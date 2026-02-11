@@ -79,12 +79,14 @@ CREATE TABLE IF NOT EXISTS chats (
 
 CREATE TABLE IF NOT EXISTS post (
     id INTEGER PRIMARY KEY CHECK (id = 1),
-    text TEXT NOT NULL DEFAULT '',
-    photo_file_id TEXT
+    source_chat_id INTEGER,
+    source_message_id INTEGER,
+    has_media INTEGER NOT NULL DEFAULT 0,
+    media_group_id TEXT
 );
 
-INSERT OR IGNORE INTO post (id, text, photo_file_id)
-VALUES (1, '', NULL);
+INSERT OR IGNORE INTO post (id, source_chat_id, source_message_id, has_media, media_group_id)
+VALUES (1, NULL, NULL, 0, NULL);
 
 CREATE TABLE IF NOT EXISTS schedules (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -99,6 +101,30 @@ CREATE TABLE IF NOT EXISTS schedules (
 async def init_db() -> None:
     async with aiosqlite.connect(DB_PATH) as db:
         await db.executescript(CREATE_TABLES_SQL)
+
+        async with db.execute("PRAGMA table_info(post)") as cursor:
+            columns = {row[1] for row in await cursor.fetchall()}
+
+        if "source_chat_id" not in columns or "source_message_id" not in columns:
+            await db.executescript(
+                """
+                ALTER TABLE post RENAME TO post_old;
+
+                CREATE TABLE post (
+                    id INTEGER PRIMARY KEY CHECK (id = 1),
+                    source_chat_id INTEGER,
+                    source_message_id INTEGER,
+                    has_media INTEGER NOT NULL DEFAULT 0,
+                    media_group_id TEXT
+                );
+
+                INSERT OR IGNORE INTO post (id, source_chat_id, source_message_id, has_media, media_group_id)
+                VALUES (1, NULL, NULL, 0, NULL);
+
+                DROP TABLE post_old;
+                """
+            )
+
         await db.commit()
 
 
@@ -144,18 +170,34 @@ async def get_chats() -> list[int]:
 
 async def get_post() -> dict:
     async with aiosqlite.connect(DB_PATH) as db:
-        async with db.execute("SELECT text, photo_file_id FROM post WHERE id = 1") as cursor:
+        async with db.execute(
+            "SELECT source_chat_id, source_message_id, has_media, media_group_id FROM post WHERE id = 1"
+        ) as cursor:
             row = await cursor.fetchone()
     if not row:
-        return {"text": "", "photo_file_id": None}
-    return {"text": row[0], "photo_file_id": row[1]}
+        return {
+            "source_chat_id": None,
+            "source_message_id": None,
+            "has_media": False,
+            "media_group_id": None,
+        }
+    return {
+        "source_chat_id": row[0],
+        "source_message_id": row[1],
+        "has_media": bool(row[2]),
+        "media_group_id": row[3],
+    }
 
 
-async def save_post(text: str, photo_file_id: Optional[str]) -> None:
+async def save_post(source_chat_id: int, source_message_id: int, has_media: bool, media_group_id: Optional[str]) -> None:
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(
-            "UPDATE post SET text = ?, photo_file_id = ? WHERE id = 1",
-            (text.strip(), photo_file_id),
+            """
+            UPDATE post
+            SET source_chat_id = ?, source_message_id = ?, has_media = ?, media_group_id = ?
+            WHERE id = 1
+            """,
+            (source_chat_id, source_message_id, int(has_media), media_group_id),
         )
         await db.commit()
 
@@ -236,12 +278,19 @@ def support_keyboard() -> InlineKeyboardMarkup:
 
 async def send_post_preview(message: Message, title: str = "Текущий пост") -> None:
     post = await get_post()
-    text = post["text"] or "(пусто)"
-    header = f"{title}:\n\n{text}"
-    if post["photo_file_id"]:
-        await message.answer_photo(photo=post["photo_file_id"], caption=header)
-    else:
-        await message.answer(header)
+    source_chat_id = post["source_chat_id"]
+    source_message_id = post["source_message_id"]
+
+    if not source_chat_id or not source_message_id:
+        await message.answer(f"{title}:\n\n(пусто)")
+        return
+
+    await message.answer(f"{title}:")
+    await bot.copy_message(
+        chat_id=message.chat.id,
+        from_chat_id=source_chat_id,
+        message_id=source_message_id,
+    )
 
 
 async def send_schedule_list(message: Message) -> None:
@@ -275,7 +324,10 @@ async def send_post_actions(message: Message) -> None:
 
 async def broadcast_once() -> None:
     post = await get_post()
-    if not post["text"].strip():
+    source_chat_id = post["source_chat_id"]
+    source_message_id = post["source_message_id"]
+
+    if not source_chat_id or not source_message_id:
         logger.info("Broadcast skipped: empty post")
         return
 
@@ -284,15 +336,24 @@ async def broadcast_once() -> None:
 
     for chat_id in chat_ids:
         try:
-            if post["photo_file_id"]:
-                await bot.send_photo(
+            try:
+                await bot.copy_message(
                     chat_id=chat_id,
-                    photo=post["photo_file_id"],
-                    caption=post["text"],
+                    from_chat_id=source_chat_id,
+                    message_id=source_message_id,
                     reply_markup=keyboard,
                 )
-            else:
-                await bot.send_message(chat_id=chat_id, text=post["text"], reply_markup=keyboard)
+            except Exception:
+                await bot.copy_message(
+                    chat_id=chat_id,
+                    from_chat_id=source_chat_id,
+                    message_id=source_message_id,
+                )
+                await bot.send_message(
+                    chat_id=chat_id,
+                    text="Связь с поддержкой 👇",
+                    reply_markup=keyboard,
+                )
             await asyncio.sleep(0.2)
         except Exception as exc:
             logger.warning("Failed to send to chat %s: %s", chat_id, exc)
@@ -382,13 +443,16 @@ async def receive_post_content(message: Message, state: FSMContext):
     if not ensure_admin(message):
         return
 
-    text = (message.caption or message.text or "").strip()
-    if not text:
-        await message.answer("Нужен текст поста (можно в подписи к фото).")
+    if message.media_group_id:
+        await message.answer("Пока поддерживается только один пост = одно сообщение (без альбомов).")
         return
 
-    photo_file_id = message.photo[-1].file_id if message.photo else None
-    await save_post(text=text, photo_file_id=photo_file_id)
+    await save_post(
+        source_chat_id=message.chat.id,
+        source_message_id=message.message_id,
+        has_media=bool(message.photo or message.video or message.animation or message.document),
+        media_group_id=message.media_group_id,
+    )
 
     data = await state.get_data()
     mode = data.get("mode")
@@ -398,6 +462,13 @@ async def receive_post_content(message: Message, state: FSMContext):
         await message.answer("Пост обновлён. Существующие расписания сохранены ✅")
     else:
         await message.answer("Пост сохранён ✅")
+
+    await message.answer("Превью:")
+    await bot.copy_message(
+        chat_id=message.chat.id,
+        from_chat_id=message.chat.id,
+        message_id=message.message_id,
+    )
 
     await send_post_actions(message)
 
