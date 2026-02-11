@@ -122,7 +122,10 @@ def ensure_admin(event_message: Message) -> bool:
 
 async def save_chat(chat_id: int) -> None:
     async with aiosqlite.connect(DB_PATH) as db:
-                await db.execute("INSERT OR IGNORE INTO chats(chat_id) VALUES (?)", (chat_id,))
+        await db.execute(
+            "INSERT OR IGNORE INTO chats(chat_id) VALUES (?)",
+            (chat_id,),
+        )
         await db.commit()
 
 
@@ -225,7 +228,7 @@ def schedule_label(item: dict) -> str:
 
 
 def support_keyboard() -> InlineKeyboardMarkup:
-    deep_link = f"https://t.me/{BOT_USERNAME}?start={SUPPORT_PAYLOAD}"start={SUPPORT_START_PAYLOAD}"
+    deep_link = f"https://t.me/{BOT_USERNAME}?start={SUPPORT_PAYLOAD}"
     return InlineKeyboardMarkup(
         inline_keyboard=[[InlineKeyboardButton(text=SUPPORT_BUTTON_TEXT, url=deep_link)]]
     )
@@ -326,7 +329,7 @@ async def track_chat_membership(update: ChatMemberUpdated):
     if chat.type not in {"group", "supergroup"}:
         return
 
-   old_status = update.old_chat_member.status
+    old_status = update.old_chat_member.status
     new_status = update.new_chat_member.status
 
     if new_status in {"member", "administrator", "creator"}:
@@ -617,7 +620,7 @@ async def schedule_edit_save(message: Message, state: FSMContext):
     if not ensure_admin(message):
         return
 
-     parsed = parse_time(message.text or "")
+    parsed = parse_time(message.text or "")
     if not parsed:
         await message.answer("Неверный формат. Используйте HH:MM")
         return
