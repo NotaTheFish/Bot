@@ -1,4 +1,5 @@
 import asyncio
+import os
 from datetime import datetime, timedelta
 from typing import Optional
 
@@ -10,18 +11,56 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.interval import IntervalTrigger
 from zoneinfo import ZoneInfo
 
-BOT_TOKEN = "PASTE_TOKEN"
-ADMIN_ID = 123456789  # ваш Telegram user id
-TZ = ZoneInfo("Europe/Berlin")
-DB_PATH = "bot.db"
-SUPPORT_BUTTON_TEXT = "Если у вас бан"
-SUPPORT_START_PAYLOAD = "contact_admin"
+# =========================
+# ENV / CONFIG
+# =========================
+
+def _get_env_str(name: str, default: str = "") -> str:
+    return (os.getenv(name, default) or "").strip()
+
+def _get_env_int(name: str, default: int = 0) -> int:
+    raw = _get_env_str(name, str(default))
+    try:
+        return int(raw)
+    except ValueError:
+        return default
+
+BOT_TOKEN = _get_env_str("BOT_TOKEN")
+ADMIN_ID = _get_env_int("ADMIN_ID", 0)
+
+TZ_NAME = _get_env_str("TZ", "Europe/Berlin")
+try:
+    TZ = ZoneInfo(TZ_NAME)
+except Exception:
+    TZ = ZoneInfo("Europe/Berlin")
+
+DB_PATH = _get_env_str("DB_PATH", "bot.db")
+
+SUPPORT_BUTTON_TEXT = _get_env_str("SUPPORT_BUTTON_TEXT", "Если у вас бан")
+SUPPORT_START_PAYLOAD = _get_env_str("SUPPORT_START_PAYLOAD", "contact_admin")
+
 BROADCAST_JOB_ID = "broadcast_job"
 BOT_USERNAME = ""
+
+# Валидируем env до создания Bot()
+if not BOT_TOKEN or ":" not in BOT_TOKEN:
+    raise RuntimeError(
+        "BOT_TOKEN не задан или неверного формата. "
+        "Проверь Railway → Variables → BOT_TOKEN (должен быть вида 123456:ABC...)."
+    )
+if ADMIN_ID <= 0:
+    raise RuntimeError(
+        "ADMIN_ID не задан или неверный. "
+        "Проверь Railway → Variables → ADMIN_ID (число)."
+    )
 
 bot = Bot(BOT_TOKEN)
 dp = Dispatcher()
 scheduler = AsyncIOScheduler(timezone=TZ)
+
+# =========================
+# DB
+# =========================
 
 CREATE_TABLES_SQL = """
 CREATE TABLE IF NOT EXISTS chats (
@@ -53,30 +92,31 @@ INSERT OR IGNORE INTO schedule
 VALUES (1, NULL, NULL, NULL, 1, 0, NULL);
 """
 
-
-def ensure_admin(message: Message) -> bool:
-    return bool(message.from_user and message.from_user.id == ADMIN_ID)
-
-
 async def init_db() -> None:
     async with aiosqlite.connect(DB_PATH) as db:
         await db.executescript(CREATE_TABLES_SQL)
         await db.commit()
 
+# =========================
+# HELPERS
+# =========================
+
+def ensure_admin(message: Message) -> bool:
+    return bool(message.from_user and message.from_user.id == ADMIN_ID)
 
 async def is_admin_in_chat(message: Message) -> bool:
     if message.chat.type not in ("group", "supergroup"):
         return False
+    if not message.from_user:
+        return False
     member = await bot.get_chat_member(message.chat.id, message.from_user.id)
     return member.status in ("administrator", "creator")
-
 
 async def get_all_chats() -> list[int]:
     async with aiosqlite.connect(DB_PATH) as db:
         async with db.execute("SELECT chat_id FROM chats") as cur:
             rows = await cur.fetchall()
     return [row[0] for row in rows]
-
 
 async def set_post(text: str, photo_file_id: Optional[str], username: str) -> None:
     async with aiosqlite.connect(DB_PATH) as db:
@@ -90,7 +130,6 @@ async def set_post(text: str, photo_file_id: Optional[str], username: str) -> No
         )
         await db.commit()
 
-
 async def get_post() -> dict:
     async with aiosqlite.connect(DB_PATH) as db:
         async with db.execute(
@@ -102,7 +141,6 @@ async def get_post() -> dict:
         return {"text": "", "photo_file_id": None, "contact_username": ""}
 
     return {"text": row[0], "photo_file_id": row[1], "contact_username": row[2]}
-
 
 async def save_schedule(
     interval_minutes: int,
@@ -134,7 +172,6 @@ async def save_schedule(
         )
         await db.commit()
 
-
 async def get_schedule() -> dict:
     async with aiosqlite.connect(DB_PATH) as db:
         async with db.execute(
@@ -163,13 +200,11 @@ async def get_schedule() -> dict:
         "active": bool(row[4]),
     }
 
-
 def build_inline_keyboard() -> InlineKeyboardMarkup:
     deep_link = f"https://t.me/{BOT_USERNAME}?start={SUPPORT_START_PAYLOAD}"
     return InlineKeyboardMarkup(
         inline_keyboard=[[InlineKeyboardButton(text=SUPPORT_BUTTON_TEXT, url=deep_link)]]
     )
-
 
 async def compose_post_text() -> str:
     post = await get_post()
@@ -184,6 +219,9 @@ async def compose_post_text() -> str:
     )
     return f"{post['text']}{suffix}"
 
+# =========================
+# BROADCAST
+# =========================
 
 async def broadcast() -> None:
     post = await get_post()
@@ -223,7 +261,6 @@ async def broadcast() -> None:
         f"Рассылка завершена. Успешно: {sent}, ошибок: {failed}, чатов: {len(chat_ids)}",
     )
 
-
 def schedule_broadcast_job(
     interval_minutes: int,
     start_hour: int,
@@ -235,7 +272,11 @@ def schedule_broadcast_job(
 
     now = datetime.now(TZ)
     today_start = now.replace(hour=start_hour, minute=0, second=0, microsecond=0)
-    today_end = now.replace(hour=end_hour, minute=0, second=0, microsecond=0)
+    today_end = now.replace(hour=end_hour % 24, minute=0, second=0, microsecond=0)
+
+    # Если end_hour == 24, то это фактически конец дня -> +1 день в 00:00
+    if end_hour == 24:
+        today_end = today_end + timedelta(days=1)
 
     if now <= today_start:
         first_run = today_start
@@ -253,10 +294,13 @@ def schedule_broadcast_job(
     }
 
     if not daily:
+        # Однодневный запуск только до конца окна
         if first_run.date() == now.date():
             end_date = today_end
         else:
-            end_date = first_run.replace(hour=end_hour, minute=0, second=0, microsecond=0)
+            end_date = first_run.replace(hour=end_hour % 24, minute=0, second=0, microsecond=0)
+            if end_hour == 24:
+                end_date = end_date + timedelta(days=1)
         trigger_kwargs["end_date"] = end_date
 
     scheduler.add_job(
@@ -268,7 +312,6 @@ def schedule_broadcast_job(
         max_instances=1,
     )
 
-
 def valid_schedule(interval_minutes: int, start_hour: int, end_hour: int) -> Optional[str]:
     if interval_minutes <= 0:
         return "Интервал должен быть > 0 минут."
@@ -278,6 +321,9 @@ def valid_schedule(interval_minutes: int, start_hour: int, end_hour: int) -> Opt
         return "start_hour должен быть меньше end_hour."
     return None
 
+# =========================
+# COMMANDS
+# =========================
 
 @dp.message(Command("register"))
 async def register_chat(message: Message):
@@ -286,11 +332,13 @@ async def register_chat(message: Message):
         return
 
     async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute("INSERT OR IGNORE INTO chats (chat_id) VALUES (?)", (message.chat.id,))
+        await db.execute(
+            "INSERT OR IGNORE INTO chats (chat_id) VALUES (?)",
+            (message.chat.id,),
+        )
         await db.commit()
 
     await message.reply("Чат зарегистрирован для рассылки ✅")
-
 
 @dp.message(Command("unregister"))
 async def unregister_chat(message: Message):
@@ -303,7 +351,6 @@ async def unregister_chat(message: Message):
         await db.commit()
 
     await message.reply("Чат удалён из рассылки ✅")
-
 
 @dp.message(Command("setpost"))
 async def setpost(message: Message):
@@ -322,13 +369,10 @@ async def setpost(message: Message):
     username = payload[1]
     text = payload[2]
 
-    photo_file_id = None
-    if message.photo:
-        photo_file_id = message.photo[-1].file_id
+    photo_file_id = message.photo[-1].file_id if message.photo else None
 
     await set_post(text=text, photo_file_id=photo_file_id, username=username)
     await message.reply("Пост сохранён и будет использоваться в следующих рассылках ✅")
-
 
 @dp.message(Command("setphoto"))
 async def setphoto(message: Message):
@@ -348,7 +392,6 @@ async def setphoto(message: Message):
     )
     await message.reply("Фото для рассылки обновлено ✅")
 
-
 @dp.message(Command("clearphoto"))
 async def clearphoto(message: Message):
     if not ensure_admin(message):
@@ -358,7 +401,6 @@ async def clearphoto(message: Message):
     post = await get_post()
     await set_post(text=post["text"], photo_file_id=None, username=post["contact_username"])
     await message.reply("Фото удалено. Теперь будет отправляться только текст ✅")
-
 
 @dp.message(Command("schedule"))
 async def set_schedule(message: Message):
@@ -370,7 +412,7 @@ async def set_schedule(message: Message):
     if len(parts) != 5:
         await message.reply(
             "Использование: /schedule interval_minutes start_hour end_hour daily\n"
-            "Пример: /schedule 60 8 23 yes"
+            "Пример: /schedule 90 8 22 yes"
         )
         return
 
@@ -393,12 +435,11 @@ async def set_schedule(message: Message):
     await save_schedule(interval_minutes, start_hour, end_hour, daily=daily, active=True)
 
     await message.reply(
-        f"Расписание обновлено ✅\n"
+        "Расписание обновлено ✅\n"
         f"Интервал: {interval_minutes} мин\n"
-        f"Окно: {start_hour:02d}:00-{end_hour:02d}:00 (Europe/Berlin)\n"
+        f"Окно: {start_hour:02d}:00-{end_hour:02d}:00 ({TZ_NAME})\n"
         f"Ежедневно: {'да' if daily else 'нет (только ближайший день)'}"
     )
-
 
 @dp.message(Command("stopschedule"))
 async def stop_schedule(message: Message):
@@ -420,7 +461,6 @@ async def stop_schedule(message: Message):
 
     await message.reply("Расписание остановлено ✅")
 
-
 @dp.message(Command("broadcast"))
 async def broadcast_now(message: Message):
     if not ensure_admin(message):
@@ -429,7 +469,6 @@ async def broadcast_now(message: Message):
 
     await message.reply("Запускаю рассылку…")
     await broadcast()
-
 
 @dp.message(Command("status"))
 async def status(message: Message):
@@ -453,33 +492,32 @@ async def status(message: Message):
         f"- Ежедневно: {'да' if schedule_info['daily'] else 'нет'}"
     )
 
-
 @dp.message(Command("start"))
 async def start_private(message: Message, command: CommandObject):
     if message.chat.type != "private":
         return
 
     if command.args == SUPPORT_START_PAYLOAD:
-        await message.reply(
-            "Напишите сообщение в ответ на это сообщение — я передам его администратору."
-        )
+        await message.reply("Напишите сообщение в ответ на это — я передам его администратору.")
         return
 
     if ensure_admin(message):
         await message.reply(
             "Команды владельца:\n"
-            "/setpost @username текст\n"
+            "/setpost @username текст (можно с фото)\n"
             "/setphoto (вместе с фото)\n"
             "/clearphoto\n"
-            "/schedule 60 8 23 yes\n"
+            "/schedule 90 8 22 yes\n"
             "/stopschedule\n"
             "/status\n"
-            "/broadcast"
+            "/broadcast\n"
+            "\nКоманды для чатов:\n"
+            "/register (в группе, где вы админ)\n"
+            "/unregister"
         )
         return
 
     await message.reply("Привет! Напишите сообщение, и я отправлю его администратору.")
-
 
 @dp.message(F.chat.type == "private")
 async def dm_forward(message: Message):
@@ -511,6 +549,9 @@ async def dm_forward(message: Message):
     except Exception:
         await message.reply("Не удалось отправить сообщение администратору.")
 
+# =========================
+# STARTUP
+# =========================
 
 async def restore_schedule_from_db() -> None:
     schedule_info = await get_schedule()
@@ -533,17 +574,16 @@ async def restore_schedule_from_db() -> None:
         daily=schedule_info["daily"],
     )
 
-
 async def main():
     global BOT_USERNAME
+
     await init_db()
-    BOT_USERNAME = (await bot.get_me()).username
+    BOT_USERNAME = (await bot.get_me()).username or ""
 
     scheduler.start()
     await restore_schedule_from_db()
 
     await dp.start_polling(bot)
-
 
 if __name__ == "__main__":
     asyncio.run(main())
