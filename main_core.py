@@ -171,16 +171,6 @@ async def init_db() -> None:
         async with conn.transaction():
             for query in CREATE_TABLES_SQL:
                 await conn.execute(query)
-            await conn.execute(
-                """
-                DELETE FROM schedules
-                WHERE id NOT IN (
-                    SELECT MIN(id)
-                    FROM schedules
-                    GROUP BY schedule_type, COALESCE(time_text, ''), COALESCE(weekday, -1)
-                )
-                """
-            )
 
 
 def admin_menu_keyboard() -> ReplyKeyboardMarkup:
@@ -778,7 +768,7 @@ async def broadcast_once() -> None:
 
 
 def register_schedule_job(item: dict) -> None:
-    job_id = f"schedule_{item['id']}"
+    job_id = f"sched:{item['id']}"
     if scheduler.get_job(job_id):
         scheduler.remove_job(job_id)
 
@@ -797,7 +787,7 @@ def register_schedule_job(item: dict) -> None:
 
 
 def remove_schedule_job(schedule_id: int) -> None:
-    job_id = f"schedule_{schedule_id}"
+    job_id = f"sched:{schedule_id}"
     if scheduler.get_job(job_id):
         scheduler.remove_job(job_id)
 
@@ -1291,28 +1281,61 @@ async def support_message_forward(message: Message, state: FSMContext):
 
 
 async def restore_scheduler() -> None:
-    schedules = await get_schedules()
-    for item in schedules:
-        register_schedule_job(item)
+    pool = await get_db_pool()
+    has_enabled = await pool.fetchval(
+        """
+        SELECT EXISTS (
+            SELECT 1
+            FROM information_schema.columns
+            WHERE table_name = 'schedules' AND column_name = 'enabled'
+        )
+        """
+    )
+    has_kind = await pool.fetchval(
+        """
+        SELECT EXISTS (
+            SELECT 1
+            FROM information_schema.columns
+            WHERE table_name = 'schedules' AND column_name = 'kind'
+        )
+        """
+    )
+
+    schedule_column = "kind" if has_kind else "schedule_type"
+    enabled_filter = "WHERE enabled = TRUE" if has_enabled else ""
+    rows = await pool.fetch(
+        f"SELECT id, {schedule_column} AS schedule_kind, time_text, weekday "
+        f"FROM schedules {enabled_filter} ORDER BY {schedule_column}, time_text"
+    )
+
+    for row in rows:
+        register_schedule_job(
+            {
+                "id": row["id"],
+                "schedule_type": row["schedule_kind"],
+                "time_text": row["time_text"],
+                "weekday": row["weekday"],
+            }
+        )
 
 
 async def main() -> None:
     global BOT_USERNAME, BOT_ID
-
-    await init_db()
-    me = await bot.get_me()
-    BOT_USERNAME = me.username or ""
-    BOT_ID = me.id
-    scheduler.start()
-    await restore_scheduler()
-
     try:
+        await init_db()
+        me = await bot.get_me()
+        BOT_USERNAME = me.username or ""
+        BOT_ID = me.id
+        scheduler.start()
+        await restore_scheduler()
         await dp.start_polling(bot)
     finally:
+        with suppress(Exception):
+            scheduler.shutdown(wait=False)
         if db_pool is not None:
             await db_pool.close()
         with suppress(Exception):
-            scheduler.shutdown(wait=False)
+            await bot.session.close()
 
 
 if __name__ == "__main__":
