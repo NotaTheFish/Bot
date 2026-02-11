@@ -1,11 +1,13 @@
 import asyncio
 import logging
 import os
+import random
 from datetime import datetime
 from typing import Optional
 
 import aiosqlite
 from aiogram import Bot, Dispatcher, F
+from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError, TelegramRetryAfter
 from aiogram.filters import CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
@@ -59,6 +61,22 @@ bot = Bot(BOT_TOKEN)
 dp = Dispatcher()
 scheduler = AsyncIOScheduler(timezone=TZ)
 BOT_USERNAME = ""
+BOT_ID = 0
+
+GLOBAL_BROADCAST_COOLDOWN_SECONDS = _get_env_int("GLOBAL_BROADCAST_COOLDOWN_SECONDS", 600)
+MIN_USER_MESSAGES_BETWEEN_POSTS = _get_env_int("MIN_USER_MESSAGES_BETWEEN_POSTS", 5)
+BROADCAST_MAX_PER_DAY = _get_env_int("BROADCAST_MAX_PER_DAY", 20)
+MIN_SECONDS_BETWEEN_CHATS = max(0.0, float(_get_env_str("MIN_SECONDS_BETWEEN_CHATS", "0.3")))
+MAX_SECONDS_BETWEEN_CHATS = max(MIN_SECONDS_BETWEEN_CHATS, float(_get_env_str("MAX_SECONDS_BETWEEN_CHATS", "0.7")))
+ANTI_DUPLICATE_HOURS = _get_env_int("ANTI_DUPLICATE_HOURS", 6)
+QUIET_HOURS_START = _get_env_str("QUIET_HOURS_START", "")
+QUIET_HOURS_END = _get_env_str("QUIET_HOURS_END", "")
+MANUAL_CONFIRM_FIRST_BROADCAST = _get_env_str("MANUAL_CONFIRM_FIRST_BROADCAST", "false").lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
 
 
 class AdminStates(StatesGroup):
@@ -74,7 +92,12 @@ class SupportStates(StatesGroup):
 
 CREATE_TABLES_SQL = """
 CREATE TABLE IF NOT EXISTS chats (
-    chat_id INTEGER PRIMARY KEY
+    chat_id INTEGER PRIMARY KEY,
+    disabled INTEGER NOT NULL DEFAULT 0,
+    last_bot_post_msg_id INTEGER,
+    user_messages_since_last_post INTEGER NOT NULL DEFAULT 0,
+    last_error TEXT,
+    last_success_post_at TEXT
 );
 
 CREATE TABLE IF NOT EXISTS post (
@@ -87,6 +110,12 @@ CREATE TABLE IF NOT EXISTS post (
 
 INSERT OR IGNORE INTO post (id, source_chat_id, source_message_id, has_media, media_group_id)
 VALUES (1, NULL, NULL, 0, NULL);
+
+
+CREATE TABLE IF NOT EXISTS meta (
+    key TEXT PRIMARY KEY,
+    value TEXT
+);
 
 CREATE TABLE IF NOT EXISTS schedules (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -146,6 +175,22 @@ async def init_db() -> None:
                 """
             )
 
+        async with db.execute("PRAGMA table_info(chats)") as cursor:
+            chat_columns = {row[1] for row in await cursor.fetchall()}
+
+        if "disabled" not in chat_columns:
+            await db.execute("ALTER TABLE chats ADD COLUMN disabled INTEGER NOT NULL DEFAULT 0")
+        if "last_bot_post_msg_id" not in chat_columns:
+            await db.execute("ALTER TABLE chats ADD COLUMN last_bot_post_msg_id INTEGER")
+        if "user_messages_since_last_post" not in chat_columns:
+            await db.execute(
+                "ALTER TABLE chats ADD COLUMN user_messages_since_last_post INTEGER NOT NULL DEFAULT 0"
+            )
+        if "last_error" not in chat_columns:
+            await db.execute("ALTER TABLE chats ADD COLUMN last_error TEXT")
+        if "last_success_post_at" not in chat_columns:
+            await db.execute("ALTER TABLE chats ADD COLUMN last_success_post_at TEXT")
+
         await db.commit()
 
 
@@ -154,6 +199,7 @@ def admin_menu_keyboard() -> ReplyKeyboardMarkup:
         keyboard=[
             [KeyboardButton(text="📌 Добавить пост")],
             [KeyboardButton(text="✏️ Изменить пост")],
+            [KeyboardButton(text="📊 Статус")],
         ],
         resize_keyboard=True,
     )
@@ -187,6 +233,102 @@ async def get_chats() -> list[int]:
         async with db.execute("SELECT chat_id FROM chats") as cursor:
             rows = await cursor.fetchall()
     return [row[0] for row in rows]
+
+
+async def get_chat_rows() -> list[dict]:
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            """
+            SELECT chat_id, disabled, last_bot_post_msg_id, user_messages_since_last_post, last_error, last_success_post_at
+            FROM chats
+            """
+        ) as cursor:
+            rows = await cursor.fetchall()
+    return [
+        {
+            "chat_id": row[0],
+            "disabled": bool(row[1]),
+            "last_bot_post_msg_id": row[2],
+            "user_messages_since_last_post": row[3] or 0,
+            "last_error": row[4],
+            "last_success_post_at": row[5],
+        }
+        for row in rows
+    ]
+
+
+async def increment_user_message_counter(chat_id: int) -> None:
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            """
+            UPDATE chats
+            SET user_messages_since_last_post = user_messages_since_last_post + 1
+            WHERE chat_id = ? AND disabled = 0
+            """,
+            (chat_id,),
+        )
+        await db.commit()
+
+
+async def mark_chat_disabled(chat_id: int, error_text: str) -> None:
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "UPDATE chats SET disabled = 1, last_error = ? WHERE chat_id = ?",
+            (error_text[:500], chat_id),
+        )
+        await db.commit()
+
+
+async def mark_chat_send_success(chat_id: int, message_id: int) -> None:
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            """
+            UPDATE chats
+            SET last_bot_post_msg_id = ?,
+                user_messages_since_last_post = 0,
+                last_error = NULL,
+                last_success_post_at = ?
+            WHERE chat_id = ?
+            """,
+            (message_id, datetime.utcnow().isoformat(), chat_id),
+        )
+        await db.commit()
+
+
+async def set_meta(key: str, value: str) -> None:
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "INSERT INTO meta(key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            (key, value),
+        )
+        await db.commit()
+
+
+async def get_meta(key: str) -> Optional[str]:
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute("SELECT value FROM meta WHERE key = ?", (key,)) as cursor:
+            row = await cursor.fetchone()
+    return row[0] if row else None
+
+
+async def get_broadcast_meta() -> dict:
+    now = datetime.utcnow()
+    day_key = now.strftime("%Y-%m-%d")
+    stored_day_key = await get_meta("day_key")
+    daily_count_raw = await get_meta("daily_broadcast_count")
+    daily_count = int(daily_count_raw) if (daily_count_raw and daily_count_raw.isdigit()) else 0
+
+    if stored_day_key != day_key:
+        await set_meta("day_key", day_key)
+        await set_meta("daily_broadcast_count", "0")
+        daily_count = 0
+
+    return {
+        "last_broadcast_at": await get_meta("last_broadcast_at"),
+        "daily_broadcast_count": daily_count,
+        "day_key": day_key,
+        "manual_confirmed_day": await get_meta("manual_confirmed_day"),
+    }
 
 
 async def get_post() -> dict:
@@ -312,6 +454,30 @@ def parse_time(value: str) -> Optional[str]:
         return None
 
 
+def parse_iso_datetime(value: Optional[str]) -> Optional[datetime]:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value)
+    except ValueError:
+        return None
+
+
+def is_quiet_hours_now() -> bool:
+    start = parse_time(QUIET_HOURS_START)
+    end = parse_time(QUIET_HOURS_END)
+    if not start or not end:
+        return False
+
+    now_local = datetime.now(TZ).time()
+    start_t = datetime.strptime(start, "%H:%M").time()
+    end_t = datetime.strptime(end, "%H:%M").time()
+
+    if start_t <= end_t:
+        return start_t <= now_local < end_t
+    return now_local >= start_t or now_local < end_t
+
+
 def schedule_label(item: dict) -> str:
     if item["schedule_type"] == "daily":
         return f"📅 Ежедневно {item['time_text']}"
@@ -374,6 +540,30 @@ async def send_post_actions(message: Message) -> None:
     )
 
 
+async def send_admin_report(report: dict) -> None:
+    lines = [
+        "📊 Отчёт рассылки",
+        f"Всего чатов: {report['total_chats']}",
+        f"Отправлено: {report['sent']}",
+        f"Пропущено (5+ сообщений): {report['skipped_by_activity']}",
+        f"Пропущено (антидубль): {report['skipped_by_duplicate']}",
+        f"Пропущено (выключены): {report['skipped_disabled']}",
+        f"Ошибки/права: {report['errors']}",
+    ]
+    try:
+        await bot.send_message(ADMIN_ID, "\n".join(lines))
+    except Exception as exc:
+        logger.warning("Failed to send admin report: %s", exc)
+
+
+async def is_manual_confirmation_required(meta: dict) -> bool:
+    if not MANUAL_CONFIRM_FIRST_BROADCAST:
+        return False
+    if meta['manual_confirmed_day'] == meta['day_key']:
+        return False
+    return True
+
+
 async def broadcast_once() -> None:
     post = await get_post()
     source_chat_id = post["source_chat_id"]
@@ -383,32 +573,104 @@ async def broadcast_once() -> None:
         logger.info("Broadcast skipped: empty post")
         return
 
-    chat_ids = await get_chats()
-    keyboard = support_keyboard()
+    meta = await get_broadcast_meta()
+    if await is_manual_confirmation_required(meta):
+        keyboard = InlineKeyboardMarkup(
+            inline_keyboard=[[InlineKeyboardButton(text="✅ Запустить сегодня", callback_data="broadcast:confirm_today")]]
+        )
+        await bot.send_message(
+            ADMIN_ID,
+            "Требуется ручное подтверждение первой рассылки дня. Нажмите кнопку для запуска.",
+            reply_markup=keyboard,
+        )
+        logger.info("Broadcast skipped: waiting manual daily confirmation")
+        return
 
-    for chat_id in chat_ids:
+    if is_quiet_hours_now():
+        logger.info("Broadcast skipped: quiet hours window")
+        return
+
+    if meta['daily_broadcast_count'] >= BROADCAST_MAX_PER_DAY > 0:
+        await bot.send_message(ADMIN_ID, "⚠️ Достигнут дневной лимит запусков рассылки.")
+        logger.info("Broadcast skipped: daily limit reached")
+        return
+
+    last_broadcast_dt = parse_iso_datetime(meta["last_broadcast_at"])
+    if last_broadcast_dt:
+        delta_seconds = (datetime.utcnow() - last_broadcast_dt).total_seconds()
+        if delta_seconds < GLOBAL_BROADCAST_COOLDOWN_SECONDS:
+            logger.info("Broadcast skipped: global cooldown %.1fs", delta_seconds)
+            return
+
+    chats = await get_chat_rows()
+    keyboard = support_keyboard()
+    report = {
+        "total_chats": len(chats),
+        "sent": 0,
+        "skipped_by_activity": 0,
+        "skipped_by_duplicate": 0,
+        "skipped_disabled": 0,
+        "errors": 0,
+    }
+
+    for chat in chats:
+        chat_id = chat["chat_id"]
+        if chat["disabled"]:
+            report["skipped_disabled"] += 1
+            continue
+
+        if chat["user_messages_since_last_post"] < MIN_USER_MESSAGES_BETWEEN_POSTS:
+            report["skipped_by_activity"] += 1
+            continue
+
+        if ANTI_DUPLICATE_HOURS > 0 and chat["last_success_post_at"]:
+            last_chat_send = parse_iso_datetime(chat["last_success_post_at"])
+            if last_chat_send:
+                hours_since = (datetime.utcnow() - last_chat_send).total_seconds() / 3600
+                if hours_since < ANTI_DUPLICATE_HOURS:
+                    report["skipped_by_duplicate"] += 1
+                    continue
+
         try:
+            sent = None
             try:
-                await bot.copy_message(
+                sent = await bot.copy_message(
                     chat_id=chat_id,
                     from_chat_id=source_chat_id,
                     message_id=source_message_id,
                     reply_markup=keyboard,
                 )
-            except Exception:
-                await bot.copy_message(
+            except TelegramBadRequest:
+                sent = await bot.copy_message(
                     chat_id=chat_id,
                     from_chat_id=source_chat_id,
                     message_id=source_message_id,
                 )
-                await bot.send_message(
-                    chat_id=chat_id,
-                    text="Связь с поддержкой 👇",
-                    reply_markup=keyboard,
-                )
-            await asyncio.sleep(0.2)
+                await bot.send_message(chat_id=chat_id, text="Связь с поддержкой 👇", reply_markup=keyboard)
+
+            if sent:
+                await mark_chat_send_success(chat_id, sent.message_id)
+            report["sent"] += 1
+            await asyncio.sleep(random.uniform(MIN_SECONDS_BETWEEN_CHATS, MAX_SECONDS_BETWEEN_CHATS))
+        except TelegramRetryAfter as exc:
+            await asyncio.sleep(exc.retry_after)
+            report["errors"] += 1
+            logger.warning("RetryAfter for chat %s: %s", chat_id, exc)
+        except TelegramForbiddenError as exc:
+            await mark_chat_disabled(chat_id, str(exc))
+            report["errors"] += 1
+            logger.warning("Forbidden for chat %s: %s", chat_id, exc)
         except Exception as exc:
+            report["errors"] += 1
+            await set_meta(f"last_error_chat_{chat_id}", str(exc)[:500])
             logger.warning("Failed to send to chat %s: %s", chat_id, exc)
+
+    if report["sent"] > 0:
+        await set_meta("last_broadcast_at", datetime.utcnow().isoformat())
+        await set_meta("daily_broadcast_count", str(meta["daily_broadcast_count"] + 1))
+
+    await send_admin_report(report)
+
 
 
 def register_schedule_job(item: dict) -> None:
@@ -454,6 +716,62 @@ async def track_chat_membership(update: ChatMemberUpdated):
 @dp.message(F.chat.type.in_({"group", "supergroup"}))
 async def remember_chat_from_messages(message: Message):
     await save_chat(message.chat.id)
+
+    if not message.from_user:
+        return
+    if message.from_user.is_bot:
+        return
+    if BOT_ID and message.from_user.id == BOT_ID:
+        return
+
+    await increment_user_message_counter(message.chat.id)
+
+
+@dp.message(F.text == "📊 Статус")
+async def admin_status(message: Message):
+    if not ensure_admin(message):
+        return
+
+    meta = await get_broadcast_meta()
+    chats = await get_chat_rows()
+    total = len(chats)
+    disabled = sum(1 for c in chats if c["disabled"])
+    active_ready = sum(
+        1
+        for c in chats
+        if not c["disabled"] and c["user_messages_since_last_post"] >= MIN_USER_MESSAGES_BETWEEN_POSTS
+    )
+
+    await message.answer(
+        "\n".join(
+            [
+                "📊 Статус рассылки",
+                f"Всего чатов: {total}",
+                f"Отключено: {disabled}",
+                f"Готовы по правилу активности: {active_ready}",
+                f"Глобальная пауза: {GLOBAL_BROADCAST_COOLDOWN_SECONDS} сек.",
+                f"Лимит запусков/сутки: {BROADCAST_MAX_PER_DAY}",
+                f"Запусков сегодня: {meta['daily_broadcast_count']}",
+                f"Последняя рассылка UTC: {meta['last_broadcast_at'] or '-'}",
+                f"Тихие часы: {parse_time(QUIET_HOURS_START) or '-'} → {parse_time(QUIET_HOURS_END) or '-'}",
+            ]
+        )
+    )
+
+
+@dp.callback_query(F.data == "broadcast:confirm_today")
+async def confirm_daily_broadcast(callback: CallbackQuery):
+    if not is_admin_user(callback.from_user.id):
+        await callback.answer("Недоступно", show_alert=True)
+        return
+
+    day_key = datetime.utcnow().strftime("%Y-%m-%d")
+    await set_meta("manual_confirmed_day", day_key)
+    await callback.answer("Подтверждено")
+
+    if callback.message:
+        await callback.message.answer("Подтверждение получено. Запускаю рассылку ✅")
+    await broadcast_once()
 
 
 @dp.message(CommandStart())
@@ -766,7 +1084,7 @@ async def schedule_edit_save(message: Message, state: FSMContext):
         await message.answer("Сессия редактирования устарела, попробуйте снова.")
         return
 
-   try:
+    try:
         await update_schedule_time(int(schedule_id), parsed)
     except ValueError:
         await state.clear()
@@ -818,10 +1136,12 @@ async def restore_scheduler() -> None:
 
 
 async def main() -> None:
-    global BOT_USERNAME
+    global BOT_USERNAME, BOT_ID
 
     await init_db()
-    BOT_USERNAME = (await bot.get_me()).username or ""
+    me = await bot.get_me()
+    BOT_USERNAME = me.username or ""
+    BOT_ID = me.id
     scheduler.start()
     await restore_scheduler()
 
