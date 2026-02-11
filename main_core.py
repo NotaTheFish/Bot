@@ -127,6 +127,15 @@ CREATE TABLE IF NOT EXISTS schedules (
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_schedules_unique
 ON schedules(schedule_type, COALESCE(time_text, ''), COALESCE(weekday, -1));
+
+CREATE TABLE IF NOT EXISTS broadcast_attempts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_at TEXT NOT NULL,
+    chat_id INTEGER,
+    status TEXT NOT NULL,
+    reason TEXT,
+    error_text TEXT
+);
 """
 
 
@@ -216,10 +225,65 @@ def ensure_admin(event_message: Message) -> bool:
 async def save_chat(chat_id: int) -> None:
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(
-            "INSERT OR IGNORE INTO chats(chat_id) VALUES (?)",
-            (chat_id,),
+            """
+            INSERT OR IGNORE INTO chats(chat_id, user_messages_since_last_post)
+            VALUES (?, ?)
+            """,
+            (chat_id, MIN_USER_MESSAGES_BETWEEN_POSTS),
         )
         await db.commit()
+
+
+async def save_broadcast_attempt(
+    status: str,
+    chat_id: Optional[int] = None,
+    reason: Optional[str] = None,
+    error_text: Optional[str] = None,
+) -> None:
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            """
+            INSERT INTO broadcast_attempts(created_at, chat_id, status, reason, error_text)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (datetime.utcnow().isoformat(), chat_id, status, reason, (error_text or "")[:500] or None),
+        )
+        await db.execute(
+            """
+            DELETE FROM broadcast_attempts
+            WHERE id NOT IN (
+                SELECT id
+                FROM broadcast_attempts
+                ORDER BY created_at DESC
+                LIMIT 100
+            )
+            """
+        )
+        await db.commit()
+
+
+async def get_recent_broadcast_attempts(limit: int = 10) -> list[dict]:
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            """
+            SELECT created_at, chat_id, status, reason, error_text
+            FROM broadcast_attempts
+            ORDER BY created_at DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ) as cursor:
+            rows = await cursor.fetchall()
+    return [
+        {
+            "created_at": row[0],
+            "chat_id": row[1],
+            "status": row[2],
+            "reason": row[3],
+            "error_text": row[4],
+        }
+        for row in rows
+    ]
 
 
 async def remove_chat(chat_id: int) -> None:
@@ -463,6 +527,24 @@ def parse_iso_datetime(value: Optional[str]) -> Optional[datetime]:
         return None
 
 
+def is_chat_ready_by_activity(chat: dict) -> bool:
+    if chat["last_bot_post_msg_id"] is None or chat.get("last_success_post_at") is None:
+        return True
+    return chat["user_messages_since_last_post"] >= MIN_USER_MESSAGES_BETWEEN_POSTS
+
+
+def has_privacy_mode_symptoms(chats: list[dict]) -> bool:
+    if not chats:
+        return False
+    active_chats = [c for c in chats if not c["disabled"]]
+    if not active_chats:
+        return False
+    return all(
+        c["last_bot_post_msg_id"] is not None and c["user_messages_since_last_post"] == 0
+        for c in active_chats
+    )
+
+
 def is_quiet_hours_now() -> bool:
     start = parse_time(QUIET_HOURS_START)
     end = parse_time(QUIET_HOURS_END)
@@ -513,6 +595,7 @@ async def send_post_preview(message: Message) -> None:
 
 async def send_schedule_list(message: Message) -> None:
     schedules = await get_schedules()
+    title = "Расписания:" if schedules else "Расписаний пока нет."
     rows = []
     for item in schedules:
         rows.append(
@@ -524,7 +607,30 @@ async def send_schedule_list(message: Message) -> None:
         )
     rows.append([InlineKeyboardButton(text="➕ Добавить ещё", callback_data="schedule:add_time")])
     rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="schedule:back_to_post")])
-    await message.answer("Расписания:", reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
+    await message.answer(title, reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
+
+
+async def send_edit_post_menu(message: Message) -> None:
+    await message.answer(
+        "Что вы хотите изменить?",
+        reply_markup=InlineKeyboardMarkup(
+            inline_keyboard=[
+                [InlineKeyboardButton(text="⏰ Изменить время", callback_data="edit:time")],
+                [InlineKeyboardButton(text="📝 Изменить пост", callback_data="edit:post")],
+                [InlineKeyboardButton(text="⬅️ Назад", callback_data="edit:back")],
+            ]
+        ),
+    )
+
+
+@dp.callback_query(F.data == "edit:menu")
+async def edit_menu_callback(callback: CallbackQuery, state: FSMContext):
+    if not callback.message or not is_admin_user(callback.from_user.id):
+        await callback.answer("Недоступно", show_alert=True)
+        return
+    await state.clear()
+    await send_edit_post_menu(callback.message)
+    await callback.answer()
 
 
 async def send_post_actions(message: Message) -> None:
@@ -545,11 +651,19 @@ async def send_admin_report(report: dict) -> None:
         "📊 Отчёт рассылки",
         f"Всего чатов: {report['total_chats']}",
         f"Отправлено: {report['sent']}",
+        f"Готовы по активности: {report['activity_ready']}",
         f"Пропущено (5+ сообщений): {report['skipped_by_activity']}",
         f"Пропущено (антидубль): {report['skipped_by_duplicate']}",
         f"Пропущено (выключены): {report['skipped_disabled']}",
         f"Ошибки/права: {report['errors']}",
     ]
+    if report.get("privacy_warning"):
+        lines.extend(
+            [
+                "⚠️ Похоже, счётчики сообщений не растут.",
+                "Проверьте BotFather → /setprivacy → Disable или выдайте боту права администратора.",
+            ]
+        )
     try:
         await bot.send_message(ADMIN_ID, "\n".join(lines))
     except Exception as exc:
@@ -607,21 +721,26 @@ async def broadcast_once() -> None:
     report = {
         "total_chats": len(chats),
         "sent": 0,
+        "activity_ready": 0,
         "skipped_by_activity": 0,
         "skipped_by_duplicate": 0,
         "skipped_disabled": 0,
         "errors": 0,
+        "privacy_warning": has_privacy_mode_symptoms(chats),
     }
 
     for chat in chats:
         chat_id = chat["chat_id"]
         if chat["disabled"]:
             report["skipped_disabled"] += 1
+            await save_broadcast_attempt(status="skipped", chat_id=chat_id, reason="disabled")
             continue
 
-        if chat["user_messages_since_last_post"] < MIN_USER_MESSAGES_BETWEEN_POSTS:
+        if not is_chat_ready_by_activity(chat):
             report["skipped_by_activity"] += 1
+            await save_broadcast_attempt(status="skipped", chat_id=chat_id, reason="activity_gate")
             continue
+        report["activity_ready"] += 1
 
         if ANTI_DUPLICATE_HOURS > 0 and chat["last_success_post_at"]:
             last_chat_send = parse_iso_datetime(chat["last_success_post_at"])
@@ -629,6 +748,7 @@ async def broadcast_once() -> None:
                 hours_since = (datetime.utcnow() - last_chat_send).total_seconds() / 3600
                 if hours_since < ANTI_DUPLICATE_HOURS:
                     report["skipped_by_duplicate"] += 1
+                    await save_broadcast_attempt(status="skipped", chat_id=chat_id, reason="anti_duplicate")
                     continue
 
         try:
@@ -650,19 +770,23 @@ async def broadcast_once() -> None:
 
             if sent:
                 await mark_chat_send_success(chat_id, sent.message_id)
+            await save_broadcast_attempt(status="sent", chat_id=chat_id, reason="ok")
             report["sent"] += 1
             await asyncio.sleep(random.uniform(MIN_SECONDS_BETWEEN_CHATS, MAX_SECONDS_BETWEEN_CHATS))
         except TelegramRetryAfter as exc:
             await asyncio.sleep(exc.retry_after)
             report["errors"] += 1
+            await save_broadcast_attempt(status="error", chat_id=chat_id, reason="retry_after", error_text=str(exc))
             logger.warning("RetryAfter for chat %s: %s", chat_id, exc)
         except TelegramForbiddenError as exc:
             await mark_chat_disabled(chat_id, str(exc))
             report["errors"] += 1
+            await save_broadcast_attempt(status="error", chat_id=chat_id, reason="forbidden", error_text=str(exc))
             logger.warning("Forbidden for chat %s: %s", chat_id, exc)
         except Exception as exc:
             report["errors"] += 1
             await set_meta(f"last_error_chat_{chat_id}", str(exc)[:500])
+            await save_broadcast_attempt(status="error", chat_id=chat_id, reason="exception", error_text=str(exc))
             logger.warning("Failed to send to chat %s: %s", chat_id, exc)
 
     if report["sent"] > 0:
@@ -739,8 +863,30 @@ async def admin_status(message: Message):
     active_ready = sum(
         1
         for c in chats
-        if not c["disabled"] and c["user_messages_since_last_post"] >= MIN_USER_MESSAGES_BETWEEN_POSTS
+        if not c["disabled"] and is_chat_ready_by_activity(c)
     )
+    blocked_by_activity = sum(
+        1
+        for c in chats
+        if not c["disabled"] and not is_chat_ready_by_activity(c)
+    )
+    privacy_warning = has_privacy_mode_symptoms(chats)
+    recent_attempts = await get_recent_broadcast_attempts(limit=5)
+
+    attempt_lines = []
+    for item in recent_attempts:
+        at = item["created_at"].replace("T", " ")[:19]
+        chat_text = str(item["chat_id"]) if item["chat_id"] is not None else "-"
+        reason = item["reason"] or "-"
+        err = f" ({item['error_text'][:80]})" if item.get("error_text") else ""
+        attempt_lines.append(f"• {at} | chat {chat_text} | {item['status']} | {reason}{err}")
+
+    warning_lines = []
+    if privacy_warning:
+        warning_lines = [
+            "⚠️ Похоже, бот не видит сообщения в чатах (privacy mode).",
+            "Подсказка: BotFather → /setprivacy → Disable или выдайте боту админ-права.",
+        ]
 
     await message.answer(
         "\n".join(
@@ -749,11 +895,16 @@ async def admin_status(message: Message):
                 f"Всего чатов: {total}",
                 f"Отключено: {disabled}",
                 f"Готовы по правилу активности: {active_ready}",
+                f"Заблокированы правилом активности: {blocked_by_activity}",
                 f"Глобальная пауза: {GLOBAL_BROADCAST_COOLDOWN_SECONDS} сек.",
                 f"Лимит запусков/сутки: {BROADCAST_MAX_PER_DAY}",
                 f"Запусков сегодня: {meta['daily_broadcast_count']}",
                 f"Последняя рассылка UTC: {meta['last_broadcast_at'] or '-'}",
                 f"Тихие часы: {parse_time(QUIET_HOURS_START) or '-'} → {parse_time(QUIET_HOURS_END) or '-'}",
+                *warning_lines,
+                "",
+                "Последние попытки рассылки:",
+                *(attempt_lines or ["• пока нет"]),
             ]
         )
     )
@@ -803,9 +954,39 @@ async def add_post_start(message: Message, state: FSMContext):
 async def edit_post_start(message: Message, state: FSMContext):
     if not ensure_admin(message):
         return
+    await state.clear()
+    await send_edit_post_menu(message)
+
+
+@dp.callback_query(F.data == "edit:time")
+async def edit_time_selected(callback: CallbackQuery, state: FSMContext):
+    if not callback.message or not is_admin_user(callback.from_user.id):
+        await callback.answer("Недоступно", show_alert=True)
+        return
+    await state.clear()
+    await send_schedule_list(callback.message)
+    await callback.answer()
+
+
+@dp.callback_query(F.data == "edit:post")
+async def edit_post_selected(callback: CallbackQuery, state: FSMContext):
+    if not callback.message or not is_admin_user(callback.from_user.id):
+        await callback.answer("Недоступно", show_alert=True)
+        return
     await state.set_state(AdminStates.waiting_post_content)
     await state.update_data(mode="edit")
-    await message.answer("Отправьте новый пост (текст или фото с подписью).")
+    await callback.message.answer("Отправьте новый пост (текст или фото с подписью).")
+    await callback.answer()
+
+
+@dp.callback_query(F.data == "edit:back")
+async def edit_back_selected(callback: CallbackQuery, state: FSMContext):
+    if not callback.message or not is_admin_user(callback.from_user.id):
+        await callback.answer()
+        return
+    await state.clear()
+    await callback.message.answer("Главное меню:", reply_markup=admin_menu_keyboard())
+    await callback.answer()
 
 
 @dp.message(AdminStates.waiting_post_content)
