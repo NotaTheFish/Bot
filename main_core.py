@@ -2,10 +2,11 @@ import asyncio
 import logging
 import os
 import random
+from contextlib import suppress
 from datetime import datetime
 from typing import Optional
 
-import aiosqlite
+import asyncpg
 from aiogram import Bot, Dispatcher, F
 from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError, TelegramRetryAfter
 from aiogram.filters import CommandStart
@@ -39,7 +40,7 @@ def _get_env_int(name: str, default: int = 0) -> int:
 
 BOT_TOKEN = _get_env_str("BOT_TOKEN")
 ADMIN_ID = _get_env_int("ADMIN_ID", 0)
-DB_PATH = _get_env_str("DB_PATH", "bot.db")
+DATABASE_URL = _get_env_str("DATABASE_URL")
 TZ_NAME = _get_env_str("TZ", "Europe/Berlin")
 SUPPORT_PAYLOAD = "support"
 SUPPORT_BUTTON_TEXT = "🚫 Бан? Нажми чтобы связаться"
@@ -48,6 +49,8 @@ if not BOT_TOKEN or ":" not in BOT_TOKEN:
     raise RuntimeError("BOT_TOKEN не задан или имеет неверный формат.")
 if ADMIN_ID <= 0:
     raise RuntimeError("ADMIN_ID не задан или имеет неверное значение.")
+if not DATABASE_URL:
+    raise RuntimeError("DATABASE_URL не задан. Для Railway используйте PostgreSQL plugin.")
 
 try:
     TZ = ZoneInfo(TZ_NAME)
@@ -62,6 +65,7 @@ dp = Dispatcher()
 scheduler = AsyncIOScheduler(timezone=TZ)
 BOT_USERNAME = ""
 BOT_ID = 0
+db_pool: Optional[asyncpg.Pool] = None
 
 GLOBAL_BROADCAST_COOLDOWN_SECONDS = _get_env_int("GLOBAL_BROADCAST_COOLDOWN_SECONDS", 600)
 MIN_USER_MESSAGES_BETWEEN_POSTS = _get_env_int("MIN_USER_MESSAGES_BETWEEN_POSTS", 5)
@@ -96,117 +100,87 @@ class SupportStates(StatesGroup):
     waiting_message = State()
 
 
-CREATE_TABLES_SQL = """
-CREATE TABLE IF NOT EXISTS chats (
-    chat_id INTEGER PRIMARY KEY,
-    disabled INTEGER NOT NULL DEFAULT 0,
-    last_bot_post_msg_id INTEGER,
-    user_messages_since_last_post INTEGER NOT NULL DEFAULT 0,
-    last_error TEXT,
-    last_success_post_at TEXT
-);
+CREATE_TABLES_SQL = [
+    """
+    CREATE TABLE IF NOT EXISTS chats (
+        chat_id BIGINT PRIMARY KEY,
+        disabled INTEGER NOT NULL DEFAULT 0,
+        last_bot_post_msg_id BIGINT,
+        user_messages_since_last_post INTEGER NOT NULL DEFAULT 0,
+        last_error TEXT,
+        last_success_post_at TEXT
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS post (
+        id INTEGER PRIMARY KEY,
+        source_chat_id BIGINT,
+        source_message_id BIGINT,
+        has_media INTEGER NOT NULL DEFAULT 0,
+        media_group_id TEXT,
+        CONSTRAINT post_single_row CHECK (id = 1)
+    )
+    """,
+    """
+    INSERT INTO post (id, source_chat_id, source_message_id, has_media, media_group_id)
+    VALUES (1, NULL, NULL, 0, NULL)
+    ON CONFLICT (id) DO NOTHING
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS meta (
+        key TEXT PRIMARY KEY,
+        value TEXT
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS schedules (
+        id BIGSERIAL PRIMARY KEY,
+        schedule_type TEXT NOT NULL CHECK (schedule_type IN ('daily', 'hourly', 'weekly')),
+        time_text TEXT,
+        weekday INTEGER,
+        created_at TEXT NOT NULL
+    )
+    """,
+    """
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_schedules_unique
+    ON schedules(schedule_type, COALESCE(time_text, ''), COALESCE(weekday, -1))
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS broadcast_attempts (
+        id BIGSERIAL PRIMARY KEY,
+        created_at TEXT NOT NULL,
+        chat_id BIGINT,
+        status TEXT NOT NULL,
+        reason TEXT,
+        error_text TEXT
+    )
+    """,
+]
 
-CREATE TABLE IF NOT EXISTS post (
-    id INTEGER PRIMARY KEY CHECK (id = 1),
-    source_chat_id INTEGER,
-    source_message_id INTEGER,
-    has_media INTEGER NOT NULL DEFAULT 0,
-    media_group_id TEXT
-);
 
-INSERT OR IGNORE INTO post (id, source_chat_id, source_message_id, has_media, media_group_id)
-VALUES (1, NULL, NULL, 0, NULL);
-
-
-CREATE TABLE IF NOT EXISTS meta (
-    key TEXT PRIMARY KEY,
-    value TEXT
-);
-
-CREATE TABLE IF NOT EXISTS schedules (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    schedule_type TEXT NOT NULL CHECK (schedule_type IN ('daily', 'hourly', 'weekly')),
-    time_text TEXT,
-    weekday INTEGER,
-    created_at TEXT NOT NULL
-);
-
-CREATE UNIQUE INDEX IF NOT EXISTS idx_schedules_unique
-ON schedules(schedule_type, COALESCE(time_text, ''), COALESCE(weekday, -1));
-
-CREATE TABLE IF NOT EXISTS broadcast_attempts (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    created_at TEXT NOT NULL,
-    chat_id INTEGER,
-    status TEXT NOT NULL,
-    reason TEXT,
-    error_text TEXT
-);
-"""
+async def get_db_pool() -> asyncpg.Pool:
+    global db_pool
+    if db_pool is None:
+        db_pool = await asyncpg.create_pool(DATABASE_URL, min_size=1, max_size=10)
+    return db_pool
 
 
 async def init_db() -> None:
-    async with aiosqlite.connect(DB_PATH) as db:
-        await db.executescript(CREATE_TABLES_SQL)
-
-        await db.execute(
-            """
-            DELETE FROM schedules
-            WHERE id NOT IN (
-                SELECT MIN(id)
-                FROM schedules
-                GROUP BY schedule_type, COALESCE(time_text, ''), COALESCE(weekday, -1)
-            )
-            """
-        )
-
-        await db.execute(
-            """
-            CREATE UNIQUE INDEX IF NOT EXISTS idx_schedules_unique
-            ON schedules(schedule_type, COALESCE(time_text, ''), COALESCE(weekday, -1))
-            """
-        )
-
-        async with db.execute("PRAGMA table_info(post)") as cursor:
-            columns = {row[1] for row in await cursor.fetchall()}
-
-        if "source_chat_id" not in columns or "source_message_id" not in columns:
-            await db.executescript(
+    pool = await get_db_pool()
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            for query in CREATE_TABLES_SQL:
+                await conn.execute(query)
+            await conn.execute(
                 """
-                ALTER TABLE post RENAME TO post_old;
-
-                CREATE TABLE post (
-                    id INTEGER PRIMARY KEY CHECK (id = 1),
-                    source_chat_id INTEGER,
-                    source_message_id INTEGER,
-                    has_media INTEGER NOT NULL DEFAULT 0,
-                    media_group_id TEXT
-                );
-
-                INSERT OR IGNORE INTO post (id, source_chat_id, source_message_id, has_media, media_group_id)
-                VALUES (1, NULL, NULL, 0, NULL);
-
-                DROP TABLE post_old;
+                DELETE FROM schedules
+                WHERE id NOT IN (
+                    SELECT MIN(id)
+                    FROM schedules
+                    GROUP BY schedule_type, COALESCE(time_text, ''), COALESCE(weekday, -1)
+                )
                 """
             )
-
-        async with db.execute("PRAGMA table_info(chats)") as cursor:
-            chat_columns = {row[1] for row in await cursor.fetchall()}
-
-        if "disabled" not in chat_columns:
-            await db.execute("ALTER TABLE chats ADD COLUMN disabled INTEGER NOT NULL DEFAULT 0")
-        if "last_bot_post_msg_id" not in chat_columns:
-            await db.execute("ALTER TABLE chats ADD COLUMN last_bot_post_msg_id INTEGER")
-        if "user_messages_since_last_post" not in chat_columns:
-            await db.execute(
-                "ALTER TABLE chats ADD COLUMN user_messages_since_last_post INTEGER NOT NULL DEFAULT 0"
-            )
-        if "last_error" not in chat_columns:
-            await db.execute("ALTER TABLE chats ADD COLUMN last_error TEXT")
-        if "last_success_post_at" not in chat_columns:
-            await db.execute("ALTER TABLE chats ADD COLUMN last_success_post_at TEXT")
-
-        await db.commit()
 
 
 def admin_menu_keyboard() -> ReplyKeyboardMarkup:
@@ -229,15 +203,16 @@ def ensure_admin(event_message: Message) -> bool:
 
 
 async def save_chat(chat_id: int) -> None:
-    async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute(
-            """
-            INSERT OR IGNORE INTO chats(chat_id, user_messages_since_last_post)
-            VALUES (?, ?)
-            """,
-            (chat_id, MIN_USER_MESSAGES_BETWEEN_POSTS),
-        )
-        await db.commit()
+    pool = await get_db_pool()
+    await pool.execute(
+        """
+        INSERT INTO chats(chat_id, user_messages_since_last_post)
+        VALUES ($1, $2)
+        ON CONFLICT (chat_id) DO NOTHING
+        """,
+        chat_id,
+        MIN_USER_MESSAGES_BETWEEN_POSTS,
+    )
 
 
 async def save_broadcast_attempt(
@@ -246,139 +221,138 @@ async def save_broadcast_attempt(
     reason: Optional[str] = None,
     error_text: Optional[str] = None,
 ) -> None:
-    async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute(
-            """
-            INSERT INTO broadcast_attempts(created_at, chat_id, status, reason, error_text)
-            VALUES (?, ?, ?, ?, ?)
-            """,
-            (datetime.utcnow().isoformat(), chat_id, status, reason, (error_text or "")[:500] or None),
-        )
-        await db.execute(
-            """
-            DELETE FROM broadcast_attempts
-            WHERE id NOT IN (
-                SELECT id
-                FROM broadcast_attempts
-                ORDER BY created_at DESC
-                LIMIT 100
+    pool = await get_db_pool()
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            await conn.execute(
+                """
+                INSERT INTO broadcast_attempts(created_at, chat_id, status, reason, error_text)
+                VALUES ($1, $2, $3, $4, $5)
+                """,
+                datetime.utcnow().isoformat(),
+                chat_id,
+                status,
+                reason,
+                (error_text or "")[:500] or None,
             )
-            """
-        )
-        await db.commit()
+            await conn.execute(
+                """
+                DELETE FROM broadcast_attempts
+                WHERE id NOT IN (
+                    SELECT id
+                    FROM broadcast_attempts
+                    ORDER BY created_at DESC
+                    LIMIT 100
+                )
+                """
+            )
 
 
 async def get_recent_broadcast_attempts(limit: int = 10) -> list[dict]:
-    async with aiosqlite.connect(DB_PATH) as db:
-        async with db.execute(
-            """
-            SELECT created_at, chat_id, status, reason, error_text
-            FROM broadcast_attempts
-            ORDER BY created_at DESC
-            LIMIT ?
-            """,
-            (limit,),
-        ) as cursor:
-            rows = await cursor.fetchall()
+    pool = await get_db_pool()
+    rows = await pool.fetch(
+        """
+        SELECT created_at, chat_id, status, reason, error_text
+        FROM broadcast_attempts
+        ORDER BY created_at DESC
+        LIMIT $1
+        """,
+        limit,
+    )
     return [
         {
-            "created_at": row[0],
-            "chat_id": row[1],
-            "status": row[2],
-            "reason": row[3],
-            "error_text": row[4],
+            "created_at": row["created_at"],
+            "chat_id": row["chat_id"],
+            "status": row["status"],
+            "reason": row["reason"],
+            "error_text": row["error_text"],
         }
         for row in rows
     ]
 
 
 async def remove_chat(chat_id: int) -> None:
-    async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute("DELETE FROM chats WHERE chat_id = ?", (chat_id,))
-        await db.commit()
+    pool = await get_db_pool()
+    await pool.execute("DELETE FROM chats WHERE chat_id = $1", chat_id)
 
 
 async def get_chats() -> list[int]:
-    async with aiosqlite.connect(DB_PATH) as db:
-        async with db.execute("SELECT chat_id FROM chats") as cursor:
-            rows = await cursor.fetchall()
-    return [row[0] for row in rows]
+    pool = await get_db_pool()
+    rows = await pool.fetch("SELECT chat_id FROM chats")
+    return [row["chat_id"] for row in rows]
 
 
 async def get_chat_rows() -> list[dict]:
-    async with aiosqlite.connect(DB_PATH) as db:
-        async with db.execute(
-            """
-            SELECT chat_id, disabled, last_bot_post_msg_id, user_messages_since_last_post, last_error, last_success_post_at
-            FROM chats
-            """
-        ) as cursor:
-            rows = await cursor.fetchall()
+    pool = await get_db_pool()
+    rows = await pool.fetch(
+        """
+        SELECT chat_id, disabled, last_bot_post_msg_id, user_messages_since_last_post, last_error, last_success_post_at
+        FROM chats
+        """
+    )
     return [
         {
-            "chat_id": row[0],
-            "disabled": bool(row[1]),
-            "last_bot_post_msg_id": row[2],
-            "user_messages_since_last_post": row[3] or 0,
-            "last_error": row[4],
-            "last_success_post_at": row[5],
+            "chat_id": row["chat_id"],
+            "disabled": bool(row["disabled"]),
+            "last_bot_post_msg_id": row["last_bot_post_msg_id"],
+            "user_messages_since_last_post": row["user_messages_since_last_post"] or 0,
+            "last_error": row["last_error"],
+            "last_success_post_at": row["last_success_post_at"],
         }
         for row in rows
     ]
 
 
 async def increment_user_message_counter(chat_id: int) -> None:
-    async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute(
-            """
-            UPDATE chats
-            SET user_messages_since_last_post = user_messages_since_last_post + 1
-            WHERE chat_id = ? AND disabled = 0
-            """,
-            (chat_id,),
-        )
-        await db.commit()
+    pool = await get_db_pool()
+    await pool.execute(
+        """
+        UPDATE chats
+        SET user_messages_since_last_post = user_messages_since_last_post + 1
+        WHERE chat_id = $1 AND disabled = 0
+        """,
+        chat_id,
+    )
 
 
 async def mark_chat_disabled(chat_id: int, error_text: str) -> None:
-    async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute(
-            "UPDATE chats SET disabled = 1, last_error = ? WHERE chat_id = ?",
-            (error_text[:500], chat_id),
-        )
-        await db.commit()
+    pool = await get_db_pool()
+    await pool.execute(
+        "UPDATE chats SET disabled = 1, last_error = $1 WHERE chat_id = $2",
+        error_text[:500],
+        chat_id,
+    )
 
 
 async def mark_chat_send_success(chat_id: int, message_id: int) -> None:
-    async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute(
-            """
-            UPDATE chats
-            SET last_bot_post_msg_id = ?,
-                user_messages_since_last_post = 0,
-                last_error = NULL,
-                last_success_post_at = ?
-            WHERE chat_id = ?
-            """,
-            (message_id, datetime.utcnow().isoformat(), chat_id),
-        )
-        await db.commit()
+    pool = await get_db_pool()
+    await pool.execute(
+        """
+        UPDATE chats
+        SET last_bot_post_msg_id = $1,
+            user_messages_since_last_post = 0,
+            last_error = NULL,
+            last_success_post_at = $2
+        WHERE chat_id = $3
+        """,
+        message_id,
+        datetime.utcnow().isoformat(),
+        chat_id,
+    )
 
 
 async def set_meta(key: str, value: str) -> None:
-    async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute(
-            "INSERT INTO meta(key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-            (key, value),
-        )
-        await db.commit()
+    pool = await get_db_pool()
+    await pool.execute(
+        "INSERT INTO meta(key, value) VALUES ($1, $2) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        key,
+        value,
+    )
 
 
 async def get_meta(key: str) -> Optional[str]:
-    async with aiosqlite.connect(DB_PATH) as db:
-        async with db.execute("SELECT value FROM meta WHERE key = ?", (key,)) as cursor:
-            row = await cursor.fetchone()
-    return row[0] if row else None
+    pool = await get_db_pool()
+    return await pool.fetchval("SELECT value FROM meta WHERE key = $1", key)
 
 
 async def get_broadcast_meta() -> dict:
@@ -402,11 +376,10 @@ async def get_broadcast_meta() -> dict:
 
 
 async def get_post() -> dict:
-    async with aiosqlite.connect(DB_PATH) as db:
-        async with db.execute(
-            "SELECT source_chat_id, source_message_id, has_media, media_group_id FROM post WHERE id = 1"
-        ) as cursor:
-            row = await cursor.fetchone()
+    pool = await get_db_pool()
+    row = await pool.fetchrow(
+        "SELECT source_chat_id, source_message_id, has_media, media_group_id FROM post WHERE id = 1"
+    )
     if not row:
         return {
             "source_chat_id": None,
@@ -415,106 +388,100 @@ async def get_post() -> dict:
             "media_group_id": None,
         }
     return {
-        "source_chat_id": row[0],
-        "source_message_id": row[1],
-        "has_media": bool(row[2]),
-        "media_group_id": row[3],
+        "source_chat_id": row["source_chat_id"],
+        "source_message_id": row["source_message_id"],
+        "has_media": bool(row["has_media"]),
+        "media_group_id": row["media_group_id"],
     }
 
 
 async def save_post(source_chat_id: int, source_message_id: int, has_media: bool, media_group_id: Optional[str]) -> None:
-    async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute(
-            """
-            UPDATE post
-            SET source_chat_id = ?, source_message_id = ?, has_media = ?, media_group_id = ?
-            WHERE id = 1
-            """,
-            (source_chat_id, source_message_id, int(has_media), media_group_id),
-        )
-        await db.commit()
+    pool = await get_db_pool()
+    await pool.execute(
+        """
+        UPDATE post
+        SET source_chat_id = $1, source_message_id = $2, has_media = $3, media_group_id = $4
+        WHERE id = 1
+        """,
+        source_chat_id,
+        source_message_id,
+        int(has_media),
+        media_group_id,
+    )
 
 
 async def find_schedule(schedule_type: str, time_text: Optional[str], weekday: Optional[int]) -> Optional[int]:
-    async with aiosqlite.connect(DB_PATH) as db:
-        async with db.execute(
-            """
-            SELECT id
-            FROM schedules
-            WHERE schedule_type = ?
-              AND time_text IS ?
-              AND weekday IS ?
-            LIMIT 1
-            """,
-            (schedule_type, time_text, weekday),
-        ) as cursor:
-            row = await cursor.fetchone()
-    return row[0] if row else None
+    pool = await get_db_pool()
+    return await pool.fetchval(
+        """
+        SELECT id
+        FROM schedules
+        WHERE schedule_type = $1
+          AND time_text IS NOT DISTINCT FROM $2
+          AND weekday IS NOT DISTINCT FROM $3
+        LIMIT 1
+        """,
+        schedule_type,
+        time_text,
+        weekday,
+    )
 
 
 async def add_schedule(schedule_type: str, time_text: Optional[str], weekday: Optional[int]) -> Optional[int]:
-    existing_id = await find_schedule(schedule_type, time_text, weekday)
-    if existing_id is not None:
-        return None
-
-    async with aiosqlite.connect(DB_PATH) as db:
-        try:
-            cursor = await db.execute(
-                """
-                INSERT INTO schedules(schedule_type, time_text, weekday, created_at)
-                VALUES (?, ?, ?, ?)
-                """,
-                (schedule_type, time_text, weekday, datetime.now(TZ).isoformat()),
-            )
-            await db.commit()
-            return cursor.lastrowid
-        except aiosqlite.IntegrityError:
-            return None
+    pool = await get_db_pool()
+    row = await pool.fetchrow(
+        """
+        INSERT INTO schedules(schedule_type, time_text, weekday, created_at)
+        VALUES ($1, $2, $3, $4)
+        ON CONFLICT (schedule_type, COALESCE(time_text, ''), COALESCE(weekday, -1)) DO NOTHING
+        RETURNING id
+        """,
+        schedule_type,
+        time_text,
+        weekday,
+        datetime.now(TZ).isoformat(),
+    )
+    return row["id"] if row else None
 
 
 async def get_schedules() -> list[dict]:
-    async with aiosqlite.connect(DB_PATH) as db:
-        async with db.execute(
-            """
-            SELECT MIN(id), schedule_type, time_text, weekday
-            FROM schedules
-            GROUP BY schedule_type, COALESCE(time_text, ''), COALESCE(weekday, -1)
-            ORDER BY time_text IS NULL, time_text, weekday, schedule_type
-            """
-        ) as cursor:
-            rows = await cursor.fetchall()
+    pool = await get_db_pool()
+    rows = await pool.fetch(
+        """
+        SELECT MIN(id) AS id, schedule_type, time_text, weekday
+        FROM schedules
+        GROUP BY schedule_type, COALESCE(time_text, ''), COALESCE(weekday, -1)
+        ORDER BY time_text IS NULL, time_text, weekday, schedule_type
+        """
+    )
     return [
-        {"id": row[0], "schedule_type": row[1], "time_text": row[2], "weekday": row[3]}
+        {"id": row["id"], "schedule_type": row["schedule_type"], "time_text": row["time_text"], "weekday": row["weekday"]}
         for row in rows
     ]
 
 
 async def get_schedule(schedule_id: int) -> Optional[dict]:
-    async with aiosqlite.connect(DB_PATH) as db:
-        async with db.execute(
-            "SELECT id, schedule_type, time_text, weekday FROM schedules WHERE id = ?",
-            (schedule_id,),
-        ) as cursor:
-            row = await cursor.fetchone()
+    pool = await get_db_pool()
+    row = await pool.fetchrow(
+        "SELECT id, schedule_type, time_text, weekday FROM schedules WHERE id = $1",
+        schedule_id,
+    )
     if not row:
         return None
-    return {"id": row[0], "schedule_type": row[1], "time_text": row[2], "weekday": row[3]}
+    return {"id": row["id"], "schedule_type": row["schedule_type"], "time_text": row["time_text"], "weekday": row["weekday"]}
 
 
 async def update_schedule_time(schedule_id: int, time_text: str) -> None:
-    async with aiosqlite.connect(DB_PATH) as db:
-        try:
-            await db.execute("UPDATE schedules SET time_text = ? WHERE id = ?", (time_text, schedule_id))
-            await db.commit()
-        except aiosqlite.IntegrityError:
-            raise ValueError("duplicate_schedule")
+    pool = await get_db_pool()
+    try:
+        await pool.execute("UPDATE schedules SET time_text = $1 WHERE id = $2", time_text, schedule_id)
+    except asyncpg.UniqueViolationError:
+        raise ValueError("duplicate_schedule")
 
 
 async def delete_schedule(schedule_id: int) -> None:
-    async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute("DELETE FROM schedules WHERE id = ?", (schedule_id,))
-        await db.commit()
-
+    pool = await get_db_pool()
+    await pool.execute("DELETE FROM schedules WHERE id = $1", schedule_id)
 
 def parse_time(value: str) -> Optional[str]:
     try:
@@ -1339,7 +1306,13 @@ async def main() -> None:
     scheduler.start()
     await restore_scheduler()
 
-    await dp.start_polling(bot)
+    try:
+        await dp.start_polling(bot)
+    finally:
+        if db_pool is not None:
+            await db_pool.close()
+        with suppress(Exception):
+            scheduler.shutdown(wait=False)
 
 
 if __name__ == "__main__":
