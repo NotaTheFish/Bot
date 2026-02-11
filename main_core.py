@@ -77,6 +77,12 @@ MANUAL_CONFIRM_FIRST_BROADCAST = _get_env_str("MANUAL_CONFIRM_FIRST_BROADCAST", 
     "yes",
     "on",
 }
+REPORT_ONLY_ON_ERRORS = _get_env_str("REPORT_ONLY_ON_ERRORS", "0").lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
 
 
 class AdminStates(StatesGroup):
@@ -670,6 +676,12 @@ async def send_admin_report(report: dict) -> None:
         logger.warning("Failed to send admin report: %s", exc)
 
 
+def should_send_admin_report(report: dict) -> bool:
+    if not REPORT_ONLY_ON_ERRORS:
+        return False
+    return report.get("errors", 0) > 0
+
+
 async def is_manual_confirmation_required(meta: dict) -> bool:
     if not MANUAL_CONFIRM_FIRST_BROADCAST:
         return False
@@ -793,7 +805,8 @@ async def broadcast_once() -> None:
         await set_meta("last_broadcast_at", datetime.utcnow().isoformat())
         await set_meta("daily_broadcast_count", str(meta["daily_broadcast_count"] + 1))
 
-    await send_admin_report(report)
+    if should_send_admin_report(report):
+        await send_admin_report(report)
 
 
 
