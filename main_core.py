@@ -95,12 +95,33 @@ CREATE TABLE IF NOT EXISTS schedules (
     weekday INTEGER,
     created_at TEXT NOT NULL
 );
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_schedules_unique
+ON schedules(schedule_type, COALESCE(time_text, ''), COALESCE(weekday, -1));
 """
 
 
 async def init_db() -> None:
     async with aiosqlite.connect(DB_PATH) as db:
         await db.executescript(CREATE_TABLES_SQL)
+
+        await db.execute(
+            """
+            DELETE FROM schedules
+            WHERE id NOT IN (
+                SELECT MIN(id)
+                FROM schedules
+                GROUP BY schedule_type, COALESCE(time_text, ''), COALESCE(weekday, -1)
+            )
+            """
+        )
+
+        await db.execute(
+            """
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_schedules_unique
+            ON schedules(schedule_type, COALESCE(time_text, ''), COALESCE(weekday, -1))
+            """
+        )
 
         async with db.execute("PRAGMA table_info(post)") as cursor:
             columns = {row[1] for row in await cursor.fetchall()}
@@ -202,23 +223,52 @@ async def save_post(source_chat_id: int, source_message_id: int, has_media: bool
         await db.commit()
 
 
-async def add_schedule(schedule_type: str, time_text: Optional[str], weekday: Optional[int]) -> int:
+async def find_schedule(schedule_type: str, time_text: Optional[str], weekday: Optional[int]) -> Optional[int]:
     async with aiosqlite.connect(DB_PATH) as db:
-        cursor = await db.execute(
+        async with db.execute(
             """
-            INSERT INTO schedules(schedule_type, time_text, weekday, created_at)
-            VALUES (?, ?, ?, ?)
+            SELECT id
+            FROM schedules
+            WHERE schedule_type = ?
+              AND time_text IS ?
+              AND weekday IS ?
+            LIMIT 1
             """,
-            (schedule_type, time_text, weekday, datetime.now(TZ).isoformat()),
-        )
-        await db.commit()
-        return cursor.lastrowid
+            (schedule_type, time_text, weekday),
+        ) as cursor:
+            row = await cursor.fetchone()
+    return row[0] if row else None
+
+
+async def add_schedule(schedule_type: str, time_text: Optional[str], weekday: Optional[int]) -> Optional[int]:
+    existing_id = await find_schedule(schedule_type, time_text, weekday)
+    if existing_id is not None:
+        return None
+
+    async with aiosqlite.connect(DB_PATH) as db:
+        try:
+            cursor = await db.execute(
+                """
+                INSERT INTO schedules(schedule_type, time_text, weekday, created_at)
+                VALUES (?, ?, ?, ?)
+                """,
+                (schedule_type, time_text, weekday, datetime.now(TZ).isoformat()),
+            )
+            await db.commit()
+            return cursor.lastrowid
+        except aiosqlite.IntegrityError:
+            return None
 
 
 async def get_schedules() -> list[dict]:
     async with aiosqlite.connect(DB_PATH) as db:
         async with db.execute(
-            "SELECT id, schedule_type, time_text, weekday FROM schedules ORDER BY id"
+            """
+            SELECT MIN(id), schedule_type, time_text, weekday
+            FROM schedules
+            GROUP BY schedule_type, COALESCE(time_text, ''), COALESCE(weekday, -1)
+            ORDER BY time_text IS NULL, time_text, weekday, schedule_type
+            """
         ) as cursor:
             rows = await cursor.fetchall()
     return [
@@ -241,8 +291,11 @@ async def get_schedule(schedule_id: int) -> Optional[dict]:
 
 async def update_schedule_time(schedule_id: int, time_text: str) -> None:
     async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute("UPDATE schedules SET time_text = ? WHERE id = ?", (time_text, schedule_id))
-        await db.commit()
+        try:
+            await db.execute("UPDATE schedules SET time_text = ? WHERE id = ?", (time_text, schedule_id))
+            await db.commit()
+        except aiosqlite.IntegrityError:
+            raise ValueError("duplicate_schedule")
 
 
 async def delete_schedule(schedule_id: int) -> None:
@@ -517,6 +570,12 @@ async def schedule_hourly(callback: CallbackQuery):
         await callback.answer()
         return
     schedule_id = await add_schedule("hourly", None, None)
+    if schedule_id is None:
+        await callback.message.answer("⚠️ Такое время уже добавлено")
+        await send_schedule_list(callback.message)
+        await callback.answer()
+        return
+
     item = await get_schedule(schedule_id)
     if item:
         register_schedule_job(item)
@@ -571,6 +630,12 @@ async def save_daily_schedule(message: Message, state: FSMContext):
         return
 
     schedule_id = await add_schedule("daily", parsed, None)
+    if schedule_id is None:
+        await state.clear()
+        await message.answer("⚠️ Такое время уже добавлено")
+        await send_schedule_list(message)
+        return
+
     item = await get_schedule(schedule_id)
     if item:
         register_schedule_job(item)
@@ -598,6 +663,12 @@ async def save_weekly_schedule(message: Message, state: FSMContext):
         return
 
     schedule_id = await add_schedule("weekly", parsed, int(weekday))
+    if schedule_id is None:
+        await state.clear()
+        await message.answer("⚠️ Такое время уже добавлено")
+        await send_schedule_list(message)
+        return
+
     item = await get_schedule(schedule_id)
     if item:
         register_schedule_job(item)
@@ -695,7 +766,14 @@ async def schedule_edit_save(message: Message, state: FSMContext):
         await message.answer("Сессия редактирования устарела, попробуйте снова.")
         return
 
-    await update_schedule_time(int(schedule_id), parsed)
+   try:
+        await update_schedule_time(int(schedule_id), parsed)
+    except ValueError:
+        await state.clear()
+        await message.answer("⚠️ Такое время уже добавлено")
+        await send_schedule_list(message)
+        return
+
     updated = await get_schedule(int(schedule_id))
     if updated:
         register_schedule_job(updated)
