@@ -276,16 +276,15 @@ def support_keyboard() -> InlineKeyboardMarkup:
     )
 
 
-async def send_post_preview(message: Message, title: str = "Текущий пост") -> None:
+async def send_post_preview(message: Message) -> None:
     post = await get_post()
     source_chat_id = post["source_chat_id"]
     source_message_id = post["source_message_id"]
 
     if not source_chat_id or not source_message_id:
-        await message.answer(f"{title}:\n\n(пусто)")
+        await message.answer("Текущий пост:\n\n(пусто)")
         return
 
-    await message.answer(f"{title}:")
     await bot.copy_message(
         chat_id=message.chat.id,
         from_chat_id=source_chat_id,
@@ -310,7 +309,7 @@ async def send_schedule_list(message: Message) -> None:
 
 
 async def send_post_actions(message: Message) -> None:
-    await send_post_preview(message, "Превью поста")
+    await send_post_preview(message)
     await message.answer(
         "Выберите действие:",
         reply_markup=InlineKeyboardMarkup(
@@ -462,13 +461,6 @@ async def receive_post_content(message: Message, state: FSMContext):
         await message.answer("Пост обновлён. Существующие расписания сохранены ✅")
     else:
         await message.answer("Пост сохранён ✅")
-
-    await message.answer("Превью:")
-    await bot.copy_message(
-        chat_id=message.chat.id,
-        from_chat_id=message.chat.id,
-        message_id=message.message_id,
-    )
 
     await send_post_actions(message)
 
