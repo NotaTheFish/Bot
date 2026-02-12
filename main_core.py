@@ -50,7 +50,7 @@ def _normalize_username(value: str) -> str:
 
 SELLER_USERNAME = _normalize_username(_get_env_str("SELLER_USERNAME", ""))
 SUPPORT_PAYLOAD = "support"
-SUPPORT_BUTTON_TEXT = "🚫 Бан? Нажми чтобы связаться"
+SUPPORT_BUTTON_TEXT = "✉️ Написать продавцу"
 
 if not BOT_TOKEN or ":" not in BOT_TOKEN:
     raise RuntimeError("BOT_TOKEN не задан или имеет неверный формат.")
