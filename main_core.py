@@ -145,6 +145,7 @@ CREATE_TABLES_SQL = [
         schedule_type TEXT NOT NULL CHECK (schedule_type IN ('daily', 'hourly', 'weekly')),
         time_text TEXT,
         weekday INTEGER,
+        enabled BOOLEAN NOT NULL DEFAULT TRUE,
         created_at TEXT NOT NULL
     )
     """,
@@ -164,6 +165,54 @@ CREATE_TABLES_SQL = [
     """,
 ]
 
+SCHEDULES_MIGRATIONS_SQL = [
+    """
+    ALTER TABLE schedules
+    ADD COLUMN IF NOT EXISTS schedule_type TEXT
+    """,
+    """
+    DO $$
+    BEGIN
+        IF EXISTS (
+            SELECT 1
+            FROM information_schema.columns
+            WHERE table_name = 'schedules' AND column_name = 'kind'
+        ) THEN
+            UPDATE schedules
+            SET schedule_type = kind
+            WHERE schedule_type IS NULL
+              AND kind IS NOT NULL;
+        END IF;
+    END
+    $$;
+    """,
+    """
+    ALTER TABLE schedules
+    ALTER COLUMN schedule_type SET NOT NULL
+    """,
+    """
+    ALTER TABLE schedules
+    DROP CONSTRAINT IF EXISTS schedules_schedule_type_check
+    """,
+    """
+    ALTER TABLE schedules
+    ADD CONSTRAINT schedules_schedule_type_check CHECK (schedule_type IN ('daily', 'hourly', 'weekly'))
+    """,
+    """
+    ALTER TABLE schedules
+    ADD COLUMN IF NOT EXISTS enabled BOOLEAN NOT NULL DEFAULT TRUE
+    """,
+    """
+    UPDATE schedules
+    SET enabled = TRUE
+    WHERE enabled IS NULL
+    """,
+    """
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_schedules_unique
+    ON schedules(schedule_type, COALESCE(time_text, ''), COALESCE(weekday, -1))
+    """,
+]
+
 
 async def get_db_pool() -> asyncpg.Pool:
     global db_pool
@@ -177,6 +226,8 @@ async def init_db() -> None:
     async with pool.acquire() as conn:
         async with conn.transaction():
             for query in CREATE_TABLES_SQL:
+                await conn.execute(query)
+            for query in SCHEDULES_MIGRATIONS_SQL:
                 await conn.execute(query)
 
 
@@ -414,6 +465,7 @@ async def find_schedule(schedule_type: str, time_text: Optional[str], weekday: O
         SELECT id
         FROM schedules
         WHERE schedule_type = $1
+          AND enabled = TRUE
           AND time_text IS NOT DISTINCT FROM $2
           AND weekday IS NOT DISTINCT FROM $3
         LIMIT 1
@@ -428,8 +480,8 @@ async def add_schedule(schedule_type: str, time_text: Optional[str], weekday: Op
     pool = await get_db_pool()
     row = await pool.fetchrow(
         """
-        INSERT INTO schedules(schedule_type, time_text, weekday, created_at)
-        VALUES ($1, $2, $3, $4)
+        INSERT INTO schedules(schedule_type, time_text, weekday, enabled, created_at)
+        VALUES ($1, $2, $3, TRUE, $4)
         ON CONFLICT (schedule_type, COALESCE(time_text, ''), COALESCE(weekday, -1)) DO NOTHING
         RETURNING id
         """,
@@ -441,28 +493,14 @@ async def add_schedule(schedule_type: str, time_text: Optional[str], weekday: Op
     return row["id"] if row else None
 
 
-async def get_schedule_type_column() -> str:
-    pool = await get_db_pool()
-    has_kind = await pool.fetchval(
-        """
-        SELECT EXISTS (
-            SELECT 1
-            FROM information_schema.columns
-            WHERE table_name = 'schedules' AND column_name = 'kind'
-        )
-        """
-    )
-    return "kind" if has_kind else "schedule_type"
-
-
 async def get_schedules() -> list[dict]:
     pool = await get_db_pool()
-    schedule_column = await get_schedule_type_column()
     rows = await pool.fetch(
-        f"""
-        SELECT id, {schedule_column} AS schedule_type, time_text, weekday
+        """
+        SELECT id, schedule_type, time_text, weekday
         FROM schedules
-        ORDER BY {schedule_column}, weekday NULLS FIRST, time_text
+        WHERE enabled = TRUE
+        ORDER BY schedule_type, weekday NULLS FIRST, time_text
         """
     )
     return [
@@ -473,9 +511,8 @@ async def get_schedules() -> list[dict]:
 
 async def get_schedule(schedule_id: int) -> Optional[dict]:
     pool = await get_db_pool()
-    schedule_column = await get_schedule_type_column()
     row = await pool.fetchrow(
-        f"SELECT id, {schedule_column} AS schedule_type, time_text, weekday FROM schedules WHERE id = $1",
+        "SELECT id, schedule_type, time_text, weekday FROM schedules WHERE id = $1 AND enabled = TRUE",
         schedule_id,
     )
     if not row:
@@ -1309,37 +1346,20 @@ async def support_message_forward(message: Message, state: FSMContext):
 
 async def restore_scheduler() -> None:
     pool = await get_db_pool()
-    has_enabled = await pool.fetchval(
-        """
-        SELECT EXISTS (
-            SELECT 1
-            FROM information_schema.columns
-            WHERE table_name = 'schedules' AND column_name = 'enabled'
-        )
-        """
-    )
-    has_kind = await pool.fetchval(
-        """
-        SELECT EXISTS (
-            SELECT 1
-            FROM information_schema.columns
-            WHERE table_name = 'schedules' AND column_name = 'kind'
-        )
-        """
-    )
-
-    schedule_column = "kind" if has_kind else "schedule_type"
-    enabled_filter = "WHERE enabled = TRUE" if has_enabled else ""
     rows = await pool.fetch(
-        f"SELECT id, {schedule_column} AS schedule_kind, time_text, weekday "
-        f"FROM schedules {enabled_filter} ORDER BY {schedule_column}, time_text"
+        """
+        SELECT id, schedule_type, time_text, weekday
+        FROM schedules
+        WHERE enabled = TRUE
+        ORDER BY schedule_type, weekday NULLS FIRST, time_text
+        """
     )
 
     for row in rows:
         register_schedule_job(
             {
                 "id": row["id"],
-                "schedule_type": row["schedule_kind"],
+                "schedule_type": row["schedule_type"],
                 "time_text": row["time_text"],
                 "weekday": row["weekday"],
             }
