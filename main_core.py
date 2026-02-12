@@ -441,14 +441,28 @@ async def add_schedule(schedule_type: str, time_text: Optional[str], weekday: Op
     return row["id"] if row else None
 
 
+async def get_schedule_type_column() -> str:
+    pool = await get_db_pool()
+    has_kind = await pool.fetchval(
+        """
+        SELECT EXISTS (
+            SELECT 1
+            FROM information_schema.columns
+            WHERE table_name = 'schedules' AND column_name = 'kind'
+        )
+        """
+    )
+    return "kind" if has_kind else "schedule_type"
+
+
 async def get_schedules() -> list[dict]:
     pool = await get_db_pool()
+    schedule_column = await get_schedule_type_column()
     rows = await pool.fetch(
-        """
-        SELECT MIN(id) AS id, schedule_type, time_text, weekday
+        f"""
+        SELECT id, {schedule_column} AS schedule_type, time_text, weekday
         FROM schedules
-        GROUP BY schedule_type, COALESCE(time_text, ''), COALESCE(weekday, -1)
-        ORDER BY time_text IS NULL, time_text, weekday, schedule_type
+        ORDER BY {schedule_column}, weekday NULLS FIRST, time_text
         """
     )
     return [
@@ -459,8 +473,9 @@ async def get_schedules() -> list[dict]:
 
 async def get_schedule(schedule_id: int) -> Optional[dict]:
     pool = await get_db_pool()
+    schedule_column = await get_schedule_type_column()
     row = await pool.fetchrow(
-        "SELECT id, schedule_type, time_text, weekday FROM schedules WHERE id = $1",
+        f"SELECT id, {schedule_column} AS schedule_type, time_text, weekday FROM schedules WHERE id = $1",
         schedule_id,
     )
     if not row:
