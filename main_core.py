@@ -42,6 +42,13 @@ BOT_TOKEN = _get_env_str("BOT_TOKEN")
 ADMIN_ID = _get_env_int("ADMIN_ID", 0)
 DATABASE_URL = _get_env_str("DATABASE_URL")
 TZ_NAME = _get_env_str("TZ", "Europe/Berlin")
+
+
+def _normalize_username(value: str) -> str:
+    return value.strip().lstrip("@")
+
+
+SELLER_USERNAME = _normalize_username(_get_env_str("SELLER_USERNAME", ""))
 SUPPORT_PAYLOAD = "support"
 SUPPORT_BUTTON_TEXT = "🚫 Бан? Нажми чтобы связаться"
 
@@ -902,13 +909,18 @@ async def on_start(message: Message, state: FSMContext):
 
     if payload == SUPPORT_PAYLOAD and message.chat.type == "private":
         await state.set_state(SupportStates.waiting_message)
-        await message.answer("Опишите проблему, я передам сообщение администратору.")
+        if SELLER_USERNAME:
+            await message.answer(
+                f"Напишите сообщение здесь, я тут же передам его продавцу или свяжитесь с ним лично @{SELLER_USERNAME}"
+            )
+        else:
+            await message.answer("Напишите сообщение здесь, я тут же передам его продавцу.")
         return
 
     if ensure_admin(message):
         await message.answer("Главное меню:", reply_markup=admin_menu_keyboard())
     else:
-        await message.answer("Здравствуйте! Используйте кнопку из поста для связи с поддержкой.")
+        await message.answer("Здравствуйте! Используйте кнопку из поста для связи с продавцом.")
 
 
 @dp.message(F.text == "📌 Добавить пост")
@@ -1273,11 +1285,11 @@ async def support_message_forward(message: Message, state: FSMContext):
                 ADMIN_ID,
                 f"Сообщение поддержки от {sender_name} (id={sender.id}):\n{message.text or '[без текста]'}",
             )
-        await message.answer("Сообщение отправлено администратору ✅")
+        await message.answer("Сообщение отправлено продавцу ✅")
         await state.clear()
     except Exception as exc:
         logger.error("Support forward error: %s", exc)
-        await message.answer("Не удалось отправить сообщение администратору.")
+        await message.answer("Не удалось отправить сообщение продавцу.")
 
 
 async def restore_scheduler() -> None:
