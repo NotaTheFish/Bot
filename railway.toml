@@ -1,3 +1,8 @@
+[build]
+builder = "NIXPACKS"
+
 [deploy]
-startCommand = "python main_core.py"
+# стартовая команда задаётся в каждом сервисе отдельно
+
+
 
