@@ -44,6 +44,7 @@ DATABASE_URL = _get_env_str("DATABASE_URL")
 TZ_NAME = _get_env_str("TZ", "Europe/Berlin")
 DELIVERY_MODE = _get_env_str("DELIVERY_MODE", "bot").lower() or "bot"
 STORAGE_CHAT_ID = _get_env_int("STORAGE_CHAT_ID", 0)
+STORAGE_CHAT_META_KEY = "storage_chat_id"
 
 
 def _normalize_username(value: str) -> str:
@@ -99,8 +100,6 @@ REPORT_ONLY_ON_ERRORS = _get_env_str("REPORT_ONLY_ON_ERRORS", "0").lower() in {
 
 if DELIVERY_MODE not in {"bot", "userbot"}:
     raise RuntimeError("DELIVERY_MODE должен быть 'bot' или 'userbot'.")
-if DELIVERY_MODE == "userbot" and STORAGE_CHAT_ID == 0:
-    raise RuntimeError("Для DELIVERY_MODE=userbot укажите STORAGE_CHAT_ID.")
 
 
 class AdminStates(StatesGroup):
@@ -427,6 +426,22 @@ async def set_meta(key: str, value: str) -> None:
 async def get_meta(key: str) -> Optional[str]:
     pool = await get_db_pool()
     return await pool.fetchval("SELECT value FROM meta WHERE key = $1", key)
+
+
+async def set_storage_chat_id(storage_chat_id: int) -> None:
+    await set_meta(STORAGE_CHAT_META_KEY, str(storage_chat_id))
+
+
+async def get_storage_chat_id() -> int:
+    stored_value = await get_meta(STORAGE_CHAT_META_KEY)
+    if stored_value:
+        try:
+            parsed = int(stored_value)
+            if parsed != 0:
+                return parsed
+        except ValueError:
+            pass
+    return STORAGE_CHAT_ID
 
 
 async def get_broadcast_meta() -> dict:
@@ -1089,19 +1104,20 @@ async def receive_post_content(message: Message, state: FSMContext):
         await message.answer("Пока поддерживается только один пост = одно сообщение (без альбомов).")
         return
 
-    if STORAGE_CHAT_ID == 0:
+    storage_chat_id = await get_storage_chat_id()
+    if storage_chat_id == 0:
         await message.answer("Ошибка: STORAGE_CHAT_ID не настроен.")
         return
 
     copied = await bot.copy_message(
-        chat_id=STORAGE_CHAT_ID,
+        chat_id=storage_chat_id,
         from_chat_id=message.chat.id,
         message_id=message.message_id,
         reply_markup=support_keyboard(),
     )
 
     await save_post(
-        source_chat_id=STORAGE_CHAT_ID,
+        source_chat_id=storage_chat_id,
         source_message_id=copied.message_id,
         has_media=bool(message.photo or message.video or message.animation or message.document),
         media_group_id=message.media_group_id,
@@ -1410,6 +1426,22 @@ async def support_message_forward(message: Message, state: FSMContext):
     except Exception as exc:
         logger.error("Support forward error: %s", exc)
         await message.answer("Не удалось отправить сообщение продавцу.")
+
+
+@dp.message(F.chat.type == "private")
+async def save_storage_chat_from_forward(message: Message, state: FSMContext):
+    if not ensure_admin(message):
+        return
+
+    current_state = await state.get_state()
+    if current_state is not None:
+        return
+
+    if not message.forward_from_chat:
+        return
+
+    await set_storage_chat_id(message.forward_from_chat.id)
+    await message.answer("Storage чат сохранён")
 
 
 async def restore_scheduler() -> None:
