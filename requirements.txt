@@ -1,0 +1,7 @@
+aiogram
+asyncpg
+APScheduler
+pytz
+telethon
+aiohttp
+python-dotenv
