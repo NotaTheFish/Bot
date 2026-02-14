@@ -3,6 +3,7 @@ import json
 import logging
 import os
 import random
+import uuid
 from contextlib import suppress
 from datetime import datetime
 from typing import Optional
@@ -20,6 +21,8 @@ from aiogram.types import (
     InlineKeyboardMarkup,
     KeyboardButton,
     Message,
+    MessageEntity,
+    MessageEntityType,
     ReplyKeyboardMarkup,
 )
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -57,8 +60,11 @@ def _normalize_username(value: str) -> str:
 
 
 SELLER_USERNAME = _normalize_username(_get_env_str("SELLER_USERNAME", ""))
+CONFIGURED_BOT_USERNAME = _normalize_username(_get_env_str("BOT_USERNAME", ""))
 SUPPORT_PAYLOAD = "support"
 SUPPORT_BUTTON_TEXT = "✉️ Написать продавцу"
+CONTACT_PAYLOAD_PREFIX = "contact_"
+CONTACT_CTA_TEXT = "✉️ Написать продавцу"
 SEND_SUPPORT_MESSAGE_WITH_BROADCAST = _get_env_str("SEND_SUPPORT_MESSAGE_WITH_BROADCAST", "1").lower() in {
     "1",
     "true",
@@ -119,9 +125,14 @@ class AdminStates(StatesGroup):
     waiting_daily_time = State()
     waiting_weekly_time = State()
     waiting_edit_time = State()
+    waiting_buyer_reply_template = State()
 
 
 class SupportStates(StatesGroup):
+    waiting_message = State()
+
+
+class ContactStates(StatesGroup):
     waiting_message = State()
 
 
@@ -141,15 +152,17 @@ CREATE_TABLES_SQL = [
         id INTEGER PRIMARY KEY,
         source_chat_id BIGINT,
         source_message_id BIGINT,
+        storage_chat_id BIGINT,
         storage_message_ids BIGINT[] NOT NULL DEFAULT '{}',
         has_media INTEGER NOT NULL DEFAULT 0,
         media_group_id TEXT,
+        contact_token TEXT UNIQUE,
         CONSTRAINT post_single_row CHECK (id = 1)
     )
     """,
     """
-    INSERT INTO post (id, source_chat_id, source_message_id, storage_message_ids, has_media, media_group_id)
-    VALUES (1, NULL, NULL, '{}', 0, NULL)
+    INSERT INTO post (id, source_chat_id, source_message_id, storage_chat_id, storage_message_ids, has_media, media_group_id, contact_token)
+    VALUES (1, NULL, NULL, NULL, '{}', 0, NULL, NULL)
     ON CONFLICT (id) DO NOTHING
     """,
     """
@@ -167,6 +180,18 @@ CREATE_TABLES_SQL = [
         enabled BOOLEAN NOT NULL DEFAULT TRUE,
         created_at TEXT NOT NULL
     )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS bot_settings (
+        id INTEGER PRIMARY KEY,
+        buyer_reply_storage_chat_id BIGINT,
+        buyer_reply_message_id BIGINT
+    )
+    """,
+    """
+    INSERT INTO bot_settings (id, buyer_reply_storage_chat_id, buyer_reply_message_id)
+    VALUES (1, NULL, NULL)
+    ON CONFLICT (id) DO NOTHING
     """,
     """
     CREATE UNIQUE INDEX IF NOT EXISTS idx_schedules_unique
@@ -314,6 +339,25 @@ POST_MIGRATIONS_SQL = [
     ALTER TABLE post
     ALTER COLUMN storage_message_ids SET NOT NULL
     """,
+    """
+    ALTER TABLE post
+    ADD COLUMN IF NOT EXISTS storage_chat_id BIGINT
+    """,
+    """
+    UPDATE post
+    SET storage_chat_id = source_chat_id
+    WHERE storage_chat_id IS NULL
+      AND source_chat_id IS NOT NULL
+    """,
+    """
+    ALTER TABLE post
+    ADD COLUMN IF NOT EXISTS contact_token TEXT
+    """,
+    """
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_post_contact_token
+    ON post(contact_token)
+    WHERE contact_token IS NOT NULL
+    """,
 ]
 
 SCHEDULES_MIGRATIONS_SQL = [
@@ -391,6 +435,7 @@ def admin_menu_keyboard() -> ReplyKeyboardMarkup:
         keyboard=[
             [KeyboardButton(text="📌 Добавить пост")],
             [KeyboardButton(text="✏️ Изменить пост")],
+            [KeyboardButton(text="📝 Изменить автоответ покупателю")],
             [KeyboardButton(text="📊 Статус")],
         ],
         resize_keyboard=True,
@@ -656,15 +701,17 @@ async def get_broadcast_meta() -> dict:
 async def get_post() -> dict:
     pool = await get_db_pool()
     row = await pool.fetchrow(
-        "SELECT source_chat_id, source_message_id, storage_message_ids, has_media, media_group_id FROM post WHERE id = 1"
+        "SELECT source_chat_id, source_message_id, storage_chat_id, storage_message_ids, has_media, media_group_id, contact_token FROM post WHERE id = 1"
     )
     if not row:
         return {
             "source_chat_id": None,
             "source_message_id": None,
+            "storage_chat_id": None,
             "source_message_ids": [],
             "has_media": False,
             "media_group_id": None,
+            "contact_token": None,
         }
     source_message_ids = list(row["storage_message_ids"] or [])
     if not source_message_ids and row["source_message_id"] is not None:
@@ -672,18 +719,32 @@ async def get_post() -> dict:
     return {
         "source_chat_id": row["source_chat_id"],
         "source_message_id": row["source_message_id"],
+        "storage_chat_id": row["storage_chat_id"],
         "source_message_ids": source_message_ids,
         "has_media": bool(row["has_media"]),
         "media_group_id": row["media_group_id"],
+        "contact_token": row["contact_token"],
     }
 
 
-async def save_post(source_chat_id: int, source_message_ids: list[int], has_media: bool, media_group_id: Optional[str]) -> None:
+async def save_post(
+    source_chat_id: int,
+    source_message_ids: list[int],
+    has_media: bool,
+    media_group_id: Optional[str],
+    contact_token: Optional[str],
+) -> None:
     pool = await get_db_pool()
     await pool.execute(
         """
         UPDATE post
-        SET source_chat_id = $1, source_message_id = $2, storage_message_ids = $3::BIGINT[], has_media = $4, media_group_id = $5
+        SET source_chat_id = $1,
+            source_message_id = $2,
+            storage_chat_id = $1,
+            storage_message_ids = $3::BIGINT[],
+            has_media = $4,
+            media_group_id = $5,
+            contact_token = $6
         WHERE id = 1
         """,
         source_chat_id,
@@ -691,6 +752,31 @@ async def save_post(source_chat_id: int, source_message_ids: list[int], has_medi
         source_message_ids,
         int(has_media),
         media_group_id,
+        contact_token,
+    )
+
+
+async def get_buyer_reply_template() -> tuple[Optional[int], Optional[int]]:
+    pool = await get_db_pool()
+    row = await pool.fetchrow("SELECT buyer_reply_storage_chat_id, buyer_reply_message_id FROM bot_settings WHERE id = 1")
+    if not row:
+        return None, None
+    return row["buyer_reply_storage_chat_id"], row["buyer_reply_message_id"]
+
+
+async def save_buyer_reply_template(storage_chat_id: int, message_id: int) -> None:
+    pool = await get_db_pool()
+    await pool.execute(
+        """
+        INSERT INTO bot_settings (id, buyer_reply_storage_chat_id, buyer_reply_message_id)
+        VALUES (1, $1, $2)
+        ON CONFLICT (id)
+        DO UPDATE SET
+            buyer_reply_storage_chat_id = excluded.buyer_reply_storage_chat_id,
+            buyer_reply_message_id = excluded.buyer_reply_message_id
+        """,
+        storage_chat_id,
+        message_id,
     )
 
 
@@ -914,6 +1000,127 @@ def support_keyboard() -> InlineKeyboardMarkup:
     )
 
 
+def _generate_contact_token() -> str:
+    return uuid.uuid4().hex[:16]
+
+
+def _resolve_bot_username() -> str:
+    return BOT_USERNAME or CONFIGURED_BOT_USERNAME
+
+
+def _contains_contact_cta(text: Optional[str]) -> bool:
+    if not text:
+        return False
+    lowered = text.lower()
+    return "start=contact_" in lowered or CONTACT_CTA_TEXT.lower() in lowered
+
+
+def _build_contact_cta_entities(prefix_text: str, cta_text: str, contact_url: str) -> list[MessageEntity]:
+    def _utf16_len(value: str) -> int:
+        return len(value.encode("utf-16-le")) // 2
+
+    offset = _utf16_len(prefix_text)
+    return [
+        MessageEntity(
+            type=MessageEntityType.TEXT_LINK,
+            offset=offset,
+            length=_utf16_len(cta_text),
+            url=contact_url,
+        )
+    ]
+
+
+def _merge_entities(original_entities: Optional[list[MessageEntity]], extra_entities: list[MessageEntity]) -> list[MessageEntity]:
+    merged: list[MessageEntity] = []
+    if original_entities:
+        merged.extend(original_entities)
+    merged.extend(extra_entities)
+    return merged
+
+
+async def _send_buyer_reply(user_id: int) -> None:
+    storage_chat_id, message_id = await get_buyer_reply_template()
+    if storage_chat_id and message_id:
+        try:
+            await bot.copy_message(chat_id=user_id, from_chat_id=storage_chat_id, message_id=message_id)
+            return
+        except Exception as exc:
+            logger.warning("Failed to send buyer reply template copy, fallback to text: %s", exc)
+    await bot.send_message(user_id, "Спасибо! Ваше сообщение отправлено продавцу ✅")
+
+
+async def _save_buyer_reply_template_from_message(message: Message) -> None:
+    storage_chat_id = await get_storage_chat_id()
+    if storage_chat_id == 0:
+        raise RuntimeError("STORAGE_CHAT_ID не настроен")
+
+    copied = await bot.copy_message(
+        chat_id=storage_chat_id,
+        from_chat_id=message.chat.id,
+        message_id=message.message_id,
+    )
+    await save_buyer_reply_template(storage_chat_id, copied.message_id)
+
+
+async def _send_post_with_cta(
+    source_message: Message,
+    storage_chat_id: int,
+    token: str,
+    force_cta_only: bool = False,
+) -> int:
+    bot_username = _resolve_bot_username()
+    if not bot_username:
+        copied = await bot.copy_message(
+            chat_id=storage_chat_id,
+            from_chat_id=source_message.chat.id,
+            message_id=source_message.message_id,
+        )
+        return copied.message_id
+
+    payload = f"{CONTACT_PAYLOAD_PREFIX}{token}"
+    contact_url = f"https://t.me/{bot_username}?start={payload}"
+
+    raw_text = source_message.text or ""
+    raw_caption = source_message.caption or ""
+    has_media = bool(source_message.media_group_id or source_message.photo or source_message.video or source_message.document or source_message.animation)
+    content_text = raw_caption if has_media else raw_text
+    original_entities = list(source_message.caption_entities or []) if has_media else list(source_message.entities or [])
+
+    if not force_cta_only and _contains_contact_cta(content_text):
+        copied = await bot.copy_message(
+            chat_id=storage_chat_id,
+            from_chat_id=source_message.chat.id,
+            message_id=source_message.message_id,
+        )
+        return copied.message_id
+
+    new_tail = CONTACT_CTA_TEXT
+    if not force_cta_only and content_text:
+        updated = f"{content_text}\n\n{new_tail}"
+        prefix = f"{content_text}\n\n"
+    elif not force_cta_only and not content_text:
+        updated = new_tail
+        prefix = ""
+    else:
+        updated = new_tail
+        prefix = ""
+
+    cta_entities = _build_contact_cta_entities(prefix, CONTACT_CTA_TEXT, contact_url)
+    entities = _merge_entities(original_entities, cta_entities)
+
+    if has_media:
+        copied = await bot.copy_message(
+            chat_id=storage_chat_id,
+            from_chat_id=source_message.chat.id,
+            message_id=source_message.message_id,
+            caption=updated,
+            caption_entities=entities,
+        )
+    else:
+        copied = await bot.send_message(storage_chat_id, updated, entities=entities)
+    return copied.message_id
+
+
 async def send_post_preview(message: Message) -> None:
     post = await get_post()
     source_chat_id = post["source_chat_id"]
@@ -966,14 +1173,32 @@ async def _publish_post_messages(messages: list[Message], state: FSMContext, med
 
     await _delete_previous_storage_post(storage_chat_id)
 
+    token = _generate_contact_token()
+    sorted_messages = sorted(messages, key=lambda msg: msg.message_id)
     copied_ids: list[int] = []
-    for item in sorted(messages, key=lambda msg: msg.message_id):
-        copied = await bot.copy_message(
-            chat_id=storage_chat_id,
-            from_chat_id=item.chat.id,
-            message_id=item.message_id,
-        )
-        copied_ids.append(copied.message_id)
+
+    if len(sorted_messages) == 1:
+        copied_ids.append(await _send_post_with_cta(sorted_messages[0], storage_chat_id, token))
+    else:
+        for item in sorted_messages:
+            copied = await bot.copy_message(
+                chat_id=storage_chat_id,
+                from_chat_id=item.chat.id,
+                message_id=item.message_id,
+            )
+            copied_ids.append(copied.message_id)
+
+        if not _contains_contact_cta(sorted_messages[0].caption):
+            bot_username = _resolve_bot_username()
+            payload = f"{CONTACT_PAYLOAD_PREFIX}{token}"
+            cta_text = CONTACT_CTA_TEXT
+            if bot_username:
+                contact_url = f"https://t.me/{bot_username}?start={payload}"
+                entities = _build_contact_cta_entities("", CONTACT_CTA_TEXT, contact_url)
+                cta_message = await bot.send_message(storage_chat_id, cta_text, entities=entities)
+            else:
+                cta_message = await bot.send_message(storage_chat_id, cta_text)
+            copied_ids.append(cta_message.message_id)
 
     logger.info("Published new storage post chat_id=%s message_ids=%s", storage_chat_id, copied_ids)
     await set_last_storage_messages(storage_chat_id, copied_ids)
@@ -983,6 +1208,7 @@ async def _publish_post_messages(messages: list[Message], state: FSMContext, med
         source_message_ids=copied_ids,
         has_media=any(msg.photo or msg.video or msg.animation or msg.document for msg in messages),
         media_group_id=media_group_id,
+        contact_token=token,
     )
 
     data = await state.get_data()
@@ -1356,6 +1582,23 @@ async def on_start(message: Message, state: FSMContext):
     args = (message.text or "").split(maxsplit=1)
     payload = args[1] if len(args) > 1 else ""
 
+    if payload.startswith(CONTACT_PAYLOAD_PREFIX) and message.chat.type == "private":
+        token = payload[len(CONTACT_PAYLOAD_PREFIX) :]
+        if not token:
+            await message.answer("Ссылка устарела или неверна.")
+            return
+
+        pool = await get_db_pool()
+        token_exists = await pool.fetchval("SELECT 1 FROM post WHERE contact_token = $1", token)
+        if not token_exists:
+            await message.answer("Ссылка устарела или неверна.")
+            return
+
+        await state.set_state(ContactStates.waiting_message)
+        await state.update_data(contact_token=token)
+        await message.answer("Напишите сообщение продавцу одним сообщением. Я перешлю.")
+        return
+
     if payload == SUPPORT_PAYLOAD and message.chat.type == "private":
         await state.set_state(SupportStates.waiting_message)
         if SELLER_USERNAME:
@@ -1387,6 +1630,30 @@ async def edit_post_start(message: Message, state: FSMContext):
         return
     await state.clear()
     await send_edit_post_menu(message)
+
+
+@dp.message(F.text.in_({"/settings", "/admin", "📝 Изменить автоответ покупателю"}))
+async def buyer_reply_settings_start(message: Message, state: FSMContext):
+    if not ensure_admin(message):
+        return
+    await state.set_state(AdminStates.waiting_buyer_reply_template)
+    await message.answer("Отправьте новое сообщение-автоответ (можно с премиум эмодзи).")
+
+
+@dp.message(AdminStates.waiting_buyer_reply_template)
+async def buyer_reply_settings_save(message: Message, state: FSMContext):
+    if not ensure_admin(message):
+        return
+
+    try:
+        await _save_buyer_reply_template_from_message(message)
+    except Exception as exc:
+        logger.error("Buyer reply template save failed: %s", exc)
+        await message.answer("Не удалось сохранить автоответ. Проверьте STORAGE_CHAT_ID и попробуйте снова.")
+        return
+
+    await state.clear()
+    await message.answer("Автоответ обновлён ✅")
 
 
 @dp.callback_query(F.data == "edit:time")
@@ -1742,6 +2009,47 @@ async def support_message_forward(message: Message, state: FSMContext):
         await state.clear()
     except Exception as exc:
         logger.error("Support forward error: %s", exc)
+        await message.answer("Не удалось отправить сообщение продавцу.")
+
+
+@dp.message(ContactStates.waiting_message, F.chat.type == "private")
+async def contact_message_forward(message: Message, state: FSMContext):
+    if ensure_admin(message):
+        await state.clear()
+        return
+
+    data = await state.get_data()
+    token = data.get("contact_token")
+    if not token:
+        await state.clear()
+        await message.answer("Ссылка устарела или неверна.")
+        return
+
+    sender = message.from_user
+    username = f"@{sender.username}" if sender and sender.username else "без username"
+    full_name = (sender.full_name if sender else "") or "без имени"
+    body = message.text or message.caption or "[без текста]"
+
+    try:
+        await bot.send_message(
+            ADMIN_ID,
+            "\n".join(
+                [
+                    "📩 Новое сообщение покупателя",
+                    f"token: {token}",
+                    f"user_id: {sender.id if sender else 'unknown'}",
+                    f"username: {username}",
+                    f"full_name: {full_name}",
+                    "",
+                    body,
+                ]
+            ),
+        )
+        logger.info("Forwarded buyer message user_id=%s token=%s", sender.id if sender else None, token)
+        await _send_buyer_reply(message.chat.id)
+        await state.clear()
+    except Exception as exc:
+        logger.error("Contact forward error user_id=%s token=%s: %s", sender.id if sender else None, token, exc)
         await message.answer("Не удалось отправить сообщение продавцу.")
 
 
