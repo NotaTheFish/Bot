@@ -8,7 +8,7 @@ from typing import Optional
 
 import asyncpg
 from aiogram import Bot, Dispatcher, F
-from aiogram.exceptions import TelegramForbiddenError, TelegramRetryAfter
+from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError, TelegramRetryAfter
 from aiogram.filters import CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
@@ -45,6 +45,8 @@ TZ_NAME = _get_env_str("TZ", "Europe/Berlin")
 DELIVERY_MODE = _get_env_str("DELIVERY_MODE", "bot").lower() or "bot"
 STORAGE_CHAT_ID = _get_env_int("STORAGE_CHAT_ID", 0)
 STORAGE_CHAT_META_KEY = "storage_chat_id"
+LAST_STORAGE_MESSAGE_ID_META_KEY = "last_storage_message_id"
+LAST_STORAGE_CHAT_ID_META_KEY = "last_storage_chat_id"
 
 
 def _normalize_username(value: str) -> str:
@@ -448,6 +450,33 @@ async def get_storage_chat_id() -> int:
         except ValueError:
             pass
     return STORAGE_CHAT_ID
+
+
+async def get_last_storage_message() -> tuple[Optional[int], Optional[int]]:
+    last_message_raw = await get_meta(LAST_STORAGE_MESSAGE_ID_META_KEY)
+    if not last_message_raw:
+        return None, None
+
+    try:
+        last_message_id = int(last_message_raw)
+    except ValueError:
+        return None, None
+
+    last_chat_raw = await get_meta(LAST_STORAGE_CHAT_ID_META_KEY)
+    if not last_chat_raw:
+        return None, last_message_id
+
+    try:
+        last_chat_id = int(last_chat_raw)
+    except ValueError:
+        return None, last_message_id
+
+    return last_chat_id, last_message_id
+
+
+async def set_last_storage_message(storage_chat_id: int, message_id: int) -> None:
+    await set_meta(LAST_STORAGE_CHAT_ID_META_KEY, str(storage_chat_id))
+    await set_meta(LAST_STORAGE_MESSAGE_ID_META_KEY, str(message_id))
 
 
 async def get_broadcast_meta() -> dict:
@@ -1108,11 +1137,31 @@ async def receive_post_content(message: Message, state: FSMContext):
         await message.answer("Ошибка: STORAGE_CHAT_ID не настроен.")
         return
 
+    previous_storage_chat_id, previous_storage_message_id = await get_last_storage_message()
+    if previous_storage_message_id is not None:
+        delete_chat_id = previous_storage_chat_id or storage_chat_id
+        logger.info(
+            "Trying to delete previous storage post chat_id=%s message_id=%s",
+            delete_chat_id,
+            previous_storage_message_id,
+        )
+        try:
+            await bot.delete_message(delete_chat_id, previous_storage_message_id)
+        except TelegramBadRequest as exc:
+            logger.warning(
+                "Skipping previous storage post deletion chat_id=%s message_id=%s: %s",
+                delete_chat_id,
+                previous_storage_message_id,
+                exc,
+            )
+
     copied = await bot.copy_message(
         chat_id=storage_chat_id,
         from_chat_id=message.chat.id,
         message_id=message.message_id,
     )
+    logger.info("Published new storage post chat_id=%s message_id=%s", storage_chat_id, copied.message_id)
+    await set_last_storage_message(storage_chat_id, copied.message_id)
 
     await save_post(
         source_chat_id=storage_chat_id,
