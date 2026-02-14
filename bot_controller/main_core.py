@@ -185,12 +185,68 @@ CREATE_TABLES_SQL = [
       status TEXT NOT NULL DEFAULT 'pending',
       attempts INT NOT NULL DEFAULT 0,
       last_error TEXT,
-      source_chat_id BIGINT NOT NULL,
-      source_message_id BIGINT NOT NULL,
+      storage_chat_id BIGINT NOT NULL,
+      storage_message_id BIGINT NOT NULL,
       target_chat_ids BIGINT[] NOT NULL,
       sent_count INT NOT NULL DEFAULT 0,
       error_count INT NOT NULL DEFAULT 0
     )
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_userbot_tasks_pending
+    ON userbot_tasks(status, run_at)
+    """,
+]
+
+USERBOT_TASKS_MIGRATIONS_SQL = [
+    """
+    ALTER TABLE userbot_tasks
+    ADD COLUMN IF NOT EXISTS storage_chat_id BIGINT
+    """,
+    """
+    ALTER TABLE userbot_tasks
+    ADD COLUMN IF NOT EXISTS storage_message_id BIGINT
+    """,
+    """
+    DO $$
+    BEGIN
+        IF EXISTS (
+            SELECT 1
+            FROM information_schema.columns
+            WHERE table_name = 'userbot_tasks' AND column_name = 'source_chat_id'
+        ) THEN
+            UPDATE userbot_tasks
+            SET storage_chat_id = source_chat_id
+            WHERE storage_chat_id IS NULL;
+        END IF;
+
+        IF EXISTS (
+            SELECT 1
+            FROM information_schema.columns
+            WHERE table_name = 'userbot_tasks' AND column_name = 'source_message_id'
+        ) THEN
+            UPDATE userbot_tasks
+            SET storage_message_id = source_message_id
+            WHERE storage_message_id IS NULL;
+        END IF;
+    END
+    $$;
+    """,
+    """
+    ALTER TABLE userbot_tasks
+    ALTER COLUMN storage_chat_id SET NOT NULL
+    """,
+    """
+    ALTER TABLE userbot_tasks
+    ALTER COLUMN storage_message_id SET NOT NULL
+    """,
+    """
+    ALTER TABLE userbot_tasks
+    DROP COLUMN IF EXISTS source_chat_id
+    """,
+    """
+    ALTER TABLE userbot_tasks
+    DROP COLUMN IF EXISTS source_message_id
     """,
     """
     CREATE INDEX IF NOT EXISTS idx_userbot_tasks_pending
@@ -261,6 +317,8 @@ async def init_db() -> None:
             for query in CREATE_TABLES_SQL:
                 await conn.execute(query)
             for query in SCHEDULES_MIGRATIONS_SQL:
+                await conn.execute(query)
+            for query in USERBOT_TASKS_MIGRATIONS_SQL:
                 await conn.execute(query)
 
 
@@ -534,19 +592,19 @@ async def save_post(source_chat_id: int, source_message_id: int, has_media: bool
     )
 
 
-async def create_userbot_task(source_chat_id: int, source_message_id: int, target_chat_ids: list[int]) -> Optional[int]:
+async def create_userbot_task(storage_chat_id: int, storage_message_id: int, target_chat_ids: list[int]) -> Optional[int]:
     if not target_chat_ids:
         return None
 
     pool = await get_db_pool()
     row = await pool.fetchrow(
         """
-        INSERT INTO userbot_tasks(source_chat_id, source_message_id, target_chat_ids, run_at)
+        INSERT INTO userbot_tasks(storage_chat_id, storage_message_id, target_chat_ids, run_at)
         VALUES ($1, $2, $3::BIGINT[], NOW())
         RETURNING id
         """,
-        source_chat_id,
-        source_message_id,
+        storage_chat_id,
+        storage_message_id,
         target_chat_ids,
     )
     return int(row["id"]) if row else None

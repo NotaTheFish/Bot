@@ -63,8 +63,8 @@ async def run_worker(settings: Settings, pool: asyncpg.Pool, client: TelegramCli
             try:
                 msg_id = await forward_post(
                     client,
-                    source_chat_id=task.source_chat_id,
-                    source_message_id=task.source_message_id,
+                    source_chat_id=task.storage_chat_id,
+                    source_message_id=task.storage_message_id,
                     target_chat_id=chat_id,
                     min_delay=settings.min_seconds_between_chats,
                     max_delay=settings.max_seconds_between_chats,
