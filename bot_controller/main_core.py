@@ -42,6 +42,8 @@ BOT_TOKEN = _get_env_str("BOT_TOKEN")
 ADMIN_ID = _get_env_int("ADMIN_ID", 0)
 DATABASE_URL = _get_env_str("DATABASE_URL")
 TZ_NAME = _get_env_str("TZ", "Europe/Berlin")
+DELIVERY_MODE = _get_env_str("DELIVERY_MODE", "bot").lower() or "bot"
+STORAGE_CHAT_ID = _get_env_int("STORAGE_CHAT_ID", 0)
 
 
 def _normalize_username(value: str) -> str:
@@ -94,6 +96,11 @@ REPORT_ONLY_ON_ERRORS = _get_env_str("REPORT_ONLY_ON_ERRORS", "0").lower() in {
     "yes",
     "on",
 }
+
+if DELIVERY_MODE not in {"bot", "userbot"}:
+    raise RuntimeError("DELIVERY_MODE должен быть 'bot' или 'userbot'.")
+if DELIVERY_MODE == "userbot" and STORAGE_CHAT_ID == 0:
+    raise RuntimeError("Для DELIVERY_MODE=userbot укажите STORAGE_CHAT_ID.")
 
 
 class AdminStates(StatesGroup):
@@ -162,6 +169,25 @@ CREATE_TABLES_SQL = [
         reason TEXT,
         error_text TEXT
     )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS userbot_tasks (
+      id BIGSERIAL PRIMARY KEY,
+      created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+      run_at TIMESTAMP NOT NULL DEFAULT NOW(),
+      status TEXT NOT NULL DEFAULT 'pending',
+      attempts INT NOT NULL DEFAULT 0,
+      last_error TEXT,
+      source_chat_id BIGINT NOT NULL,
+      source_message_id BIGINT NOT NULL,
+      target_chat_ids BIGINT[] NOT NULL,
+      sent_count INT NOT NULL DEFAULT 0,
+      error_count INT NOT NULL DEFAULT 0
+    )
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_userbot_tasks_pending
+    ON userbot_tasks(status, run_at)
     """,
 ]
 
@@ -456,6 +482,24 @@ async def save_post(source_chat_id: int, source_message_id: int, has_media: bool
         int(has_media),
         media_group_id,
     )
+
+
+async def create_userbot_task(source_chat_id: int, source_message_id: int, target_chat_ids: list[int]) -> Optional[int]:
+    if not target_chat_ids:
+        return None
+
+    pool = await get_db_pool()
+    row = await pool.fetchrow(
+        """
+        INSERT INTO userbot_tasks(source_chat_id, source_message_id, target_chat_ids, run_at)
+        VALUES ($1, $2, $3::BIGINT[], NOW())
+        RETURNING id
+        """,
+        source_chat_id,
+        source_message_id,
+        target_chat_ids,
+    )
+    return int(row["id"]) if row else None
 
 
 async def find_schedule(schedule_type: str, time_text: Optional[str], weekday: Optional[int]) -> Optional[int]:
@@ -757,6 +801,8 @@ async def broadcast_once() -> None:
         "privacy_warning": has_privacy_mode_symptoms(chats),
     }
 
+    target_chat_ids: list[int] = []
+
     for chat in chats:
         chat_id = chat["chat_id"]
         if chat["disabled"]:
@@ -778,6 +824,12 @@ async def broadcast_once() -> None:
                     report["skipped_by_duplicate"] += 1
                     await save_broadcast_attempt(status="skipped", chat_id=chat_id, reason="anti_duplicate")
                     continue
+
+        if DELIVERY_MODE == "userbot":
+            target_chat_ids.append(chat_id)
+            report["sent"] += 1
+            await save_broadcast_attempt(status="queued", chat_id=chat_id, reason="queued_for_userbot")
+            continue
 
         try:
             sent = None
@@ -816,6 +868,11 @@ async def broadcast_once() -> None:
             await set_meta(f"last_error_chat_{chat_id}", str(exc)[:500])
             await save_broadcast_attempt(status="error", chat_id=chat_id, reason="exception", error_text=str(exc))
             logger.warning("Failed to send to chat %s: %s", chat_id, exc)
+
+    if DELIVERY_MODE == "userbot" and target_chat_ids:
+        task_id = await create_userbot_task(source_chat_id, source_message_id, target_chat_ids)
+        logger.info("Queued userbot task id=%s chats=%s", task_id, len(target_chat_ids))
+        await bot.send_message(ADMIN_ID, f"🧾 Userbot-рассылка поставлена в очередь: {len(target_chat_ids)} чатов.")
 
     if report["sent"] > 0:
         await set_meta("last_broadcast_at", datetime.utcnow().isoformat())
@@ -1032,9 +1089,20 @@ async def receive_post_content(message: Message, state: FSMContext):
         await message.answer("Пока поддерживается только один пост = одно сообщение (без альбомов).")
         return
 
+    if STORAGE_CHAT_ID == 0:
+        await message.answer("Ошибка: STORAGE_CHAT_ID не настроен.")
+        return
+
+    copied = await bot.copy_message(
+        chat_id=STORAGE_CHAT_ID,
+        from_chat_id=message.chat.id,
+        message_id=message.message_id,
+        reply_markup=support_keyboard(),
+    )
+
     await save_post(
-        source_chat_id=message.chat.id,
-        source_message_id=message.message_id,
+        source_chat_id=STORAGE_CHAT_ID,
+        source_message_id=copied.message_id,
         has_media=bool(message.photo or message.video or message.animation or message.document),
         media_group_id=message.media_group_id,
     )
