@@ -13,8 +13,8 @@ class UserbotTask:
     status: str
     attempts: int
     last_error: str | None
-    source_chat_id: int
-    source_message_id: int
+    storage_chat_id: int
+    storage_message_id: int
     target_chat_ids: list[int]
     sent_count: int
     error_count: int
@@ -37,8 +37,8 @@ def row_to_task(row: asyncpg.Record) -> UserbotTask:
         status=row["status"],
         attempts=row["attempts"],
         last_error=row["last_error"],
-        source_chat_id=row["source_chat_id"],
-        source_message_id=row["source_message_id"],
+        storage_chat_id=row["storage_chat_id"],
+        storage_message_id=row["storage_message_id"],
         target_chat_ids=list(row["target_chat_ids"] or []),
         sent_count=row["sent_count"],
         error_count=row["error_count"],
