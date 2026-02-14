@@ -1,4 +1,5 @@
 import asyncio
+import json
 import logging
 import os
 import random
@@ -46,7 +47,9 @@ DELIVERY_MODE = _get_env_str("DELIVERY_MODE", "bot").lower() or "bot"
 STORAGE_CHAT_ID = _get_env_int("STORAGE_CHAT_ID", 0)
 STORAGE_CHAT_META_KEY = "storage_chat_id"
 LAST_STORAGE_MESSAGE_ID_META_KEY = "last_storage_message_id"
+LAST_STORAGE_MESSAGE_IDS_META_KEY = "last_storage_message_ids"
 LAST_STORAGE_CHAT_ID_META_KEY = "last_storage_chat_id"
+MEDIA_GROUP_BUFFER_TIMEOUT_SECONDS = max(0.5, float(_get_env_str("MEDIA_GROUP_BUFFER_TIMEOUT_SECONDS", "1.5")))
 
 
 def _normalize_username(value: str) -> str:
@@ -84,6 +87,7 @@ scheduler = AsyncIOScheduler(timezone=TZ)
 BOT_USERNAME = ""
 BOT_ID = 0
 db_pool: Optional[asyncpg.Pool] = None
+media_group_buffers: dict[str, dict] = {}
 
 GLOBAL_BROADCAST_COOLDOWN_SECONDS = _get_env_int("GLOBAL_BROADCAST_COOLDOWN_SECONDS", 600)
 MIN_USER_MESSAGES_BETWEEN_POSTS = _get_env_int("MIN_USER_MESSAGES_BETWEEN_POSTS", 5)
@@ -137,14 +141,15 @@ CREATE_TABLES_SQL = [
         id INTEGER PRIMARY KEY,
         source_chat_id BIGINT,
         source_message_id BIGINT,
+        storage_message_ids BIGINT[] NOT NULL DEFAULT '{}',
         has_media INTEGER NOT NULL DEFAULT 0,
         media_group_id TEXT,
         CONSTRAINT post_single_row CHECK (id = 1)
     )
     """,
     """
-    INSERT INTO post (id, source_chat_id, source_message_id, has_media, media_group_id)
-    VALUES (1, NULL, NULL, 0, NULL)
+    INSERT INTO post (id, source_chat_id, source_message_id, storage_message_ids, has_media, media_group_id)
+    VALUES (1, NULL, NULL, '{}', 0, NULL)
     ON CONFLICT (id) DO NOTHING
     """,
     """
@@ -186,7 +191,8 @@ CREATE_TABLES_SQL = [
       attempts INT NOT NULL DEFAULT 0,
       last_error TEXT,
       storage_chat_id BIGINT NOT NULL,
-      storage_message_id BIGINT NOT NULL,
+      storage_message_id BIGINT,
+      storage_message_ids BIGINT[] NOT NULL DEFAULT '{}',
       target_chat_ids BIGINT[] NOT NULL,
       sent_count INT NOT NULL DEFAULT 0,
       error_count INT NOT NULL DEFAULT 0
@@ -206,6 +212,10 @@ USERBOT_TASKS_MIGRATIONS_SQL = [
     """
     ALTER TABLE userbot_tasks
     ADD COLUMN IF NOT EXISTS storage_message_id BIGINT
+    """,
+    """
+    ALTER TABLE userbot_tasks
+    ADD COLUMN IF NOT EXISTS storage_message_ids BIGINT[]
     """,
     """
     DO $$
@@ -237,8 +247,23 @@ USERBOT_TASKS_MIGRATIONS_SQL = [
     ALTER COLUMN storage_chat_id SET NOT NULL
     """,
     """
+    UPDATE userbot_tasks
+    SET storage_message_ids = ARRAY[storage_message_id]
+    WHERE (storage_message_ids IS NULL OR array_length(storage_message_ids, 1) IS NULL)
+      AND storage_message_id IS NOT NULL
+    """,
+    """
+    UPDATE userbot_tasks
+    SET storage_message_ids = '{}'
+    WHERE storage_message_ids IS NULL
+    """,
+    """
     ALTER TABLE userbot_tasks
-    ALTER COLUMN storage_message_id SET NOT NULL
+    ALTER COLUMN storage_message_ids SET NOT NULL
+    """,
+    """
+    ALTER TABLE userbot_tasks
+    ALTER COLUMN storage_message_id DROP NOT NULL
     """,
     """
     ALTER TABLE userbot_tasks
@@ -251,6 +276,28 @@ USERBOT_TASKS_MIGRATIONS_SQL = [
     """
     CREATE INDEX IF NOT EXISTS idx_userbot_tasks_pending
     ON userbot_tasks(status, run_at)
+    """,
+]
+
+POST_MIGRATIONS_SQL = [
+    """
+    ALTER TABLE post
+    ADD COLUMN IF NOT EXISTS storage_message_ids BIGINT[]
+    """,
+    """
+    UPDATE post
+    SET storage_message_ids = ARRAY[source_message_id]
+    WHERE (storage_message_ids IS NULL OR array_length(storage_message_ids, 1) IS NULL)
+      AND source_message_id IS NOT NULL
+    """,
+    """
+    UPDATE post
+    SET storage_message_ids = '{}'
+    WHERE storage_message_ids IS NULL
+    """,
+    """
+    ALTER TABLE post
+    ALTER COLUMN storage_message_ids SET NOT NULL
     """,
 ]
 
@@ -319,6 +366,8 @@ async def init_db() -> None:
             for query in SCHEDULES_MIGRATIONS_SQL:
                 await conn.execute(query)
             for query in USERBOT_TASKS_MIGRATIONS_SQL:
+                await conn.execute(query)
+            for query in POST_MIGRATIONS_SQL:
                 await conn.execute(query)
 
 
@@ -532,9 +581,41 @@ async def get_last_storage_message() -> tuple[Optional[int], Optional[int]]:
     return last_chat_id, last_message_id
 
 
-async def set_last_storage_message(storage_chat_id: int, message_id: int) -> None:
+async def set_last_storage_messages(storage_chat_id: int, message_ids: list[int]) -> None:
+    normalized_ids = [int(message_id) for message_id in message_ids]
+    if normalized_ids:
+        await set_meta(LAST_STORAGE_MESSAGE_ID_META_KEY, str(normalized_ids[-1]))
+    else:
+        await set_meta(LAST_STORAGE_MESSAGE_ID_META_KEY, "")
+    await set_meta(LAST_STORAGE_MESSAGE_IDS_META_KEY, json.dumps(normalized_ids))
     await set_meta(LAST_STORAGE_CHAT_ID_META_KEY, str(storage_chat_id))
-    await set_meta(LAST_STORAGE_MESSAGE_ID_META_KEY, str(message_id))
+
+
+async def get_last_storage_messages() -> tuple[Optional[int], list[int]]:
+    message_ids_raw = await get_meta(LAST_STORAGE_MESSAGE_IDS_META_KEY)
+    message_ids: list[int] = []
+
+    if message_ids_raw:
+        try:
+            parsed = json.loads(message_ids_raw)
+            if isinstance(parsed, list):
+                message_ids = [int(item) for item in parsed]
+        except (ValueError, TypeError):
+            logger.warning("Failed to parse %s", LAST_STORAGE_MESSAGE_IDS_META_KEY)
+
+    if not message_ids:
+        _, legacy_message_id = await get_last_storage_message()
+        if legacy_message_id is not None:
+            message_ids = [legacy_message_id]
+
+    last_chat_raw = await get_meta(LAST_STORAGE_CHAT_ID_META_KEY)
+    if not last_chat_raw:
+        return None, message_ids
+
+    try:
+        return int(last_chat_raw), message_ids
+    except ValueError:
+        return None, message_ids
 
 
 async def get_broadcast_meta() -> dict:
@@ -560,51 +641,58 @@ async def get_broadcast_meta() -> dict:
 async def get_post() -> dict:
     pool = await get_db_pool()
     row = await pool.fetchrow(
-        "SELECT source_chat_id, source_message_id, has_media, media_group_id FROM post WHERE id = 1"
+        "SELECT source_chat_id, source_message_id, storage_message_ids, has_media, media_group_id FROM post WHERE id = 1"
     )
     if not row:
         return {
             "source_chat_id": None,
             "source_message_id": None,
+            "source_message_ids": [],
             "has_media": False,
             "media_group_id": None,
         }
+    source_message_ids = list(row["storage_message_ids"] or [])
+    if not source_message_ids and row["source_message_id"] is not None:
+        source_message_ids = [row["source_message_id"]]
     return {
         "source_chat_id": row["source_chat_id"],
         "source_message_id": row["source_message_id"],
+        "source_message_ids": source_message_ids,
         "has_media": bool(row["has_media"]),
         "media_group_id": row["media_group_id"],
     }
 
 
-async def save_post(source_chat_id: int, source_message_id: int, has_media: bool, media_group_id: Optional[str]) -> None:
+async def save_post(source_chat_id: int, source_message_ids: list[int], has_media: bool, media_group_id: Optional[str]) -> None:
     pool = await get_db_pool()
     await pool.execute(
         """
         UPDATE post
-        SET source_chat_id = $1, source_message_id = $2, has_media = $3, media_group_id = $4
+        SET source_chat_id = $1, source_message_id = $2, storage_message_ids = $3::BIGINT[], has_media = $4, media_group_id = $5
         WHERE id = 1
         """,
         source_chat_id,
-        source_message_id,
+        (source_message_ids[0] if source_message_ids else None),
+        source_message_ids,
         int(has_media),
         media_group_id,
     )
 
 
-async def create_userbot_task(storage_chat_id: int, storage_message_id: int, target_chat_ids: list[int]) -> Optional[int]:
+async def create_userbot_task(storage_chat_id: int, storage_message_ids: list[int], target_chat_ids: list[int]) -> Optional[int]:
     if not target_chat_ids:
         return None
 
     pool = await get_db_pool()
     row = await pool.fetchrow(
         """
-        INSERT INTO userbot_tasks(storage_chat_id, storage_message_id, target_chat_ids, run_at)
-        VALUES ($1, $2, $3::BIGINT[], NOW())
+        INSERT INTO userbot_tasks(storage_chat_id, storage_message_id, storage_message_ids, target_chat_ids, run_at)
+        VALUES ($1, $2, $3::BIGINT[], $4::BIGINT[], NOW())
         RETURNING id
         """,
         storage_chat_id,
-        storage_message_id,
+        (storage_message_ids[0] if storage_message_ids else None),
+        storage_message_ids,
         target_chat_ids,
     )
     return int(row["id"]) if row else None
@@ -754,18 +842,91 @@ def support_keyboard() -> InlineKeyboardMarkup:
 async def send_post_preview(message: Message) -> None:
     post = await get_post()
     source_chat_id = post["source_chat_id"]
-    source_message_id = post["source_message_id"]
+    source_message_ids = post["source_message_ids"]
 
-    if not source_chat_id or not source_message_id:
+    if not source_chat_id or not source_message_ids:
         await message.answer("Текущий пост:\n\n(пусто)")
         return
 
     await bot.copy_message(
         chat_id=message.chat.id,
         from_chat_id=source_chat_id,
-        message_id=source_message_id,
+        message_id=source_message_ids[0],
     )
 
+
+
+
+async def _delete_previous_storage_post(storage_chat_id: int) -> None:
+    previous_storage_chat_id, previous_storage_message_ids = await get_last_storage_messages()
+    if not previous_storage_message_ids:
+        return
+
+    delete_chat_id = previous_storage_chat_id or storage_chat_id
+    for previous_storage_message_id in previous_storage_message_ids:
+        logger.info(
+            "Trying to delete previous storage post chat_id=%s message_id=%s",
+            delete_chat_id,
+            previous_storage_message_id,
+        )
+        try:
+            await bot.delete_message(delete_chat_id, previous_storage_message_id)
+        except TelegramBadRequest as exc:
+            logger.warning(
+                "Skipping previous storage post deletion chat_id=%s message_id=%s: %s",
+                delete_chat_id,
+                previous_storage_message_id,
+                exc,
+            )
+
+
+async def _publish_post_messages(messages: list[Message], state: FSMContext, media_group_id: Optional[str]) -> None:
+    if not messages:
+        return
+
+    storage_chat_id = await get_storage_chat_id()
+    if storage_chat_id == 0:
+        await messages[-1].answer("Ошибка: STORAGE_CHAT_ID не настроен.")
+        return
+
+    await _delete_previous_storage_post(storage_chat_id)
+
+    copied_ids: list[int] = []
+    for item in sorted(messages, key=lambda msg: msg.message_id):
+        copied = await bot.copy_message(
+            chat_id=storage_chat_id,
+            from_chat_id=item.chat.id,
+            message_id=item.message_id,
+        )
+        copied_ids.append(copied.message_id)
+
+    logger.info("Published new storage post chat_id=%s message_ids=%s", storage_chat_id, copied_ids)
+    await set_last_storage_messages(storage_chat_id, copied_ids)
+
+    await save_post(
+        source_chat_id=storage_chat_id,
+        source_message_ids=copied_ids,
+        has_media=any(msg.photo or msg.video or msg.animation or msg.document for msg in messages),
+        media_group_id=media_group_id,
+    )
+
+    data = await state.get_data()
+    mode = data.get("mode")
+    await state.clear()
+
+    if mode == "edit":
+        await messages[-1].answer("Пост обновлён. Существующие расписания сохранены ✅")
+    else:
+        await messages[-1].answer("Пост сохранён ✅")
+
+    await send_post_actions(messages[-1])
+
+
+async def _flush_media_group(media_group_id: str, state: FSMContext) -> None:
+    buffer_data = media_group_buffers.pop(media_group_id, None)
+    if not buffer_data:
+        return
+    await _publish_post_messages(buffer_data["messages"], state, media_group_id=media_group_id)
 
 async def send_schedule_list(message: Message) -> None:
     schedules = await get_schedules()
@@ -861,9 +1022,9 @@ async def is_manual_confirmation_required(meta: dict) -> bool:
 async def broadcast_once() -> None:
     post = await get_post()
     source_chat_id = post["source_chat_id"]
-    source_message_id = post["source_message_id"]
+    source_message_ids = post["source_message_ids"]
 
-    if not source_chat_id or not source_message_id:
+    if not source_chat_id or not source_message_ids:
         logger.info("Broadcast skipped: empty post")
         return
 
@@ -941,16 +1102,19 @@ async def broadcast_once() -> None:
             continue
 
         try:
-            sent = await bot.copy_message(
-                chat_id=chat_id,
-                from_chat_id=source_chat_id,
-                message_id=source_message_id,
-            )
+            sent_messages = []
+            for source_message_id in source_message_ids:
+                sent = await bot.copy_message(
+                    chat_id=chat_id,
+                    from_chat_id=source_chat_id,
+                    message_id=source_message_id,
+                )
+                sent_messages.append(sent)
             if keyboard:
                 await bot.send_message(chat_id=chat_id, text="Связь с поддержкой 👇", reply_markup=keyboard)
 
-            if sent:
-                await mark_chat_send_success(chat_id, sent.message_id)
+            if sent_messages:
+                await mark_chat_send_success(chat_id, sent_messages[-1].message_id)
             await save_broadcast_attempt(status="sent", chat_id=chat_id, reason="ok")
             report["sent"] += 1
             await asyncio.sleep(random.uniform(MIN_SECONDS_BETWEEN_CHATS, MAX_SECONDS_BETWEEN_CHATS))
@@ -971,7 +1135,7 @@ async def broadcast_once() -> None:
             logger.warning("Failed to send to chat %s: %s", chat_id, exc)
 
     if DELIVERY_MODE == "userbot" and target_chat_ids:
-        task_id = await create_userbot_task(source_chat_id, source_message_id, target_chat_ids)
+        task_id = await create_userbot_task(source_chat_id, source_message_ids, target_chat_ids)
         logger.info("Queued userbot task id=%s chats=%s", task_id, len(target_chat_ids))
         await bot.send_message(ADMIN_ID, f"🧾 Userbot-рассылка поставлена в очередь: {len(target_chat_ids)} чатов.")
 
@@ -1186,58 +1350,31 @@ async def receive_post_content(message: Message, state: FSMContext):
     if not ensure_admin(message):
         return
 
-    if message.media_group_id:
-        await message.answer("Пока поддерживается только один пост = одно сообщение (без альбомов).")
+    if not message.media_group_id:
+        await _publish_post_messages([message], state, media_group_id=None)
         return
 
-    storage_chat_id = await get_storage_chat_id()
-    if storage_chat_id == 0:
-        await message.answer("Ошибка: STORAGE_CHAT_ID не настроен.")
-        return
+    media_group_id = str(message.media_group_id)
+    buffer_data = media_group_buffers.get(media_group_id)
+    if not buffer_data:
+        buffer_data = {"messages": []}
+        media_group_buffers[media_group_id] = buffer_data
 
-    previous_storage_chat_id, previous_storage_message_id = await get_last_storage_message()
-    if previous_storage_message_id is not None:
-        delete_chat_id = previous_storage_chat_id or storage_chat_id
-        logger.info(
-            "Trying to delete previous storage post chat_id=%s message_id=%s",
-            delete_chat_id,
-            previous_storage_message_id,
-        )
-        try:
-            await bot.delete_message(delete_chat_id, previous_storage_message_id)
-        except TelegramBadRequest as exc:
-            logger.warning(
-                "Skipping previous storage post deletion chat_id=%s message_id=%s: %s",
-                delete_chat_id,
-                previous_storage_message_id,
-                exc,
-            )
+    buffer_data["messages"].append(message)
 
-    copied = await bot.copy_message(
-        chat_id=storage_chat_id,
-        from_chat_id=message.chat.id,
-        message_id=message.message_id,
-    )
-    logger.info("Published new storage post chat_id=%s message_id=%s", storage_chat_id, copied.message_id)
-    await set_last_storage_message(storage_chat_id, copied.message_id)
+    pending_task = buffer_data.get("task")
+    if pending_task:
+        pending_task.cancel()
 
-    await save_post(
-        source_chat_id=storage_chat_id,
-        source_message_id=copied.message_id,
-        has_media=bool(message.photo or message.video or message.animation or message.document),
-        media_group_id=message.media_group_id,
-    )
+    buffer_data["task"] = asyncio.create_task(_flush_media_group_with_delay(media_group_id, state))
 
-    data = await state.get_data()
-    mode = data.get("mode")
-    await state.clear()
 
-    if mode == "edit":
-        await message.answer("Пост обновлён. Существующие расписания сохранены ✅")
-    else:
-        await message.answer("Пост сохранён ✅")
-
-    await send_post_actions(message)
+async def _flush_media_group_with_delay(media_group_id: str, state: FSMContext) -> None:
+    try:
+        await asyncio.sleep(MEDIA_GROUP_BUFFER_TIMEOUT_SECONDS)
+        await _flush_media_group(media_group_id, state)
+    except asyncio.CancelledError:
+        pass
 
 
 @dp.callback_query(F.data == "schedule:add_time")

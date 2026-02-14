@@ -61,10 +61,14 @@ async def run_worker(settings: Settings, pool: asyncpg.Pool, client: TelegramCli
 
         for chat_id in task.target_chat_ids:
             try:
+                source_message_ids = task.storage_message_ids or ([] if task.storage_message_id is None else [task.storage_message_id])
+                if not source_message_ids:
+                    raise ValueError("Task has empty storage_message_ids")
+
                 msg_id = await forward_post(
                     client,
                     source_chat_id=task.storage_chat_id,
-                    source_message_id=task.storage_message_id,
+                    source_message_ids=source_message_ids,
                     target_chat_id=chat_id,
                     min_delay=settings.min_seconds_between_chats,
                     max_delay=settings.max_seconds_between_chats,
