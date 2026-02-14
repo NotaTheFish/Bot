@@ -1,4 +1,0 @@
-telethon
-asyncpg
-aiohttp
-python-dotenv
