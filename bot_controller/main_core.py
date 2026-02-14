@@ -192,6 +192,7 @@ CREATE_TABLES_SQL = [
       last_error TEXT,
       storage_chat_id BIGINT NOT NULL,
       storage_message_id BIGINT,
+      dedupe_key TEXT,
       storage_message_ids BIGINT[] NOT NULL DEFAULT '{}',
       target_chat_ids BIGINT[] NOT NULL,
       sent_count INT NOT NULL DEFAULT 0,
@@ -201,6 +202,11 @@ CREATE_TABLES_SQL = [
     """
     CREATE INDEX IF NOT EXISTS idx_userbot_tasks_pending
     ON userbot_tasks(status, run_at)
+    """,
+    """
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_userbot_tasks_dedupe_active
+    ON userbot_tasks(dedupe_key)
+    WHERE status IN ('pending', 'running') AND dedupe_key IS NOT NULL
     """,
 ]
 
@@ -216,6 +222,10 @@ USERBOT_TASKS_MIGRATIONS_SQL = [
     """
     ALTER TABLE userbot_tasks
     ADD COLUMN IF NOT EXISTS storage_message_ids BIGINT[]
+    """,
+    """
+    ALTER TABLE userbot_tasks
+    ADD COLUMN IF NOT EXISTS dedupe_key TEXT
     """,
     """
     DO $$
@@ -276,6 +286,11 @@ USERBOT_TASKS_MIGRATIONS_SQL = [
     """
     CREATE INDEX IF NOT EXISTS idx_userbot_tasks_pending
     ON userbot_tasks(status, run_at)
+    """,
+    """
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_userbot_tasks_dedupe_active
+    ON userbot_tasks(dedupe_key)
+    WHERE status IN ('pending', 'running') AND dedupe_key IS NOT NULL
     """,
 ]
 
@@ -683,18 +698,78 @@ async def create_userbot_task(storage_chat_id: int, storage_message_ids: list[in
     if not target_chat_ids:
         return None
 
+    storage_message_id = storage_message_ids[0] if storage_message_ids else None
+    dedupe_key = f"{storage_chat_id}:{storage_message_id}" if storage_message_id is not None else None
+
     pool = await get_db_pool()
-    row = await pool.fetchrow(
-        """
-        INSERT INTO userbot_tasks(storage_chat_id, storage_message_id, storage_message_ids, target_chat_ids, run_at)
-        VALUES ($1, $2, $3::BIGINT[], $4::BIGINT[], NOW())
-        RETURNING id
-        """,
-        storage_chat_id,
-        (storage_message_ids[0] if storage_message_ids else None),
-        storage_message_ids,
-        target_chat_ids,
-    )
+    if storage_message_id is not None:
+        existing_task_id = await pool.fetchval(
+            """
+            SELECT id
+            FROM userbot_tasks
+            WHERE storage_chat_id = $1
+              AND storage_message_id = $2
+              AND status IN ('pending', 'running')
+            ORDER BY id DESC
+            LIMIT 1
+            """,
+            storage_chat_id,
+            storage_message_id,
+        )
+        if existing_task_id:
+            logger.info(
+                "Userbot task deduplicated: existing task id=%s for storage_chat_id=%s storage_message_id=%s",
+                existing_task_id,
+                storage_chat_id,
+                storage_message_id,
+            )
+            return int(existing_task_id)
+
+    try:
+        row = await pool.fetchrow(
+            """
+            INSERT INTO userbot_tasks(
+                storage_chat_id,
+                storage_message_id,
+                dedupe_key,
+                storage_message_ids,
+                target_chat_ids,
+                run_at
+            )
+            VALUES ($1, $2, $3, $4::BIGINT[], $5::BIGINT[], NOW())
+            RETURNING id
+            """,
+            storage_chat_id,
+            storage_message_id,
+            dedupe_key,
+            storage_message_ids,
+            target_chat_ids,
+        )
+    except asyncpg.UniqueViolationError:
+        if storage_message_id is None:
+            raise
+        existing_task_id = await pool.fetchval(
+            """
+            SELECT id
+            FROM userbot_tasks
+            WHERE storage_chat_id = $1
+              AND storage_message_id = $2
+              AND status IN ('pending', 'running')
+            ORDER BY id DESC
+            LIMIT 1
+            """,
+            storage_chat_id,
+            storage_message_id,
+        )
+        if existing_task_id:
+            logger.info(
+                "Userbot task deduplicated by unique index: existing task id=%s for storage_chat_id=%s storage_message_id=%s",
+                existing_task_id,
+                storage_chat_id,
+                storage_message_id,
+            )
+            return int(existing_task_id)
+        raise
     return int(row["id"]) if row else None
 
 
