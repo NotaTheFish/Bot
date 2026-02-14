@@ -8,7 +8,7 @@ from typing import Optional
 
 import asyncpg
 from aiogram import Bot, Dispatcher, F
-from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError, TelegramRetryAfter
+from aiogram.exceptions import TelegramForbiddenError, TelegramRetryAfter
 from aiogram.filters import CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
@@ -54,6 +54,12 @@ def _normalize_username(value: str) -> str:
 SELLER_USERNAME = _normalize_username(_get_env_str("SELLER_USERNAME", ""))
 SUPPORT_PAYLOAD = "support"
 SUPPORT_BUTTON_TEXT = "✉️ Написать продавцу"
+SEND_SUPPORT_MESSAGE_WITH_BROADCAST = _get_env_str("SEND_SUPPORT_MESSAGE_WITH_BROADCAST", "1").lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
 
 if not BOT_TOKEN or ":" not in BOT_TOKEN:
     raise RuntimeError("BOT_TOKEN не задан или имеет неверный формат.")
@@ -804,7 +810,8 @@ async def broadcast_once() -> None:
             return
 
     chats = await get_chat_rows()
-    keyboard = support_keyboard()
+    support_enabled = SEND_SUPPORT_MESSAGE_WITH_BROADCAST and bool(BOT_USERNAME)
+    keyboard = support_keyboard() if support_enabled else None
     report = {
         "total_chats": len(chats),
         "sent": 0,
@@ -847,20 +854,12 @@ async def broadcast_once() -> None:
             continue
 
         try:
-            sent = None
-            try:
-                sent = await bot.copy_message(
-                    chat_id=chat_id,
-                    from_chat_id=source_chat_id,
-                    message_id=source_message_id,
-                    reply_markup=keyboard,
-                )
-            except TelegramBadRequest:
-                sent = await bot.copy_message(
-                    chat_id=chat_id,
-                    from_chat_id=source_chat_id,
-                    message_id=source_message_id,
-                )
+            sent = await bot.copy_message(
+                chat_id=chat_id,
+                from_chat_id=source_chat_id,
+                message_id=source_message_id,
+            )
+            if keyboard:
                 await bot.send_message(chat_id=chat_id, text="Связь с поддержкой 👇", reply_markup=keyboard)
 
             if sent:
@@ -1113,7 +1112,6 @@ async def receive_post_content(message: Message, state: FSMContext):
         chat_id=storage_chat_id,
         from_chat_id=message.chat.id,
         message_id=message.message_id,
-        reply_markup=support_keyboard(),
     )
 
     await save_post(
