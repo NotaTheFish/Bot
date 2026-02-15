@@ -25,6 +25,7 @@ class Settings:
     worker_poll_seconds: int
     admin_notify_bot_token: str
     admin_id: int
+    storage_chat_id: int
 
 
 def load_settings() -> Settings:
@@ -38,6 +39,7 @@ def load_settings() -> Settings:
         worker_poll_seconds=max(1, _getint("WORKER_POLL_SECONDS", 10)),
         admin_notify_bot_token=_getenv("ADMIN_NOTIFY_BOT_TOKEN"),
         admin_id=_getint("ADMIN_ID", 0),
+        storage_chat_id=_getint("STORAGE_CHAT_ID", 0),
     )
 
     if settings.max_seconds_between_chats < settings.min_seconds_between_chats:

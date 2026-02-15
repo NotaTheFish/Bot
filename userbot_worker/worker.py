@@ -5,6 +5,7 @@ import json
 import logging
 import asyncpg
 from telethon import TelegramClient
+from telethon.tl.types import Channel, Chat, User
 from telethon.errors import RPCError
 
 from .config import Settings
@@ -59,7 +60,49 @@ async def run_worker(settings: Settings, pool: asyncpg.Pool, client: TelegramCli
             )
         )
 
-        for chat_id in task.target_chat_ids:
+        target_chat_ids = list(task.target_chat_ids)
+        if not target_chat_ids:
+            storage_chat_id = settings.storage_chat_id or task.storage_chat_id
+            auto_targets: list[int] = []
+
+            async for dialog in client.iter_dialogs():
+                entity = dialog.entity
+                if isinstance(entity, User):
+                    continue
+                if getattr(dialog, "is_user", False):
+                    continue
+                if getattr(entity, "id", None) is None:
+                    continue
+
+                if isinstance(entity, Chat):
+                    if getattr(entity, "left", False) or getattr(entity, "deactivated", False):
+                        continue
+                elif isinstance(entity, Channel):
+                    if getattr(entity, "broadcast", False):
+                        can_post = bool(getattr(entity, "creator", False))
+                        if not can_post:
+                            admin_rights = getattr(entity, "admin_rights", None)
+                            can_post = bool(admin_rights and getattr(admin_rights, "post_messages", False))
+                        if not can_post:
+                            continue
+                else:
+                    continue
+
+                chat_id = dialog.id
+                if chat_id == storage_chat_id:
+                    continue
+                auto_targets.append(chat_id)
+
+            target_chat_ids = auto_targets
+            logger.info("AUTO targets count=%s", len(target_chat_ids))
+
+            if not target_chat_ids:
+                await finalize_task(pool, task.id, "error", 0, 0, "No writable chats found")
+                logger.info("Userbot task #%s: status=error, sent=0, errors=0", task.id)
+                await notify_admin(settings, f"Userbot task #{task.id}: status=error, sent=0, errors=0")
+                continue
+
+        for chat_id in target_chat_ids:
             try:
                 source_message_ids = task.storage_message_ids or ([] if task.storage_message_id is None else [task.storage_message_id])
                 if not source_message_ids:
