@@ -210,7 +210,7 @@ CREATE_TABLES_SQL = [
       storage_message_id BIGINT,
       dedupe_key TEXT,
       storage_message_ids BIGINT[] NOT NULL DEFAULT '{}',
-      target_chat_ids BIGINT[] NOT NULL,
+      target_chat_ids BIGINT[],
       sent_count INT NOT NULL DEFAULT 0,
       error_count INT NOT NULL DEFAULT 0
     )
@@ -293,6 +293,10 @@ USERBOT_TASKS_MIGRATIONS_SQL = [
     """,
     """
     ALTER TABLE userbot_tasks
+    ALTER COLUMN target_chat_ids DROP NOT NULL
+    """,
+    """
+    ALTER TABLE userbot_tasks
     DROP COLUMN IF EXISTS source_chat_id
     """,
     """
@@ -331,7 +335,7 @@ USERBOT_TASKS_BASE_SQL = [
       storage_message_id BIGINT,
       dedupe_key TEXT,
       storage_message_ids BIGINT[] NOT NULL DEFAULT '{}',
-      target_chat_ids BIGINT[] NOT NULL,
+      target_chat_ids BIGINT[],
       sent_count INT NOT NULL DEFAULT 0,
       error_count INT NOT NULL DEFAULT 0
     )
@@ -844,10 +848,10 @@ async def save_buyer_reply_template(storage_chat_id: int, message_id: int) -> No
 async def create_userbot_task(
     storage_chat_id: int,
     storage_message_ids: list[int],
-    target_chat_ids: Optional[list[int]],
+    target_chat_ids: list[int] | None,
     run_at: datetime,
 ) -> Optional[int]:
-    normalized_target_chat_ids = target_chat_ids or []
+    normalized_target_chat_ids = target_chat_ids if target_chat_ids is not None else None
     normalized_storage_message_ids = storage_message_ids or []
     run_at_utc = run_at if run_at.tzinfo else run_at.replace(tzinfo=timezone.utc)
     run_at_utc = run_at_utc.astimezone(timezone.utc)

@@ -16,7 +16,7 @@ class UserbotTask:
     storage_chat_id: int
     storage_message_id: int | None
     storage_message_ids: list[int]
-    target_chat_ids: list[int]
+    target_chat_ids: list[int] | None
     sent_count: int
     error_count: int
 
@@ -41,7 +41,7 @@ def row_to_task(row: asyncpg.Record) -> UserbotTask:
         storage_chat_id=row["storage_chat_id"],
         storage_message_id=row["storage_message_id"],
         storage_message_ids=list(row["storage_message_ids"] or []),
-        target_chat_ids=list(row["target_chat_ids"] or []),
+        target_chat_ids=(list(row["target_chat_ids"]) if row["target_chat_ids"] is not None else None),
         sent_count=row["sent_count"],
         error_count=row["error_count"],
     )

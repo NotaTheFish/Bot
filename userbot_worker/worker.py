@@ -54,14 +54,14 @@ async def run_worker(settings: Settings, pool: asyncpg.Pool, client: TelegramCli
                 {
                     "event": "task_started",
                     "task_id": task.id,
-                    "targets": len(task.target_chat_ids),
+                    "targets": len(task.target_chat_ids or []),
                 },
                 ensure_ascii=False,
             )
         )
 
-        target_chat_ids = list(task.target_chat_ids)
-        if not target_chat_ids:
+        target_chat_ids = list(task.target_chat_ids or [])
+        if task.target_chat_ids is None:
             storage_chat_id = settings.storage_chat_id or task.storage_chat_id
             auto_targets: list[int] = []
 
