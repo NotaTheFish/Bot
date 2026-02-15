@@ -91,6 +91,22 @@ MIN_USER_MESSAGES_BETWEEN_POSTS = _get_env_int("MIN_USER_MESSAGES_BETWEEN_POSTS"
 BROADCAST_MAX_PER_DAY = _get_env_int("BROADCAST_MAX_PER_DAY", 20)
 MIN_SECONDS_BETWEEN_CHATS = max(0.0, float(_get_env_str("MIN_SECONDS_BETWEEN_CHATS", "0.3")))
 MAX_SECONDS_BETWEEN_CHATS = max(MIN_SECONDS_BETWEEN_CHATS, float(_get_env_str("MAX_SECONDS_BETWEEN_CHATS", "0.7")))
+
+
+def _get_env_int_list(name: str) -> list[int]:
+    raw = _get_env_str(name, "")
+    if not raw:
+        return []
+    values: list[int] = []
+    for part in raw.split(","):
+        item = part.strip()
+        if not item:
+            continue
+        values.append(int(item))
+    return values
+
+
+TARGET_CHAT_IDS = _get_env_int_list("TARGET_CHAT_IDS")
 ANTI_DUPLICATE_HOURS = _get_env_int("ANTI_DUPLICATE_HOURS", 6)
 QUIET_HOURS_START = _get_env_str("QUIET_HOURS_START", "")
 QUIET_HOURS_END = _get_env_str("QUIET_HOURS_END", "")
@@ -210,7 +226,7 @@ CREATE_TABLES_SQL = [
       storage_message_id BIGINT,
       dedupe_key TEXT,
       storage_message_ids BIGINT[] NOT NULL DEFAULT '{}',
-      target_chat_ids BIGINT[],
+      target_chat_ids BIGINT[] NOT NULL DEFAULT '{}',
       sent_count INT NOT NULL DEFAULT 0,
       error_count INT NOT NULL DEFAULT 0
     )
@@ -222,7 +238,7 @@ CREATE_TABLES_SQL = [
     """
     CREATE UNIQUE INDEX IF NOT EXISTS idx_userbot_tasks_dedupe_active
     ON userbot_tasks(dedupe_key)
-    WHERE dedupe_key IS NOT NULL AND status IN ('pending', 'running')
+    WHERE dedupe_key IS NOT NULL AND status IN ('pending', 'processing')
     """,
 ]
 
@@ -292,8 +308,17 @@ USERBOT_TASKS_MIGRATIONS_SQL = [
     ALTER COLUMN storage_message_id DROP NOT NULL
     """,
     """
+    UPDATE userbot_tasks
+    SET target_chat_ids = '{}'
+    WHERE target_chat_ids IS NULL
+    """,
+    """
     ALTER TABLE userbot_tasks
-    ALTER COLUMN target_chat_ids DROP NOT NULL
+    ALTER COLUMN target_chat_ids SET NOT NULL
+    """,
+    """
+    ALTER TABLE userbot_tasks
+    ALTER COLUMN target_chat_ids SET DEFAULT '{}'
     """,
     """
     ALTER TABLE userbot_tasks
@@ -313,12 +338,20 @@ USERBOT_TASKS_MIGRATIONS_SQL = [
     USING run_at AT TIME ZONE 'UTC'
     """,
     """
+    UPDATE userbot_tasks
+    SET status = CASE status
+        WHEN 'running' THEN 'processing'
+        WHEN 'failed' THEN 'error'
+        ELSE status
+    END
+    """,
+    """
     DROP INDEX IF EXISTS idx_userbot_tasks_dedupe_active
     """,
     """
     CREATE UNIQUE INDEX IF NOT EXISTS idx_userbot_tasks_dedupe_active
     ON userbot_tasks(dedupe_key)
-    WHERE dedupe_key IS NOT NULL AND status IN ('pending', 'running')
+    WHERE dedupe_key IS NOT NULL AND status IN ('pending', 'processing')
     """,
 ]
 
@@ -335,7 +368,7 @@ USERBOT_TASKS_BASE_SQL = [
       storage_message_id BIGINT,
       dedupe_key TEXT,
       storage_message_ids BIGINT[] NOT NULL DEFAULT '{}',
-      target_chat_ids BIGINT[],
+      target_chat_ids BIGINT[] NOT NULL DEFAULT '{}',
       sent_count INT NOT NULL DEFAULT 0,
       error_count INT NOT NULL DEFAULT 0
     )
@@ -347,7 +380,7 @@ USERBOT_TASKS_BASE_SQL = [
     """
     CREATE UNIQUE INDEX IF NOT EXISTS idx_userbot_tasks_dedupe_active
     ON userbot_tasks(dedupe_key)
-    WHERE dedupe_key IS NOT NULL AND status IN ('pending', 'running')
+    WHERE dedupe_key IS NOT NULL AND status IN ('pending', 'processing')
     """,
 ]
 
@@ -854,7 +887,7 @@ async def create_userbot_task(
     def _logical_schedule_bucket(run_at_value: datetime) -> str:
         return run_at_value.strftime("%Y%m%d%H%M")
 
-    normalized_target_chat_ids = target_chat_ids if target_chat_ids is not None else None
+    normalized_target_chat_ids = sorted(set(target_chat_ids or []))
     normalized_storage_message_ids = sorted(storage_message_ids or [])
     run_at_utc = run_at if run_at.tzinfo else run_at.replace(tzinfo=timezone.utc)
     run_at_utc = run_at_utc.astimezone(timezone.utc)
@@ -911,7 +944,7 @@ async def create_userbot_task(
     if dedupe_enabled:
         query += " " + (
             "ON CONFLICT (dedupe_key) "
-            "WHERE dedupe_key IS NOT NULL AND status IN ('pending', 'running') "
+            "WHERE dedupe_key IS NOT NULL AND status IN ('pending', 'processing') "
             "DO NOTHING"
         )
     query += " RETURNING id"
@@ -928,7 +961,7 @@ async def create_userbot_task(
         SELECT id
         FROM userbot_tasks
         WHERE dedupe_key = $1
-          AND status IN ('pending', 'running')
+          AND status IN ('pending', 'processing')
         ORDER BY id DESC
         LIMIT 1
         """,
@@ -1511,12 +1544,12 @@ async def broadcast_once() -> None:
 
     if DELIVERY_MODE == "userbot":
         run_at = datetime.now(timezone.utc)
-        task_id = await create_userbot_task(source_chat_id, source_message_ids, None, run_at)
+        task_id = await create_userbot_task(source_chat_id, source_message_ids, TARGET_CHAT_IDS, run_at)
         if task_id:
             await save_broadcast_attempt(status="queued", chat_id=None, reason="queued_for_userbot")
             broadcast_recorded = True
-            logger.info("Queued userbot task id=%s targets=AUTO", task_id)
-            await bot.send_message(ADMIN_ID, "🧾 Userbot-рассылка поставлена в очередь: AUTO.")
+            logger.info("Queued userbot task id=%s targets=%s", task_id, TARGET_CHAT_IDS if TARGET_CHAT_IDS else "WORKER_ENV")
+            await bot.send_message(ADMIN_ID, "🧾 Userbot-рассылка поставлена в очередь.")
         else:
             logger.info("Userbot task is already pending/running for this payload")
             await bot.send_message(ADMIN_ID, "ℹ️ Такая userbot-задача уже в очереди.")

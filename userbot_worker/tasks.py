@@ -29,9 +29,9 @@ DISABLE_RPC_ERRORS = {
 }
 
 TASK_STATUS_PENDING = "pending"
-TASK_STATUS_RUNNING = "running"
+TASK_STATUS_RUNNING = "processing"
 TASK_STATUS_DONE = "done"
-TASK_STATUS_FAILED = "failed"
+TASK_STATUS_FAILED = "error"
 
 
 
