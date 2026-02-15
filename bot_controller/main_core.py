@@ -82,6 +82,9 @@ BOT_USERNAME = ""
 BOT_ID = 0
 db_pool: Optional[asyncpg.Pool] = None
 media_group_buffers: dict[str, dict] = {}
+userbot_tasks_schema_ready = False
+userbot_tasks_schema_lock = asyncio.Lock()
+userbot_tasks_columns_cache: Optional[set[str]] = None
 
 GLOBAL_BROADCAST_COOLDOWN_SECONDS = _get_env_int("GLOBAL_BROADCAST_COOLDOWN_SECONDS", 600)
 MIN_USER_MESSAGES_BETWEEN_POSTS = _get_env_int("MIN_USER_MESSAGES_BETWEEN_POSTS", 5)
@@ -315,6 +318,35 @@ USERBOT_TASKS_MIGRATIONS_SQL = [
     """,
 ]
 
+USERBOT_TASKS_BASE_SQL = [
+    """
+    CREATE TABLE IF NOT EXISTS userbot_tasks (
+      id BIGSERIAL PRIMARY KEY,
+      created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+      run_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      status TEXT NOT NULL DEFAULT 'pending',
+      attempts INT NOT NULL DEFAULT 0,
+      last_error TEXT,
+      storage_chat_id BIGINT NOT NULL,
+      storage_message_id BIGINT,
+      dedupe_key TEXT,
+      storage_message_ids BIGINT[] NOT NULL DEFAULT '{}',
+      target_chat_ids BIGINT[] NOT NULL,
+      sent_count INT NOT NULL DEFAULT 0,
+      error_count INT NOT NULL DEFAULT 0
+    )
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_userbot_tasks_pending
+    ON userbot_tasks(status, run_at)
+    """,
+    """
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_userbot_tasks_dedupe_active
+    ON userbot_tasks(dedupe_key)
+    WHERE dedupe_key IS NOT NULL AND status IN ('pending', 'running')
+    """,
+]
+
 POST_MIGRATIONS_SQL = [
     """
     ALTER TABLE post
@@ -424,6 +456,39 @@ async def init_db() -> None:
                 await conn.execute(query)
             for query in POST_MIGRATIONS_SQL:
                 await conn.execute(query)
+
+
+async def ensure_userbot_tasks_schema(pool: asyncpg.Pool) -> None:
+    global userbot_tasks_schema_ready, userbot_tasks_columns_cache
+    if userbot_tasks_schema_ready:
+        return
+    async with userbot_tasks_schema_lock:
+        if userbot_tasks_schema_ready:
+            return
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+                for query in USERBOT_TASKS_BASE_SQL:
+                    await conn.execute(query)
+                for query in USERBOT_TASKS_MIGRATIONS_SQL:
+                    await conn.execute(query)
+        userbot_tasks_columns_cache = None
+        userbot_tasks_schema_ready = True
+
+
+async def get_userbot_tasks_columns(pool: asyncpg.Pool) -> set[str]:
+    global userbot_tasks_columns_cache
+    if userbot_tasks_columns_cache is not None:
+        return userbot_tasks_columns_cache
+    rows = await pool.fetch(
+        """
+        SELECT column_name
+        FROM information_schema.columns
+        WHERE table_schema = current_schema()
+          AND table_name = 'userbot_tasks'
+        """
+    )
+    userbot_tasks_columns_cache = {str(row["column_name"]) for row in rows}
+    return userbot_tasks_columns_cache
 
 
 def admin_menu_keyboard() -> ReplyKeyboardMarkup:
@@ -792,31 +857,60 @@ async def create_userbot_task(
     dedupe_key = f"{storage_chat_id}:{','.join(str(message_id) for message_id in normalized_storage_message_ids)}:{run_at_iso}"
 
     pool = await get_db_pool()
-    row = await pool.fetchrow(
-        """
-        INSERT INTO userbot_tasks(
-            storage_chat_id,
-            storage_message_id,
-            dedupe_key,
-            storage_message_ids,
-            target_chat_ids,
-            run_at
-        )
-        VALUES ($1, $2, $3, $4::BIGINT[], $5::BIGINT[], $6::TIMESTAMPTZ)
-        ON CONFLICT (dedupe_key)
-        WHERE dedupe_key IS NOT NULL AND status IN ('pending', 'running')
-        DO NOTHING
-        RETURNING id
-        """,
+    await ensure_userbot_tasks_schema(pool)
+    existing_columns = await get_userbot_tasks_columns(pool)
+
+    insert_columns: list[str] = ["storage_chat_id", "storage_message_ids", "run_at", "status", "target_chat_ids"]
+    insert_values: list[object] = [
         storage_chat_id,
-        storage_message_id,
-        dedupe_key,
         normalized_storage_message_ids,
-        normalized_target_chat_ids,
         run_at_utc,
+        "pending",
+        normalized_target_chat_ids,
+    ]
+
+    if "storage_message_id" in existing_columns:
+        insert_columns.append("storage_message_id")
+        insert_values.append(storage_message_id)
+    if "attempts" in existing_columns:
+        insert_columns.append("attempts")
+        insert_values.append(0)
+    if "last_error" in existing_columns:
+        insert_columns.append("last_error")
+        insert_values.append(None)
+
+    dedupe_enabled = "dedupe_key" in existing_columns and "status" in existing_columns
+    if dedupe_enabled:
+        insert_columns.append("dedupe_key")
+        insert_values.append(dedupe_key)
+
+    placeholders: list[str] = []
+    for index, column in enumerate(insert_columns, start=1):
+        if column in {"storage_message_ids", "target_chat_ids"}:
+            placeholders.append(f"${index}::BIGINT[]")
+        elif column == "run_at":
+            placeholders.append(f"${index}::TIMESTAMPTZ")
+        else:
+            placeholders.append(f"${index}")
+
+    query = (
+        f"INSERT INTO userbot_tasks({', '.join(insert_columns)}) "
+        f"VALUES ({', '.join(placeholders)})"
     )
+    if dedupe_enabled:
+        query += " " + (
+            "ON CONFLICT (dedupe_key) "
+            "WHERE dedupe_key IS NOT NULL AND status IN ('pending', 'running') "
+            "DO NOTHING"
+        )
+    query += " RETURNING id"
+
+    row = await pool.fetchrow(query, *insert_values)
     if row:
         return int(row["id"])
+
+    if not dedupe_enabled:
+        return None
 
     existing_task_id = await pool.fetchval(
         """
