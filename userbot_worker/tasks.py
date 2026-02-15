@@ -28,6 +28,11 @@ DISABLE_RPC_ERRORS = {
     "UserBannedInChannelError",
 }
 
+TASK_STATUS_PENDING = "pending"
+TASK_STATUS_RUNNING = "running"
+TASK_STATUS_DONE = "done"
+TASK_STATUS_FAILED = "failed"
+
 
 
 def row_to_task(row: asyncpg.Record) -> UserbotTask:
@@ -53,16 +58,18 @@ async def claim_pending_task(pool: asyncpg.Pool) -> UserbotTask | None:
             row = await conn.fetchrow(
                 """
                 UPDATE userbot_tasks
-                SET status='running', attempts=attempts+1
+                SET status=$1, attempts=attempts+1
                 WHERE id = (
                     SELECT id FROM userbot_tasks
-                    WHERE status='pending' AND run_at<=NOW()
+                    WHERE status=$2 AND run_at<=NOW()
                     ORDER BY run_at ASC
                     LIMIT 1
                     FOR UPDATE SKIP LOCKED
                 )
                 RETURNING *
-                """
+                """,
+                TASK_STATUS_RUNNING,
+                TASK_STATUS_PENDING,
             )
     return row_to_task(row) if row else None
 

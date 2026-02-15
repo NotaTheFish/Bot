@@ -28,6 +28,8 @@ Worker исполняет задачи из `userbot\_tasks` и рассылае
 
 \- `ADMIN\_ID` (optional)
 
+- `MAX\_TASK\_ATTEMPTS` (optional, по умолчанию `3`)
+
 
 
 \## Запуск Windows
@@ -90,7 +92,7 @@ python -m userbot\_worker.main
 
 
 
-\- Берёт pending-задачу из `userbot\_tasks` атомарно.
+\- Берёт `pending`-задачу из `userbot\_tasks` атомарно, переводит её в `running` и увеличивает `attempts` на 1.
 
 \- Отправляет пост только в чаты из `target\_chat\_ids` (никаких ЛС).
 
@@ -104,3 +106,17 @@ python -m userbot\_worker.main
 
 
 
+
+
+## Статусы задач (`userbot_tasks.status`)
+
+- `pending` — задача ожидает выполнения или поставлена на ретрай.
+- `running` — задача взята воркером в обработку.
+- `done` — задача завершена (включая частичный успех по чатам, если часть отправок прошла).
+- `failed` — задача завершена неуспешно и исчерпала лимит `MAX_TASK_ATTEMPTS`.
+
+Поведение после обработки:
+
+- при завершении отправки (в том числе частичном по чатам) задача получает `done`, а в БД сохраняются `sent_count`, `error_count`, `last_error`;
+- при task-level ошибке до завершения и `attempts < MAX_TASK_ATTEMPTS` задача возвращается в `pending` с `last_error`;
+- при task-level ошибке и `attempts >= MAX_TASK_ATTEMPTS` задача получает `failed` с `last_error`.

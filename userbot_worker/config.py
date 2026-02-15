@@ -14,6 +14,23 @@ def _getint(name: str, default: int = 0) -> int:
         return default
 
 
+def _getintset_csv(name: str) -> set[int]:
+    raw = _getenv(name)
+    if not raw:
+        return set()
+
+    values: set[int] = set()
+    for part in raw.split(","):
+        item = part.strip()
+        if not item:
+            continue
+        try:
+            values.add(int(item))
+        except ValueError as exc:
+            raise RuntimeError(f"{name} contains non-integer value: {item!r}") from exc
+    return values
+
+
 @dataclass(frozen=True)
 class Settings:
     database_url: str
@@ -26,6 +43,8 @@ class Settings:
     admin_notify_bot_token: str
     admin_id: int
     storage_chat_id: int
+    blacklist_chat_ids: set[int]
+    max_task_attempts: int
 
 
 def load_settings() -> Settings:
@@ -40,6 +59,8 @@ def load_settings() -> Settings:
         admin_notify_bot_token=_getenv("ADMIN_NOTIFY_BOT_TOKEN"),
         admin_id=_getint("ADMIN_ID", 0),
         storage_chat_id=_getint("STORAGE_CHAT_ID", 0),
+        blacklist_chat_ids=_getintset_csv("BLACKLIST_CHAT_IDS"),
+        max_task_attempts=max(1, _getint("MAX_TASK_ATTEMPTS", 3)),
     )
 
     if settings.max_seconds_between_chats < settings.min_seconds_between_chats:
