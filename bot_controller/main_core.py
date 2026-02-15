@@ -851,14 +851,21 @@ async def create_userbot_task(
     target_chat_ids: list[int] | None,
     run_at: datetime,
 ) -> Optional[int]:
+    def _logical_schedule_bucket(run_at_value: datetime) -> str:
+        return run_at_value.strftime("%Y%m%d%H%M")
+
     normalized_target_chat_ids = target_chat_ids if target_chat_ids is not None else None
-    normalized_storage_message_ids = storage_message_ids or []
+    normalized_storage_message_ids = sorted(storage_message_ids or [])
     run_at_utc = run_at if run_at.tzinfo else run_at.replace(tzinfo=timezone.utc)
     run_at_utc = run_at_utc.astimezone(timezone.utc)
-    run_at_iso = run_at_utc.isoformat(timespec="microseconds")
+    schedule_bucket = _logical_schedule_bucket(run_at_utc)
 
     storage_message_id = normalized_storage_message_ids[0] if normalized_storage_message_ids else None
-    dedupe_key = f"{storage_chat_id}:{','.join(str(message_id) for message_id in normalized_storage_message_ids)}:{run_at_iso}"
+    dedupe_key = (
+        f"v2:{storage_chat_id}:"
+        f"{','.join(str(message_id) for message_id in normalized_storage_message_ids)}:"
+        f"{schedule_bucket}"
+    )
 
     pool = await get_db_pool()
     await ensure_userbot_tasks_schema(pool)
