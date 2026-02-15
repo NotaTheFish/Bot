@@ -158,3 +158,61 @@ async def mark_chat_error(pool: asyncpg.Pool, chat_id: int, error_text: str, dis
             error_text[:500],
             chat_id,
         )
+
+
+async def remap_chat_id_everywhere(
+    pool: asyncpg.Pool,
+    old_chat_id: int,
+    new_chat_id: int,
+    *,
+    is_storage_chat: bool = False,
+) -> None:
+    """
+    Централизованно переносит старый chat_id на новый:
+    - chats.chat_id (чтобы старый id больше не использовался)
+    - userbot_tasks.target_chat_ids
+    - userbot_tasks.storage_chat_id + post.storage_chat_id (если мигрировал storage)
+    """
+    if old_chat_id == new_chat_id:
+        return
+
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            # 1) Основная карта target-чатов
+            await conn.execute(
+                """
+                UPDATE userbot_tasks
+                SET target_chat_ids = array_replace(target_chat_ids, $1, $2)
+                WHERE target_chat_ids IS NOT NULL
+                  AND array_position(target_chat_ids, $1) IS NOT NULL
+                """,
+                old_chat_id,
+                new_chat_id,
+            )
+
+            # 2) При миграции storage обновляем пост и все задачи по storage
+            if is_storage_chat:
+                await conn.execute(
+                    "UPDATE post SET storage_chat_id = $2 WHERE storage_chat_id = $1",
+                    old_chat_id,
+                    new_chat_id,
+                )
+                await conn.execute(
+                    "UPDATE userbot_tasks SET storage_chat_id = $2 WHERE storage_chat_id = $1",
+                    old_chat_id,
+                    new_chat_id,
+                )
+
+            # 3) chats.chat_id: переносим карточку чата на новый ID
+            await conn.execute(
+                """
+                INSERT INTO chats(chat_id, disabled, last_bot_post_msg_id, user_messages_since_last_post, last_error, last_success_post_at)
+                SELECT $2, disabled, last_bot_post_msg_id, user_messages_since_last_post, last_error, last_success_post_at
+                FROM chats
+                WHERE chat_id = $1
+                ON CONFLICT (chat_id) DO NOTHING
+                """,
+                old_chat_id,
+                new_chat_id,
+            )
+            await conn.execute("DELETE FROM chats WHERE chat_id = $1", old_chat_id)
