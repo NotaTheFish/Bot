@@ -22,7 +22,6 @@ from aiogram.types import (
     KeyboardButton,
     Message,
     MessageEntity,
-    MessageEntityType,
     ReplyKeyboardMarkup,
 )
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -1022,7 +1021,7 @@ def _build_contact_cta_entities(prefix_text: str, cta_text: str, contact_url: st
     offset = _utf16_len(prefix_text)
     return [
         MessageEntity(
-            type=MessageEntityType.TEXT_LINK,
+            type="text_link",
             offset=offset,
             length=_utf16_len(cta_text),
             url=contact_url,
