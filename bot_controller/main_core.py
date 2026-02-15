@@ -774,8 +774,7 @@ async def save_buyer_reply_template(storage_chat_id: int, message_id: int) -> No
 
 
 async def create_userbot_task(storage_chat_id: int, storage_message_ids: list[int], target_chat_ids: list[int]) -> Optional[int]:
-    if not target_chat_ids:
-        return None
+    normalized_target_chat_ids = target_chat_ids or []
 
     storage_message_id = storage_message_ids[0] if storage_message_ids else None
     dedupe_key = f"{storage_chat_id}:{storage_message_id}" if storage_message_id is not None else None
@@ -822,7 +821,7 @@ async def create_userbot_task(storage_chat_id: int, storage_message_ids: list[in
             storage_message_id,
             dedupe_key,
             storage_message_ids,
-            target_chat_ids,
+            normalized_target_chat_ids,
         )
     except asyncpg.UniqueViolationError:
         if storage_message_id is None:
@@ -1478,10 +1477,12 @@ async def broadcast_once() -> None:
             await save_broadcast_attempt(status="error", chat_id=chat_id, reason="exception", error_text=str(exc))
             logger.warning("Failed to send to chat %s: %s", chat_id, exc)
 
-    if DELIVERY_MODE == "userbot" and target_chat_ids:
-        task_id = await create_userbot_task(source_chat_id, source_message_ids, target_chat_ids)
-        logger.info("Queued userbot task id=%s chats=%s", task_id, len(target_chat_ids))
-        await bot.send_message(ADMIN_ID, f"🧾 Userbot-рассылка поставлена в очередь: {len(target_chat_ids)} чатов.")
+    if DELIVERY_MODE == "userbot":
+        normalized_target_chat_ids = target_chat_ids or []
+        task_id = await create_userbot_task(source_chat_id, source_message_ids, normalized_target_chat_ids)
+        target_descriptor = str(len(normalized_target_chat_ids)) if normalized_target_chat_ids else "AUTO"
+        logger.info("Queued userbot task id=%s targets=%s", task_id, target_descriptor)
+        await bot.send_message(ADMIN_ID, f"🧾 Userbot-рассылка поставлена в очередь: {target_descriptor}.")
 
     if report["sent"] > 0:
         await set_meta("last_broadcast_at", datetime.now(timezone.utc).isoformat())
