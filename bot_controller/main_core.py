@@ -219,7 +219,7 @@ CREATE_TABLES_SQL = [
     """
     CREATE UNIQUE INDEX IF NOT EXISTS idx_userbot_tasks_dedupe_active
     ON userbot_tasks(dedupe_key)
-    WHERE status IN ('pending', 'running') AND dedupe_key IS NOT NULL
+    WHERE dedupe_key IS NOT NULL AND status IN ('pending', 'running')
     """,
 ]
 
@@ -306,9 +306,12 @@ USERBOT_TASKS_MIGRATIONS_SQL = [
     USING run_at AT TIME ZONE 'UTC'
     """,
     """
+    DROP INDEX IF EXISTS idx_userbot_tasks_dedupe_active
+    """,
+    """
     CREATE UNIQUE INDEX IF NOT EXISTS idx_userbot_tasks_dedupe_active
     ON userbot_tasks(dedupe_key)
-    WHERE status IN ('pending', 'running') AND dedupe_key IS NOT NULL
+    WHERE dedupe_key IS NOT NULL AND status IN ('pending', 'running')
     """,
 ]
 
@@ -773,82 +776,67 @@ async def save_buyer_reply_template(storage_chat_id: int, message_id: int) -> No
     )
 
 
-async def create_userbot_task(storage_chat_id: int, storage_message_ids: list[int], target_chat_ids: list[int]) -> Optional[int]:
+async def create_userbot_task(
+    storage_chat_id: int,
+    storage_message_ids: list[int],
+    target_chat_ids: list[int],
+    run_at: datetime,
+) -> Optional[int]:
     normalized_target_chat_ids = target_chat_ids or []
+    normalized_storage_message_ids = storage_message_ids or []
+    run_at_utc = run_at if run_at.tzinfo else run_at.replace(tzinfo=timezone.utc)
+    run_at_utc = run_at_utc.astimezone(timezone.utc)
+    run_at_iso = run_at_utc.isoformat(timespec="microseconds")
 
-    storage_message_id = storage_message_ids[0] if storage_message_ids else None
-    dedupe_key = f"{storage_chat_id}:{storage_message_id}" if storage_message_id is not None else None
+    storage_message_id = normalized_storage_message_ids[0] if normalized_storage_message_ids else None
+    dedupe_key = f"{storage_chat_id}:{','.join(str(message_id) for message_id in normalized_storage_message_ids)}:{run_at_iso}"
 
     pool = await get_db_pool()
-    if storage_message_id is not None:
-        existing_task_id = await pool.fetchval(
-            """
-            SELECT id
-            FROM userbot_tasks
-            WHERE storage_chat_id = $1
-              AND storage_message_id = $2
-              AND status IN ('pending', 'running')
-            ORDER BY id DESC
-            LIMIT 1
-            """,
-            storage_chat_id,
-            storage_message_id,
-        )
-        if existing_task_id:
-            logger.info(
-                "Userbot task deduplicated: existing task id=%s for storage_chat_id=%s storage_message_id=%s",
-                existing_task_id,
-                storage_chat_id,
-                storage_message_id,
-            )
-            return int(existing_task_id)
-
-    try:
-        row = await pool.fetchrow(
-            """
-            INSERT INTO userbot_tasks(
-                storage_chat_id,
-                storage_message_id,
-                dedupe_key,
-                storage_message_ids,
-                target_chat_ids,
-                run_at
-            )
-            VALUES ($1, $2, $3, $4::BIGINT[], $5::BIGINT[], NOW())
-            RETURNING id
-            """,
+    row = await pool.fetchrow(
+        """
+        INSERT INTO userbot_tasks(
             storage_chat_id,
             storage_message_id,
             dedupe_key,
             storage_message_ids,
-            normalized_target_chat_ids,
+            target_chat_ids,
+            run_at
         )
-    except asyncpg.UniqueViolationError:
-        if storage_message_id is None:
-            raise
-        existing_task_id = await pool.fetchval(
-            """
-            SELECT id
-            FROM userbot_tasks
-            WHERE storage_chat_id = $1
-              AND storage_message_id = $2
-              AND status IN ('pending', 'running')
-            ORDER BY id DESC
-            LIMIT 1
-            """,
-            storage_chat_id,
-            storage_message_id,
+        VALUES ($1, $2, $3, $4::BIGINT[], $5::BIGINT[], $6::TIMESTAMPTZ)
+        ON CONFLICT (dedupe_key)
+        WHERE dedupe_key IS NOT NULL AND status IN ('pending', 'running')
+        DO NOTHING
+        RETURNING id
+        """,
+        storage_chat_id,
+        storage_message_id,
+        dedupe_key,
+        normalized_storage_message_ids,
+        normalized_target_chat_ids,
+        run_at_utc,
+    )
+    if row:
+        return int(row["id"])
+
+    existing_task_id = await pool.fetchval(
+        """
+        SELECT id
+        FROM userbot_tasks
+        WHERE dedupe_key = $1
+          AND status IN ('pending', 'running')
+        ORDER BY id DESC
+        LIMIT 1
+        """,
+        dedupe_key,
+    )
+    if existing_task_id:
+        logger.info(
+            "Userbot task deduplicated by unique index: existing task id=%s dedupe_key=%s",
+            existing_task_id,
+            dedupe_key,
         )
-        if existing_task_id:
-            logger.info(
-                "Userbot task deduplicated by unique index: existing task id=%s for storage_chat_id=%s storage_message_id=%s",
-                existing_task_id,
-                storage_chat_id,
-                storage_message_id,
-            )
-            return int(existing_task_id)
-        raise
-    return int(row["id"]) if row else None
+        return int(existing_task_id)
+    return None
 
 
 async def find_schedule(schedule_type: str, time_text: Optional[str], weekday: Optional[int]) -> Optional[int]:
@@ -1479,7 +1467,8 @@ async def broadcast_once() -> None:
 
     if DELIVERY_MODE == "userbot":
         normalized_target_chat_ids = target_chat_ids or []
-        task_id = await create_userbot_task(source_chat_id, source_message_ids, normalized_target_chat_ids)
+        run_at = datetime.now(timezone.utc)
+        task_id = await create_userbot_task(source_chat_id, source_message_ids, normalized_target_chat_ids, run_at)
         target_descriptor = str(len(normalized_target_chat_ids)) if normalized_target_chat_ids else "AUTO"
         logger.info("Queued userbot task id=%s targets=%s", task_id, target_descriptor)
         await bot.send_message(ADMIN_ID, f"🧾 Userbot-рассылка поставлена в очередь: {target_descriptor}.")
