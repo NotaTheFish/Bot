@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 import asyncpg
 
 
@@ -103,7 +103,7 @@ async def log_broadcast_attempt(
                 INSERT INTO broadcast_attempts(created_at, chat_id, status, reason, error_text)
                 VALUES ($1, $2, $3, $4, $5)
                 """,
-                datetime.utcnow().isoformat(),
+                datetime.now(timezone.utc).isoformat(),
                 chat_id,
                 status,
                 reason,
@@ -133,7 +133,7 @@ async def mark_chat_success(pool: asyncpg.Pool, chat_id: int, message_id: int) -
         WHERE chat_id = $3
         """,
         message_id,
-        datetime.utcnow().isoformat(),
+        datetime.now(timezone.utc).isoformat(),
         chat_id,
     )
 

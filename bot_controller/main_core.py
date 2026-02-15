@@ -5,7 +5,7 @@ import os
 import random
 import uuid
 from contextlib import suppress
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 
 import asyncpg
@@ -44,7 +44,6 @@ def _get_env_int(name: str, default: int = 0) -> int:
 BOT_TOKEN = _get_env_str("BOT_TOKEN")
 ADMIN_ID = _get_env_int("ADMIN_ID", 0)
 DATABASE_URL = _get_env_str("DATABASE_URL")
-TZ_NAME = _get_env_str("TZ", "Europe/Berlin")
 DELIVERY_MODE = _get_env_str("DELIVERY_MODE", "bot").lower() or "bot"
 STORAGE_CHAT_ID = _get_env_int("STORAGE_CHAT_ID", 0)
 STORAGE_CHAT_META_KEY = "storage_chat_id"
@@ -61,15 +60,8 @@ def _normalize_username(value: str) -> str:
 SELLER_USERNAME = _normalize_username(_get_env_str("SELLER_USERNAME", ""))
 CONFIGURED_BOT_USERNAME = _normalize_username(_get_env_str("BOT_USERNAME", ""))
 SUPPORT_PAYLOAD = "support"
-SUPPORT_BUTTON_TEXT = "✉️ Написать продавцу"
 CONTACT_PAYLOAD_PREFIX = "contact_"
 CONTACT_CTA_TEXT = "✉️ Написать продавцу"
-SEND_SUPPORT_MESSAGE_WITH_BROADCAST = _get_env_str("SEND_SUPPORT_MESSAGE_WITH_BROADCAST", "1").lower() in {
-    "1",
-    "true",
-    "yes",
-    "on",
-}
 
 if not BOT_TOKEN or ":" not in BOT_TOKEN:
     raise RuntimeError("BOT_TOKEN не задан или имеет неверный формат.")
@@ -78,10 +70,7 @@ if ADMIN_ID <= 0:
 if not DATABASE_URL:
     raise RuntimeError("DATABASE_URL не задан. Для Railway используйте PostgreSQL plugin.")
 
-try:
-    TZ = ZoneInfo(TZ_NAME)
-except Exception:
-    TZ = ZoneInfo("Europe/Berlin")
+TZ = ZoneInfo("Europe/Berlin")
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -210,7 +199,7 @@ CREATE_TABLES_SQL = [
     CREATE TABLE IF NOT EXISTS userbot_tasks (
       id BIGSERIAL PRIMARY KEY,
       created_at TIMESTAMP NOT NULL DEFAULT NOW(),
-      run_at TIMESTAMP NOT NULL DEFAULT NOW(),
+      run_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       status TEXT NOT NULL DEFAULT 'pending',
       attempts INT NOT NULL DEFAULT 0,
       last_error TEXT,
@@ -310,6 +299,11 @@ USERBOT_TASKS_MIGRATIONS_SQL = [
     """
     CREATE INDEX IF NOT EXISTS idx_userbot_tasks_pending
     ON userbot_tasks(status, run_at)
+    """,
+    """
+    ALTER TABLE userbot_tasks
+    ALTER COLUMN run_at TYPE TIMESTAMPTZ
+    USING run_at AT TIME ZONE 'UTC'
     """,
     """
     CREATE UNIQUE INDEX IF NOT EXISTS idx_userbot_tasks_dedupe_active
@@ -476,7 +470,7 @@ async def save_broadcast_attempt(
                 INSERT INTO broadcast_attempts(created_at, chat_id, status, reason, error_text)
                 VALUES ($1, $2, $3, $4, $5)
                 """,
-                datetime.utcnow().isoformat(),
+                datetime.now(timezone.utc).isoformat(),
                 chat_id,
                 status,
                 reason,
@@ -583,7 +577,7 @@ async def mark_chat_send_success(chat_id: int, message_id: int) -> None:
         WHERE chat_id = $3
         """,
         message_id,
-        datetime.utcnow().isoformat(),
+        datetime.now(timezone.utc).isoformat(),
         chat_id,
     )
 
@@ -678,7 +672,7 @@ async def get_last_storage_messages() -> tuple[Optional[int], list[int]]:
 
 
 async def get_broadcast_meta() -> dict:
-    now = datetime.utcnow()
+    now = datetime.now(TZ)
     day_key = now.strftime("%Y-%m-%d")
     stored_day_key = await get_meta("day_key")
     daily_count_raw = await get_meta("daily_broadcast_count")
@@ -944,7 +938,10 @@ def parse_iso_datetime(value: Optional[str]) -> Optional[datetime]:
     if not value:
         return None
     try:
-        return datetime.fromisoformat(value)
+        parsed = datetime.fromisoformat(value)
+        if parsed.tzinfo is None:
+            return parsed.replace(tzinfo=timezone.utc)
+        return parsed
     except ValueError:
         return None
 
@@ -992,13 +989,6 @@ def schedule_label(item: dict) -> str:
     return f"📆 {day_name} {item['time_text']}"
 
 
-def support_keyboard() -> InlineKeyboardMarkup:
-    deep_link = f"https://t.me/{BOT_USERNAME}?start={SUPPORT_PAYLOAD}"
-    return InlineKeyboardMarkup(
-        inline_keyboard=[[InlineKeyboardButton(text=SUPPORT_BUTTON_TEXT, url=deep_link)]]
-    )
-
-
 def _generate_contact_token() -> str:
     return uuid.uuid4().hex[:16]
 
@@ -1011,7 +1001,9 @@ def _contains_contact_cta(text: Optional[str]) -> bool:
     if not text:
         return False
     lowered = text.lower()
-    return "start=contact_" in lowered or CONTACT_CTA_TEXT.lower() in lowered
+    if "start=contact_" in lowered:
+        return True
+    return text.rstrip().casefold().endswith("написать продавцу")
 
 
 def _build_contact_cta_entities(prefix_text: str, cta_text: str, contact_url: str) -> list[MessageEntity]:
@@ -1068,14 +1060,6 @@ async def _send_post_with_cta(
     force_cta_only: bool = False,
 ) -> int:
     bot_username = _resolve_bot_username()
-    if not bot_username:
-        copied = await bot.copy_message(
-            chat_id=storage_chat_id,
-            from_chat_id=source_message.chat.id,
-            message_id=source_message.message_id,
-        )
-        return copied.message_id
-
     payload = f"{CONTACT_PAYLOAD_PREFIX}{token}"
     contact_url = f"https://t.me/{bot_username}?start={payload}"
 
@@ -1085,7 +1069,9 @@ async def _send_post_with_cta(
     content_text = raw_caption if has_media else raw_text
     original_entities = list(source_message.caption_entities or []) if has_media else list(source_message.entities or [])
 
-    if not force_cta_only and _contains_contact_cta(content_text):
+    should_append_cta = bool(bot_username) and not force_cta_only and not _contains_contact_cta(content_text)
+
+    if not force_cta_only and not should_append_cta:
         copied = await bot.copy_message(
             chat_id=storage_chat_id,
             from_chat_id=source_message.chat.id,
@@ -1094,10 +1080,10 @@ async def _send_post_with_cta(
         return copied.message_id
 
     new_tail = CONTACT_CTA_TEXT
-    if not force_cta_only and content_text:
+    if should_append_cta and content_text:
         updated = f"{content_text}\n\n{new_tail}"
         prefix = f"{content_text}\n\n"
-    elif not force_cta_only and not content_text:
+    elif should_append_cta and not content_text:
         updated = new_tail
         prefix = ""
     else:
@@ -1118,6 +1104,7 @@ async def _send_post_with_cta(
     else:
         copied = await bot.send_message(storage_chat_id, updated, entities=entities)
     return copied.message_id
+
 
 
 async def send_post_preview(message: Message) -> None:
@@ -1170,45 +1157,105 @@ async def _publish_post_messages(messages: list[Message], state: FSMContext, med
         await messages[-1].answer("Ошибка: STORAGE_CHAT_ID не настроен.")
         return
 
-    await _delete_previous_storage_post(storage_chat_id)
-
     token = _generate_contact_token()
     sorted_messages = sorted(messages, key=lambda msg: msg.message_id)
     copied_ids: list[int] = []
 
-    if len(sorted_messages) == 1:
-        copied_ids.append(await _send_post_with_cta(sorted_messages[0], storage_chat_id, token))
-    else:
-        for item in sorted_messages:
-            copied = await bot.copy_message(
-                chat_id=storage_chat_id,
-                from_chat_id=item.chat.id,
-                message_id=item.message_id,
-            )
-            copied_ids.append(copied.message_id)
+    first_message = sorted_messages[0]
+    first_has_media = bool(
+        first_message.media_group_id
+        or first_message.photo
+        or first_message.video
+        or first_message.document
+        or first_message.animation
+    )
+    first_content = first_message.caption if first_has_media else first_message.text
+    bot_username = _resolve_bot_username()
+    if not bot_username and not _contains_contact_cta(first_content):
+        await messages[-1].answer("❌ BOT_USERNAME не настроен, не могу добавить кликабельный CTA в пост.")
+        return
 
-        if not _contains_contact_cta(sorted_messages[0].caption):
-            bot_username = _resolve_bot_username()
+    will_add_cta = bool(bot_username) and not _contains_contact_cta(first_content)
+    cta_appendix = f"\n\n{CONTACT_CTA_TEXT}" if first_content else CONTACT_CTA_TEXT
+    final_content = (first_content or "") + (cta_appendix if will_add_cta else "")
+    max_len = 1024 if first_has_media else 4096
+    if len(final_content) > max_len:
+        if first_has_media:
+            await messages[-1].answer(
+                f"❌ Слишком длинная подпись (caption). Лимит 1024 символа. Сейчас: {len(final_content)}. "
+                "Сократите текст или сделайте пост текстовым сообщением."
+            )
+        else:
+            await messages[-1].answer(
+                f"❌ Слишком длинный текст. Лимит 4096 символов. Сейчас: {len(final_content)}. "
+                "Сократите текст."
+            )
+        return
+
+    previous_storage_chat_id, previous_storage_message_ids = await get_last_storage_messages()
+
+    try:
+        if len(sorted_messages) == 1:
+            copied_ids.append(await _send_post_with_cta(sorted_messages[0], storage_chat_id, token))
+        else:
             payload = f"{CONTACT_PAYLOAD_PREFIX}{token}"
-            cta_text = CONTACT_CTA_TEXT
-            if bot_username:
-                contact_url = f"https://t.me/{bot_username}?start={payload}"
-                entities = _build_contact_cta_entities("", CONTACT_CTA_TEXT, contact_url)
-                cta_message = await bot.send_message(storage_chat_id, cta_text, entities=entities)
-            else:
-                cta_message = await bot.send_message(storage_chat_id, cta_text)
-            copied_ids.append(cta_message.message_id)
+            contact_url = f"https://t.me/{bot_username}?start={payload}"
+
+            for idx, item in enumerate(sorted_messages):
+                if idx == 0 and will_add_cta and bot_username:
+                    original_caption = item.caption or ""
+                    updated_caption = f"{original_caption}\n\n{CONTACT_CTA_TEXT}" if original_caption else CONTACT_CTA_TEXT
+                    prefix = f"{original_caption}\n\n" if original_caption else ""
+                    entities = _merge_entities(
+                        list(item.caption_entities or []),
+                        _build_contact_cta_entities(prefix, CONTACT_CTA_TEXT, contact_url),
+                    )
+                    copied = await bot.copy_message(
+                        chat_id=storage_chat_id,
+                        from_chat_id=item.chat.id,
+                        message_id=item.message_id,
+                        caption=updated_caption,
+                        caption_entities=entities,
+                    )
+                else:
+                    copied = await bot.copy_message(
+                        chat_id=storage_chat_id,
+                        from_chat_id=item.chat.id,
+                        message_id=item.message_id,
+                    )
+                copied_ids.append(copied.message_id)
+    except Exception as exc:
+        logger.exception("Failed to publish new storage post")
+        await messages[-1].answer(f"❌ Не удалось опубликовать новый пост в storage: {exc}")
+        return
 
     logger.info("Published new storage post chat_id=%s message_ids=%s", storage_chat_id, copied_ids)
-    await set_last_storage_messages(storage_chat_id, copied_ids)
+    try:
+        await set_last_storage_messages(storage_chat_id, copied_ids)
+        await save_post(
+            source_chat_id=storage_chat_id,
+            source_message_ids=copied_ids,
+            has_media=any(msg.photo or msg.video or msg.animation or msg.document for msg in messages),
+            media_group_id=media_group_id,
+            contact_token=token,
+        )
+    except Exception as exc:
+        logger.exception("Failed to persist storage metadata")
+        await messages[-1].answer(f"❌ Новый пост отправлен, но не удалось сохранить его в БД: {exc}")
+        return
 
-    await save_post(
-        source_chat_id=storage_chat_id,
-        source_message_ids=copied_ids,
-        has_media=any(msg.photo or msg.video or msg.animation or msg.document for msg in messages),
-        media_group_id=media_group_id,
-        contact_token=token,
-    )
+    if previous_storage_message_ids:
+        delete_chat_id = previous_storage_chat_id or storage_chat_id
+        for previous_storage_message_id in previous_storage_message_ids:
+            try:
+                await bot.delete_message(delete_chat_id, previous_storage_message_id)
+            except TelegramBadRequest as exc:
+                logger.warning(
+                    "Skipping previous storage post deletion chat_id=%s message_id=%s: %s",
+                    delete_chat_id,
+                    previous_storage_message_id,
+                    exc,
+                )
 
     data = await state.get_data()
     mode = data.get("mode")
@@ -1220,6 +1267,7 @@ async def _publish_post_messages(messages: list[Message], state: FSMContext, med
         await messages[-1].answer("Пост сохранён ✅")
 
     await send_post_actions(messages[-1])
+
 
 
 async def _flush_media_group(media_group_id: str, state: FSMContext) -> None:
@@ -1352,14 +1400,12 @@ async def broadcast_once() -> None:
 
     last_broadcast_dt = parse_iso_datetime(meta["last_broadcast_at"])
     if last_broadcast_dt:
-        delta_seconds = (datetime.utcnow() - last_broadcast_dt).total_seconds()
+        delta_seconds = (datetime.now(timezone.utc) - last_broadcast_dt).total_seconds()
         if delta_seconds < GLOBAL_BROADCAST_COOLDOWN_SECONDS:
             logger.info("Broadcast skipped: global cooldown %.1fs", delta_seconds)
             return
 
     chats = await get_chat_rows()
-    support_enabled = SEND_SUPPORT_MESSAGE_WITH_BROADCAST and bool(BOT_USERNAME)
-    keyboard = support_keyboard() if support_enabled else None
     report = {
         "total_chats": len(chats),
         "sent": 0,
@@ -1389,7 +1435,7 @@ async def broadcast_once() -> None:
         if ANTI_DUPLICATE_HOURS > 0 and chat["last_success_post_at"]:
             last_chat_send = parse_iso_datetime(chat["last_success_post_at"])
             if last_chat_send:
-                hours_since = (datetime.utcnow() - last_chat_send).total_seconds() / 3600
+                hours_since = (datetime.now(timezone.utc) - last_chat_send).total_seconds() / 3600
                 if hours_since < ANTI_DUPLICATE_HOURS:
                     report["skipped_by_duplicate"] += 1
                     await save_broadcast_attempt(status="skipped", chat_id=chat_id, reason="anti_duplicate")
@@ -1410,8 +1456,6 @@ async def broadcast_once() -> None:
                     message_id=source_message_id,
                 )
                 sent_messages.append(sent)
-            if keyboard:
-                await bot.send_message(chat_id=chat_id, text="Связь с поддержкой 👇", reply_markup=keyboard)
 
             if sent_messages:
                 await mark_chat_send_success(chat_id, sent_messages[-1].message_id)
@@ -1440,7 +1484,7 @@ async def broadcast_once() -> None:
         await bot.send_message(ADMIN_ID, f"🧾 Userbot-рассылка поставлена в очередь: {len(target_chat_ids)} чатов.")
 
     if report["sent"] > 0:
-        await set_meta("last_broadcast_at", datetime.utcnow().isoformat())
+        await set_meta("last_broadcast_at", datetime.now(timezone.utc).isoformat())
         await set_meta("daily_broadcast_count", str(meta["daily_broadcast_count"] + 1))
 
     if should_send_admin_report(report):
@@ -1567,7 +1611,7 @@ async def confirm_daily_broadcast(callback: CallbackQuery):
         await callback.answer("Недоступно", show_alert=True)
         return
 
-    day_key = datetime.utcnow().strftime("%Y-%m-%d")
+    day_key = datetime.now(TZ).strftime("%Y-%m-%d")
     await set_meta("manual_confirmed_day", day_key)
     await callback.answer("Подтверждено")
 
@@ -1841,7 +1885,7 @@ async def save_daily_schedule(message: Message, state: FSMContext):
         register_schedule_job(item)
     await state.clear()
 
-    await message.answer(f"Время {parsed} добавлено ✅")
+    await message.answer(f"Запланировано на {parsed} (Europe/Berlin) ✅")
     await send_schedule_list(message)
 
 
@@ -1874,7 +1918,7 @@ async def save_weekly_schedule(message: Message, state: FSMContext):
         register_schedule_job(item)
 
     await state.clear()
-    await message.answer("Еженедельное расписание добавлено ✅")
+    await message.answer(f"Запланировано на {parsed} (Europe/Berlin) ✅")
     await send_schedule_list(message)
 
 
@@ -1979,7 +2023,7 @@ async def schedule_edit_save(message: Message, state: FSMContext):
         register_schedule_job(updated)
 
     await state.clear()
-    await message.answer("Время обновлено ✅")
+    await message.answer(f"Запланировано на {parsed} (Europe/Berlin) ✅")
     await send_schedule_list(message)
 
 
