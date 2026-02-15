@@ -844,7 +844,7 @@ async def save_buyer_reply_template(storage_chat_id: int, message_id: int) -> No
 async def create_userbot_task(
     storage_chat_id: int,
     storage_message_ids: list[int],
-    target_chat_ids: list[int],
+    target_chat_ids: Optional[list[int]],
     run_at: datetime,
 ) -> Optional[int]:
     normalized_target_chat_ids = target_chat_ids or []
@@ -1486,88 +1486,90 @@ async def broadcast_once() -> None:
             logger.info("Broadcast skipped: global cooldown %.1fs", delta_seconds)
             return
 
-    chats = await get_chat_rows()
     report = {
-        "total_chats": len(chats),
+        "total_chats": 0,
         "sent": 0,
         "activity_ready": 0,
         "skipped_by_activity": 0,
         "skipped_by_duplicate": 0,
         "skipped_disabled": 0,
         "errors": 0,
-        "privacy_warning": has_privacy_mode_symptoms(chats),
+        "privacy_warning": False,
     }
-
-    target_chat_ids: list[int] = []
-
-    for chat in chats:
-        chat_id = chat["chat_id"]
-        if chat["disabled"]:
-            report["skipped_disabled"] += 1
-            await save_broadcast_attempt(status="skipped", chat_id=chat_id, reason="disabled")
-            continue
-
-        if not is_chat_ready_by_activity(chat):
-            report["skipped_by_activity"] += 1
-            await save_broadcast_attempt(status="skipped", chat_id=chat_id, reason="activity_gate")
-            continue
-        report["activity_ready"] += 1
-
-        if ANTI_DUPLICATE_HOURS > 0 and chat["last_success_post_at"]:
-            last_chat_send = parse_iso_datetime(chat["last_success_post_at"])
-            if last_chat_send:
-                hours_since = (datetime.now(timezone.utc) - last_chat_send).total_seconds() / 3600
-                if hours_since < ANTI_DUPLICATE_HOURS:
-                    report["skipped_by_duplicate"] += 1
-                    await save_broadcast_attempt(status="skipped", chat_id=chat_id, reason="anti_duplicate")
-                    continue
-
-        if DELIVERY_MODE == "userbot":
-            target_chat_ids.append(chat_id)
-            report["sent"] += 1
-            await save_broadcast_attempt(status="queued", chat_id=chat_id, reason="queued_for_userbot")
-            continue
-
-        try:
-            sent_messages = []
-            for source_message_id in source_message_ids:
-                sent = await bot.copy_message(
-                    chat_id=chat_id,
-                    from_chat_id=source_chat_id,
-                    message_id=source_message_id,
-                )
-                sent_messages.append(sent)
-
-            if sent_messages:
-                await mark_chat_send_success(chat_id, sent_messages[-1].message_id)
-            await save_broadcast_attempt(status="sent", chat_id=chat_id, reason="ok")
-            report["sent"] += 1
-            await asyncio.sleep(random.uniform(MIN_SECONDS_BETWEEN_CHATS, MAX_SECONDS_BETWEEN_CHATS))
-        except TelegramRetryAfter as exc:
-            await asyncio.sleep(exc.retry_after)
-            report["errors"] += 1
-            await save_broadcast_attempt(status="error", chat_id=chat_id, reason="retry_after", error_text=str(exc))
-            logger.warning("RetryAfter for chat %s: %s", chat_id, exc)
-        except TelegramForbiddenError as exc:
-            await mark_chat_disabled(chat_id, str(exc))
-            report["errors"] += 1
-            await save_broadcast_attempt(status="error", chat_id=chat_id, reason="forbidden", error_text=str(exc))
-            logger.warning("Forbidden for chat %s: %s", chat_id, exc)
-        except Exception as exc:
-            report["errors"] += 1
-            await set_meta(f"last_error_chat_{chat_id}", str(exc)[:500])
-            await save_broadcast_attempt(status="error", chat_id=chat_id, reason="exception", error_text=str(exc))
-            logger.warning("Failed to send to chat %s: %s", chat_id, exc)
+    broadcast_recorded = False
 
     if DELIVERY_MODE == "userbot":
-        normalized_target_chat_ids = target_chat_ids or []
         run_at = datetime.now(timezone.utc)
-        task_id = await create_userbot_task(source_chat_id, source_message_ids, normalized_target_chat_ids, run_at)
-        target_descriptor = str(len(normalized_target_chat_ids)) if normalized_target_chat_ids else "AUTO"
-        logger.info("Queued userbot task id=%s targets=%s", task_id, target_descriptor)
-        await bot.send_message(ADMIN_ID, f"🧾 Userbot-рассылка поставлена в очередь: {target_descriptor}.")
+        task_id = await create_userbot_task(source_chat_id, source_message_ids, None, run_at)
+        if task_id:
+            await save_broadcast_attempt(status="queued", chat_id=None, reason="queued_for_userbot")
+            broadcast_recorded = True
+            logger.info("Queued userbot task id=%s targets=AUTO", task_id)
+            await bot.send_message(ADMIN_ID, "🧾 Userbot-рассылка поставлена в очередь: AUTO.")
+        else:
+            logger.info("Userbot task is already pending/running for this payload")
+            await bot.send_message(ADMIN_ID, "ℹ️ Такая userbot-задача уже в очереди.")
+    else:
+        chats = await get_chat_rows()
+        report["total_chats"] = len(chats)
+        report["privacy_warning"] = has_privacy_mode_symptoms(chats)
 
-    if report["sent"] > 0:
+        for chat in chats:
+            chat_id = chat["chat_id"]
+            if chat["disabled"]:
+                report["skipped_disabled"] += 1
+                await save_broadcast_attempt(status="skipped", chat_id=chat_id, reason="disabled")
+                continue
+
+            if not is_chat_ready_by_activity(chat):
+                report["skipped_by_activity"] += 1
+                await save_broadcast_attempt(status="skipped", chat_id=chat_id, reason="activity_gate")
+                continue
+            report["activity_ready"] += 1
+
+            if ANTI_DUPLICATE_HOURS > 0 and chat["last_success_post_at"]:
+                last_chat_send = parse_iso_datetime(chat["last_success_post_at"])
+                if last_chat_send:
+                    hours_since = (datetime.now(timezone.utc) - last_chat_send).total_seconds() / 3600
+                    if hours_since < ANTI_DUPLICATE_HOURS:
+                        report["skipped_by_duplicate"] += 1
+                        await save_broadcast_attempt(status="skipped", chat_id=chat_id, reason="anti_duplicate")
+                        continue
+
+            try:
+                sent_messages = []
+                for source_message_id in source_message_ids:
+                    sent = await bot.copy_message(
+                        chat_id=chat_id,
+                        from_chat_id=source_chat_id,
+                        message_id=source_message_id,
+                    )
+                    sent_messages.append(sent)
+
+                if sent_messages:
+                    await mark_chat_send_success(chat_id, sent_messages[-1].message_id)
+                await save_broadcast_attempt(status="sent", chat_id=chat_id, reason="ok")
+                report["sent"] += 1
+                await asyncio.sleep(random.uniform(MIN_SECONDS_BETWEEN_CHATS, MAX_SECONDS_BETWEEN_CHATS))
+            except TelegramRetryAfter as exc:
+                await asyncio.sleep(exc.retry_after)
+                report["errors"] += 1
+                await save_broadcast_attempt(status="error", chat_id=chat_id, reason="retry_after", error_text=str(exc))
+                logger.warning("RetryAfter for chat %s: %s", chat_id, exc)
+            except TelegramForbiddenError as exc:
+                await mark_chat_disabled(chat_id, str(exc))
+                report["errors"] += 1
+                await save_broadcast_attempt(status="error", chat_id=chat_id, reason="forbidden", error_text=str(exc))
+                logger.warning("Forbidden for chat %s: %s", chat_id, exc)
+            except Exception as exc:
+                report["errors"] += 1
+                await set_meta(f"last_error_chat_{chat_id}", str(exc)[:500])
+                await save_broadcast_attempt(status="error", chat_id=chat_id, reason="exception", error_text=str(exc))
+                logger.warning("Failed to send to chat %s: %s", chat_id, exc)
+
+        broadcast_recorded = report["sent"] > 0
+
+    if broadcast_recorded:
         await set_meta("last_broadcast_at", datetime.now(timezone.utc).isoformat())
         await set_meta("daily_broadcast_count", str(meta["daily_broadcast_count"] + 1))
 
