@@ -28,6 +28,8 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 from zoneinfo import ZoneInfo
 
+from bot_controller.config import load_controller_settings
+
 
 def _get_env_str(name: str, default: str = "") -> str:
     return (os.getenv(name, default) or "").strip()
@@ -129,6 +131,9 @@ QUIET_MODE = _get_env_str("QUIET_MODE", "0").lower() in {
     "yes",
     "on",
 }
+
+controller_settings = load_controller_settings()
+ADMIN_BROADCAST_NOTIFICATIONS = controller_settings.admin_broadcast_notifications
 
 if DELIVERY_MODE not in {"bot", "userbot"}:
     raise RuntimeError("DELIVERY_MODE должен быть 'bot' или 'userbot'.")
@@ -1531,6 +1536,9 @@ async def send_post_actions(message: Message) -> None:
 
 
 async def send_admin_report(report: dict) -> None:
+    if not ADMIN_BROADCAST_NOTIFICATIONS:
+        logger.info("Admin report suppressed (silent mode)")
+        return
     lines = [
         "📊 Отчёт рассылки",
         f"Всего чатов: {report['total_chats']}",
@@ -1579,14 +1587,6 @@ async def broadcast_once() -> None:
 
     meta = await get_broadcast_meta()
     if await is_manual_confirmation_required(meta):
-        keyboard = InlineKeyboardMarkup(
-            inline_keyboard=[[InlineKeyboardButton(text="✅ Запустить сегодня", callback_data="broadcast:confirm_today")]]
-        )
-        await bot.send_message(
-            ADMIN_ID,
-            "Требуется ручное подтверждение первой рассылки дня. Нажмите кнопку для запуска.",
-            reply_markup=keyboard,
-        )
         logger.info("Broadcast skipped: waiting manual daily confirmation")
         return
 
@@ -1595,7 +1595,6 @@ async def broadcast_once() -> None:
         return
 
     if meta['daily_broadcast_count'] >= BROADCAST_MAX_PER_DAY > 0:
-        await bot.send_message(ADMIN_ID, "⚠️ Достигнут дневной лимит запусков рассылки.")
         logger.info("Broadcast skipped: daily limit reached")
         return
 
@@ -1633,12 +1632,16 @@ async def broadcast_once() -> None:
                 source_message_ids,
                 target_chat_ids_to_store if target_chat_ids_to_store is not None else "WORKER_ENV",
             )
-            if not QUIET_MODE:
+            if ADMIN_BROADCAST_NOTIFICATIONS and not QUIET_MODE:
                 await bot.send_message(ADMIN_ID, "🧾 Userbot-рассылка поставлена в очередь.")
+            else:
+                logger.info("Userbot task queued (silent mode).")
         else:
             logger.info("Userbot task is already pending/running for this payload")
-            if not QUIET_MODE:
+            if ADMIN_BROADCAST_NOTIFICATIONS and not QUIET_MODE:
                 await bot.send_message(ADMIN_ID, "ℹ️ Такая userbot-задача уже в очереди.")
+            else:
+                logger.info("Duplicate userbot task ignored (silent mode).")
     else:
         chats = await get_chat_rows()
         report["total_chats"] = len(chats)
@@ -1855,7 +1858,10 @@ async def admin_broadcast_now(message: Message) -> None:
         return
 
     async with broadcast_now_lock:
-        await message.answer("🚀 Запускаю рассылку сейчас...")
+        if message.chat.type == "private":
+            await message.answer("Ок, запустил")
+        day_key = datetime.now(TZ).strftime("%Y-%m-%d")
+        await set_meta("manual_confirmed_day", day_key)
         logger.info("Manual broadcast triggered by admin_id=%s", message.from_user.id if message.from_user else None)
 
         try:
@@ -1866,7 +1872,6 @@ async def admin_broadcast_now(message: Message) -> None:
             return
 
         logger.info("Manual broadcast finished")
-        await message.answer("✅ Готово. Проверьте 📊 Статус и логи воркера.")
 
 
 
@@ -1881,7 +1886,8 @@ async def confirm_daily_broadcast(callback: CallbackQuery):
     await callback.answer("Подтверждено")
 
     if callback.message:
-        await callback.message.answer("Подтверждение получено. Запускаю рассылку ✅")
+        with suppress(Exception):
+            await callback.message.edit_text("Подтверждение получено. Запускаю рассылку ✅")
     await broadcast_once()
 
 
