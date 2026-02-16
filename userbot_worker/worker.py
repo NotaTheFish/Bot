@@ -119,7 +119,15 @@ def build_input_peer(target) -> InputPeerChannel | InputPeerChat:
     raise ValueError(f"Unsupported peer_type={target.peer_type} chat_id={target.chat_id}")
 
 
-async def _apply_activity_gate(pool, client: TelegramClient, *, chat_id: int, known_last_self_message_id: Optional[int], min_messages: int) -> tuple[bool, Optional[int], int]:
+async def _apply_activity_gate(
+    pool,
+    client: TelegramClient,
+    *,
+    chat_id: int,
+    known_last_self_message_id: Optional[int],
+    my_id: int,
+    threshold: int,
+) -> tuple[bool, Optional[int], int]:
     last_self_message_id = known_last_self_message_id
     if last_self_message_id is None:
         async for message in client.iter_messages(chat_id, from_user="me", limit=1):
@@ -127,17 +135,18 @@ async def _apply_activity_gate(pool, client: TelegramClient, *, chat_id: int, kn
             await set_userbot_target_last_self_message_id(pool, chat_id=chat_id, message_id=last_self_message_id)
             break
 
-    if min_messages <= 0:
+    if threshold <= 0:
         return True, last_self_message_id, 0
 
     if last_self_message_id is None:
-        return True, None, min_messages
+        return True, None, threshold
 
     activity_count = 0
     async for message in client.iter_messages(chat_id, min_id=int(last_self_message_id), limit=100):
-        if not getattr(message, "out", False):
+        sender_id = int(getattr(message, "sender_id", 0) or 0)
+        if sender_id != int(my_id):
             activity_count += 1
-            if activity_count >= min_messages:
+            if activity_count >= threshold:
                 return True, last_self_message_id, activity_count
     return False, last_self_message_id, activity_count
 
@@ -225,6 +234,8 @@ async def _apply_chat_migration(
 async def run_worker(settings: Settings, pool, client: TelegramClient, stop_event: asyncio.Event) -> None:
     logger.info("Worker started. poll=%ss", settings.worker_poll_seconds)
     await ensure_schema(pool)
+    me = await client.get_me()
+    my_id = int(me.id)
 
     try:
         await sync_userbot_targets(pool, client, settings)
@@ -326,27 +337,34 @@ async def run_worker(settings: Settings, pool, client: TelegramClient, stop_even
                     logger.info("chat_result=skipped reason=%s task_id=%s chat_id=%s", history_skip_reason, task.id, current_chat_id)
                     continue
 
-                try:
-                    passed_activity, _, activity_count = await _apply_activity_gate(
-                        pool,
-                        client,
-                        chat_id=current_chat_id,
-                        known_last_self_message_id=(state.last_self_message_id if state else None),
-                        min_messages=settings.activity_gate_min_messages,
-                    )
-                except Exception as exc:
-                    last_error = str(exc)
-                    errors += 1
-                    logger.warning("chat_result=error task_id=%s chat_id=%s err=%s text=%s", task.id, current_chat_id, type(exc).__name__, str(exc))
-                    await update_task_progress(pool, task_id=task.id, sent_count=sent, error_count=errors, last_error=last_error)
-                    continue
+                activity_threshold = int(settings.activity_gate_min_messages)
+                if activity_threshold > 0:
+                    try:
+                        passed_activity, _, activity_count = await _apply_activity_gate(
+                            pool,
+                            client,
+                            chat_id=current_chat_id,
+                            known_last_self_message_id=(state.last_self_message_id if state else None),
+                            my_id=my_id,
+                            threshold=activity_threshold,
+                        )
+                    except Exception as exc:
+                        last_error = str(exc)
+                        errors += 1
+                        logger.warning("chat_result=error task_id=%s chat_id=%s err=%s text=%s", task.id, current_chat_id, type(exc).__name__, str(exc))
+                        await update_task_progress(pool, task_id=task.id, sent_count=sent, error_count=errors, last_error=last_error)
+                        continue
+                else:
+                    passed_activity = True
+                    activity_count = 0
 
                 if not passed_activity:
                     skipped += 1
                     skip_reasons["activity_gate"] += 1
                     logger.info(
-                        "chat_result=skipped reason=activity_gate count=%s task_id=%s chat_id=%s",
+                        "chat_result=skipped reason=activity_gate count=%s need=%s task_id=%s chat_id=%s",
                         activity_count,
+                        activity_threshold,
                         task.id,
                         current_chat_id,
                     )
