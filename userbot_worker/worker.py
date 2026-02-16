@@ -94,6 +94,21 @@ def _build_post_fingerprint(storage_chat_id: int, storage_message_ids: list[int]
     return hashlib.sha1(payload.encode("utf-8")).hexdigest()
 
 
+def _skip_reason_by_history(*, settings: Settings, state, fingerprint: str, now_utc: datetime) -> Optional[str]:
+    if not state:
+        return None
+
+    if settings.cooldown_minutes > 0 and state.last_success_post_at:
+        if (now_utc - state.last_success_post_at) < timedelta(minutes=settings.cooldown_minutes):
+            return "cooldown"
+
+    if settings.anti_dup_minutes > 0 and state.last_post_fingerprint == fingerprint and state.last_post_at:
+        if (now_utc - state.last_post_at) < timedelta(minutes=settings.anti_dup_minutes):
+            return "anti_dup"
+
+    return None
+
+
 def build_input_peer(target) -> InputPeerChannel | InputPeerChat:
     if target.peer_type == "channel":
         if target.access_hash is None:
@@ -299,16 +314,16 @@ async def run_worker(settings: Settings, pool, client: TelegramClient, stop_even
                 retried_after_migration = False
                 state = await get_userbot_target_state(pool, chat_id=current_chat_id)
 
-                if settings.cooldown_minutes > 0 and state and state.last_success_post_at and (_now_utc() - state.last_success_post_at) < timedelta(minutes=settings.cooldown_minutes):
+                history_skip_reason = _skip_reason_by_history(
+                    settings=settings,
+                    state=state,
+                    fingerprint=fingerprint,
+                    now_utc=_now_utc(),
+                )
+                if history_skip_reason:
                     skipped += 1
-                    skip_reasons["cooldown"] += 1
-                    logger.info("chat_result=skipped reason=cooldown task_id=%s chat_id=%s", task.id, current_chat_id)
-                    continue
-
-                if settings.anti_dup_minutes > 0 and state and state.last_post_fingerprint == fingerprint and state.last_post_at and (_now_utc() - state.last_post_at) < timedelta(minutes=settings.anti_dup_minutes):
-                    skipped += 1
-                    skip_reasons["anti_dup"] += 1
-                    logger.info("chat_result=skipped reason=anti_dup task_id=%s chat_id=%s", task.id, current_chat_id)
+                    skip_reasons[history_skip_reason] += 1
+                    logger.info("chat_result=skipped reason=%s task_id=%s chat_id=%s", history_skip_reason, task.id, current_chat_id)
                     continue
 
                 try:
