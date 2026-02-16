@@ -41,13 +41,17 @@ def _get_env_int(name: str, default: int = 0) -> int:
         return default
 
 
+def _get_on_off(name: str, default: str = "off") -> bool:
+    return _get_env_str(name, default).lower() == "on"
+
+
 BOT_TOKEN = _get_env_str("BOT_TOKEN")
 ADMIN_ID = _get_env_int("ADMIN_ID", 0)
 DATABASE_URL = _get_env_str("DATABASE_URL")
 DELIVERY_MODE = _get_env_str("DELIVERY_MODE", "bot").lower() or "bot"
 STORAGE_CHAT_ID = _get_env_int("STORAGE_CHAT_ID", 0)
 TZ_NAME = _get_env_str("TZ", "Europe/Berlin")
-ADMIN_BROADCAST_NOTIFICATIONS = _get_env_str("ADMIN_BROADCAST_NOTIFICATIONS", "off").lower() == "on"
+ADMIN_BROADCAST_NOTIFICATIONS = _get_on_off("ADMIN_BROADCAST_NOTIFICATIONS", "off")
 STORAGE_CHAT_META_KEY = "storage_chat_id"
 LAST_STORAGE_MESSAGE_ID_META_KEY = "last_storage_message_id"
 LAST_STORAGE_MESSAGE_IDS_META_KEY = "last_storage_message_ids"
@@ -71,7 +75,7 @@ if ADMIN_ID <= 0:
     raise RuntimeError("ADMIN_ID не задан или имеет неверное значение.")
 if not DATABASE_URL:
     raise RuntimeError("DATABASE_URL не задан. Для Railway используйте PostgreSQL plugin.")
-if STORAGE_CHAT_ID <= 0:
+if STORAGE_CHAT_ID == 0:
     raise RuntimeError("STORAGE_CHAT_ID не задан или имеет неверное значение.")
 
 TZ = ZoneInfo(TZ_NAME)
