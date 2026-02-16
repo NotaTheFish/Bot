@@ -638,8 +638,8 @@ async def userbot_targets_stats() -> Optional[dict]:
             SELECT chat_id, COALESCE(last_error, '-') AS last_error
             FROM userbot_targets
             WHERE enabled = FALSE
-            ORDER BY last_seen_at DESC
-            LIMIT 3
+            ORDER BY COALESCE(last_error_at, last_seen_at) DESC
+            LIMIT 5
             """
         )
     except Exception:
@@ -657,6 +657,27 @@ async def userbot_targets_stats() -> Optional[dict]:
             for row in recent_disabled_rows
         ],
     }
+
+
+async def detect_userbot_targets_source() -> str:
+    if TARGET_CHAT_IDS:
+        return "WORKER_ENV"
+    pool = await get_db_pool()
+    try:
+        row = await pool.fetchrow(
+            """
+            SELECT target_chat_ids
+            FROM userbot_tasks
+            WHERE status IN ('pending', 'processing', 'done')
+            ORDER BY id DESC
+            LIMIT 1
+            """
+        )
+    except Exception:
+        return "WORKER_DB"
+    if row and row.get("target_chat_ids") and len(row["target_chat_ids"]) > 0:
+        return "TASK"
+    return "WORKER_DB"
 
 async def remove_chat(chat_id: int) -> None:
     pool = await get_db_pool()
@@ -1781,7 +1802,7 @@ async def admin_status(message: Message):
     ]
 
     if DELIVERY_MODE == "userbot":
-        targets_source = "CONTROLLER_ENV" if TARGET_CHAT_IDS else "WORKER_DB"
+        targets_source = await detect_userbot_targets_source()
         lines.append(f"Targets source: {targets_source}")
         stats = await userbot_targets_stats()
         if stats is not None:

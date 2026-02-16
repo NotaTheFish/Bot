@@ -118,6 +118,11 @@ async def ensure_schema(db: DBOrPool) -> None:
             ON userbot_targets(enabled);
             """
         )
+        await conn.execute("ALTER TABLE userbot_targets ADD COLUMN IF NOT EXISTS last_error_at TIMESTAMPTZ;")
+        await conn.execute("ALTER TABLE userbot_targets ADD COLUMN IF NOT EXISTS last_success_post_at TIMESTAMPTZ;")
+        await conn.execute("ALTER TABLE userbot_targets ADD COLUMN IF NOT EXISTS last_self_message_id BIGINT;")
+        await conn.execute("ALTER TABLE userbot_targets ADD COLUMN IF NOT EXISTS last_post_fingerprint TEXT;")
+        await conn.execute("ALTER TABLE userbot_targets ADD COLUMN IF NOT EXISTS last_post_at TIMESTAMPTZ;")
     finally:
         await _release_conn(db, conn)
 
@@ -287,6 +292,104 @@ async def mark_task_error(
     )
 
 
+@dataclass(frozen=True)
+class UserbotTargetState:
+    chat_id: int
+    enabled: bool
+    last_success_post_at: Optional[datetime]
+    last_self_message_id: Optional[int]
+    last_post_fingerprint: Optional[str]
+    last_post_at: Optional[datetime]
+
+
+async def get_userbot_target_state(db: DBOrPool, *, chat_id: int) -> Optional[UserbotTargetState]:
+    conn = await _acquire_conn(db)
+    try:
+        row = await conn.fetchrow(
+            """
+            SELECT chat_id, enabled, last_success_post_at, last_self_message_id, last_post_fingerprint, last_post_at
+            FROM userbot_targets
+            WHERE chat_id = $1
+            """,
+            int(chat_id),
+        )
+        if not row:
+            return None
+        return UserbotTargetState(
+            chat_id=int(row["chat_id"]),
+            enabled=bool(row["enabled"]),
+            last_success_post_at=row.get("last_success_post_at"),
+            last_self_message_id=(int(row["last_self_message_id"]) if row.get("last_self_message_id") is not None else None),
+            last_post_fingerprint=(str(row["last_post_fingerprint"]) if row.get("last_post_fingerprint") is not None else None),
+            last_post_at=row.get("last_post_at"),
+        )
+    finally:
+        await _release_conn(db, conn)
+
+
+async def set_userbot_target_last_self_message_id(db: DBOrPool, *, chat_id: int, message_id: int) -> None:
+    conn = await _acquire_conn(db)
+    try:
+        await conn.execute(
+            """
+            UPDATE userbot_targets
+            SET last_self_message_id = $2
+            WHERE chat_id = $1
+            """,
+            int(chat_id),
+            int(message_id),
+        )
+    finally:
+        await _release_conn(db, conn)
+
+
+async def mark_userbot_target_disabled(db: DBOrPool, *, chat_id: int, error_text: str) -> None:
+    conn = await _acquire_conn(db)
+    try:
+        await conn.execute(
+            """
+            UPDATE userbot_targets
+            SET enabled = FALSE,
+                last_error = $2,
+                last_error_at = NOW()
+            WHERE chat_id = $1
+            """,
+            int(chat_id),
+            str(error_text)[:2000],
+        )
+    finally:
+        await _release_conn(db, conn)
+
+
+async def mark_userbot_target_success(
+    db: DBOrPool,
+    *,
+    chat_id: int,
+    sent_message_id: int,
+    fingerprint: str,
+) -> None:
+    conn = await _acquire_conn(db)
+    try:
+        await conn.execute(
+            """
+            UPDATE userbot_targets
+            SET enabled = TRUE,
+                last_error = NULL,
+                last_error_at = NULL,
+                last_success_post_at = NOW(),
+                last_self_message_id = $2,
+                last_post_fingerprint = $3,
+                last_post_at = NOW()
+            WHERE chat_id = $1
+            """,
+            int(chat_id),
+            int(sent_message_id),
+            str(fingerprint)[:200],
+        )
+    finally:
+        await _release_conn(db, conn)
+
+
 async def upsert_userbot_target(
     db: DBOrPool,
     *,
@@ -364,20 +467,7 @@ async def disable_userbot_target(
     chat_id: int,
     error_text: str,
 ) -> None:
-    conn = await _acquire_conn(db)
-    try:
-        await conn.execute(
-            """
-            UPDATE userbot_targets
-            SET enabled = FALSE,
-                last_error = $2
-            WHERE chat_id = $1
-            """,
-            int(chat_id),
-            str(error_text)[:2000],
-        )
-    finally:
-        await _release_conn(db, conn)
+    await mark_userbot_target_disabled(db, chat_id=chat_id, error_text=error_text)
 
 
 async def remap_userbot_target_chat_id(

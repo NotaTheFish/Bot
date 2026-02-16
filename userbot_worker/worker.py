@@ -1,6 +1,8 @@
 import asyncio
+import hashlib
 import logging
-from datetime import datetime, timezone
+from collections import Counter
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from telethon import TelegramClient
@@ -11,12 +13,15 @@ from .config import Settings
 from .db import (
     claim_pending_tasks,
     disable_stale_userbot_targets,
-    disable_userbot_target,
     ensure_schema,
+    get_userbot_target_state,
     load_enabled_userbot_targets,
     mark_task_done,
     mark_task_error,
+    mark_userbot_target_disabled,
+    mark_userbot_target_success,
     remap_userbot_target_chat_id,
+    set_userbot_target_last_self_message_id,
     update_task_progress,
     upsert_userbot_target,
 )
@@ -24,6 +29,16 @@ from .sender import extract_migrated_chat_id, send_post_to_chat
 from .tasks import remap_chat_id_everywhere
 
 logger = logging.getLogger(__name__)
+
+_DISABLE_RPC_ERRORS = {
+    "ChatWriteForbiddenError",
+    "ChatAdminRequiredError",
+    "UserBannedInChannelError",
+    "ChannelPrivateError",
+    "ChatForbiddenError",
+    "ChannelInvalidError",
+    "ChannelPrivate",
+}
 
 
 def _normalize_chat_id(raw_chat_id: int) -> int:
@@ -56,7 +71,48 @@ def _is_write_permission_error(exc: BaseException) -> bool:
         "forbidden",
         "not enough rights",
     )
-    return any(marker in text for marker in markers)
+    return type(exc).__name__ in _DISABLE_RPC_ERRORS or any(marker in text for marker in markers)
+
+
+def _now_utc() -> datetime:
+    return datetime.now(tz=timezone.utc)
+
+
+def _build_post_fingerprint(storage_chat_id: int, storage_message_ids: list[int]) -> str:
+    payload = f"{int(storage_chat_id)}:{','.join(str(int(i)) for i in storage_message_ids)}"
+    return hashlib.sha1(payload.encode("utf-8")).hexdigest()
+
+
+async def resolve_target_entity(client: TelegramClient, chat_id: int):
+    try:
+        return await client.get_input_entity(chat_id)
+    except ValueError:
+        normalized_id = int(str(int(chat_id)).replace("-100", ""))
+        async for dialog in client.iter_dialogs():
+            entity_id = int(getattr(getattr(dialog, "entity", None), "id", 0) or 0)
+            if entity_id in {abs(int(chat_id)), normalized_id}:
+                break
+        return await client.get_input_entity(chat_id)
+
+
+async def _apply_activity_gate(pool, client: TelegramClient, *, chat_id: int, known_last_self_message_id: Optional[int]) -> tuple[bool, Optional[int], int]:
+    last_self_message_id = known_last_self_message_id
+    if last_self_message_id is None:
+        async for message in client.iter_messages(chat_id, from_user="me", limit=1):
+            last_self_message_id = int(message.id)
+            await set_userbot_target_last_self_message_id(pool, chat_id=chat_id, message_id=last_self_message_id)
+            break
+
+    if last_self_message_id is None:
+        return True, None, 999
+
+    activity_count = 0
+    async for message in client.iter_messages(chat_id, min_id=int(last_self_message_id), limit=100):
+        if not getattr(message, "out", False):
+            activity_count += 1
+            if activity_count >= 5:
+                return True, last_self_message_id, activity_count
+    return False, last_self_message_id, activity_count
 
 
 async def sync_userbot_targets(pool, client: TelegramClient, settings: Settings) -> dict:
@@ -109,10 +165,6 @@ async def sync_userbot_targets(pool, client: TelegramClient, settings: Settings)
     }
     logger.info("Targets sync done: %s", stats)
     return stats
-
-
-def _now_utc() -> datetime:
-    return datetime.now(tz=timezone.utc)
 
 
 async def _apply_chat_migration(
@@ -173,10 +225,14 @@ async def run_worker(settings: Settings, pool, client: TelegramClient, stop_even
         for task in tasks:
             if task.target_chat_ids:
                 target_ids = list(task.target_chat_ids)
+                source = "TASK"
             elif settings.target_chat_ids:
                 target_ids = list(settings.target_chat_ids)
+                source = "ENV"
             else:
                 target_ids = await load_enabled_userbot_targets(pool)
+                source = "DB"
+            logger.info("Targets source=%s count=%s task_id=%s", source, len(target_ids), task.id)
 
             filtered_target_ids: list[int] = []
             seen_target_ids: set[int] = set()
@@ -206,29 +262,80 @@ async def run_worker(settings: Settings, pool, client: TelegramClient, stop_even
 
             sent = 0
             errors = 0
+            skipped = 0
+            skip_reasons: Counter[str] = Counter()
             last_error: Optional[str] = None
+            fingerprint = _build_post_fingerprint(int(task.storage_chat_id), list(task.storage_message_ids))
 
             for chat_id in target_ids:
                 current_chat_id = int(chat_id)
                 retried_after_migration = False
+                state = await get_userbot_target_state(pool, chat_id=current_chat_id)
+
+                if state and state.last_success_post_at and (_now_utc() - state.last_success_post_at) < timedelta(minutes=10):
+                    skipped += 1
+                    skip_reasons["cooldown"] += 1
+                    logger.info("chat_result=skipped reason=cooldown task_id=%s chat_id=%s", task.id, current_chat_id)
+                    continue
+
+                if state and state.last_post_fingerprint == fingerprint and state.last_post_at and (_now_utc() - state.last_post_at) < timedelta(minutes=10):
+                    skipped += 1
+                    skip_reasons["anti_dup"] += 1
+                    logger.info("chat_result=skipped reason=anti_dup task_id=%s chat_id=%s", task.id, current_chat_id)
+                    continue
+
+                try:
+                    passed_activity, _, activity_count = await _apply_activity_gate(
+                        pool,
+                        client,
+                        chat_id=current_chat_id,
+                        known_last_self_message_id=(state.last_self_message_id if state else None),
+                    )
+                except Exception as exc:
+                    last_error = str(exc)
+                    errors += 1
+                    logger.warning("chat_result=error task_id=%s chat_id=%s err=%s text=%s", task.id, current_chat_id, type(exc).__name__, str(exc))
+                    await update_task_progress(pool, task_id=task.id, sent_count=sent, error_count=errors, last_error=last_error)
+                    continue
+
+                if not passed_activity:
+                    skipped += 1
+                    skip_reasons["activity_gate"] += 1
+                    logger.info(
+                        "chat_result=skipped reason=activity_gate count=%s task_id=%s chat_id=%s",
+                        activity_count,
+                        task.id,
+                        current_chat_id,
+                    )
+                    continue
+
                 while True:
                     try:
-                        await send_post_to_chat(
+                        target_entity = await resolve_target_entity(client, current_chat_id)
+                        sent_message_id = await send_post_to_chat(
                             client=client,
                             source_chat_id=int(task.storage_chat_id),
                             source_message_ids=task.storage_message_ids,
-                            target_chat_id=current_chat_id,
+                            target=target_entity,
                             min_delay=settings.min_seconds_between_chats,
                             max_delay=settings.max_seconds_between_chats,
                         )
-                        sent += 1
-                        await update_task_progress(
+                        await mark_userbot_target_success(
                             pool,
-                            task_id=task.id,
-                            sent_count=sent,
-                            error_count=errors,
-                            last_error=None,
+                            chat_id=current_chat_id,
+                            sent_message_id=int(sent_message_id),
+                            fingerprint=fingerprint,
                         )
+                        sent += 1
+                        logger.info("chat_result=success task_id=%s chat_id=%s sent_message_id=%s", task.id, current_chat_id, sent_message_id)
+                        await update_task_progress(pool, task_id=task.id, sent_count=sent, error_count=errors, last_error=None)
+                        break
+                    except ValueError as e:
+                        last_error = str(e)
+                        errors += 1
+                        logger.warning("chat_result=error task_id=%s chat_id=%s err=ValueError text=%s", task.id, current_chat_id, last_error)
+                        await mark_userbot_target_disabled(pool, chat_id=current_chat_id, error_text=f"entity_not_found: {last_error}")
+                        await update_task_progress(pool, task_id=task.id, sent_count=sent, error_count=errors, last_error=last_error)
                         break
                     except FloodWaitError as e:
                         wait_s = int(getattr(e, "seconds", 0) or 0)
@@ -239,26 +346,10 @@ async def run_worker(settings: Settings, pool, client: TelegramClient, stop_even
                         if retried_after_migration or migrated_chat_id is None:
                             last_error = str(e)
                             errors += 1
-                            logger.warning(
-                                "Send failed chat_id=%s task_id=%s err=%s text=%s",
-                                current_chat_id,
-                                task.id,
-                                type(e).__name__,
-                                str(e),
-                            )
+                            logger.warning("chat_result=error task_id=%s chat_id=%s err=%s text=%s", task.id, current_chat_id, type(e).__name__, str(e))
                             if _is_write_permission_error(e):
-                                await disable_userbot_target(
-                                    pool,
-                                    chat_id=current_chat_id,
-                                    error_text=last_error,
-                                )
-                            await update_task_progress(
-                                pool,
-                                task_id=task.id,
-                                sent_count=sent,
-                                error_count=errors,
-                                last_error=last_error,
-                            )
+                                await mark_userbot_target_disabled(pool, chat_id=current_chat_id, error_text=last_error)
+                            await update_task_progress(pool, task_id=task.id, sent_count=sent, error_count=errors, last_error=last_error)
                             break
 
                         error_text = str(e)
@@ -281,27 +372,20 @@ async def run_worker(settings: Settings, pool, client: TelegramClient, stop_even
                     except Exception as e:
                         last_error = repr(e)
                         errors += 1
-                        logger.warning(
-                            "Send failed chat_id=%s task_id=%s err=%s text=%s",
-                            current_chat_id,
-                            task.id,
-                            type(e).__name__,
-                            str(e),
-                        )
+                        logger.warning("chat_result=error task_id=%s chat_id=%s err=%s text=%s", task.id, current_chat_id, type(e).__name__, str(e))
                         if _is_write_permission_error(e):
-                            await disable_userbot_target(
-                                pool,
-                                chat_id=current_chat_id,
-                                error_text=last_error,
-                            )
-                        await update_task_progress(
-                            pool,
-                            task_id=task.id,
-                            sent_count=sent,
-                            error_count=errors,
-                            last_error=last_error,
-                        )
+                            await mark_userbot_target_disabled(pool, chat_id=current_chat_id, error_text=last_error)
+                        await update_task_progress(pool, task_id=task.id, sent_count=sent, error_count=errors, last_error=last_error)
                         break
+
+            logger.info(
+                "Task summary task_id=%s sent=%s errors=%s skipped=%s skipped_breakdown=%s",
+                task.id,
+                sent,
+                errors,
+                skipped,
+                dict(skip_reasons),
+            )
 
             if errors == 0:
                 await mark_task_done(
@@ -311,7 +395,6 @@ async def run_worker(settings: Settings, pool, client: TelegramClient, stop_even
                     error_count=errors,
                     last_error=None,
                 )
-                logger.info("Task %s done. sent=%s", task.id, sent)
                 continue
 
             err_text = last_error or f"Broadcast completed with {errors} errors."
@@ -323,14 +406,6 @@ async def run_worker(settings: Settings, pool, client: TelegramClient, stop_even
                 error=err_text,
                 sent_count=sent,
                 error_count=errors,
-            )
-            logger.warning(
-                "Task %s finished with errors: sent=%s errors=%s attempts=%s/%s",
-                task.id,
-                sent,
-                errors,
-                task.attempts,
-                settings.max_task_attempts,
             )
 
         await asyncio.sleep(settings.worker_poll_seconds)

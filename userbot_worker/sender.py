@@ -4,10 +4,11 @@ import asyncio
 import logging
 import random
 import re
-from typing import Any, Iterable, List, Optional, Sequence, Union
+from typing import Any, Optional, Sequence, Union
 
 from telethon import TelegramClient
 from telethon.errors import FloodWaitError, RPCError
+from telethon.tl.types import TypeInputPeer
 
 logger = logging.getLogger(__name__)
 
@@ -79,7 +80,7 @@ async def _copy_messages_as_text(
     *,
     source_chat_id: int,
     source_message_id: Union[int, Sequence[int]],
-    target_chat_id: int,
+    target: Union[int, TypeInputPeer],
 ) -> int:
     message_ids = (
         [int(source_message_id)]
@@ -97,7 +98,7 @@ async def _copy_messages_as_text(
     for source_message in source_messages:
         text = getattr(source_message, "raw_text", None) or getattr(source_message, "message", None) or ""
         sent = await client.send_message(
-            entity=target_chat_id,
+            entity=target,
             message=text if text else " ",
             buttons=getattr(source_message, "buttons", None),
         )
@@ -112,7 +113,7 @@ async def forward_post(
     client: TelegramClient,
     source_chat_id: int,
     source_message_id: Union[int, Sequence[int]],
-    target_chat_id: int,
+    target: Union[int, TypeInputPeer],
     min_delay: int,
     max_delay: int,
 ) -> int:
@@ -129,7 +130,7 @@ async def forward_post(
     while True:
         try:
             sent = await client.forward_messages(
-                entity=target_chat_id,
+                entity=target,
                 messages=source_message_id,  # int или list[int]
                 from_peer=source_chat_id,
             )
@@ -142,21 +143,21 @@ async def forward_post(
             return int(sent.id)
 
         except FloodWaitError as exc:
-            logger.warning("FloodWaitError chat=%s wait=%s", target_chat_id, exc.seconds)
+            logger.warning("FloodWaitError target=%s wait=%s", target, exc.seconds)
             await asyncio.sleep(int(exc.seconds))
 
         except RPCError as exc:
             if _is_forward_restricted_error(exc):
                 logger.warning(
                     "Forward restricted chat=%s source_chat=%s. Fallback to text copy",
-                    target_chat_id,
+                    target,
                     source_chat_id,
                 )
                 return await _copy_messages_as_text(
                     client,
                     source_chat_id=source_chat_id,
                     source_message_id=source_message_id,
-                    target_chat_id=target_chat_id,
+                    target=target,
                 )
             # Ничего не скрываем — пусть воркер решает, что делать дальше
             raise
@@ -167,7 +168,7 @@ async def send_post_to_chat(
     *,
     source_chat_id: int,
     source_message_ids: Sequence[int],
-    target_chat_id: int,
+    target: Union[int, TypeInputPeer],
     min_delay: int,
     max_delay: int,
 ) -> int:
@@ -184,7 +185,7 @@ async def send_post_to_chat(
         client=client,
         source_chat_id=source_chat_id,
         source_message_id=list(source_message_ids) if len(source_message_ids) > 1 else int(source_message_ids[0]),
-        target_chat_id=target_chat_id,
+        target=target,
         min_delay=min_delay,
         max_delay=max_delay,
     )
