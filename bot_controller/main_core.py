@@ -538,10 +538,14 @@ async def get_userbot_tasks_columns(pool: asyncpg.Pool) -> set[str]:
 def admin_menu_keyboard() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[
-            [KeyboardButton(text="📌 Добавить пост")],
-            [KeyboardButton(text="✏️ Изменить пост")],
-            [KeyboardButton(text="📝 Изменить автоответ покупателю")],
-            [KeyboardButton(text="📊 Статус")],
+            [
+                KeyboardButton(text="📌 Добавить пост"),
+                KeyboardButton(text="✏️ Изменить пост"),
+            ],
+            [
+                KeyboardButton(text="📝 Изменить автоответ покупателю"),
+                KeyboardButton(text="📊 Статус"),
+            ],
             [KeyboardButton(text="🚀 Запустить сейчас")],
         ],
         resize_keyboard=True,
