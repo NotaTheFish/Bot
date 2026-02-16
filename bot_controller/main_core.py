@@ -85,6 +85,7 @@ media_group_buffers: dict[str, dict] = {}
 userbot_tasks_schema_ready = False
 userbot_tasks_schema_lock = asyncio.Lock()
 userbot_tasks_columns_cache: Optional[set[str]] = None
+broadcast_now_lock = asyncio.Lock()
 
 GLOBAL_BROADCAST_COOLDOWN_SECONDS = _get_env_int("GLOBAL_BROADCAST_COOLDOWN_SECONDS", 600)
 MIN_USER_MESSAGES_BETWEEN_POSTS = _get_env_int("MIN_USER_MESSAGES_BETWEEN_POSTS", 5)
@@ -535,6 +536,7 @@ def admin_menu_keyboard() -> ReplyKeyboardMarkup:
             [KeyboardButton(text="✏️ Изменить пост")],
             [KeyboardButton(text="📝 Изменить автоответ покупателю")],
             [KeyboardButton(text="📊 Статус")],
+            [KeyboardButton(text="🚀 Запустить сейчас")],
         ],
         resize_keyboard=True,
     )
@@ -1741,6 +1743,31 @@ async def admin_status(message: Message):
             ]
         )
     )
+
+
+@dp.message(F.text == "🚀 Запустить сейчас")
+async def admin_broadcast_now(message: Message) -> None:
+    if not ensure_admin(message):
+        return
+
+    if broadcast_now_lock.locked():
+        await message.answer("⏳ Расссылка уже запускается, подождите...")
+        return
+
+    async with broadcast_now_lock:
+        await message.answer("🚀 Запускаю рассылку сейчас...")
+        logger.info("Manual broadcast triggered by admin_id=%s", message.from_user.id if message.from_user else None)
+
+        try:
+            await broadcast_once()
+        except Exception as exc:
+            logger.exception("Manual broadcast failed")
+            await message.answer(f"❌ Ошибка запуска: {exc}")
+            return
+
+        logger.info("Manual broadcast finished")
+        await message.answer("✅ Готово. Проверьте 📊 Статус и логи воркера.")
+
 
 
 @dp.callback_query(F.data == "broadcast:confirm_today")
