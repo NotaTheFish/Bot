@@ -11,7 +11,7 @@ from typing import Optional
 import asyncpg
 from aiogram import Bot, Dispatcher, F
 from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError, TelegramRetryAfter
-from aiogram.filters import CommandStart
+from aiogram.filters import Command, CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import (
@@ -41,17 +41,27 @@ def _get_env_int(name: str, default: int = 0) -> int:
         return default
 
 
+def parse_int_env(name: str, default: int | None = None) -> int | None:
+    v = os.getenv(name)
+    if v is None or v.strip() == "":
+        return default
+    try:
+        return int(v)
+    except ValueError:
+        return default
+
+
 def _get_on_off(name: str, default: str = "off") -> bool:
     return _get_env_str(name, default).lower() == "on"
 
 
 BOT_TOKEN = _get_env_str("BOT_TOKEN")
-ADMIN_ID = _get_env_int("ADMIN_ID", 0)
+ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
 DATABASE_URL = _get_env_str("DATABASE_URL")
 DELIVERY_MODE = _get_env_str("DELIVERY_MODE", "bot").lower() or "bot"
-STORAGE_CHAT_ID = _get_env_int("STORAGE_CHAT_ID", 0)
+STORAGE_CHAT_ID = parse_int_env("STORAGE_CHAT_ID")
 TZ_NAME = _get_env_str("TZ", "Europe/Berlin")
-ADMIN_BROADCAST_NOTIFICATIONS = _get_on_off("ADMIN_BROADCAST_NOTIFICATIONS", "off")
+ADMIN_NOTIFICATIONS = _get_env_str("ADMIN_NOTIFICATIONS", "errors").lower() or "errors"
 STORAGE_CHAT_META_KEY = "storage_chat_id"
 LAST_STORAGE_MESSAGE_ID_META_KEY = "last_storage_message_id"
 LAST_STORAGE_MESSAGE_IDS_META_KEY = "last_storage_message_ids"
@@ -75,7 +85,7 @@ if ADMIN_ID <= 0:
     raise RuntimeError("ADMIN_ID не задан или имеет неверное значение.")
 if not DATABASE_URL:
     raise RuntimeError("DATABASE_URL не задан. Для Railway используйте PostgreSQL plugin.")
-if STORAGE_CHAT_ID == 0:
+if not STORAGE_CHAT_ID:
     raise RuntimeError("STORAGE_CHAT_ID не задан или имеет неверное значение.")
 
 TZ = ZoneInfo(TZ_NAME)
@@ -1539,8 +1549,7 @@ async def send_post_actions(message: Message) -> None:
 
 
 async def send_admin_report(report: dict) -> None:
-    if not ADMIN_BROADCAST_NOTIFICATIONS:
-        logger.info("Admin report suppressed (silent mode)")
+    if report.get("errors", 0) <= 0:
         return
     lines = [
         "📊 Отчёт рассылки",
@@ -1559,16 +1568,22 @@ async def send_admin_report(report: dict) -> None:
                 "Проверьте BotFather → /setprivacy → Disable или выдайте боту права администратора.",
             ]
         )
-    try:
-        await bot.send_message(ADMIN_ID, "\n".join(lines))
-    except Exception as exc:
-        logger.warning("Failed to send admin report: %s", exc)
+    await notify_admin("\n".join(lines), level="error")
 
 
 def should_send_admin_report(report: dict) -> bool:
-    if not REPORT_ONLY_ON_ERRORS:
-        return False
     return report.get("errors", 0) > 0
+
+
+async def notify_admin(text: str, level: str = "info"):
+    if ADMIN_NOTIFICATIONS == "off":
+        return
+    if ADMIN_NOTIFICATIONS == "errors" and level != "error":
+        return
+    try:
+        await bot.send_message(ADMIN_ID, text)
+    except Exception:
+        logger.exception("Failed to notify admin")
 
 
 async def is_manual_confirmation_required(meta: dict) -> bool:
@@ -1635,16 +1650,16 @@ async def broadcast_once() -> None:
                 source_message_ids,
                 target_chat_ids_to_store if target_chat_ids_to_store is not None else "WORKER_ENV",
             )
-            if ADMIN_BROADCAST_NOTIFICATIONS and not QUIET_MODE:
-                await bot.send_message(ADMIN_ID, "🧾 Userbot-рассылка поставлена в очередь.")
+            if QUIET_MODE:
+                logger.info("Userbot task queued (quiet mode).")
             else:
-                logger.info("Userbot task queued (silent mode).")
+                await notify_admin("🧾 Userbot-рассылка поставлена в очередь.", level="info")
         else:
             logger.info("Userbot task is already pending/running for this payload")
-            if ADMIN_BROADCAST_NOTIFICATIONS and not QUIET_MODE:
-                await bot.send_message(ADMIN_ID, "ℹ️ Такая userbot-задача уже в очереди.")
+            if QUIET_MODE:
+                logger.info("Duplicate userbot task ignored (quiet mode).")
             else:
-                logger.info("Duplicate userbot task ignored (silent mode).")
+                await notify_admin("ℹ️ Такая userbot-задача уже в очереди.", level="info")
     else:
         chats = await get_chat_rows()
         report["total_chats"] = len(chats)
@@ -1926,10 +1941,25 @@ async def on_start(message: Message, state: FSMContext):
             await message.answer("Напишите сообщение здесь, я тут же передам его продавцу.")
         return
 
-    if ensure_admin(message):
+    if message.chat.type == "private" and message.from_user and is_admin_user(message.from_user.id):
+        await state.clear()
         await message.answer("Главное меню:", reply_markup=admin_menu_keyboard())
     else:
         await message.answer("Здравствуйте! Используйте кнопку из поста для связи с продавцом.")
+
+
+@dp.message(Command("menu"))
+async def on_menu(message: Message, state: FSMContext):
+    if message.chat.type == "private" and message.from_user and is_admin_user(message.from_user.id):
+        await state.clear()
+        await message.answer("Главное меню:", reply_markup=admin_menu_keyboard())
+
+
+@dp.message(F.text.in_({"/", "Меню", "меню"}))
+async def on_menu_fallback(message: Message, state: FSMContext):
+    if message.chat.type == "private" and message.from_user and is_admin_user(message.from_user.id):
+        await state.clear()
+        await message.answer("Главное меню:", reply_markup=admin_menu_keyboard())
 
 
 @dp.message(F.text == "📌 Добавить пост")
