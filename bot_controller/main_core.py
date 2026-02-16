@@ -1544,11 +1544,19 @@ async def broadcast_once() -> None:
 
     if DELIVERY_MODE == "userbot":
         run_at = datetime.now(timezone.utc)
-        task_id = await create_userbot_task(source_chat_id, source_message_ids, TARGET_CHAT_IDS, run_at)
+        target_chat_ids_to_store = TARGET_CHAT_IDS if TARGET_CHAT_IDS else None
+        task_id = await create_userbot_task(source_chat_id, source_message_ids, target_chat_ids_to_store, run_at)
         if task_id:
             await save_broadcast_attempt(status="queued", chat_id=None, reason="queued_for_userbot")
             broadcast_recorded = True
-            logger.info("Queued userbot task id=%s targets=%s", task_id, TARGET_CHAT_IDS if TARGET_CHAT_IDS else "WORKER_ENV")
+            logger.info(
+                "Queued userbot task id=%s run_at=%s storage_chat_id=%s msg_ids=%s targets=%s",
+                task_id,
+                run_at.isoformat(),
+                source_chat_id,
+                source_message_ids,
+                target_chat_ids_to_store if target_chat_ids_to_store is not None else "WORKER_ENV",
+            )
             await bot.send_message(ADMIN_ID, "🧾 Userbot-рассылка поставлена в очередь.")
         else:
             logger.info("Userbot task is already pending/running for this payload")
