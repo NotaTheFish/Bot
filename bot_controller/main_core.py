@@ -28,7 +28,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 from zoneinfo import ZoneInfo
 
-from bot_controller.config import load_controller_settings
+from config import load_controller_settings
 
 
 def _get_env_str(name: str, default: str = "") -> str:
