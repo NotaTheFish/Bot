@@ -64,6 +64,8 @@ class Settings:
     blacklist_chat_ids: set[int]
     max_task_attempts: int
     target_chat_ids: list[int]
+    targets_sync_seconds: int
+    auto_targets_mode: str
 
 
 def load_settings() -> Settings:
@@ -81,6 +83,8 @@ def load_settings() -> Settings:
         blacklist_chat_ids=_getintset_csv("BLACKLIST_CHAT_IDS"),
         max_task_attempts=max(1, _getint("MAX_TASK_ATTEMPTS", 3)),
         target_chat_ids=_getintlist_csv("TARGET_CHAT_IDS"),
+        targets_sync_seconds=max(30, _getint("TARGETS_SYNC_SECONDS", 600)),
+        auto_targets_mode=(_getenv("AUTO_TARGETS_MODE", "groups_only").lower() or "groups_only"),
     )
 
     if settings.max_seconds_between_chats < settings.min_seconds_between_chats:
@@ -92,5 +96,7 @@ def load_settings() -> Settings:
         raise RuntimeError("TELEGRAM_API_ID is required")
     if not settings.telegram_api_hash:
         raise RuntimeError("TELEGRAM_API_HASH is required")
+if settings.auto_targets_mode not in {"groups_only", "groups_and_channels"}:
+        raise RuntimeError("AUTO_TARGETS_MODE must be 'groups_only' or 'groups_and_channels'")
 
     return settings

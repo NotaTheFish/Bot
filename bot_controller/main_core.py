@@ -619,6 +619,45 @@ async def get_recent_broadcast_attempts(limit: int = 10) -> list[dict]:
     ]
 
 
+
+
+async def userbot_targets_stats() -> Optional[dict]:
+    pool = await get_db_pool()
+    try:
+        totals = await pool.fetchrow(
+            """
+            SELECT
+              COUNT(*)::bigint AS total,
+              COALESCE(SUM(CASE WHEN enabled THEN 1 ELSE 0 END), 0)::bigint AS enabled,
+              COALESCE(SUM(CASE WHEN NOT enabled THEN 1 ELSE 0 END), 0)::bigint AS disabled
+            FROM userbot_targets
+            """
+        )
+        recent_disabled_rows = await pool.fetch(
+            """
+            SELECT chat_id, COALESCE(last_error, '-') AS last_error
+            FROM userbot_targets
+            WHERE enabled = FALSE
+            ORDER BY last_seen_at DESC
+            LIMIT 3
+            """
+        )
+    except Exception:
+        return None
+
+    return {
+        "total": int(totals["total"] if totals else 0),
+        "enabled": int(totals["enabled"] if totals else 0),
+        "disabled": int(totals["disabled"] if totals else 0),
+        "recent_disabled": [
+            {
+                "chat_id": int(row["chat_id"]),
+                "last_error": str(row["last_error"]),
+            }
+            for row in recent_disabled_rows
+        ],
+    }
+
 async def remove_chat(chat_id: int) -> None:
     pool = await get_db_pool()
     await pool.execute("DELETE FROM chats WHERE chat_id = $1", chat_id)
@@ -1692,20 +1731,28 @@ async def admin_status(message: Message):
         return
 
     meta = await get_broadcast_meta()
-    chats = await get_chat_rows()
-    total = len(chats)
-    disabled = sum(1 for c in chats if c["disabled"])
-    active_ready = sum(
-        1
-        for c in chats
-        if not c["disabled"] and is_chat_ready_by_activity(c)
-    )
-    blocked_by_activity = sum(
-        1
-        for c in chats
-        if not c["disabled"] and not is_chat_ready_by_activity(c)
-    )
-    privacy_warning = has_privacy_mode_symptoms(chats)
+    total = 0
+    disabled = 0
+    active_ready = 0
+    blocked_by_activity = 0
+    privacy_warning = False
+
+    if DELIVERY_MODE != "userbot":
+        chats = await get_chat_rows()
+        total = len(chats)
+        disabled = sum(1 for c in chats if c["disabled"])
+        active_ready = sum(
+            1
+            for c in chats
+            if not c["disabled"] and is_chat_ready_by_activity(c)
+        )
+        blocked_by_activity = sum(
+            1
+            for c in chats
+            if not c["disabled"] and not is_chat_ready_by_activity(c)
+        )
+        privacy_warning = has_privacy_mode_symptoms(chats)
+
     recent_attempts = await get_recent_broadcast_attempts(limit=5)
 
     attempt_lines = []
@@ -1723,26 +1770,42 @@ async def admin_status(message: Message):
             "Подсказка: BotFather → /setprivacy → Disable или выдайте боту админ-права.",
         ]
 
-    await message.answer(
-        "\n".join(
-            [
-                "📊 Статус рассылки",
-                f"Всего чатов: {total}",
-                f"Отключено: {disabled}",
-                f"Готовы по правилу активности: {active_ready}",
-                f"Заблокированы правилом активности: {blocked_by_activity}",
-                f"Глобальная пауза: {GLOBAL_BROADCAST_COOLDOWN_SECONDS} сек.",
-                f"Лимит запусков/сутки: {BROADCAST_MAX_PER_DAY}",
-                f"Запусков сегодня: {meta['daily_broadcast_count']}",
-                f"Последняя рассылка UTC: {meta['last_broadcast_at'] or '-'}",
-                f"Тихие часы: {parse_time(QUIET_HOURS_START) or '-'} → {parse_time(QUIET_HOURS_END) or '-'}",
-                *warning_lines,
-                "",
-                "Последние попытки рассылки:",
-                *(attempt_lines or ["• пока нет"]),
-            ]
-        )
-    )
+    lines = [
+        "📊 Статус рассылки",
+        f"Режим доставки: {DELIVERY_MODE}",
+        f"Глобальная пауза: {GLOBAL_BROADCAST_COOLDOWN_SECONDS} сек.",
+        f"Лимит запусков/сутки: {BROADCAST_MAX_PER_DAY}",
+        f"Запусков сегодня: {meta['daily_broadcast_count']}",
+        f"Последняя рассылка UTC: {meta['last_broadcast_at'] or '-'}",
+        f"Тихие часы: {parse_time(QUIET_HOURS_START) or '-'} → {parse_time(QUIET_HOURS_END) or '-'}",
+    ]
+
+    if DELIVERY_MODE == "userbot":
+        targets_source = "CONTROLLER_ENV" if TARGET_CHAT_IDS else "WORKER_DB"
+        lines.append(f"Targets source: {targets_source}")
+        stats = await userbot_targets_stats()
+        if stats is not None:
+            lines.append(
+                f"userbot targets: total={stats['total']} enabled={stats['enabled']} disabled={stats['disabled']}"
+            )
+            for item in stats["recent_disabled"]:
+                lines.append(f"• disabled {item['chat_id']}: {item['last_error'][:80]}")
+    else:
+        lines.extend([
+            f"Всего чатов: {total}",
+            f"Отключено: {disabled}",
+            f"Готовы по правилу активности: {active_ready}",
+            f"Заблокированы правилом активности: {blocked_by_activity}",
+            *warning_lines,
+        ])
+
+    lines.extend([
+        "",
+        "Последние попытки рассылки:",
+        *(attempt_lines or ["• пока нет"]),
+    ])
+
+    await message.answer("\n".join(lines))
 
 
 @dp.message(F.text == "🚀 Запустить сейчас")

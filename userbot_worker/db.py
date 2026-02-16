@@ -97,6 +97,27 @@ async def ensure_schema(db: DBOrPool) -> None:
             ON userbot_tasks(status, run_at);
             """
         )
+
+        await conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS userbot_targets (
+              chat_id BIGINT PRIMARY KEY,
+              chat_type TEXT NOT NULL,
+              title TEXT,
+              username TEXT,
+              enabled BOOLEAN NOT NULL DEFAULT TRUE,
+              last_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+              last_error TEXT,
+              migrated_to BIGINT
+            );
+            """
+        )
+        await conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_userbot_targets_enabled
+            ON userbot_targets(enabled);
+            """
+        )
     finally:
         await _release_conn(db, conn)
 
@@ -264,3 +285,148 @@ async def mark_task_error(
         sent_count=sent_count,
         error_count=error_count,
     )
+
+
+async def upsert_userbot_target(
+    db: DBOrPool,
+    *,
+    chat_id: int,
+    chat_type: str,
+    title: Optional[str],
+    username: Optional[str],
+) -> bool:
+    conn = await _acquire_conn(db)
+    try:
+        row = await conn.fetchrow(
+            """
+            INSERT INTO userbot_targets(chat_id, chat_type, title, username, enabled, last_seen_at, last_error)
+            VALUES ($1, $2, $3, $4, TRUE, NOW(), NULL)
+            ON CONFLICT(chat_id) DO UPDATE
+            SET chat_type = EXCLUDED.chat_type,
+                title = EXCLUDED.title,
+                username = EXCLUDED.username,
+                enabled = TRUE,
+                last_seen_at = NOW(),
+                last_error = NULL
+            RETURNING (xmax = 0) AS inserted
+            """,
+            int(chat_id),
+            str(chat_type),
+            (str(title) if title else None),
+            (str(username) if username else None),
+        )
+        return bool(row and row["inserted"])
+    finally:
+        await _release_conn(db, conn)
+
+
+async def disable_stale_userbot_targets(
+    db: DBOrPool,
+    *,
+    grace_days: int,
+) -> int:
+    conn = await _acquire_conn(db)
+    try:
+        result = await conn.execute(
+            """
+            UPDATE userbot_targets
+            SET enabled = FALSE,
+                last_error = COALESCE(last_error, 'Not seen in recent dialogs sync')
+            WHERE enabled = TRUE
+              AND last_seen_at < NOW() - ($1::text || ' days')::interval
+            """,
+            max(1, int(grace_days)),
+        )
+        return int(str(result).split()[-1])
+    finally:
+        await _release_conn(db, conn)
+
+
+async def load_enabled_userbot_targets(db: DBOrPool) -> List[int]:
+    conn = await _acquire_conn(db)
+    try:
+        rows = await conn.fetch(
+            """
+            SELECT chat_id
+            FROM userbot_targets
+            WHERE enabled = TRUE
+            ORDER BY chat_id
+            """
+        )
+        return [int(r["chat_id"]) for r in rows]
+    finally:
+        await _release_conn(db, conn)
+
+
+async def disable_userbot_target(
+    db: DBOrPool,
+    *,
+    chat_id: int,
+    error_text: str,
+) -> None:
+    conn = await _acquire_conn(db)
+    try:
+        await conn.execute(
+            """
+            UPDATE userbot_targets
+            SET enabled = FALSE,
+                last_error = $2
+            WHERE chat_id = $1
+            """,
+            int(chat_id),
+            str(error_text)[:2000],
+        )
+    finally:
+        await _release_conn(db, conn)
+
+
+async def remap_userbot_target_chat_id(
+    db: DBOrPool,
+    *,
+    old_chat_id: int,
+    new_chat_id: int,
+) -> None:
+    if int(old_chat_id) == int(new_chat_id):
+        return
+
+    conn = await _acquire_conn(db)
+    try:
+        async with conn.transaction():
+            await conn.execute(
+                """
+                INSERT INTO userbot_targets(chat_id, chat_type, title, username, enabled, last_seen_at, last_error, migrated_to)
+                SELECT $2,
+                       chat_type,
+                       title,
+                       username,
+                       enabled,
+                       last_seen_at,
+                       last_error,
+                       migrated_to
+                FROM userbot_targets
+                WHERE chat_id = $1
+                ON CONFLICT(chat_id) DO UPDATE
+                SET chat_type = EXCLUDED.chat_type,
+                    title = COALESCE(EXCLUDED.title, userbot_targets.title),
+                    username = COALESCE(EXCLUDED.username, userbot_targets.username),
+                    enabled = userbot_targets.enabled OR EXCLUDED.enabled,
+                    last_seen_at = GREATEST(userbot_targets.last_seen_at, EXCLUDED.last_seen_at),
+                    last_error = COALESCE(userbot_targets.last_error, EXCLUDED.last_error),
+                    migrated_to = NULL
+                """,
+                int(old_chat_id),
+                int(new_chat_id),
+            )
+            await conn.execute(
+                """
+                UPDATE userbot_targets
+                SET migrated_to = $2,
+                    enabled = FALSE
+                WHERE chat_id = $1
+                """,
+                int(old_chat_id),
+                int(new_chat_id),
+            )
+            await conn.execute("DELETE FROM userbot_targets WHERE chat_id = $1", int(old_chat_id))
+    finally:
+        await _release_conn(db, conn)
