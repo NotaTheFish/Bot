@@ -99,6 +99,7 @@ async def sync_userbot_targets(pool, client: TelegramClient, settings: Settings)
             new_count += 1
 
     disabled_count = await disable_stale_userbot_targets(pool, grace_days=30)
+    logger.info("Disabled stale targets: %s", disabled_count)
     enabled_count = len(await load_enabled_userbot_targets(pool))
     stats = {
         "total": total_seen,

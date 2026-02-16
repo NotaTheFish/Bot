@@ -333,7 +333,7 @@ async def disable_stale_userbot_targets(
             SET enabled = FALSE,
                 last_error = COALESCE(last_error, 'Not seen in recent dialogs sync')
             WHERE enabled = TRUE
-              AND last_seen_at < NOW() - ($1::text || ' days')::interval
+              AND last_seen_at < NOW() - ($1::int * INTERVAL '1 day')
             """,
             max(1, int(grace_days)),
         )
