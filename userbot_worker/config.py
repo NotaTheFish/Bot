@@ -96,7 +96,7 @@ def load_settings() -> Settings:
         raise RuntimeError("TELEGRAM_API_ID is required")
     if not settings.telegram_api_hash:
         raise RuntimeError("TELEGRAM_API_HASH is required")
-if settings.auto_targets_mode not in {"groups_only", "groups_and_channels"}:
+    if settings.auto_targets_mode not in {"groups_only", "groups_and_channels"}:
         raise RuntimeError("AUTO_TARGETS_MODE must be 'groups_only' or 'groups_and_channels'")
 
     return settings
