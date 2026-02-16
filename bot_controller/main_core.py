@@ -1124,6 +1124,25 @@ def parse_iso_datetime(value: Optional[str]) -> Optional[datetime]:
         return None
 
 
+def format_admin_datetime(value: Optional[str | datetime]) -> str:
+    if value is None:
+        return "-"
+
+    parsed: Optional[datetime]
+    if isinstance(value, datetime):
+        parsed = value
+    else:
+        parsed = parse_iso_datetime(value)
+
+    if parsed is None:
+        return "-"
+
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+
+    return parsed.astimezone(TZ).strftime("%Y-%m-%d %H:%M:%S") + f" ({TZ.key})"
+
+
 def is_chat_ready_by_activity(chat: dict) -> bool:
     if chat["last_bot_post_msg_id"] is None or chat.get("last_success_post_at") is None:
         return True
@@ -1771,7 +1790,7 @@ async def admin_status(message: Message):
 
     attempt_lines = []
     for item in recent_attempts:
-        at = item["created_at"].replace("T", " ")[:19]
+        at = format_admin_datetime(item["created_at"])
         chat_text = str(item["chat_id"]) if item["chat_id"] is not None else "-"
         reason = item["reason"] or "-"
         err = f" ({item['error_text'][:80]})" if item.get("error_text") else ""
@@ -1790,7 +1809,7 @@ async def admin_status(message: Message):
         f"Глобальная пауза: {GLOBAL_BROADCAST_COOLDOWN_SECONDS} сек.",
         f"Лимит запусков/сутки: {BROADCAST_MAX_PER_DAY}",
         f"Запусков сегодня: {meta['daily_broadcast_count']}",
-        f"Последняя рассылка UTC: {meta['last_broadcast_at'] or '-'}",
+        f"Последняя рассылка ({TZ.key}): {format_admin_datetime(meta['last_broadcast_at'])}",
         f"Тихие часы: {parse_time(QUIET_HOURS_START) or '-'} → {parse_time(QUIET_HOURS_END) or '-'}",
     ]
 
