@@ -123,6 +123,26 @@ async def ensure_schema(db: DBOrPool) -> None:
         await conn.execute("ALTER TABLE userbot_targets ADD COLUMN IF NOT EXISTS last_self_message_id BIGINT;")
         await conn.execute("ALTER TABLE userbot_targets ADD COLUMN IF NOT EXISTS last_post_fingerprint TEXT;")
         await conn.execute("ALTER TABLE userbot_targets ADD COLUMN IF NOT EXISTS last_post_at TIMESTAMPTZ;")
+        await conn.execute("ALTER TABLE userbot_targets ADD COLUMN IF NOT EXISTS peer_type TEXT NOT NULL DEFAULT 'channel';")
+        await conn.execute("ALTER TABLE userbot_targets ADD COLUMN IF NOT EXISTS peer_id BIGINT;")
+        await conn.execute("ALTER TABLE userbot_targets ADD COLUMN IF NOT EXISTS access_hash BIGINT;")
+        await conn.execute(
+            """
+            UPDATE userbot_targets
+            SET peer_type = CASE WHEN chat_id::text LIKE '-100%' THEN 'channel' ELSE 'chat' END
+            WHERE peer_type IS NULL OR peer_type = ''
+            """
+        )
+        await conn.execute(
+            """
+            UPDATE userbot_targets
+            SET peer_id = CASE
+                WHEN chat_id::text LIKE '-100%' THEN ABS((right(chat_id::text, length(chat_id::text) - 4))::bigint)
+                ELSE ABS(chat_id)
+            END
+            WHERE peer_id IS NULL
+            """
+        )
     finally:
         await _release_conn(db, conn)
 
@@ -302,6 +322,16 @@ class UserbotTargetState:
     last_post_at: Optional[datetime]
 
 
+@dataclass(frozen=True)
+class UserbotTargetPeer:
+    chat_id: int
+    peer_type: str
+    peer_id: int
+    access_hash: Optional[int]
+    title: Optional[str]
+    username: Optional[str]
+
+
 async def get_userbot_target_state(db: DBOrPool, *, chat_id: int) -> Optional[UserbotTargetState]:
     conn = await _acquire_conn(db)
     try:
@@ -395,6 +425,9 @@ async def upsert_userbot_target(
     *,
     chat_id: int,
     chat_type: str,
+    peer_type: str,
+    peer_id: int,
+    access_hash: Optional[int],
     title: Optional[str],
     username: Optional[str],
 ) -> bool:
@@ -402,12 +435,15 @@ async def upsert_userbot_target(
     try:
         row = await conn.fetchrow(
             """
-            INSERT INTO userbot_targets(chat_id, chat_type, title, username, enabled, last_seen_at, last_error)
-            VALUES ($1, $2, $3, $4, TRUE, NOW(), NULL)
+            INSERT INTO userbot_targets(chat_id, chat_type, peer_type, peer_id, access_hash, title, username, enabled, last_seen_at, last_error)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, TRUE, NOW(), NULL)
             ON CONFLICT(chat_id) DO UPDATE
             SET chat_type = EXCLUDED.chat_type,
-                title = EXCLUDED.title,
-                username = EXCLUDED.username,
+                peer_type = EXCLUDED.peer_type,
+                peer_id = EXCLUDED.peer_id,
+                access_hash = EXCLUDED.access_hash,
+                title = COALESCE(EXCLUDED.title, userbot_targets.title),
+                username = COALESCE(EXCLUDED.username, userbot_targets.username),
                 enabled = TRUE,
                 last_seen_at = NOW(),
                 last_error = NULL
@@ -415,6 +451,9 @@ async def upsert_userbot_target(
             """,
             int(chat_id),
             str(chat_type),
+            str(peer_type),
+            int(peer_id),
+            (int(access_hash) if access_hash is not None else None),
             (str(title) if title else None),
             (str(username) if username else None),
         )
@@ -445,18 +484,60 @@ async def disable_stale_userbot_targets(
         await _release_conn(db, conn)
 
 
-async def load_enabled_userbot_targets(db: DBOrPool) -> List[int]:
+async def load_enabled_userbot_targets(db: DBOrPool) -> List[UserbotTargetPeer]:
     conn = await _acquire_conn(db)
     try:
         rows = await conn.fetch(
             """
-            SELECT chat_id
+            SELECT chat_id, peer_type, peer_id, access_hash, title, username
             FROM userbot_targets
             WHERE enabled = TRUE
             ORDER BY chat_id
             """
         )
-        return [int(r["chat_id"]) for r in rows]
+        return [
+            UserbotTargetPeer(
+                chat_id=int(r["chat_id"]),
+                peer_type=str(r["peer_type"] or "channel"),
+                peer_id=int(r["peer_id"] or 0),
+                access_hash=(int(r["access_hash"]) if r["access_hash"] is not None else None),
+                title=(str(r["title"]) if r["title"] is not None else None),
+                username=(str(r["username"]) if r["username"] is not None else None),
+            )
+            for r in rows
+            if r["peer_id"] is not None
+        ]
+    finally:
+        await _release_conn(db, conn)
+
+
+async def load_userbot_targets_by_chat_ids(db: DBOrPool, *, chat_ids: List[int]) -> List[UserbotTargetPeer]:
+    normalized_ids = sorted({int(chat_id) for chat_id in chat_ids})
+    if not normalized_ids:
+        return []
+
+    conn = await _acquire_conn(db)
+    try:
+        rows = await conn.fetch(
+            """
+            SELECT chat_id, peer_type, peer_id, access_hash, title, username
+            FROM userbot_targets
+            WHERE chat_id = ANY($1::bigint[])
+            """,
+            normalized_ids,
+        )
+        return [
+            UserbotTargetPeer(
+                chat_id=int(r["chat_id"]),
+                peer_type=str(r["peer_type"] or "channel"),
+                peer_id=int(r["peer_id"] or 0),
+                access_hash=(int(r["access_hash"]) if r["access_hash"] is not None else None),
+                title=(str(r["title"]) if r["title"] is not None else None),
+                username=(str(r["username"]) if r["username"] is not None else None),
+            )
+            for r in rows
+            if r["peer_id"] is not None
+        ]
     finally:
         await _release_conn(db, conn)
 
@@ -484,9 +565,12 @@ async def remap_userbot_target_chat_id(
         async with conn.transaction():
             await conn.execute(
                 """
-                INSERT INTO userbot_targets(chat_id, chat_type, title, username, enabled, last_seen_at, last_error, migrated_to)
+                INSERT INTO userbot_targets(chat_id, chat_type, peer_type, peer_id, access_hash, title, username, enabled, last_seen_at, last_error, migrated_to)
                 SELECT $2,
                        chat_type,
+                       peer_type,
+                       peer_id,
+                       access_hash,
                        title,
                        username,
                        enabled,
@@ -497,6 +581,9 @@ async def remap_userbot_target_chat_id(
                 WHERE chat_id = $1
                 ON CONFLICT(chat_id) DO UPDATE
                 SET chat_type = EXCLUDED.chat_type,
+                    peer_type = EXCLUDED.peer_type,
+                    peer_id = EXCLUDED.peer_id,
+                    access_hash = EXCLUDED.access_hash,
                     title = COALESCE(EXCLUDED.title, userbot_targets.title),
                     username = COALESCE(EXCLUDED.username, userbot_targets.username),
                     enabled = userbot_targets.enabled OR EXCLUDED.enabled,

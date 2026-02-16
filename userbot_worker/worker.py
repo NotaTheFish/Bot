@@ -7,7 +7,7 @@ from typing import Optional
 
 from telethon import TelegramClient
 from telethon.errors import FloodWaitError, RPCError
-from telethon.tl.types import User
+from telethon.tl.types import Channel, Chat, InputPeerChannel, InputPeerChat, User
 
 from .config import Settings
 from .db import (
@@ -15,6 +15,7 @@ from .db import (
     disable_stale_userbot_targets,
     ensure_schema,
     get_userbot_target_state,
+    load_userbot_targets_by_chat_ids,
     load_enabled_userbot_targets,
     mark_task_done,
     mark_task_error,
@@ -41,11 +42,19 @@ _DISABLE_RPC_ERRORS = {
 }
 
 
-def _normalize_chat_id(raw_chat_id: int) -> int:
-    value = int(raw_chat_id)
-    if value > 0:
-        return int(f"-100{value}")
-    return value
+def _build_chat_id_and_peer(entity) -> tuple[int, str, int, Optional[int]]:
+    if isinstance(entity, Channel):
+        peer_id = int(getattr(entity, "id", 0) or 0)
+        access_hash = getattr(entity, "access_hash", None)
+        chat_id = int(f"-100{peer_id}") if peer_id > 0 else 0
+        return chat_id, "channel", peer_id, (int(access_hash) if access_hash is not None else None)
+
+    if isinstance(entity, Chat):
+        peer_id = int(getattr(entity, "id", 0) or 0)
+        chat_id = -peer_id if peer_id > 0 else 0
+        return chat_id, "chat", peer_id, None
+
+    return 0, "", 0, None
 
 
 def _chat_type_from_dialog(dialog) -> Optional[str]:
@@ -68,6 +77,8 @@ def _is_write_permission_error(exc: BaseException) -> bool:
         "chatadminrequired",
         "userbannedinchannel",
         "channelprivate",
+        "chatsendmediaforbidden",
+        "chat_send_media_forbidden",
         "forbidden",
         "not enough rights",
     )
@@ -83,16 +94,14 @@ def _build_post_fingerprint(storage_chat_id: int, storage_message_ids: list[int]
     return hashlib.sha1(payload.encode("utf-8")).hexdigest()
 
 
-async def resolve_target_entity(client: TelegramClient, chat_id: int):
-    try:
-        return await client.get_input_entity(chat_id)
-    except ValueError:
-        normalized_id = int(str(int(chat_id)).replace("-100", ""))
-        async for dialog in client.iter_dialogs():
-            entity_id = int(getattr(getattr(dialog, "entity", None), "id", 0) or 0)
-            if entity_id in {abs(int(chat_id)), normalized_id}:
-                break
-        return await client.get_input_entity(chat_id)
+def build_input_peer(target) -> InputPeerChannel | InputPeerChat:
+    if target.peer_type == "channel":
+        if target.access_hash is None:
+            raise ValueError(f"Missing access_hash for channel peer chat_id={target.chat_id}")
+        return InputPeerChannel(channel_id=int(target.peer_id), access_hash=int(target.access_hash))
+    if target.peer_type == "chat":
+        return InputPeerChat(chat_id=int(target.peer_id))
+    raise ValueError(f"Unsupported peer_type={target.peer_type} chat_id={target.chat_id}")
 
 
 async def _apply_activity_gate(pool, client: TelegramClient, *, chat_id: int, known_last_self_message_id: Optional[int]) -> tuple[bool, Optional[int], int]:
@@ -135,7 +144,7 @@ async def sync_userbot_targets(pool, client: TelegramClient, settings: Settings)
         if chat_type not in {"group", "supergroup", "channel"}:
             continue
 
-        chat_id = _normalize_chat_id(getattr(entity, "id", 0))
+        chat_id, peer_type, peer_id, access_hash = _build_chat_id_and_peer(entity)
         if not chat_id:
             continue
         if int(chat_id) == int(settings.storage_chat_id):
@@ -147,6 +156,9 @@ async def sync_userbot_targets(pool, client: TelegramClient, settings: Settings)
             pool,
             chat_id=int(chat_id),
             chat_type=chat_type,
+            peer_type=peer_type,
+            peer_id=peer_id,
+            access_hash=access_hash,
             title=getattr(entity, "title", None),
             username=getattr(entity, "username", None),
         )
@@ -224,13 +236,19 @@ async def run_worker(settings: Settings, pool, client: TelegramClient, stop_even
 
         for task in tasks:
             if task.target_chat_ids:
-                target_ids = list(task.target_chat_ids)
+                task_targets = await load_userbot_targets_by_chat_ids(pool, chat_ids=list(task.target_chat_ids))
+                target_map = {item.chat_id: item for item in task_targets}
+                target_ids = [int(chat_id) for chat_id in task.target_chat_ids if int(chat_id) in target_map]
                 source = "TASK"
             elif settings.target_chat_ids:
-                target_ids = list(settings.target_chat_ids)
+                env_targets = await load_userbot_targets_by_chat_ids(pool, chat_ids=list(settings.target_chat_ids))
+                target_map = {item.chat_id: item for item in env_targets}
+                target_ids = [int(chat_id) for chat_id in settings.target_chat_ids if int(chat_id) in target_map]
                 source = "ENV"
             else:
-                target_ids = await load_enabled_userbot_targets(pool)
+                db_targets = await load_enabled_userbot_targets(pool)
+                target_map = {item.chat_id: item for item in db_targets}
+                target_ids = [item.chat_id for item in db_targets]
                 source = "DB"
             logger.info("Targets source=%s count=%s task_id=%s", source, len(target_ids), task.id)
 
@@ -269,6 +287,12 @@ async def run_worker(settings: Settings, pool, client: TelegramClient, stop_even
 
             for chat_id in target_ids:
                 current_chat_id = int(chat_id)
+                target_peer = target_map.get(current_chat_id)
+                if target_peer is None:
+                    skipped += 1
+                    skip_reasons["peer_missing"] += 1
+                    logger.info("chat_result=skipped reason=peer_missing task_id=%s chat_id=%s", task.id, current_chat_id)
+                    continue
                 retried_after_migration = False
                 state = await get_userbot_target_state(pool, chat_id=current_chat_id)
 
@@ -311,7 +335,7 @@ async def run_worker(settings: Settings, pool, client: TelegramClient, stop_even
 
                 while True:
                     try:
-                        target_entity = await resolve_target_entity(client, current_chat_id)
+                        target_entity = build_input_peer(target_peer)
                         sent_message_id = await send_post_to_chat(
                             client=client,
                             source_chat_id=int(task.storage_chat_id),
@@ -327,14 +351,15 @@ async def run_worker(settings: Settings, pool, client: TelegramClient, stop_even
                             fingerprint=fingerprint,
                         )
                         sent += 1
-                        logger.info("chat_result=success task_id=%s chat_id=%s sent_message_id=%s", task.id, current_chat_id, sent_message_id)
+                        logger.info("chat_result=sent task_id=%s chat_id=%s sent_message_id=%s", task.id, current_chat_id, sent_message_id)
                         await update_task_progress(pool, task_id=task.id, sent_count=sent, error_count=errors, last_error=None)
                         break
                     except ValueError as e:
                         last_error = str(e)
                         errors += 1
                         logger.warning("chat_result=error task_id=%s chat_id=%s err=ValueError text=%s", task.id, current_chat_id, last_error)
-                        await mark_userbot_target_disabled(pool, chat_id=current_chat_id, error_text=f"entity_not_found: {last_error}")
+                        reason = "entity_missing" if "input entity" in last_error.lower() else "invalid_target"
+                        await mark_userbot_target_disabled(pool, chat_id=current_chat_id, error_text=f"{reason}: {last_error}")
                         await update_task_progress(pool, task_id=task.id, sent_count=sent, error_count=errors, last_error=last_error)
                         break
                     except FloodWaitError as e:

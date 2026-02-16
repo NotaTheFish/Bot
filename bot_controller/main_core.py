@@ -662,21 +662,6 @@ async def userbot_targets_stats() -> Optional[dict]:
 async def detect_userbot_targets_source() -> str:
     if TARGET_CHAT_IDS:
         return "WORKER_ENV"
-    pool = await get_db_pool()
-    try:
-        row = await pool.fetchrow(
-            """
-            SELECT target_chat_ids
-            FROM userbot_tasks
-            WHERE status IN ('pending', 'processing', 'done')
-            ORDER BY id DESC
-            LIMIT 1
-            """
-        )
-    except Exception:
-        return "WORKER_DB"
-    if row and row.get("target_chat_ids") and len(row["target_chat_ids"]) > 0:
-        return "TASK"
     return "WORKER_DB"
 
 async def remove_chat(chat_id: int) -> None:
