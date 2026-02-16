@@ -123,6 +123,12 @@ REPORT_ONLY_ON_ERRORS = _get_env_str("REPORT_ONLY_ON_ERRORS", "0").lower() in {
     "yes",
     "on",
 }
+QUIET_MODE = _get_env_str("QUIET_MODE", "0").lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
 
 if DELIVERY_MODE not in {"bot", "userbot"}:
     raise RuntimeError("DELIVERY_MODE должен быть 'bot' или 'userbot'.")
@@ -1604,10 +1610,12 @@ async def broadcast_once() -> None:
                 source_message_ids,
                 target_chat_ids_to_store if target_chat_ids_to_store is not None else "WORKER_ENV",
             )
-            await bot.send_message(ADMIN_ID, "🧾 Userbot-рассылка поставлена в очередь.")
+            if not QUIET_MODE:
+                await bot.send_message(ADMIN_ID, "🧾 Userbot-рассылка поставлена в очередь.")
         else:
             logger.info("Userbot task is already pending/running for this payload")
-            await bot.send_message(ADMIN_ID, "ℹ️ Такая userbot-задача уже в очереди.")
+            if not QUIET_MODE:
+                await bot.send_message(ADMIN_ID, "ℹ️ Такая userbot-задача уже в очереди.")
     else:
         chats = await get_chat_rows()
         report["total_chats"] = len(chats)
