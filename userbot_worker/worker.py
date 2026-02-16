@@ -239,6 +239,13 @@ async def run_worker(settings: Settings, pool, client: TelegramClient, stop_even
                         if retried_after_migration or migrated_chat_id is None:
                             last_error = str(e)
                             errors += 1
+                            logger.warning(
+                                "Send failed chat_id=%s task_id=%s err=%s text=%s",
+                                current_chat_id,
+                                task.id,
+                                type(e).__name__,
+                                str(e),
+                            )
                             if _is_write_permission_error(e):
                                 await disable_userbot_target(
                                     pool,
@@ -274,6 +281,13 @@ async def run_worker(settings: Settings, pool, client: TelegramClient, stop_even
                     except Exception as e:
                         last_error = repr(e)
                         errors += 1
+                        logger.warning(
+                            "Send failed chat_id=%s task_id=%s err=%s text=%s",
+                            current_chat_id,
+                            task.id,
+                            type(e).__name__,
+                            str(e),
+                        )
                         if _is_write_permission_error(e):
                             await disable_userbot_target(
                                 pool,

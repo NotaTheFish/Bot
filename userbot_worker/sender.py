@@ -62,6 +62,52 @@ def extract_migrated_chat_id(exc: BaseException) -> Optional[int]:
     return None
 
 
+def _is_forward_restricted_error(exc: BaseException) -> bool:
+    text = f"{type(exc).__name__} {exc}".lower()
+    markers = (
+        "chatforwardsrestricted",
+        "forwards restricted",
+        "forward forbidden",
+        "chat_send_media_forbidden",
+        "chatsendmediaforbidden",
+    )
+    return any(marker in text for marker in markers)
+
+
+async def _copy_messages_as_text(
+    client: TelegramClient,
+    *,
+    source_chat_id: int,
+    source_message_id: Union[int, Sequence[int]],
+    target_chat_id: int,
+) -> int:
+    message_ids = (
+        [int(source_message_id)]
+        if isinstance(source_message_id, int)
+        else [int(message_id) for message_id in source_message_id]
+    )
+    source_messages = await client.get_messages(source_chat_id, ids=message_ids)
+    if not source_messages:
+        raise RuntimeError("Cannot copy message: source message not found")
+
+    if not isinstance(source_messages, list):
+        source_messages = [source_messages]
+
+    last_sent = None
+    for source_message in source_messages:
+        text = getattr(source_message, "raw_text", None) or getattr(source_message, "message", None) or ""
+        sent = await client.send_message(
+            entity=target_chat_id,
+            message=text if text else " ",
+            buttons=getattr(source_message, "buttons", None),
+        )
+        last_sent = sent
+
+    if last_sent is None:
+        raise RuntimeError("Cannot copy message: no messages were sent")
+    return int(last_sent.id)
+
+
 async def forward_post(
     client: TelegramClient,
     source_chat_id: int,
@@ -99,7 +145,19 @@ async def forward_post(
             logger.warning("FloodWaitError chat=%s wait=%s", target_chat_id, exc.seconds)
             await asyncio.sleep(int(exc.seconds))
 
-        except RPCError:
+        except RPCError as exc:
+            if _is_forward_restricted_error(exc):
+                logger.warning(
+                    "Forward restricted chat=%s source_chat=%s. Fallback to text copy",
+                    target_chat_id,
+                    source_chat_id,
+                )
+                return await _copy_messages_as_text(
+                    client,
+                    source_chat_id=source_chat_id,
+                    source_message_id=source_message_id,
+                    target_chat_id=target_chat_id,
+                )
             # Ничего не скрываем — пусть воркер решает, что делать дальше
             raise
 
