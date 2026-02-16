@@ -30,6 +30,10 @@ Worker исполняет задачи из `userbot\_tasks` и рассылае
 
 - `MAX\_TASK\_ATTEMPTS` (optional, по умолчанию `3`)
 
+- `COOLDOWN_MINUTES` (optional, default `10`; `0` отключает cooldown между успешными отправками в один чат)
+- `ACTIVITY_GATE_MIN_MESSAGES` (optional, default `5`; минимальное число чужих сообщений после последнего вашего для разрешения новой отправки, `0` отключает gate)
+- `ANTI_DUP_MINUTES` (optional, default `10`; окно антидубликата по fingerprint поста, `0` отключает проверку)
+
 
 
 \## Запуск Windows
@@ -82,6 +86,10 @@ export TELEGRAM\_API\_HASH=...
 
 export TELETHON\_SESSION=/data/userbot.session
 
+export COOLDOWN_MINUTES=10
+export ACTIVITY_GATE_MIN_MESSAGES=5
+export ANTI_DUP_MINUTES=10
+
 python -m userbot\_worker.main
 
 ```
@@ -97,6 +105,13 @@ python -m userbot\_worker.main
 \- Отправляет пост только в чаты из `target\_chat\_ids`; если массив пустой — использует `TARGET_CHAT_IDS` из env воркера.
 
 \- Между чатами делает случайную задержку.
+
+
+- Применяет предохранители рассылки:
+  - `COOLDOWN_MINUTES`: не отправляет слишком часто в один и тот же чат после успешной отправки.
+  - `ACTIVITY_GATE_MIN_MESSAGES`: ждёт минимум N новых чужих сообщений после последнего вашего сообщения в чате.
+  - `ANTI_DUP_MINUTES`: не отправляет в чат тот же самый пост (по fingerprint) в течение окна.
+  - Для всех трёх параметров значение `0` означает `off` (предохранитель выключен).
 
 \- Обрабатывает `FloodWaitError` (ждёт и продолжает).
 

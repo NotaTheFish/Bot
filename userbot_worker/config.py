@@ -66,6 +66,9 @@ class Settings:
     target_chat_ids: list[int]
     targets_sync_seconds: int
     auto_targets_mode: str
+    cooldown_minutes: int
+    activity_gate_min_messages: int
+    anti_dup_minutes: int
 
 
 def load_settings() -> Settings:
@@ -85,6 +88,9 @@ def load_settings() -> Settings:
         target_chat_ids=_getintlist_csv("TARGET_CHAT_IDS"),
         targets_sync_seconds=max(30, _getint("TARGETS_SYNC_SECONDS", 600)),
         auto_targets_mode=(_getenv("AUTO_TARGETS_MODE", "groups_only").lower() or "groups_only"),
+        cooldown_minutes=max(0, _getint("COOLDOWN_MINUTES", 10)),
+        activity_gate_min_messages=max(0, _getint("ACTIVITY_GATE_MIN_MESSAGES", 5)),
+        anti_dup_minutes=max(0, _getint("ANTI_DUP_MINUTES", 10)),
     )
 
     if settings.max_seconds_between_chats < settings.min_seconds_between_chats:

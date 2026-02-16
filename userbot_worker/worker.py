@@ -104,7 +104,7 @@ def build_input_peer(target) -> InputPeerChannel | InputPeerChat:
     raise ValueError(f"Unsupported peer_type={target.peer_type} chat_id={target.chat_id}")
 
 
-async def _apply_activity_gate(pool, client: TelegramClient, *, chat_id: int, known_last_self_message_id: Optional[int]) -> tuple[bool, Optional[int], int]:
+async def _apply_activity_gate(pool, client: TelegramClient, *, chat_id: int, known_last_self_message_id: Optional[int], min_messages: int) -> tuple[bool, Optional[int], int]:
     last_self_message_id = known_last_self_message_id
     if last_self_message_id is None:
         async for message in client.iter_messages(chat_id, from_user="me", limit=1):
@@ -112,14 +112,17 @@ async def _apply_activity_gate(pool, client: TelegramClient, *, chat_id: int, kn
             await set_userbot_target_last_self_message_id(pool, chat_id=chat_id, message_id=last_self_message_id)
             break
 
+    if min_messages <= 0:
+        return True, last_self_message_id, 0
+
     if last_self_message_id is None:
-        return True, None, 999
+        return True, None, min_messages
 
     activity_count = 0
     async for message in client.iter_messages(chat_id, min_id=int(last_self_message_id), limit=100):
         if not getattr(message, "out", False):
             activity_count += 1
-            if activity_count >= 5:
+            if activity_count >= min_messages:
                 return True, last_self_message_id, activity_count
     return False, last_self_message_id, activity_count
 
@@ -296,13 +299,13 @@ async def run_worker(settings: Settings, pool, client: TelegramClient, stop_even
                 retried_after_migration = False
                 state = await get_userbot_target_state(pool, chat_id=current_chat_id)
 
-                if state and state.last_success_post_at and (_now_utc() - state.last_success_post_at) < timedelta(minutes=10):
+                if settings.cooldown_minutes > 0 and state and state.last_success_post_at and (_now_utc() - state.last_success_post_at) < timedelta(minutes=settings.cooldown_minutes):
                     skipped += 1
                     skip_reasons["cooldown"] += 1
                     logger.info("chat_result=skipped reason=cooldown task_id=%s chat_id=%s", task.id, current_chat_id)
                     continue
 
-                if state and state.last_post_fingerprint == fingerprint and state.last_post_at and (_now_utc() - state.last_post_at) < timedelta(minutes=10):
+                if settings.anti_dup_minutes > 0 and state and state.last_post_fingerprint == fingerprint and state.last_post_at and (_now_utc() - state.last_post_at) < timedelta(minutes=settings.anti_dup_minutes):
                     skipped += 1
                     skip_reasons["anti_dup"] += 1
                     logger.info("chat_result=skipped reason=anti_dup task_id=%s chat_id=%s", task.id, current_chat_id)
@@ -314,6 +317,7 @@ async def run_worker(settings: Settings, pool, client: TelegramClient, stop_even
                         client,
                         chat_id=current_chat_id,
                         known_last_self_message_id=(state.last_self_message_id if state else None),
+                        min_messages=settings.activity_gate_min_messages,
                     )
                 except Exception as exc:
                     last_error = str(exc)
