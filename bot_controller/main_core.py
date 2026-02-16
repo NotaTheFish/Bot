@@ -28,8 +28,6 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 from zoneinfo import ZoneInfo
 
-from config import load_controller_settings
-
 
 def _get_env_str(name: str, default: str = "") -> str:
     return (os.getenv(name, default) or "").strip()
@@ -48,6 +46,8 @@ ADMIN_ID = _get_env_int("ADMIN_ID", 0)
 DATABASE_URL = _get_env_str("DATABASE_URL")
 DELIVERY_MODE = _get_env_str("DELIVERY_MODE", "bot").lower() or "bot"
 STORAGE_CHAT_ID = _get_env_int("STORAGE_CHAT_ID", 0)
+TZ_NAME = _get_env_str("TZ", "Europe/Berlin")
+ADMIN_BROADCAST_NOTIFICATIONS = _get_env_str("ADMIN_BROADCAST_NOTIFICATIONS", "off").lower() == "on"
 STORAGE_CHAT_META_KEY = "storage_chat_id"
 LAST_STORAGE_MESSAGE_ID_META_KEY = "last_storage_message_id"
 LAST_STORAGE_MESSAGE_IDS_META_KEY = "last_storage_message_ids"
@@ -71,8 +71,10 @@ if ADMIN_ID <= 0:
     raise RuntimeError("ADMIN_ID не задан или имеет неверное значение.")
 if not DATABASE_URL:
     raise RuntimeError("DATABASE_URL не задан. Для Railway используйте PostgreSQL plugin.")
+if STORAGE_CHAT_ID <= 0:
+    raise RuntimeError("STORAGE_CHAT_ID не задан или имеет неверное значение.")
 
-TZ = ZoneInfo("Europe/Berlin")
+TZ = ZoneInfo(TZ_NAME)
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -131,9 +133,6 @@ QUIET_MODE = _get_env_str("QUIET_MODE", "0").lower() in {
     "yes",
     "on",
 }
-
-controller_settings = load_controller_settings()
-ADMIN_BROADCAST_NOTIFICATIONS = controller_settings.admin_broadcast_notifications
 
 if DELIVERY_MODE not in {"bot", "userbot"}:
     raise RuntimeError("DELIVERY_MODE должен быть 'bot' или 'userbot'.")
@@ -548,7 +547,7 @@ def admin_menu_keyboard() -> ReplyKeyboardMarkup:
                 KeyboardButton(text="✏️ Изменить пост"),
             ],
             [
-                KeyboardButton(text="📝 Изменить автоответ покупателю"),
+                KeyboardButton(text="📝 Изменить автоответ"),
                 KeyboardButton(text="📊 Статус"),
             ],
             [KeyboardButton(text="🚀 Запустить сейчас")],
@@ -1946,7 +1945,7 @@ async def edit_post_start(message: Message, state: FSMContext):
     await send_edit_post_menu(message)
 
 
-@dp.message(F.text.in_({"/settings", "/admin", "📝 Изменить автоответ покупателю"}))
+@dp.message(F.text.in_({"/settings", "/admin", "📝 Изменить автоответ", "📝 Изменить автоответ покупателю"}))
 async def buyer_reply_settings_start(message: Message, state: FSMContext):
     if not ensure_admin(message):
         return
