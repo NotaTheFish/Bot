@@ -37,6 +37,10 @@ async def main() -> None:
 
     reviews_service = ReviewsService(pool, bot, settings)
 
+    dispatcher["settings"] = settings
+    dispatcher["pool"] = pool
+    dispatcher["reviews_service"] = reviews_service
+
     register_listener_handlers(telethon_client, reviews_service, settings)
     register_admin_handlers(dispatcher)
 
