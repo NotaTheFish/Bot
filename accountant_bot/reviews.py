@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional, Sequence
 
 import asyncpg
@@ -180,30 +180,59 @@ class ReviewsService:
                 or 0
             )
 
-    async def get_stats_reviews(self, period: str) -> int:
-        interval_by_period = {
-            "day": "1 day",
-            "week": "7 days",
-            "month": "1 month",
-        }
-        if period not in interval_by_period:
-            raise ValueError("period must be one of: day, week, month")
+    @staticmethod
+    def _period_to_timedelta(period: str) -> timedelta:
+        p = (period or "").strip().lower()
+        if p in ("day", "today", "1day", "1 day"):
+            return timedelta(days=1)
+        if p in ("week", "7days", "7 days"):
+            return timedelta(days=7)
+        if p in ("month", "30days", "30 days"):
+            return timedelta(days=30)
+        raise ValueError(f"Unsupported period: {period!r}")
+
+    async def get_stats_reviews(self, period: str) -> dict[str, int]:
+        interval = self._period_to_timedelta(period)
 
         async with self._pool.acquire() as conn:
-            return int(
-                await conn.fetchval(
-                    """
-                    SELECT COUNT(*)
-                    FROM reviews
-                    WHERE channel_id = $1
-                      AND deleted_at IS NULL
-                      AND created_at >= NOW() - $2::interval
-                    """,
-                    int(self._settings.REVIEWS_CHANNEL_ID),
-                    interval_by_period[period],
-                )
-                or 0
+            added = await conn.fetchval(
+                """
+                SELECT COUNT(*)
+                FROM reviews
+                WHERE channel_id = $1
+                  AND created_at >= NOW() - $2::interval
+                """,
+                int(self._settings.REVIEWS_CHANNEL_ID),
+                interval,
             )
+
+            deleted = await conn.fetchval(
+                """
+                SELECT COUNT(*)
+                FROM reviews
+                WHERE channel_id = $1
+                  AND deleted_at IS NOT NULL
+                  AND deleted_at >= NOW() - $2::interval
+                """,
+                int(self._settings.REVIEWS_CHANNEL_ID),
+                interval,
+            )
+
+            active = await conn.fetchval(
+                """
+                SELECT COUNT(*)
+                FROM reviews
+                WHERE channel_id = $1
+                  AND deleted_at IS NULL
+                """,
+                int(self._settings.REVIEWS_CHANNEL_ID),
+            )
+
+        return {
+            "added": int(added or 0),
+            "deleted": int(deleted or 0),
+            "active": int(active or 0),
+        }
 
     def format_about_line(self, count: int) -> str:
         return self._settings.ABOUT_TEMPLATE.format(

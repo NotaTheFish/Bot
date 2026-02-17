@@ -1,13 +1,12 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import datetime
 from decimal import Decimal, InvalidOperation
 from typing import Any, Optional
 
 import asyncpg
 from aiogram import Dispatcher, F, Router
-from aiogram.filters import CommandStart
+from aiogram.filters import Command, CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import (
@@ -35,6 +34,7 @@ START_KEYBOARD = ReplyKeyboardMarkup(
         [KeyboardButton(text="📊 Статистика отзывов")],
         [KeyboardButton(text="🧾 Добавить чек")],
         [KeyboardButton(text="📤 Выгрузить Excel")],
+        [KeyboardButton(text="🔄 Обновить описание")],
     ],
     resize_keyboard=True,
 )
@@ -73,10 +73,7 @@ class AddCheckFSM(StatesGroup):
     receipt = State()
 
 
-@dataclass
-class DateRange:
-    start: Optional[datetime]
-    end: datetime
+
 
 def register_admin_handlers(dispatcher: Dispatcher) -> None:
     dispatcher.include_router(router)
@@ -99,58 +96,6 @@ async def _check_access(event: Message | CallbackQuery, settings: Settings) -> b
         await event.answer()
     return False
 
-
-def _period_range(period: str) -> DateRange:
-    now = datetime.now(timezone.utc)
-    if period == "all":
-        return DateRange(start=None, end=now)
-    if period == "day":
-        return DateRange(start=now - timedelta(days=1), end=now)
-    if period == "week":
-        return DateRange(start=now - timedelta(days=7), end=now)
-    if period == "month":
-        return DateRange(start=now - timedelta(days=30), end=now)
-    raise ValueError("unsupported period")
-
-
-async def _collect_reviews_stats(pool: asyncpg.Pool, settings: Settings, period: str) -> tuple[int, int]:
-    date_range = _period_range(period)
-    async with pool.acquire() as conn:
-        if date_range.start is None:
-            deleted = await conn.fetchval(
-                """
-                SELECT COUNT(*)
-                FROM reviews
-                WHERE channel_id = $1
-                  AND deleted_at IS NOT NULL
-                """,
-                int(settings.REVIEWS_CHANNEL_ID),
-            )
-        else:
-            deleted = await conn.fetchval(
-                """
-                SELECT COUNT(*)
-                FROM reviews
-                WHERE channel_id = $1
-                  AND deleted_at IS NOT NULL
-                  AND deleted_at >= $2
-                """,
-                int(settings.REVIEWS_CHANNEL_ID),
-                date_range.start,
-            )
-
-        active = await conn.fetchval(
-            """
-            SELECT COUNT(*)
-            FROM reviews
-            WHERE channel_id = $1
-              AND deleted_at IS NULL
-            """,
-            int(settings.REVIEWS_CHANNEL_ID),
-        )
-    return int(deleted or 0), int(active or 0)
-
-
 @router.message(CommandStart())
 async def handle_start(message: Message, settings: Settings) -> None:
     if not await _check_access(message, settings):
@@ -166,7 +111,7 @@ async def ask_stats_period(message: Message, settings: Settings) -> None:
 
 
 @router.callback_query(F.data.startswith("stats:"))
-async def show_stats(callback: CallbackQuery, settings: Settings, reviews_service: ReviewsService, pool: asyncpg.Pool) -> None:
+async def show_stats(callback: CallbackQuery, settings: Settings, reviews_service: ReviewsService) -> None:
     if not await _check_access(callback, settings):
         return
 
@@ -176,18 +121,35 @@ async def show_stats(callback: CallbackQuery, settings: Settings, reviews_servic
         await callback.answer("Неверный период", show_alert=True)
         return
 
-    added = await reviews_service.get_stats_reviews(period)
-    deleted, active = await _collect_reviews_stats(pool, settings, period)
+    stats = await reviews_service.get_stats_reviews(period)
 
     await safe_send_message(
         callback.message.bot,
         callback.message.chat.id,
         f"📊 Статистика ({period_to_label[period]})\n"
-        f"Добавлено: {added}\n"
-        f"Удалено: {deleted}\n"
-        f"Активных: {active}",
+        f"Добавлено: {stats['added']}\n"
+        f"Удалено: {stats['deleted']}\n"
+        f"Активных: {stats['active']}",
     )
     await callback.answer()
+
+
+
+
+@router.message(F.text == "🔄 Обновить описание")
+@router.message(Command("refresh_about"))
+async def refresh_about(message: Message, settings: Settings, reviews_service: ReviewsService) -> None:
+    if not await _check_access(message, settings):
+        return
+
+    count = await reviews_service.count_active(settings.REVIEWS_CHANNEL_ID)
+    await reviews_service.update_channel_about(
+        message.bot,
+        settings.REVIEWS_CHANNEL_ID,
+        settings.ABOUT_TEMPLATE,
+        settings.ABOUT_DATE_FORMAT,
+    )
+    await safe_send_message(message.bot, message.chat.id, f"Описание обновлено. Активных отзывов: {count}")
 
 
 @router.message(F.text == "🧾 Добавить чек")
