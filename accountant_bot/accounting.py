@@ -7,6 +7,7 @@ from typing import Any, Optional
 
 import asyncpg
 
+from .db import create_receipt_with_items as db_create_receipt_with_items
 from .db import insert_transaction as db_insert_transaction
 
 
@@ -61,6 +62,29 @@ async def add_transaction(
         total=None if total is None else str(total),
         pay_method=pay_method,
         receipt_file_id=receipt_file_id,
+    )
+
+
+async def add_receipt_with_items(
+    pool: asyncpg.Pool,
+    *,
+    admin_id: int,
+    currency: str,
+    pay_method: Optional[str],
+    note: Optional[str],
+    receipt_file_id: Optional[str],
+    receipt_file_type: Optional[str],
+    items: list[dict[str, Optional[str]]],
+) -> dict[str, Any]:
+    return await db_create_receipt_with_items(
+        pool,
+        admin_id=admin_id,
+        currency=currency,
+        pay_method=pay_method,
+        note=note,
+        receipt_file_id=receipt_file_id,
+        receipt_file_type=receipt_file_type,
+        items=items,
     )
 
 

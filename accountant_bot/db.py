@@ -474,6 +474,74 @@ async def insert_receipt_item(
         )
 
 
+
+
+async def create_receipt_with_items(
+    pool: asyncpg.Pool,
+    *,
+    admin_id: int,
+    currency: str = "RUB",
+    pay_method: Optional[str] = None,
+    note: Optional[str] = None,
+    receipt_file_id: Optional[str] = None,
+    receipt_file_type: Optional[str] = None,
+    items: list[dict[str, Optional[str]]],
+) -> dict[str, Any]:
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            receipt = await conn.fetchrow(
+                """
+                INSERT INTO receipts (
+                    admin_id,
+                    currency,
+                    pay_method,
+                    note,
+                    receipt_file_id,
+                    receipt_file_type,
+                    status
+                )
+                VALUES ($1, $2, $3, $4, $5, $6, 'created')
+                RETURNING *
+                """,
+                int(admin_id),
+                str(currency),
+                pay_method,
+                note,
+                receipt_file_id,
+                receipt_file_type,
+            )
+
+            saved_items: list[asyncpg.Record] = []
+            for item in items:
+                row = await conn.fetchrow(
+                    """
+                    INSERT INTO receipt_items (
+                        receipt_id,
+                        category,
+                        item_name,
+                        qty,
+                        unit_price,
+                        unit_basis,
+                        line_total,
+                        note
+                    )
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                    RETURNING *
+                    """,
+                    int(receipt["id"]),
+                    item.get("category"),
+                    str(item.get("item_name") or ""),
+                    item.get("qty"),
+                    item.get("unit_price"),
+                    item.get("unit_basis"),
+                    item.get("line_total"),
+                    item.get("note"),
+                )
+                saved_items.append(row)
+
+    return {"receipt": receipt, "items": saved_items}
+
+
 async def get_receipt_with_items(pool: asyncpg.Pool, receipt_id: int) -> Optional[dict[str, Any]]:
     async with pool.acquire() as conn:
         receipt = await conn.fetchrow(
