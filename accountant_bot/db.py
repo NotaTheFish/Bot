@@ -80,6 +80,17 @@ async def init_db(pool: asyncpg.Pool) -> None:
             ON transactions(admin_id)
             """
         )
+        await conn.execute(
+            """
+            ALTER TABLE transactions
+            ADD COLUMN IF NOT EXISTS item TEXT,
+            ADD COLUMN IF NOT EXISTS qty NUMERIC,
+            ADD COLUMN IF NOT EXISTS unit_price NUMERIC,
+            ADD COLUMN IF NOT EXISTS total NUMERIC,
+            ADD COLUMN IF NOT EXISTS pay_method TEXT,
+            ADD COLUMN IF NOT EXISTS receipt_file_id TEXT
+            """
+        )
 
 
 async def insert_review(
@@ -198,12 +209,30 @@ async def insert_transaction(
     review_id: Optional[int] = None,
     currency: str = "RUB",
     note: Optional[str] = None,
+    item: Optional[str] = None,
+    qty: Optional[str] = None,
+    unit_price: Optional[str] = None,
+    total: Optional[str] = None,
+    pay_method: Optional[str] = None,
+    receipt_file_id: Optional[str] = None,
 ) -> asyncpg.Record:
     async with pool.acquire() as conn:
         return await conn.fetchrow(
             """
-            INSERT INTO transactions (review_id, admin_id, amount_kopecks, currency, note)
-            VALUES ($1, $2, $3, $4, $5)
+            INSERT INTO transactions (
+                review_id,
+                admin_id,
+                amount_kopecks,
+                currency,
+                note,
+                item,
+                qty,
+                unit_price,
+                total,
+                pay_method,
+                receipt_file_id
+            )
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
             RETURNING *
             """,
             review_id,
@@ -211,6 +240,12 @@ async def insert_transaction(
             int(amount_kopecks),
             str(currency),
             note,
+            item,
+            qty,
+            unit_price,
+            total,
+            pay_method,
+            receipt_file_id,
         )
 
 
