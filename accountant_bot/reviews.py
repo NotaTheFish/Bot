@@ -6,6 +6,7 @@ from typing import Optional, Sequence
 
 import asyncpg
 from aiogram import Bot
+from aiogram.exceptions import TelegramBadRequest
 
 from .config import Settings
 from .db import fetch_review_by_key, fetch_reviews_by_message_id, insert_review
@@ -131,8 +132,21 @@ class ReviewsService:
 
     async def update_channel_about(self, bot: Bot, channel_id: int, template: str, date_format: str) -> None:
         count = await self.count_active(channel_id)
-        about = template.format(count=count, date=datetime.now().strftime(date_format))
-        await bot.set_chat_description(chat_id=channel_id, description=about)
+        new_line = template.format(count=count, date=datetime.now().strftime(date_format))
+
+        chat = await bot.get_chat(channel_id)
+        current_description = (chat.description or "")
+        next_description = self.replace_or_append_about(current_description, new_line)
+
+        if next_description == current_description:
+            return
+
+        try:
+            await bot.set_chat_description(chat_id=channel_id, description=next_description)
+        except TelegramBadRequest as e:
+            if "chat description is not modified" in str(e):
+                return
+            raise
 
     async def mark_deleted_by_message_id(self, *, channel_id: int, message_id: int) -> list[asyncpg.Record]:
         async with self._pool.acquire() as conn:
@@ -232,11 +246,18 @@ class ReviewsService:
             current_description = getattr(chat, "description", None)
             next_description = self.replace_or_append_about(current_description, new_line)
 
-            if next_description != (current_description or ""):
+            if next_description == (current_description or ""):
+                return
+
+            try:
                 await self._bot.set_chat_description(
                     chat_id=self._settings.REVIEWS_CHANNEL_ID,
                     description=next_description,
                 )
+            except TelegramBadRequest as e:
+                if "chat description is not modified" in str(e):
+                    return
+                raise
         except asyncio.CancelledError:
             raise
 

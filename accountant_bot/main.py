@@ -92,7 +92,10 @@ async def main() -> None:
             task.cancel()
         await asyncio.gather(*pending, return_exceptions=True)
     finally:
-        dispatcher.stop_polling()
+        try:
+            await dispatcher.stop_polling()
+        except Exception:
+            pass
 
         if telethon_client.is_connected():
             await telethon_client.disconnect()
