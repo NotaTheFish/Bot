@@ -21,6 +21,7 @@ from aiogram.types import (
 
 from .accounting import add_receipt_with_items, list_transactions_by_period, to_excel_rows
 from .config import Settings
+from .db import cancel_receipt, get_receipt_with_items, refund_receipt
 from .excel_export import build_transactions_report
 from .reviews import ReviewsService
 from .taboo import safe_send_document, safe_send_message
@@ -33,6 +34,7 @@ START_KEYBOARD = ReplyKeyboardMarkup(
     keyboard=[
         [KeyboardButton(text="📊 Статистика отзывов")],
         [KeyboardButton(text="🧾 Добавить чек")],
+[KeyboardButton(text="🔍 Найти чек"), KeyboardButton(text="🧾 Последние чеки")],
         [KeyboardButton(text="📤 Выгрузить Excel")],
         [KeyboardButton(text="🔄 Обновить описание")],
     ],
@@ -79,6 +81,10 @@ class AddCheckFSM(StatesGroup):
     item_edit_value = State()
     receipt = State()
     confirm = State()
+
+
+class ReceiptLookupFSM(StatesGroup):
+    wait_receipt_id = State()
 
 
 ITEM_CATEGORIES = ("VID", "TOKENS", "MUSHROOMS", "OTHER")
@@ -240,6 +246,213 @@ def _items_text(items: list[dict[str, Any]]) -> str:
             f"unit_price: {item['unit_price']}, total: {item['line_total']} ({item['unit_basis']})"
         )
     return "\n".join(lines)
+
+
+def _receipt_actions_keyboard(receipt_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="❌ Отменить чек", callback_data=f"receipt:cancel:{receipt_id}"),
+                InlineKeyboardButton(text="↩️ Возврат", callback_data=f"receipt:refund:{receipt_id}"),
+            ]
+        ]
+    )
+
+
+def _receipt_list_keyboard(rows: list[asyncpg.Record]) -> InlineKeyboardMarkup:
+    buttons: list[list[InlineKeyboardButton]] = []
+    for row in rows:
+        created_at = row.get("created_at")
+        date_label = created_at.strftime("%d.%m") if created_at else "--.--"
+        total = row.get("total") or Decimal("0")
+        currency = row.get("currency") or "RUB"
+        buttons.append(
+            [
+                InlineKeyboardButton(
+                    text=f"#{row['id']} {date_label} {total} {currency}",
+                    callback_data=f"receipt:open:{row['id']}",
+                )
+            ]
+        )
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
+def _receipt_details_text(receipt: asyncpg.Record, items: list[asyncpg.Record]) -> str:
+    total = sum((Decimal(str(item.get("line_total") or "0")) for item in items), Decimal("0"))
+    lines = [
+        f"🧾 Чек #{receipt['id']}",
+        f"Дата: {receipt['created_at'].strftime('%d.%m.%Y %H:%M') if receipt.get('created_at') else '-'}",
+        f"Статус: {receipt.get('status') or 'created'}",
+        f"Валюта: {receipt.get('currency') or 'RUB'}",
+        f"Способ оплаты: {receipt.get('pay_method') or '-'}",
+        f"Комментарий: {receipt.get('note') or '-'}",
+        f"Сумма: {total} {receipt.get('currency') or 'RUB'}",
+        "",
+        "Позиции:",
+    ]
+    if not items:
+        lines.append("— Нет позиций")
+    else:
+        for idx, item in enumerate(items, start=1):
+            lines.append(
+                f"{idx}. [{item.get('category') or 'OTHER'}] {item.get('item_name') or '-'} — "
+                f"qty: {item.get('qty') or '0'}, unit: {item.get('unit_price') or '0'}, "
+                f"total: {item.get('line_total') or '0'}"
+            )
+            if item.get("note"):
+                lines.append(f"   💬 {item['note']}")
+    return "\n".join(lines)
+
+
+async def _send_receipt_details(message: Message, pool: asyncpg.Pool, receipt_id: int) -> None:
+    payload = await get_receipt_with_items(pool, receipt_id)
+    if payload is None:
+        await safe_send_message(message.bot, message.chat.id, "Чек не найден.")
+        return
+
+    receipt = payload["receipt"]
+    items = payload["items"]
+    await safe_send_message(
+        message.bot,
+        message.chat.id,
+        _receipt_details_text(receipt, items),
+        reply_markup=_receipt_actions_keyboard(int(receipt["id"])),
+    )
+
+    file_id = receipt.get("receipt_file_id")
+    file_type = receipt.get("receipt_file_type")
+    if file_id and file_type == "photo":
+        await message.bot.send_photo(chat_id=message.chat.id, photo=file_id)
+    elif file_id and file_type == "document":
+        await message.bot.send_document(chat_id=message.chat.id, document=file_id)
+
+
+async def _fetch_recent_receipts(pool: asyncpg.Pool, limit: int = 10) -> list[asyncpg.Record]:
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT
+                r.id,
+                r.created_at,
+                r.currency,
+                COALESCE(SUM(ri.line_total), 0) AS total
+            FROM receipts r
+            LEFT JOIN receipt_items ri ON ri.receipt_id = r.id
+            GROUP BY r.id, r.created_at, r.currency
+            ORDER BY r.created_at DESC, r.id DESC
+            LIMIT $1
+            """,
+            int(limit),
+        )
+    return list(rows)
+
+
+@router.message(F.text == "🔍 Найти чек")
+async def start_receipt_lookup(message: Message, state: FSMContext, settings: Settings) -> None:
+    if not await _check_access(message, settings):
+        return
+    await state.clear()
+    await state.set_state(ReceiptLookupFSM.wait_receipt_id)
+    await safe_send_message(
+        message.bot,
+        message.chat.id,
+        "Введите ID чека:",
+        reply_markup=NAV_BACK_CANCEL,
+    )
+
+
+@router.message(ReceiptLookupFSM.wait_receipt_id)
+async def process_receipt_lookup(message: Message, state: FSMContext, pool: asyncpg.Pool) -> None:
+    text = (message.text or "").strip()
+    if _is_cancel(text) or _is_back(text):
+        await state.clear()
+        await safe_send_message(message.bot, message.chat.id, "Поиск чека завершён.", reply_markup=START_KEYBOARD)
+        return
+    if not text.isdigit():
+        await safe_send_message(message.bot, message.chat.id, "ID должен быть числом.", reply_markup=NAV_BACK_CANCEL)
+        return
+
+    await _send_receipt_details(message, pool, int(text))
+    await state.clear()
+    await safe_send_message(message.bot, message.chat.id, "Выберите действие:", reply_markup=START_KEYBOARD)
+
+
+@router.message(F.text == "🧾 Последние чеки")
+async def show_recent_receipts(message: Message, settings: Settings, pool: asyncpg.Pool) -> None:
+    if not await _check_access(message, settings):
+        return
+    rows = await _fetch_recent_receipts(pool, limit=10)
+    if not rows:
+        await safe_send_message(message.bot, message.chat.id, "Чеки пока отсутствуют.")
+        return
+    await safe_send_message(
+        message.bot,
+        message.chat.id,
+        "Последние чеки:",
+        reply_markup=_receipt_list_keyboard(rows),
+    )
+
+
+@router.callback_query(F.data.startswith("receipt:open:"))
+async def open_receipt_from_list(callback: CallbackQuery, settings: Settings, pool: asyncpg.Pool) -> None:
+    if not await _check_access(callback, settings):
+        return
+    if callback.message is None:
+        await callback.answer()
+        return
+
+    receipt_id_raw = callback.data.split(":")[-1]
+    if not receipt_id_raw.isdigit():
+        await callback.answer("Некорректный ID", show_alert=True)
+        return
+    await _send_receipt_details(callback.message, pool, int(receipt_id_raw))
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("receipt:cancel:"))
+async def cancel_receipt_action(callback: CallbackQuery, settings: Settings, pool: asyncpg.Pool) -> None:
+    if not await _check_access(callback, settings):
+        return
+    if callback.message is None:
+        await callback.answer()
+        return
+
+    receipt_id_raw = callback.data.split(":")[-1]
+    if not receipt_id_raw.isdigit():
+        await callback.answer("Некорректный ID", show_alert=True)
+        return
+
+    row = await cancel_receipt(pool, receipt_id=int(receipt_id_raw))
+    if row is None:
+        await callback.answer("Чек не найден", show_alert=True)
+        return
+
+    await safe_send_message(callback.message.bot, callback.message.chat.id, f"Чек #{receipt_id_raw} отменён.")
+    await _send_receipt_details(callback.message, pool, int(receipt_id_raw))
+    await callback.answer("Статус обновлён")
+
+
+@router.callback_query(F.data.startswith("receipt:refund:"))
+async def refund_receipt_action(callback: CallbackQuery, settings: Settings, pool: asyncpg.Pool) -> None:
+    if not await _check_access(callback, settings):
+        return
+    if callback.message is None:
+        await callback.answer()
+        return
+
+    receipt_id_raw = callback.data.split(":")[-1]
+    if not receipt_id_raw.isdigit():
+        await callback.answer("Некорректный ID", show_alert=True)
+        return
+
+    row = await refund_receipt(pool, receipt_id=int(receipt_id_raw))
+    if row is None:
+        await callback.answer("Чек не найден", show_alert=True)
+        return
+
+    await safe_send_message(callback.message.bot, callback.message.chat.id, f"Возврат по чеку #{receipt_id_raw} выполнен.")
+    await _send_receipt_details(callback.message, pool, int(receipt_id_raw))
+    await callback.answer("Статус обновлён")
 
 
 async def _cancel_add_check(message: Message, state: FSMContext) -> None:
