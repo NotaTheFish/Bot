@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 from typing import Any, Optional, Sequence
 
 import asyncpg
@@ -379,4 +380,173 @@ async def fetch_transaction_by_id(pool: asyncpg.Pool, *, transaction_id: int) ->
             WHERE id = $1
             """,
             int(transaction_id),
+        )
+
+
+def _period_start(period: str) -> Optional[datetime]:
+    period_normalized = (period or "").strip().lower()
+    now = datetime.now(timezone.utc)
+
+    if period_normalized == "all":
+        return None
+    if period_normalized in {"day", "1day", "today"}:
+        return now - timedelta(days=1)
+    if period_normalized in {"7days", "week"}:
+        return now - timedelta(days=7)
+    if period_normalized in {"30days", "month"}:
+        return now - timedelta(days=30)
+
+    raise ValueError("unsupported period")
+
+
+async def insert_receipt(
+    pool: asyncpg.Pool,
+    *,
+    admin_id: int,
+    currency: str = "RUB",
+    pay_method: Optional[str] = None,
+    note: Optional[str] = None,
+    receipt_file_id: Optional[str] = None,
+    receipt_file_type: Optional[str] = None,
+    status: str = "created",
+) -> asyncpg.Record:
+    async with pool.acquire() as conn:
+        return await conn.fetchrow(
+            """
+            INSERT INTO receipts (
+                admin_id,
+                currency,
+                pay_method,
+                note,
+                receipt_file_id,
+                receipt_file_type,
+                status
+            )
+            VALUES ($1, $2, $3, $4, $5, $6, $7)
+            RETURNING *
+            """,
+            int(admin_id),
+            str(currency),
+            pay_method,
+            note,
+            receipt_file_id,
+            receipt_file_type,
+            str(status),
+        )
+
+
+async def insert_receipt_item(
+    pool: asyncpg.Pool,
+    *,
+    receipt_id: int,
+    item_name: str,
+    category: Optional[str] = None,
+    qty: Optional[str] = None,
+    unit_price: Optional[str] = None,
+    unit_basis: Optional[str] = None,
+    line_total: Optional[str] = None,
+    note: Optional[str] = None,
+) -> asyncpg.Record:
+    async with pool.acquire() as conn:
+        return await conn.fetchrow(
+            """
+            INSERT INTO receipt_items (
+                receipt_id,
+                category,
+                item_name,
+                qty,
+                unit_price,
+                unit_basis,
+                line_total,
+                note
+            )
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+            RETURNING *
+            """,
+            int(receipt_id),
+            category,
+            str(item_name),
+            qty,
+            unit_price,
+            unit_basis,
+            line_total,
+            note,
+        )
+
+
+async def get_receipt_with_items(pool: asyncpg.Pool, receipt_id: int) -> Optional[dict[str, Any]]:
+    async with pool.acquire() as conn:
+        receipt = await conn.fetchrow(
+            """
+            SELECT *
+            FROM receipts
+            WHERE id = $1
+            """,
+            int(receipt_id),
+        )
+        if receipt is None:
+            return None
+
+        items = await conn.fetch(
+            """
+            SELECT *
+            FROM receipt_items
+            WHERE receipt_id = $1
+            ORDER BY created_at ASC, id ASC
+            """,
+            int(receipt_id),
+        )
+
+    return {"receipt": receipt, "items": list(items)}
+
+
+async def list_receipts_by_period(pool: asyncpg.Pool, *, period: str) -> list[asyncpg.Record]:
+    start = _period_start(period)
+    async with pool.acquire() as conn:
+        if start is None:
+            rows = await conn.fetch(
+                """
+                SELECT *
+                FROM receipts
+                ORDER BY created_at DESC, id DESC
+                """
+            )
+        else:
+            rows = await conn.fetch(
+                """
+                SELECT *
+                FROM receipts
+                WHERE created_at >= $1
+                ORDER BY created_at DESC, id DESC
+                """,
+                start,
+            )
+    return list(rows)
+
+
+async def cancel_receipt(pool: asyncpg.Pool, *, receipt_id: int) -> Optional[asyncpg.Record]:
+    async with pool.acquire() as conn:
+        return await conn.fetchrow(
+            """
+            UPDATE receipts
+            SET status = 'canceled',
+                canceled_at = NOW()
+            WHERE id = $1
+            RETURNING *
+            """,
+            int(receipt_id),
+        )
+
+
+async def refund_receipt(pool: asyncpg.Pool, *, receipt_id: int) -> Optional[asyncpg.Record]:
+    async with pool.acquire() as conn:
+        return await conn.fetchrow(
+            """
+            UPDATE receipts
+            SET status = 'refunded',
+                refunded_at = NOW()
+            WHERE id = $1
+            RETURNING *
+            """,
+            int(receipt_id),
         )
