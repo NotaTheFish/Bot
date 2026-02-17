@@ -1,0 +1,45 @@
+from __future__ import annotations
+
+from typing import Optional
+
+import asyncpg
+
+from .db import fetch_transaction_by_id, fetch_transactions, insert_transaction
+
+
+async def add_transaction(
+    pool: asyncpg.Pool,
+    *,
+    admin_id: int,
+    amount_kopecks: int,
+    review_id: Optional[int] = None,
+    currency: str = "RUB",
+    note: Optional[str] = None,
+) -> asyncpg.Record:
+    return await insert_transaction(
+        pool,
+        admin_id=admin_id,
+        amount_kopecks=amount_kopecks,
+        review_id=review_id,
+        currency=currency,
+        note=note,
+    )
+
+
+async def list_transactions(
+    pool: asyncpg.Pool,
+    *,
+    admin_id: Optional[int] = None,
+    limit: int = 100,
+    offset: int = 0,
+) -> list[asyncpg.Record]:
+    return await fetch_transactions(
+        pool,
+        admin_id=admin_id,
+        limit=limit,
+        offset=offset,
+    )
+
+
+async def get_transaction(pool: asyncpg.Pool, *, transaction_id: int) -> Optional[asyncpg.Record]:
+    return await fetch_transaction_by_id(pool, transaction_id=transaction_id)
