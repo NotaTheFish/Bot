@@ -10,7 +10,7 @@ from telethon.sessions import StringSession
 
 from .admin_bot import register_admin_handlers
 from .config import load_settings
-from .db import create_pool, init_db
+from .db import create_pool, ensure_schema
 from .listener import register_listener_handlers
 from .reviews import ReviewsService
 from .taboo import load_taboo
@@ -26,7 +26,7 @@ async def main() -> None:
     load_taboo(settings)
 
     pool = await create_pool(settings.DATABASE_URL)
-    await init_db(pool)
+    await ensure_schema(pool)
 
     bot = Bot(token=settings.ACCOUNTANT_BOT_TOKEN)
     dispatcher = Dispatcher()

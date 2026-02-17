@@ -9,8 +9,8 @@ async def create_pool(database_url: str) -> asyncpg.Pool:
     return await asyncpg.create_pool(dsn=database_url, min_size=1, max_size=5)
 
 
-async def init_db(pool: asyncpg.Pool) -> None:
-    """Initialize database structures required by accountant bot."""
+async def ensure_schema(pool: asyncpg.Pool) -> None:
+    """Ensure database schema exists and is compatible with current bot version."""
     async with pool.acquire() as conn:
         await conn.execute(
             """
@@ -91,6 +91,92 @@ async def init_db(pool: asyncpg.Pool) -> None:
             ADD COLUMN IF NOT EXISTS receipt_file_id TEXT
             """
         )
+
+        await conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS receipts (
+                id BIGSERIAL PRIMARY KEY,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                admin_id BIGINT NOT NULL,
+                currency TEXT NOT NULL DEFAULT 'RUB',
+                pay_method TEXT,
+                note TEXT,
+                receipt_file_id TEXT,
+                receipt_file_type TEXT,
+                status TEXT NOT NULL DEFAULT 'created',
+                canceled_at TIMESTAMPTZ,
+                refunded_at TIMESTAMPTZ
+            )
+            """
+        )
+        await conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS receipt_items (
+                id BIGSERIAL PRIMARY KEY,
+                receipt_id BIGINT NOT NULL REFERENCES receipts(id) ON DELETE CASCADE,
+                category TEXT,
+                item_name TEXT NOT NULL,
+                qty NUMERIC,
+                unit_price NUMERIC,
+                unit_basis TEXT,
+                line_total NUMERIC,
+                note TEXT,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+            """
+        )
+        await conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_receipts_created_at_desc
+            ON receipts(created_at DESC)
+            """
+        )
+        await conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_receipts_admin_id_created_at_desc
+            ON receipts(admin_id, created_at DESC)
+            """
+        )
+        await conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_receipt_items_receipt_id
+            ON receipt_items(receipt_id)
+            """
+        )
+        await conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_receipt_items_category
+            ON receipt_items(category)
+            """
+        )
+        await conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_receipt_items_created_at_desc
+            ON receipt_items(created_at DESC)
+            """
+        )
+
+        # Backward-compatible migration for environments where table may have
+        # been created manually with partial set of columns.
+        for alter_sql in (
+            "ALTER TABLE receipts ADD COLUMN IF NOT EXISTS receipt_file_type TEXT",
+            "ALTER TABLE receipts ADD COLUMN IF NOT EXISTS status TEXT",
+            "ALTER TABLE receipts ADD COLUMN IF NOT EXISTS canceled_at TIMESTAMPTZ",
+            "ALTER TABLE receipts ADD COLUMN IF NOT EXISTS refunded_at TIMESTAMPTZ",
+            "ALTER TABLE receipt_items ADD COLUMN IF NOT EXISTS unit_basis TEXT",
+            "ALTER TABLE receipt_items ADD COLUMN IF NOT EXISTS line_total NUMERIC",
+        ):
+            try:
+                await conn.execute(alter_sql)
+            except Exception:
+                # Keep startup resilient and idempotent when old inconsistent
+                # schemas are encountered.
+                pass
+
+
+async def init_db(pool: asyncpg.Pool) -> None:
+    """Backward-compatible wrapper for schema initialization."""
+    await ensure_schema(pool)
 
 
 async def insert_review(
