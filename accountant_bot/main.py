@@ -12,6 +12,7 @@ from .admin_bot import register_admin_handlers
 from .config import load_settings
 from .db import create_pool, init_db
 from .listener import register_listener_handlers
+from .reviews import ReviewsService
 
 
 async def main() -> None:
@@ -22,19 +23,21 @@ async def main() -> None:
 
     settings = load_settings()
 
-    pool = await create_pool(settings.database_url)
+    pool = await create_pool(settings.DATABASE_URL)
     await init_db(pool)
 
-    bot = Bot(token=settings.bot_token)
+    bot = Bot(token=settings.ACCOUNTANT_BOT_TOKEN)
     dispatcher = Dispatcher()
 
     telethon_client = TelegramClient(
-        StringSession(settings.accountant_tg_string_session),
-        settings.telegram_api_id,
-        settings.telegram_api_hash,
+        StringSession(settings.ACCOUNTANT_TG_STRING_SESSION),
+        settings.TG_API_ID,
+        settings.TG_API_HASH,
     )
 
-    register_listener_handlers(dispatcher)
+    reviews_service = ReviewsService(pool, bot, settings)
+
+    register_listener_handlers(telethon_client, reviews_service, settings)
     register_admin_handlers(dispatcher)
 
     stop_event = asyncio.Event()
