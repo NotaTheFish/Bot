@@ -24,6 +24,7 @@ from .accounting import add_transaction, list_transactions_by_period, to_excel_r
 from .config import Settings
 from .excel_export import build_transactions_report
 from .reviews import ReviewsService
+from .taboo import safe_send_document, safe_send_message
 
 router = Router(name="admin")
 
@@ -91,10 +92,10 @@ async def _check_access(event: Message | CallbackQuery, settings: Settings) -> b
         return True
 
     if isinstance(event, Message):
-        await event.answer(NO_ACCESS_TEXT)
+        await safe_send_message(event.bot, event.chat.id, NO_ACCESS_TEXT)
     else:
         if event.message:
-            await event.message.answer(NO_ACCESS_TEXT)
+            await safe_send_message(event.message.bot, event.message.chat.id, NO_ACCESS_TEXT)
         await event.answer()
     return False
 
@@ -150,25 +151,18 @@ async def _collect_reviews_stats(pool: asyncpg.Pool, settings: Settings, period:
     return int(deleted or 0), int(active or 0)
 
 
-async def safe_send_document(message: Message, document: BufferedInputFile, caption: str) -> None:
-    try:
-        await message.bot.send_document(chat_id=message.chat.id, document=document, caption=caption)
-    except Exception:
-        await message.answer("Не удалось отправить файл. Попробуйте позже.")
-
-
 @router.message(CommandStart())
 async def handle_start(message: Message, settings: Settings) -> None:
     if not await _check_access(message, settings):
         return
-    await message.answer("Выберите действие:", reply_markup=START_KEYBOARD)
+    await safe_send_message(message.bot, message.chat.id, "Выберите действие:", reply_markup=START_KEYBOARD)
 
 
 @router.message(F.text == "📊 Статистика отзывов")
 async def ask_stats_period(message: Message, settings: Settings) -> None:
     if not await _check_access(message, settings):
         return
-    await message.answer("Выберите период:", reply_markup=STATS_KEYBOARD)
+    await safe_send_message(message.bot, message.chat.id, "Выберите период:", reply_markup=STATS_KEYBOARD)
 
 
 @router.callback_query(F.data.startswith("stats:"))
@@ -185,11 +179,13 @@ async def show_stats(callback: CallbackQuery, settings: Settings, reviews_servic
     added = await reviews_service.get_stats_reviews(period)
     deleted, active = await _collect_reviews_stats(pool, settings, period)
 
-    await callback.message.answer(
+    await safe_send_message(
+        callback.message.bot,
+        callback.message.chat.id,
         f"📊 Статистика ({period_to_label[period]})\n"
         f"Добавлено: {added}\n"
         f"Удалено: {deleted}\n"
-        f"Активных: {active}"
+        f"Активных: {active}",
     )
     await callback.answer()
 
@@ -200,14 +196,14 @@ async def start_add_check(message: Message, state: FSMContext, settings: Setting
         return
     await state.clear()
     await state.set_state(AddCheckFSM.item)
-    await message.answer("Введите item (или '-' для пустого):")
+    await safe_send_message(message.bot, message.chat.id, "Введите item (или '-' для пустого):")
 
 
 @router.message(AddCheckFSM.item)
 async def add_check_item(message: Message, state: FSMContext) -> None:
     await state.update_data(item=None if message.text == "-" else (message.text or "").strip())
     await state.set_state(AddCheckFSM.qty)
-    await message.answer("Введите qty (число):")
+    await safe_send_message(message.bot, message.chat.id, "Введите qty (число):")
 
 
 @router.message(AddCheckFSM.qty)
@@ -215,12 +211,12 @@ async def add_check_qty(message: Message, state: FSMContext) -> None:
     try:
         qty = Decimal((message.text or "").replace(",", ".").strip())
     except InvalidOperation:
-        await message.answer("qty должен быть числом. Попробуйте ещё раз.")
+        await safe_send_message(message.bot, message.chat.id, "qty должен быть числом. Попробуйте ещё раз.")
         return
 
     await state.update_data(qty=str(qty))
     await state.set_state(AddCheckFSM.unit_price)
-    await message.answer("Введите unit_price (число):")
+    await safe_send_message(message.bot, message.chat.id, "Введите unit_price (число):")
 
 
 @router.message(AddCheckFSM.unit_price)
@@ -228,12 +224,12 @@ async def add_check_unit_price(message: Message, state: FSMContext) -> None:
     try:
         unit_price = Decimal((message.text or "").replace(",", ".").strip())
     except InvalidOperation:
-        await message.answer("unit_price должен быть числом. Попробуйте ещё раз.")
+        await safe_send_message(message.bot, message.chat.id, "unit_price должен быть числом. Попробуйте ещё раз.")
         return
 
     await state.update_data(unit_price=str(unit_price))
     await state.set_state(AddCheckFSM.currency)
-    await message.answer("Введите currency (или '-' для пустого, по умолчанию RUB):")
+    await safe_send_message(message.bot, message.chat.id, "Введите currency (или '-' для пустого, по умолчанию RUB):")
 
 
 @router.message(AddCheckFSM.currency)
@@ -242,21 +238,21 @@ async def add_check_currency(message: Message, state: FSMContext) -> None:
     currency = "RUB" if currency_raw == "-" or not currency_raw else currency_raw.upper()
     await state.update_data(currency=currency)
     await state.set_state(AddCheckFSM.pay_method)
-    await message.answer("Введите pay_method (или '-' для пустого):")
+    await safe_send_message(message.bot, message.chat.id, "Введите pay_method (или '-' для пустого):")
 
 
 @router.message(AddCheckFSM.pay_method)
 async def add_check_pay_method(message: Message, state: FSMContext) -> None:
     await state.update_data(pay_method=None if message.text == "-" else (message.text or "").strip())
     await state.set_state(AddCheckFSM.note)
-    await message.answer("Введите note (или '-' для пустого):")
+    await safe_send_message(message.bot, message.chat.id, "Введите note (или '-' для пустого):")
 
 
 @router.message(AddCheckFSM.note)
 async def add_check_note(message: Message, state: FSMContext) -> None:
     await state.update_data(note=None if message.text == "-" else (message.text or "").strip())
     await state.set_state(AddCheckFSM.receipt)
-    await message.answer("Отправьте фото/документ чека (или '-' для пустого):")
+    await safe_send_message(message.bot, message.chat.id, "Отправьте фото/документ чека (или '-' для пустого):")
 
 
 @router.message(AddCheckFSM.receipt)
@@ -274,7 +270,7 @@ async def add_check_receipt(message: Message, state: FSMContext, pool: asyncpg.P
         elif message.document:
             receipt_file_id = message.document.file_id
         else:
-            await message.answer("Нужно отправить фото/документ или '-'.")
+            await safe_send_message(message.bot, message.chat.id, "Нужно отправить фото/документ или '-'.")
             return
 
     qty = Decimal(data["qty"])
@@ -297,9 +293,11 @@ async def add_check_receipt(message: Message, state: FSMContext, pool: asyncpg.P
     )
 
     await state.clear()
-    await message.answer(
+    await safe_send_message(
+        message.bot,
+        message.chat.id,
         f"Чек сохранён.\nitem: {data.get('item') or '-'}\nqty: {qty}\n"
-        f"unit_price: {unit_price}\ntotal: {total}"
+        f"unit_price: {unit_price}\ntotal: {total}",
     )
 
 
@@ -307,7 +305,7 @@ async def add_check_receipt(message: Message, state: FSMContext, pool: asyncpg.P
 async def ask_export_period(message: Message, settings: Settings) -> None:
     if not await _check_access(message, settings):
         return
-    await message.answer("Выберите период выгрузки:", reply_markup=EXPORT_KEYBOARD)
+    await safe_send_message(message.bot, message.chat.id, "Выберите период выгрузки:", reply_markup=EXPORT_KEYBOARD)
 
 
 @router.callback_query(F.data.startswith("export:"))
@@ -334,6 +332,11 @@ async def export_excel(callback: CallbackQuery, settings: Settings, pool: asyncp
     document = BufferedInputFile(report_bytes, filename=filename)
 
     if callback.message:
-        await safe_send_document(callback.message, document, caption=f"Выгрузка: {label_by_period[period]}")
+        await safe_send_document(
+            callback.message.bot,
+            callback.message.chat.id,
+            document,
+            caption=f"Выгрузка: {label_by_period[period]}",
+        )
 
     await callback.answer("Файл отправлен")

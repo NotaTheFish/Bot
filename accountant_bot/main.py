@@ -13,6 +13,7 @@ from .config import load_settings
 from .db import create_pool, init_db
 from .listener import register_listener_handlers
 from .reviews import ReviewsService
+from .taboo import load_taboo
 
 
 async def main() -> None:
@@ -22,6 +23,7 @@ async def main() -> None:
     )
 
     settings = load_settings()
+    load_taboo(settings)
 
     pool = await create_pool(settings.DATABASE_URL)
     await init_db(pool)
