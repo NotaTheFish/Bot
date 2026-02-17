@@ -19,9 +19,9 @@ from aiogram.types import (
     ReplyKeyboardMarkup,
 )
 
-from .accounting import add_receipt_with_items, list_transactions_by_period, to_excel_rows
+from .accounting import add_receipt_with_items
 from .config import Settings
-from .db import cancel_receipt, get_receipt_with_items, refund_receipt
+from .db import cancel_receipt, get_receipt_with_items, list_receipts_by_period, refund_receipt
 from .excel_export import build_transactions_report
 from .reviews import ReviewsService
 from .taboo import safe_send_document, safe_send_message
@@ -932,10 +932,43 @@ async def export_excel(callback: CallbackQuery, settings: Settings, pool: asyncp
         return
 
     period_for_filter = {"day": "day", "week": "7days", "month": "30days", "all": "all"}[period]
-    rows = await list_transactions_by_period(pool, period=period_for_filter)
+    receipts = await list_receipts_by_period(pool, period=period_for_filter)
 
-    report_bytes = build_transactions_report(to_excel_rows(rows))
-    filename = f"transactions_{period}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xls"
+    export_rows: list[dict[str, Any]] = []
+    for receipt in receipts:
+        receipt_data = dict(receipt)
+        admin_id = int(receipt_data.get("admin_id") or 0)
+        admin_signature = f"id: {admin_id}"
+        try:
+            chat = await callback.bot.get_chat(admin_id)
+            if chat.username:
+                admin_signature = f"@{chat.username} (id: {admin_id})"
+            else:
+                full_name = " ".join(part for part in [chat.first_name, chat.last_name] if part).strip()
+                admin_signature = f"{full_name or 'Unknown'} (id: {admin_id})"
+        except Exception:
+            admin_signature = f"id: {admin_id}"
+
+        payload = await get_receipt_with_items(pool, int(receipt_data["id"]))
+        items = [] if payload is None else [dict(item) for item in payload["items"]]
+
+        export_rows.append(
+            {
+                "receipt_id": receipt_data.get("id"),
+                "created_at": receipt_data.get("created_at"),
+                "admin": admin_signature,
+                "currency": receipt_data.get("currency"),
+                "pay_method": receipt_data.get("pay_method"),
+                "total_sum": sum((Decimal(str(item.get("line_total") or "0")) for item in items), Decimal("0")),
+                "note": receipt_data.get("note"),
+                "receipt_file_id": receipt_data.get("receipt_file_id"),
+                "status": receipt_data.get("status"),
+                "items": items,
+            }
+        )
+
+    report_bytes = build_transactions_report(export_rows)
+    filename = f"transactions_{period}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
     document = BufferedInputFile(report_bytes, filename=filename)
 
     if callback.message:

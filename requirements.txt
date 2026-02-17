@@ -5,3 +5,4 @@ pytz
 telethon
 aiohttp
 python-dotenv
+openpyxl
