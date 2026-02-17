@@ -89,23 +89,29 @@ class ReceiptLookupFSM(StatesGroup):
 
 ITEM_CATEGORIES = ("VID", "TOKENS", "MUSHROOMS", "OTHER")
 
+BTN_BACK = "Назад"
+BTN_CANCEL = "Отменить"
+BTN_SKIP = "Пропустить"
+BTN_SAVE = "Сохранить"
+BTN_FIX = "Исправить"
+
 NAV_BACK_CANCEL = ReplyKeyboardMarkup(
-    keyboard=[[KeyboardButton(text="⬅️ Назад"), KeyboardButton(text="❌ Отменить")]],
+    keyboard=[[KeyboardButton(text=BTN_BACK), KeyboardButton(text=BTN_CANCEL)]],
     resize_keyboard=True,
 )
 NAV_BACK_CANCEL_SKIP = ReplyKeyboardMarkup(
     keyboard=[
-        [KeyboardButton(text="⏭ Пропустить")],
-        [KeyboardButton(text="⬅️ Назад"), KeyboardButton(text="❌ Отменить")],
+        [KeyboardButton(text=BTN_SKIP)],
+        [KeyboardButton(text=BTN_BACK), KeyboardButton(text=BTN_CANCEL)],
     ],
     resize_keyboard=True,
 )
 ITEMS_MENU_KEYBOARD = ReplyKeyboardMarkup(
     keyboard=[
         [KeyboardButton(text="➕ Добавить позицию")],
-        [KeyboardButton(text="✏️ Изменить позицию"), KeyboardButton(text="🗑 Удалить позицию")],
+        [KeyboardButton(text=f"✏️ {BTN_FIX} позицию"), KeyboardButton(text="🗑 Удалить позицию")],
         [KeyboardButton(text="➡️ К файлу")],
-        [KeyboardButton(text="⬅️ Назад"), KeyboardButton(text="❌ Отменить")],
+        [KeyboardButton(text=BTN_BACK), KeyboardButton(text=BTN_CANCEL)],
     ],
     resize_keyboard=True,
 )
@@ -113,23 +119,23 @@ CATEGORY_KEYBOARD = ReplyKeyboardMarkup(
     keyboard=[
         [KeyboardButton(text="VID"), KeyboardButton(text="TOKENS")],
         [KeyboardButton(text="MUSHROOMS"), KeyboardButton(text="OTHER")],
-        [KeyboardButton(text="⬅️ Назад"), KeyboardButton(text="❌ Отменить")],
+        [KeyboardButton(text=BTN_BACK), KeyboardButton(text=BTN_CANCEL)],
     ],
     resize_keyboard=True,
 )
 CONFIRM_KEYBOARD = ReplyKeyboardMarkup(
     keyboard=[
-        [KeyboardButton(text="✅ Сохранить")],
-        [KeyboardButton(text="⬅️ Назад"), KeyboardButton(text="❌ Отменить")],
+        [KeyboardButton(text=BTN_SAVE)],
+        [KeyboardButton(text=BTN_BACK), KeyboardButton(text=BTN_CANCEL)],
     ],
     resize_keyboard=True,
 )
 EDIT_FIELD_KEYBOARD = ReplyKeyboardMarkup(
     keyboard=[
-        [KeyboardButton(text="Категория"), KeyboardButton(text="Название")],
+        [KeyboardButton(text="Категория"), KeyboardButton(text="Название товара")],
         [KeyboardButton(text="Количество"), KeyboardButton(text="Цена")],
         [KeyboardButton(text="Комментарий")],
-        [KeyboardButton(text="⬅️ Назад"), KeyboardButton(text="❌ Отменить")],
+        [KeyboardButton(text=BTN_BACK), KeyboardButton(text=BTN_CANCEL)],
     ],
     resize_keyboard=True,
 )
@@ -212,16 +218,21 @@ async def refresh_about(message: Message, settings: Settings, reviews_service: R
 
 
 def _is_cancel(text: str) -> bool:
-    return text == "❌ Отменить"
+    return text in {BTN_CANCEL, "❌ Отменить"}
 
 
 def _is_back(text: str) -> bool:
-    return text == "⬅️ Назад"
+    return text in {BTN_BACK, "⬅️ Назад"}
 
 
 def _is_skip(text: str) -> bool:
-    return text == "⏭ Пропустить"
+    return text in {BTN_SKIP, "⏭ Пропустить"}
 
+
+
+
+def _unit_price_prompt(category: str) -> str:
+    return "Цена за 1000 грибов" if category == "MUSHROOMS" else "Цена за 1"
 
 def _parse_decimal(raw: str) -> Optional[Decimal]:
     try:
@@ -242,8 +253,8 @@ def _items_text(items: list[dict[str, Any]]) -> str:
     lines = ["Позиции:"]
     for idx, item in enumerate(items, start=1):
         lines.append(
-            f"{idx}. [{item['category']}] {item['item_name']} — qty: {item['qty']}, "
-            f"unit_price: {item['unit_price']}, total: {item['line_total']} ({item['unit_basis']})"
+            f"{idx}. [{item['category']}] {item['item_name']} — Количество: {item['qty']}, "
+            f"{_unit_price_prompt(item['category'])}: {item['unit_price']}, Итог: {item['line_total']}"
         )
     return "\n".join(lines)
 
@@ -296,8 +307,9 @@ def _receipt_details_text(receipt: asyncpg.Record, items: list[asyncpg.Record]) 
         for idx, item in enumerate(items, start=1):
             lines.append(
                 f"{idx}. [{item.get('category') or 'OTHER'}] {item.get('item_name') or '-'} — "
-                f"qty: {item.get('qty') or '0'}, unit: {item.get('unit_price') or '0'}, "
-                f"total: {item.get('line_total') or '0'}"
+                f"Количество: {item.get('qty') or '0'}, "
+                f"{_unit_price_prompt(item.get('category') or 'OTHER')}: {item.get('unit_price') or '0'}, "
+                f"Итог: {item.get('line_total') or '0'}"
             )
             if item.get("note"):
                 lines.append(f"   💬 {item['note']}")
@@ -485,7 +497,7 @@ async def _show_summary(message: Message, state: FSMContext) -> None:
         f"Способ оплаты: {data.get('pay_method') or '-'}\n"
         f"Комментарий: {data.get('note') or '-'}\n"
         f"Файл чека: {'есть' if data.get('receipt_file_id') else 'нет'}\n"
-        f"Сумма по позициям: {total}\n\n"
+        f"Итог по позициям: {total}\n\n"
         f"{_items_text(items)}",
         reply_markup=CONFIRM_KEYBOARD,
     )
@@ -498,7 +510,7 @@ async def start_add_check(message: Message, state: FSMContext, settings: Setting
     await state.clear()
     await state.update_data(items=[])
     await state.set_state(AddCheckFSM.currency)
-    await safe_send_message(message.bot, message.chat.id, "Выберите валюту (например RUB, USD):", reply_markup=NAV_BACK_CANCEL)
+    await safe_send_message(message.bot, message.chat.id, "Валюта (например RUB, USD):", reply_markup=NAV_BACK_CANCEL)
 
 
 @router.message(AddCheckFSM.currency)
@@ -513,7 +525,7 @@ async def add_check_currency(message: Message, state: FSMContext) -> None:
 
     await state.update_data(currency=(text or "RUB").upper())
     await state.set_state(AddCheckFSM.pay_method)
-    await safe_send_message(message.bot, message.chat.id, "Введите способ оплаты:", reply_markup=NAV_BACK_CANCEL_SKIP)
+    await safe_send_message(message.bot, message.chat.id, "Способ оплаты:", reply_markup=NAV_BACK_CANCEL_SKIP)
 
 
 @router.message(AddCheckFSM.pay_method)
@@ -524,13 +536,13 @@ async def add_check_pay_method(message: Message, state: FSMContext) -> None:
         return
     if _is_back(text):
         await state.set_state(AddCheckFSM.currency)
-        await safe_send_message(message.bot, message.chat.id, "Выберите валюту:", reply_markup=NAV_BACK_CANCEL)
+        await safe_send_message(message.bot, message.chat.id, "Валюта:", reply_markup=NAV_BACK_CANCEL)
         return
 
     pay_method = None if _is_skip(text) or not text else text
     await state.update_data(pay_method=pay_method)
     await state.set_state(AddCheckFSM.note)
-    await safe_send_message(message.bot, message.chat.id, "Введите комментарий к чеку:", reply_markup=NAV_BACK_CANCEL_SKIP)
+    await safe_send_message(message.bot, message.chat.id, "Комментарий к чеку:", reply_markup=NAV_BACK_CANCEL_SKIP)
 
 
 @router.message(AddCheckFSM.note)
@@ -541,7 +553,7 @@ async def add_check_note(message: Message, state: FSMContext) -> None:
         return
     if _is_back(text):
         await state.set_state(AddCheckFSM.pay_method)
-        await safe_send_message(message.bot, message.chat.id, "Введите способ оплаты:", reply_markup=NAV_BACK_CANCEL_SKIP)
+        await safe_send_message(message.bot, message.chat.id, "Способ оплаты:", reply_markup=NAV_BACK_CANCEL_SKIP)
         return
 
     note = None if _is_skip(text) or not text else text
@@ -557,7 +569,7 @@ async def add_check_items_menu(message: Message, state: FSMContext) -> None:
         return
     if _is_back(text):
         await state.set_state(AddCheckFSM.note)
-        await safe_send_message(message.bot, message.chat.id, "Введите комментарий к чеку:", reply_markup=NAV_BACK_CANCEL_SKIP)
+        await safe_send_message(message.bot, message.chat.id, "Комментарий к чеку:", reply_markup=NAV_BACK_CANCEL_SKIP)
         return
     if text == "➕ Добавить позицию":
         await state.update_data(item_draft={}, edit_index=None)
@@ -568,7 +580,7 @@ async def add_check_items_menu(message: Message, state: FSMContext) -> None:
         await state.set_state(AddCheckFSM.item_delete)
         await safe_send_message(message.bot, message.chat.id, "Введите номер позиции для удаления:", reply_markup=NAV_BACK_CANCEL)
         return
-    if text == "✏️ Изменить позицию":
+    if text in {f"✏️ {BTN_FIX} позицию", "✏️ Изменить позицию"}:
         await state.set_state(AddCheckFSM.item_edit_select)
         await safe_send_message(message.bot, message.chat.id, "Введите номер позиции для изменения:", reply_markup=NAV_BACK_CANCEL)
         return
@@ -598,7 +610,7 @@ async def add_check_item_category(message: Message, state: FSMContext) -> None:
     item_draft["category"] = text
     await state.update_data(item_draft=item_draft)
     await state.set_state(AddCheckFSM.item_name)
-    await safe_send_message(message.bot, message.chat.id, "Введите название позиции:", reply_markup=NAV_BACK_CANCEL)
+    await safe_send_message(message.bot, message.chat.id, "Название товара:", reply_markup=NAV_BACK_CANCEL)
 
 
 @router.message(AddCheckFSM.item_name)
@@ -620,7 +632,7 @@ async def add_check_item_name(message: Message, state: FSMContext) -> None:
     item_draft["item_name"] = text
     await state.update_data(item_draft=item_draft)
     await state.set_state(AddCheckFSM.item_qty)
-    await safe_send_message(message.bot, message.chat.id, "Введите количество:", reply_markup=NAV_BACK_CANCEL)
+    await safe_send_message(message.bot, message.chat.id, "Количество:", reply_markup=NAV_BACK_CANCEL)
 
 
 @router.message(AddCheckFSM.item_qty)
@@ -631,7 +643,7 @@ async def add_check_item_qty(message: Message, state: FSMContext) -> None:
         return
     if _is_back(text):
         await state.set_state(AddCheckFSM.item_name)
-        await safe_send_message(message.bot, message.chat.id, "Введите название позиции:", reply_markup=NAV_BACK_CANCEL)
+        await safe_send_message(message.bot, message.chat.id, "Название товара:", reply_markup=NAV_BACK_CANCEL)
         return
     qty = _parse_decimal(text)
     if qty is None:
@@ -643,26 +655,35 @@ async def add_check_item_qty(message: Message, state: FSMContext) -> None:
     item_draft["qty"] = str(qty)
     await state.update_data(item_draft=item_draft)
     await state.set_state(AddCheckFSM.item_unit_price)
-    await safe_send_message(message.bot, message.chat.id, "Введите цену за единицу:", reply_markup=NAV_BACK_CANCEL)
+    await safe_send_message(
+        message.bot,
+        message.chat.id,
+        f"{_unit_price_prompt(item_draft.get('category', 'OTHER'))}:",
+        reply_markup=NAV_BACK_CANCEL,
+    )
 
 
 @router.message(AddCheckFSM.item_unit_price)
 async def add_check_item_unit_price(message: Message, state: FSMContext) -> None:
     text = (message.text or "").strip()
+    data = await state.get_data()
+    item_draft = data.get("item_draft", {})
     if _is_cancel(text):
         await _cancel_add_check(message, state)
         return
     if _is_back(text):
         await state.set_state(AddCheckFSM.item_qty)
-        await safe_send_message(message.bot, message.chat.id, "Введите количество:", reply_markup=NAV_BACK_CANCEL)
+        await safe_send_message(message.bot, message.chat.id, "Количество:", reply_markup=NAV_BACK_CANCEL)
         return
     unit_price = _parse_decimal(text)
     if unit_price is None:
-        await safe_send_message(message.bot, message.chat.id, "Цена должна быть числом.")
+        await safe_send_message(
+            message.bot,
+            message.chat.id,
+            f"Поле «{_unit_price_prompt(item_draft.get('category', 'OTHER'))}» должно быть числом.",
+        )
         return
 
-    data = await state.get_data()
-    item_draft = data.get("item_draft", {})
     category = item_draft.get("category", "OTHER")
     qty = Decimal(item_draft["qty"])
     unit_basis, line_total = _calc_line(category, qty, unit_price)
@@ -682,8 +703,15 @@ async def add_check_item_note(message: Message, state: FSMContext) -> None:
         await _cancel_add_check(message, state)
         return
     if _is_back(text):
+        data = await state.get_data()
+        item_draft = data.get("item_draft", {})
         await state.set_state(AddCheckFSM.item_unit_price)
-        await safe_send_message(message.bot, message.chat.id, "Введите цену за единицу:", reply_markup=NAV_BACK_CANCEL)
+        await safe_send_message(
+            message.bot,
+            message.chat.id,
+            f"{_unit_price_prompt(item_draft.get('category', 'OTHER'))}:",
+            reply_markup=NAV_BACK_CANCEL,
+        )
         return
 
     data = await state.get_data()
@@ -765,7 +793,7 @@ async def add_check_item_edit_field(message: Message, state: FSMContext) -> None
 
     field_map = {
         "Категория": "category",
-        "Название": "item_name",
+        "Название товара": "item_name",
         "Количество": "qty",
         "Цена": "unit_price",
         "Комментарий": "note",
@@ -810,7 +838,8 @@ async def add_check_item_edit_value(message: Message, state: FSMContext) -> None
     elif field in {"qty", "unit_price"}:
         dec = _parse_decimal(text)
         if dec is None:
-            await safe_send_message(message.bot, message.chat.id, "Нужно число.")
+            label = "Количество" if field == "qty" else _unit_price_prompt(item.get("category", "OTHER"))
+            await safe_send_message(message.bot, message.chat.id, f"Поле «{label}» должно быть числом.")
             return
         item[field] = str(dec)
     elif field == "note":
@@ -852,7 +881,7 @@ async def add_check_receipt(message: Message, state: FSMContext) -> None:
             receipt_file_id = message.document.file_id
             receipt_file_type = "document"
         else:
-            await safe_send_message(message.bot, message.chat.id, "Отправьте фото/документ или нажмите «⏭ Пропустить».")
+            await safe_send_message(message.bot, message.chat.id, "Отправьте фото/документ или нажмите «Пропустить».")
             return
 
     await state.update_data(receipt_file_id=receipt_file_id, receipt_file_type=receipt_file_type)
@@ -874,8 +903,8 @@ async def add_check_confirm(
         await state.set_state(AddCheckFSM.receipt)
         await safe_send_message(message.bot, message.chat.id, "Отправьте фото/документ чека:", reply_markup=NAV_BACK_CANCEL_SKIP)
         return
-    if text != "✅ Сохранить":
-        await safe_send_message(message.bot, message.chat.id, "Подтвердите кнопкой «✅ Сохранить».", reply_markup=CONFIRM_KEYBOARD)
+    if text != BTN_SAVE:
+        await safe_send_message(message.bot, message.chat.id, "Подтвердите сохранение кнопкой «Сохранить».", reply_markup=CONFIRM_KEYBOARD)
         return
     if not await _check_access(message, settings):
         await state.clear()
@@ -884,7 +913,7 @@ async def add_check_confirm(
     data = await state.get_data()
     items = data.get("items", [])
     if not items:
-        await safe_send_message(message.bot, message.chat.id, "Добавьте хотя бы одну позицию перед сохранением.")
+        await safe_send_message(message.bot, message.chat.id, "Добавьте хотя бы одну позицию в чек перед сохранением.")
         await _show_items_menu(message, state)
         return
 
@@ -902,7 +931,7 @@ async def add_check_confirm(
     await safe_send_message(
         message.bot,
         message.chat.id,
-        f"Чек сохранён (ID: {saved['receipt']['id']}). Позиций: {len(saved['items'])}.",
+        f"Чек сохранён (ID: {saved['receipt']['id']}). Позиции: {len(saved['items'])}, итог: {sum((Decimal(item['line_total']) for item in saved['items']), Decimal('0'))}.",
         reply_markup=START_KEYBOARD,
     )
 
