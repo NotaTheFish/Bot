@@ -61,6 +61,17 @@ async def main() -> None:
     try:
         await telethon_client.start()
 
+        # Синхронизация истории канала
+        await reviews_service.sync_channel_history(telethon_client, settings.REVIEWS_CHANNEL_ID)
+
+        # Обновление описания канала
+        await reviews_service.update_channel_about(
+            bot,
+            settings.REVIEWS_CHANNEL_ID,
+            settings.ABOUT_TEMPLATE,
+            settings.ABOUT_DATE_FORMAT,
+        )
+
         polling_task = asyncio.create_task(dispatcher.start_polling(bot), name="bot-polling")
         telethon_task = asyncio.create_task(
             telethon_client.run_until_disconnected(),

@@ -56,6 +56,84 @@ class ReviewsService:
                 review_text,
             )
 
+    async def add_review_from_message(self, message) -> Optional[asyncpg.Record]:
+        message_id = getattr(message, "id", None)
+        if message_id is None:
+            return None
+
+        return await self.add_review(
+            channel_id=int(self._settings.REVIEWS_CHANNEL_ID),
+            review_key=self.build_review_key(int(message_id), None),
+            message_ids=[int(message_id)],
+            source_chat_id=int(self._settings.REVIEWS_CHANNEL_ID),
+            source_message_id=int(message_id),
+            review_text=getattr(message, "message", None),
+        )
+
+    async def sync_channel_history(self, tg_client, channel_id: int) -> None:
+        """Синхронизирует историю канала и добавляет отсутствующие отзывы в БД."""
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT DISTINCT message_id
+                FROM reviews,
+                LATERAL unnest(message_ids) AS message_id
+                WHERE channel_id = $1
+                """,
+                int(channel_id),
+            )
+            existing_ids = {int(row["message_id"]) for row in rows}
+
+        media_groups: dict[int, list] = {}
+
+        async for message in tg_client.iter_messages(channel_id, reverse=True):
+            message_id = getattr(message, "id", None)
+            if message_id is None:
+                continue
+
+            if getattr(message, "action", None):
+                continue
+
+            grouped_id = getattr(message, "grouped_id", None)
+            if grouped_id is not None:
+                media_groups.setdefault(int(grouped_id), []).append(message)
+                continue
+
+            if int(message_id) in existing_ids:
+                continue
+
+            row = await self.add_review_from_message(message)
+            if row is not None:
+                existing_ids.add(int(message_id))
+
+        for grouped_id, group_messages in media_groups.items():
+            message_ids = sorted(
+                int(group_message.id)
+                for group_message in group_messages
+                if getattr(group_message, "id", None) is not None
+            )
+            if not message_ids:
+                continue
+
+            if any(message_id in existing_ids for message_id in message_ids):
+                continue
+
+            root_message_id = message_ids[0]
+            row = await self.add_review(
+                channel_id=int(channel_id),
+                review_key=self.build_review_key(root_message_id, str(grouped_id)),
+                message_ids=message_ids,
+                source_chat_id=int(channel_id),
+                source_message_id=root_message_id,
+            )
+            if row is not None:
+                existing_ids.update(message_ids)
+
+    async def update_channel_about(self, bot: Bot, channel_id: int, template: str, date_format: str) -> None:
+        count = await self.count_active(channel_id)
+        about = template.format(count=count, date=datetime.now().strftime(date_format))
+        await bot.set_chat_description(chat_id=channel_id, description=about)
+
     async def mark_deleted_by_message_id(self, *, channel_id: int, message_id: int) -> list[asyncpg.Record]:
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(

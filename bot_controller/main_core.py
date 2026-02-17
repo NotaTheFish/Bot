@@ -56,7 +56,6 @@ def _get_on_off(name: str, default: str = "off") -> bool:
 
 
 BOT_TOKEN = _get_env_str("BOT_TOKEN")
-ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
 DATABASE_URL = _get_env_str("DATABASE_URL")
 DELIVERY_MODE = _get_env_str("DELIVERY_MODE", "bot").lower() or "bot"
 STORAGE_CHAT_ID = parse_int_env("STORAGE_CHAT_ID")
@@ -79,10 +78,34 @@ SUPPORT_PAYLOAD = "support"
 CONTACT_PAYLOAD_PREFIX = "contact_"
 CONTACT_CTA_TEXT = "✉️ Написать продавцу"
 
+def _parse_int_list_csv(raw: str) -> list[int]:
+    raw = (raw or "").strip()
+    if not raw:
+        return []
+    result: list[int] = []
+    for part in raw.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        result.append(int(part))
+    return result
+
+
+_admin_ids = _parse_int_list_csv(os.getenv("ADMIN_IDS", ""))
+
+if not _admin_ids:
+    legacy_admin_id = int(os.getenv("ADMIN_ID", "0") or "0")
+    if legacy_admin_id > 0:
+        _admin_ids = [legacy_admin_id]
+
+ADMIN_IDS_LIST = _admin_ids
+ADMIN_ID = ADMIN_IDS_LIST[0] if ADMIN_IDS_LIST else 0
+
+
 if not BOT_TOKEN or ":" not in BOT_TOKEN:
     raise RuntimeError("BOT_TOKEN не задан или имеет неверный формат.")
-if ADMIN_ID <= 0:
-    raise RuntimeError("ADMIN_ID не задан или имеет неверное значение.")
+if not ADMIN_IDS_LIST:
+    raise RuntimeError("ADMIN_IDS/ADMIN_ID не задан(ы) или имеют неверное значение.")
 if not DATABASE_URL:
     raise RuntimeError("DATABASE_URL не задан. Для Railway используйте PostgreSQL plugin.")
 if not STORAGE_CHAT_ID:
@@ -92,6 +115,7 @@ TZ = ZoneInfo(TZ_NAME)
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+logger.info("Loaded %s admin ids: %s", len(ADMIN_IDS_LIST), ADMIN_IDS_LIST)
 
 bot = Bot(BOT_TOKEN)
 dp = Dispatcher()
@@ -571,7 +595,7 @@ def admin_menu_keyboard() -> ReplyKeyboardMarkup:
 
 
 def is_admin_user(user_id: Optional[int]) -> bool:
-    return bool(user_id and user_id == ADMIN_ID)
+    return bool(user_id and user_id in ADMIN_IDS_LIST)
 
 
 def ensure_admin(event_message: Message) -> bool:
