@@ -329,7 +329,8 @@ async def export_excel(callback: CallbackQuery, settings: Settings, pool: asyncp
     period_for_filter = {"day": "day", "week": "7days", "month": "30days", "all": "all"}[period]
     rows = await list_transactions_by_period(pool, period=period_for_filter)
 
-    report_bytes, filename = build_transactions_report(to_excel_rows(rows), period=label_by_period[period])
+    report_bytes = build_transactions_report(to_excel_rows(rows))
+    filename = f"transactions_{period}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xls"
     document = BufferedInputFile(report_bytes, filename=filename)
 
     if callback.message:
