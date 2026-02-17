@@ -20,6 +20,7 @@ from aiogram.types import (
     ReplyKeyboardMarkup,
 )
 
+from .accounting import add_transaction, list_transactions_by_period, to_excel_rows
 from .config import Settings
 from .excel_export import build_transactions_report
 from .reviews import ReviewsService
@@ -281,34 +282,19 @@ async def add_check_receipt(message: Message, state: FSMContext, pool: asyncpg.P
     total = qty * unit_price
     amount_kopecks = int((total * 100).to_integral_value())
 
-    async with pool.acquire() as conn:
-        await conn.execute(
-            """
-            INSERT INTO transactions (
-                admin_id,
-                amount_kopecks,
-                currency,
-                note,
-                item,
-                qty,
-                unit_price,
-                total,
-                pay_method,
-                receipt_file_id
-            )
-            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
-            """,
-            int(message.from_user.id),
-            amount_kopecks,
-            data.get("currency") or "RUB",
-            data.get("note"),
-            data.get("item"),
-            str(qty),
-            str(unit_price),
-            str(total),
-            data.get("pay_method"),
-            receipt_file_id,
-        )
+    await add_transaction(
+        pool,
+        admin_id=int(message.from_user.id),
+        amount_kopecks=amount_kopecks,
+        currency=data.get("currency") or "RUB",
+        note=data.get("note"),
+        item=data.get("item"),
+        qty=qty,
+        unit_price=unit_price,
+        total=total,
+        pay_method=data.get("pay_method"),
+        receipt_file_id=receipt_file_id,
+    )
 
     await state.clear()
     await message.answer(
@@ -340,22 +326,10 @@ async def export_excel(callback: CallbackQuery, settings: Settings, pool: asyncp
         await callback.answer("Неверный период", show_alert=True)
         return
 
-    date_range = _period_range(period)
-    async with pool.acquire() as conn:
-        if date_range.start is None:
-            rows = await conn.fetch("SELECT * FROM transactions ORDER BY created_at DESC, id DESC")
-        else:
-            rows = await conn.fetch(
-                """
-                SELECT *
-                FROM transactions
-                WHERE created_at >= $1
-                ORDER BY created_at DESC, id DESC
-                """,
-                date_range.start,
-            )
+    period_for_filter = {"day": "day", "week": "7days", "month": "30days", "all": "all"}[period]
+    rows = await list_transactions_by_period(pool, period=period_for_filter)
 
-    report_bytes, filename = build_transactions_report(list(rows), period=label_by_period[period])
+    report_bytes, filename = build_transactions_report(to_excel_rows(rows), period=label_by_period[period])
     document = BufferedInputFile(report_bytes, filename=filename)
 
     if callback.message:
