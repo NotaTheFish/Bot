@@ -2,10 +2,36 @@ from datetime import datetime, timezone
 from decimal import Decimal
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
+import sys
+import types
+
+import asyncio
 
 import pytest
 
-from accountant_bot.admin_bot import _receipt_details_text, _receipt_list_keyboard, add_check_confirm
+if "openpyxl" not in sys.modules:
+    fake_openpyxl = types.ModuleType("openpyxl")
+    fake_openpyxl.Workbook = object
+    fake_styles = types.ModuleType("openpyxl.styles")
+
+    def _style_stub(*args, **kwargs):
+        return object()
+
+    fake_styles.Alignment = _style_stub
+    fake_styles.Border = _style_stub
+    fake_styles.Font = _style_stub
+    fake_styles.PatternFill = _style_stub
+    fake_styles.Side = _style_stub
+
+    sys.modules["openpyxl"] = fake_openpyxl
+    sys.modules["openpyxl.styles"] = fake_styles
+
+from accountant_bot.admin_bot import (
+    START_KEYBOARD,
+    _receipt_details_text,
+    _receipt_list_keyboard,
+    add_check_confirm,
+)
 from accountant_bot.config import Settings
 
 
@@ -24,6 +50,15 @@ class _DummyMessage:
         self.bot = object()
         self.chat = SimpleNamespace(id=1)
         self.from_user = SimpleNamespace(id=1)
+
+
+def test_start_keyboard_has_expected_rows_and_labels():
+    rows = [[button.text for button in row] for row in START_KEYBOARD.keyboard]
+    assert rows == [
+        ["📊 Отзывы", "🧾 Чек"],
+        ["📤 Excel", "🔎 Найти чек"],
+        ["🧾 Последние чеки"],
+    ]
 
 
 def test_receipt_details_text_contains_status_sum_and_items():
@@ -72,8 +107,7 @@ def test_receipt_list_keyboard_uses_compact_button_title():
     assert button.callback_data == "receipt:open:123"
 
 
-@pytest.mark.asyncio
-async def test_add_check_confirm_cancel_does_not_write_to_db(monkeypatch):
+def test_add_check_confirm_cancel_does_not_write_to_db(monkeypatch):
     safe_send_message = AsyncMock()
     add_receipt = AsyncMock()
     cancel = AsyncMock()
@@ -95,14 +129,13 @@ async def test_add_check_confirm_cancel_does_not_write_to_db(monkeypatch):
     state = _DummyState(data={"items": [{"line_total": "100"}]})
     message = _DummyMessage("Отменить")
 
-    await add_check_confirm(message, state, pool=object(), settings=settings)
+    asyncio.run(add_check_confirm(message, state, pool=object(), settings=settings))
 
     cancel.assert_awaited_once()
     add_receipt.assert_not_called()
 
 
-@pytest.mark.asyncio
-async def test_add_check_confirm_invalid_button_does_not_write_to_db(monkeypatch):
+def test_add_check_confirm_invalid_button_does_not_write_to_db(monkeypatch):
     safe_send_message = AsyncMock()
     add_receipt = AsyncMock()
 
@@ -122,7 +155,7 @@ async def test_add_check_confirm_invalid_button_does_not_write_to_db(monkeypatch
     state = _DummyState(data={"items": [{"line_total": "100"}]})
     message = _DummyMessage("что-то другое")
 
-    await add_check_confirm(message, state, pool=object(), settings=settings)
+    asyncio.run(add_check_confirm(message, state, pool=object(), settings=settings))
 
     add_receipt.assert_not_called()
     assert safe_send_message.await_count == 1

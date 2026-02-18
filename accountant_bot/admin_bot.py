@@ -30,13 +30,21 @@ router = Router(name="admin")
 
 NO_ACCESS_TEXT = "Нет доступа"
 
+BTN_REVIEWS = "📊 Отзывы"
+BTN_REVIEWS_LEGACY = "📊 Статистика отзывов"
+BTN_ADD_RECEIPT = "🧾 Чек"
+BTN_ADD_RECEIPT_LEGACY = "🧾 Добавить чек"
+BTN_EXPORT_EXCEL = "📤 Excel"
+BTN_EXPORT_EXCEL_LEGACY = "📤 Выгрузить Excel"
+BTN_FIND_RECEIPT = "🔎 Найти чек"
+BTN_FIND_RECEIPT_LEGACY = "🔍 Найти чек"
+BTN_RECENT_RECEIPTS = "🧾 Последние чеки"
+
 START_KEYBOARD = ReplyKeyboardMarkup(
     keyboard=[
-        [KeyboardButton(text="📊 Статистика отзывов")],
-        [KeyboardButton(text="🧾 Добавить чек")],
-[KeyboardButton(text="🔍 Найти чек"), KeyboardButton(text="🧾 Последние чеки")],
-        [KeyboardButton(text="📤 Выгрузить Excel")],
-        [KeyboardButton(text="🔄 Обновить описание")],
+        [KeyboardButton(text=BTN_REVIEWS), KeyboardButton(text=BTN_ADD_RECEIPT)],
+        [KeyboardButton(text=BTN_EXPORT_EXCEL), KeyboardButton(text=BTN_FIND_RECEIPT)],
+        [KeyboardButton(text=BTN_RECENT_RECEIPTS)],
     ],
     resize_keyboard=True,
 )
@@ -170,7 +178,7 @@ async def handle_start(message: Message, settings: Settings) -> None:
     await safe_send_message(message.bot, message.chat.id, "Выберите действие:", reply_markup=START_KEYBOARD)
 
 
-@router.message(F.text == "📊 Статистика отзывов")
+@router.message((F.text == BTN_REVIEWS) | (F.text == BTN_REVIEWS_LEGACY))
 async def ask_stats_period(message: Message, settings: Settings) -> None:
     if not await _check_access(message, settings):
         return
@@ -359,7 +367,7 @@ async def _fetch_recent_receipts(pool: asyncpg.Pool, limit: int = 10) -> list[as
     return list(rows)
 
 
-@router.message(F.text == "🔍 Найти чек")
+@router.message((F.text == BTN_FIND_RECEIPT) | (F.text == BTN_FIND_RECEIPT_LEGACY))
 async def start_receipt_lookup(message: Message, state: FSMContext, settings: Settings) -> None:
     if not await _check_access(message, settings):
         return
@@ -389,7 +397,7 @@ async def process_receipt_lookup(message: Message, state: FSMContext, pool: asyn
     await safe_send_message(message.bot, message.chat.id, "Выберите действие:", reply_markup=START_KEYBOARD)
 
 
-@router.message(F.text == "🧾 Последние чеки")
+@router.message(F.text == BTN_RECENT_RECEIPTS)
 async def show_recent_receipts(message: Message, settings: Settings, pool: asyncpg.Pool) -> None:
     if not await _check_access(message, settings):
         return
@@ -503,7 +511,7 @@ async def _show_summary(message: Message, state: FSMContext) -> None:
     )
 
 
-@router.message(F.text == "🧾 Добавить чек")
+@router.message((F.text == BTN_ADD_RECEIPT) | (F.text == BTN_ADD_RECEIPT_LEGACY))
 async def start_add_check(message: Message, state: FSMContext, settings: Settings) -> None:
     if not await _check_access(message, settings):
         return
@@ -937,7 +945,7 @@ async def add_check_confirm(
 
 
 
-@router.message(F.text == "📤 Выгрузить Excel")
+@router.message((F.text == BTN_EXPORT_EXCEL) | (F.text == BTN_EXPORT_EXCEL_LEGACY))
 async def ask_export_period(message: Message, settings: Settings) -> None:
     if not await _check_access(message, settings):
         return
