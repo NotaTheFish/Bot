@@ -98,6 +98,13 @@ class ReceiptLookupFSM(StatesGroup):
 
 
 ITEM_CATEGORIES = ("VID", "TOKENS", "MUSHROOMS", "OTHER")
+CATEGORY_LABELS = {
+    "VID": "🐉 Вид",
+    "TOKENS": "🪙 Токены",
+    "MUSHROOMS": "🍄 Грибы",
+    "OTHER": "✍️ Другое",
+}
+CATEGORY_CODES_BY_LABEL = {label: code for code, label in CATEGORY_LABELS.items()}
 
 BTN_BACK = "Назад"
 BTN_CANCEL = "Отменить"
@@ -135,8 +142,8 @@ def _items_menu_keyboard(items_count: int) -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True)
 CATEGORY_KEYBOARD = ReplyKeyboardMarkup(
     keyboard=[
-        [KeyboardButton(text="VID"), KeyboardButton(text="TOKENS")],
-        [KeyboardButton(text="MUSHROOMS"), KeyboardButton(text="OTHER")],
+        [KeyboardButton(text=CATEGORY_LABELS["VID"]), KeyboardButton(text=CATEGORY_LABELS["TOKENS"])],
+        [KeyboardButton(text=CATEGORY_LABELS["MUSHROOMS"]), KeyboardButton(text=CATEGORY_LABELS["OTHER"])],
         [KeyboardButton(text=BTN_BACK), KeyboardButton(text=BTN_CANCEL)],
     ],
     resize_keyboard=True,
@@ -982,20 +989,23 @@ async def add_check_items_menu(message: Message, state: FSMContext) -> None:
 
 @router.message(AddCheckFSM.item_category)
 async def add_check_item_category(message: Message, state: FSMContext) -> None:
-    text = (message.text or "").strip().upper()
+     text = (message.text or "").strip()
+    text_upper = text.upper()
     if _is_cancel(text):
         await _cancel_add_check(message, state)
         return
     if _is_back(text):
         await _show_items_menu(message, state)
         return
-    if text not in ITEM_CATEGORIES:
+
+    category = text_upper if text_upper in ITEM_CATEGORIES else CATEGORY_CODES_BY_LABEL.get(text)
+    if category is None:
         await safe_send_message(message.bot, message.chat.id, "Выберите категорию из кнопок.", reply_markup=CATEGORY_KEYBOARD)
         return
 
     data = await state.get_data()
     item_draft = data.get("item_draft", {})
-    item_draft["category"] = text
+    item_draft["category"] = category
     await state.update_data(item_draft=item_draft)
     await state.set_state(AddCheckFSM.item_name)
     await safe_send_message(message.bot, message.chat.id, _item_name_prompt(), reply_markup=INLINE_NAV_BACK_CANCEL)
@@ -1216,8 +1226,9 @@ async def add_check_item_edit_value(message: Message, state: FSMContext) -> None
 
     item = items[idx]
     if field == "category":
-        val = text.upper()
-        if val not in ITEM_CATEGORIES:
+        text_upper = text.upper()
+        val = text_upper if text_upper in ITEM_CATEGORIES else CATEGORY_CODES_BY_LABEL.get(text)
+        if val is None:
             await safe_send_message(message.bot, message.chat.id, "Выберите категорию из кнопок.", reply_markup=CATEGORY_KEYBOARD)
             return
         item[field] = val
