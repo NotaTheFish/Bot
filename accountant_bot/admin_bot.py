@@ -299,6 +299,37 @@ def _is_skip(text: str) -> bool:
     return text in {BTN_SKIP, "⏭ Пропустить"}
 
 
+def _is_dash_skip(text: str) -> bool:
+    return text.strip() == "-"
+
+
+NUMERIC_INPUT_ERROR_TEXT = "❌ Нужно число. Например: 10 или 10.5"
+
+
+def _item_name_prompt() -> str:
+    return "📝 Название товара (например: Revive Token) или «-» чтобы пропустить"
+
+
+def _item_qty_prompt() -> str:
+    return "🔢 Количество (число)"
+
+
+def _item_unit_price_prompt(category: str) -> str:
+    if category == "MUSHROOMS":
+        return "💰 Цена за 1000 грибов (число)"
+    return "💰 Цена за 1 шт (число)"
+
+
+def _item_edit_value_prompt(field: str, item: dict[str, Any]) -> str:
+    if field == "item_name":
+        return _item_name_prompt()
+    if field == "qty":
+        return _item_qty_prompt()
+    if field == "unit_price":
+        return _item_unit_price_prompt(item.get("category", "OTHER"))
+    return "Введите новое значение:"
+
+
 
 
 def _unit_price_prompt(category: str) -> str:
@@ -587,17 +618,15 @@ async def _render_add_check_state(message: Message, state: FSMContext, target_st
         return
     if target_state == AddCheckFSM.item_name:
         await state.set_state(AddCheckFSM.item_name)
-        await safe_send_message(message.bot, message.chat.id, "Название товара:", reply_markup=INLINE_NAV_BACK_CANCEL)
+        await safe_send_message(message.bot, message.chat.id, _item_name_prompt(), reply_markup=INLINE_NAV_BACK_CANCEL)
         return
     if target_state == AddCheckFSM.item_qty:
         data = await state.get_data()
-        item_draft = data.get("item_draft", {})
-        category = item_draft.get("category", "OTHER")
         await state.set_state(AddCheckFSM.item_qty)
         await safe_send_message(
             message.bot,
             message.chat.id,
-            "Количество (для MUSHROOMS — в штуках):" if category == "MUSHROOMS" else "Количество:",
+            _item_qty_prompt(),
             reply_markup=INLINE_NAV_BACK_CANCEL,
         )
         return
@@ -606,7 +635,7 @@ async def _render_add_check_state(message: Message, state: FSMContext, target_st
         item_draft = data.get("item_draft", {})
         category = item_draft.get("category", "OTHER")
         await state.set_state(AddCheckFSM.item_unit_price)
-        await safe_send_message(message.bot, message.chat.id, f"{_unit_price_prompt(category)}:", reply_markup=INLINE_NAV_BACK_CANCEL)
+        await safe_send_message(message.bot, message.chat.id, _item_unit_price_prompt(category), reply_markup=INLINE_NAV_BACK_CANCEL)
         return
     if target_state == AddCheckFSM.item_note:
         await state.set_state(AddCheckFSM.item_note)
@@ -637,9 +666,17 @@ async def _render_add_check_state(message: Message, state: FSMContext, target_st
     if target_state == AddCheckFSM.item_edit_value:
         data = await state.get_data()
         edit_field = data.get("edit_field")
+        edit_index = data.get("edit_index")
+        items = data.get("items", [])
+        item = items[edit_index] if edit_index is not None and 0 <= edit_index < len(items) else {}
         kb = CATEGORY_KEYBOARD if edit_field == "category" else (INLINE_NAV_BACK_CANCEL_SKIP if edit_field == "note" else INLINE_NAV_BACK_CANCEL)
         await state.set_state(AddCheckFSM.item_edit_value)
-        await safe_send_message(message.bot, message.chat.id, "Введите новое значение:", reply_markup=kb)
+        await safe_send_message(
+            message.bot,
+            message.chat.id,
+            _item_edit_value_prompt(edit_field or "", item),
+            reply_markup=kb,
+        )
         return
     if target_state == AddCheckFSM.receipt:
         await state.set_state(AddCheckFSM.receipt)
@@ -900,7 +937,7 @@ async def add_check_note(message: Message, state: FSMContext) -> None:
         await _prompt_pay_method(message, state=state)
         return
 
-    note = None if _is_skip(text) or not text else text
+    note = None if _is_skip(text) or not text or _is_dash_skip(text) else text
     await state.update_data(note=note)
     await _show_items_menu(message, state)
 
@@ -961,7 +998,7 @@ async def add_check_item_category(message: Message, state: FSMContext) -> None:
     item_draft["category"] = text
     await state.update_data(item_draft=item_draft)
     await state.set_state(AddCheckFSM.item_name)
-    await safe_send_message(message.bot, message.chat.id, "Название товара:", reply_markup=INLINE_NAV_BACK_CANCEL)
+    await safe_send_message(message.bot, message.chat.id, _item_name_prompt(), reply_markup=INLINE_NAV_BACK_CANCEL)
 
 
 @router.message(AddCheckFSM.item_name)
@@ -978,12 +1015,13 @@ async def add_check_item_name(message: Message, state: FSMContext) -> None:
         await safe_send_message(message.bot, message.chat.id, "Название не должно быть пустым.")
         return
 
+    item_name = None if _is_dash_skip(text) else text
     data = await state.get_data()
     item_draft = data.get("item_draft", {})
-    item_draft["item_name"] = text
+    item_draft["item_name"] = item_name
     await state.update_data(item_draft=item_draft)
     await state.set_state(AddCheckFSM.item_qty)
-    await safe_send_message(message.bot, message.chat.id, "Количество:", reply_markup=INLINE_NAV_BACK_CANCEL)
+    await safe_send_message(message.bot, message.chat.id, _item_qty_prompt(), reply_markup=INLINE_NAV_BACK_CANCEL)
 
 
 @router.message(AddCheckFSM.item_qty)
@@ -994,11 +1032,11 @@ async def add_check_item_qty(message: Message, state: FSMContext) -> None:
         return
     if _is_back(text):
         await state.set_state(AddCheckFSM.item_name)
-        await safe_send_message(message.bot, message.chat.id, "Название товара:", reply_markup=INLINE_NAV_BACK_CANCEL)
+        await safe_send_message(message.bot, message.chat.id, _item_name_prompt(), reply_markup=INLINE_NAV_BACK_CANCEL)
         return
     qty = _parse_decimal(text)
     if qty is None:
-        await safe_send_message(message.bot, message.chat.id, "Количество должно быть числом.")
+        await safe_send_message(message.bot, message.chat.id, NUMERIC_INPUT_ERROR_TEXT)
         return
 
     data = await state.get_data()
@@ -1009,7 +1047,7 @@ async def add_check_item_qty(message: Message, state: FSMContext) -> None:
     await safe_send_message(
         message.bot,
         message.chat.id,
-        f"{_unit_price_prompt(item_draft.get('category', 'OTHER'))}:",
+        _item_unit_price_prompt(item_draft.get("category", "OTHER")),
         reply_markup=INLINE_NAV_BACK_CANCEL,
     )
 
@@ -1024,15 +1062,11 @@ async def add_check_item_unit_price(message: Message, state: FSMContext) -> None
         return
     if _is_back(text):
         await state.set_state(AddCheckFSM.item_qty)
-        await safe_send_message(message.bot, message.chat.id, "Количество:", reply_markup=INLINE_NAV_BACK_CANCEL)
+        await safe_send_message(message.bot, message.chat.id, _item_qty_prompt(), reply_markup=INLINE_NAV_BACK_CANCEL)
         return
     unit_price = _parse_decimal(text)
     if unit_price is None:
-        await safe_send_message(
-            message.bot,
-            message.chat.id,
-            f"Поле «{_unit_price_prompt(item_draft.get('category', 'OTHER'))}» должно быть числом.",
-        )
+        await safe_send_message(message.bot, message.chat.id, NUMERIC_INPUT_ERROR_TEXT)
         return
 
     category = item_draft.get("category", "OTHER")
@@ -1060,14 +1094,14 @@ async def add_check_item_note(message: Message, state: FSMContext) -> None:
         await safe_send_message(
             message.bot,
             message.chat.id,
-            f"{_unit_price_prompt(item_draft.get('category', 'OTHER'))}:",
+            _item_unit_price_prompt(item_draft.get("category", "OTHER")),
             reply_markup=INLINE_NAV_BACK_CANCEL,
         )
         return
 
     data = await state.get_data()
     item_draft = data.get("item_draft", {})
-    item_draft["note"] = None if _is_skip(text) or not text else text
+    item_draft["note"] = None if _is_skip(text) or not text or _is_dash_skip(text) else text
     items = data.get("items", [])
 
     edit_index = data.get("edit_index")
@@ -1154,10 +1188,11 @@ async def add_check_item_edit_field(message: Message, state: FSMContext) -> None
         await safe_send_message(message.bot, message.chat.id, "Выберите поле кнопками.", reply_markup=EDIT_FIELD_KEYBOARD)
         return
 
+    item = items[idx]
     await state.update_data(edit_field=field)
     await state.set_state(AddCheckFSM.item_edit_value)
     kb = CATEGORY_KEYBOARD if field == "category" else (INLINE_NAV_BACK_CANCEL_SKIP if field == "note" else INLINE_NAV_BACK_CANCEL)
-    await safe_send_message(message.bot, message.chat.id, "Введите новое значение:", reply_markup=kb)
+    await safe_send_message(message.bot, message.chat.id, _item_edit_value_prompt(field, item), reply_markup=kb)
 
 
 @router.message(AddCheckFSM.item_edit_value)
@@ -1189,12 +1224,16 @@ async def add_check_item_edit_value(message: Message, state: FSMContext) -> None
     elif field in {"qty", "unit_price"}:
         dec = _parse_decimal(text)
         if dec is None:
-            label = "Количество" if field == "qty" else _unit_price_prompt(item.get("category", "OTHER"))
-            await safe_send_message(message.bot, message.chat.id, f"Поле «{label}» должно быть числом.")
+            await safe_send_message(message.bot, message.chat.id, NUMERIC_INPUT_ERROR_TEXT)
             return
         item[field] = str(dec)
     elif field == "note":
-        item[field] = None if _is_skip(text) or not text else text
+        item[field] = None if _is_skip(text) or not text or _is_dash_skip(text) else text
+    elif field == "item_name":
+        if not text:
+            await safe_send_message(message.bot, message.chat.id, "Название не должно быть пустым.")
+            return
+        item[field] = None if _is_dash_skip(text) else text
     else:
         if not text:
             await safe_send_message(message.bot, message.chat.id, "Значение не должно быть пустым.")
