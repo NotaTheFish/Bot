@@ -2449,30 +2449,52 @@ async def schedule_edit_save(message: Message, state: FSMContext):
 async def _notify_admin_about_buyer_message(message: Message, token: str) -> None:
     sender = message.from_user
     sender_id = sender.id if sender else None
-    username = f"@{sender.username}" if sender and sender.username else "без username"
+    username = f"@{sender.username}" if sender and sender.username else "отсутствует"
     full_name = (sender.full_name if sender else "") or "без имени"
     safe_name = html.escape(full_name)
     user_link = (
         f'<a href="tg://user?id={sender_id}">{safe_name}</a>' if sender_id else safe_name
     )
     body = message.text or message.caption or "[без текста]"
+    contact_markup = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="✉️ Написать",
+                    url=f"tg://user?id={sender_id}",
+                )
+            ]
+        ]
+    ) if sender_id else None
 
-    await bot.forward_message(ADMIN_ID, message.chat.id, message.message_id)
+    try:
+        await bot.forward_message(ADMIN_ID, message.chat.id, message.message_id)
+    except TelegramBadRequest as exc:
+        description = (exc.message or "").lower()
+        if "forward" in description and ("restricted" in description or "can't" in description):
+            await bot.copy_message(
+                chat_id=ADMIN_ID,
+                from_chat_id=message.chat.id,
+                message_id=message.message_id,
+            )
+        else:
+            raise
+
     await bot.send_message(
         ADMIN_ID,
         "\n".join(
             [
                 "📩 Новое сообщение покупателя",
                 f"token: {token}",
-                f"user: {user_link}",
-                f"user_id: {sender_id if sender_id is not None else 'unknown'}",
-                f"username: {username}",
-                f"full_name: {safe_name}",
+                f"Имя: {user_link}",
+                f"ID: {sender_id if sender_id is not None else 'unknown'}",
+                f"Username: {username}",
                 "",
                 body,
             ]
         ),
         parse_mode="HTML",
+        reply_markup=contact_markup,
     )
 
 
