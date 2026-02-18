@@ -118,15 +118,21 @@ NAV_BACK_CANCEL_SKIP = ReplyKeyboardMarkup(
     ],
     resize_keyboard=True,
 )
-ITEMS_MENU_KEYBOARD = ReplyKeyboardMarkup(
-    keyboard=[
-        [KeyboardButton(text="➕ Добавить позицию")],
-        [KeyboardButton(text=f"✏️ {BTN_FIX} позицию"), KeyboardButton(text="🗑 Удалить позицию")],
-        [KeyboardButton(text="➡️ К файлу")],
-        [KeyboardButton(text=BTN_BACK), KeyboardButton(text=BTN_CANCEL)],
-    ],
-    resize_keyboard=True,
-)
+def _items_menu_keyboard(items_count: int) -> ReplyKeyboardMarkup:
+    if items_count == 0:
+        keyboard = [
+            [KeyboardButton(text="➕ Добавить позицию")],
+            [KeyboardButton(text="❌ Отмена")],
+        ]
+    else:
+        keyboard = [
+            [KeyboardButton(text="➕ Добавить позицию")],
+            [KeyboardButton(text="🗑 Удалить позицию")],
+            [KeyboardButton(text="✏️ Изменить позицию")],
+            [KeyboardButton(text="✅ К чеку")],
+            [KeyboardButton(text="❌ Отмена")],
+        ]
+    return ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True)
 CATEGORY_KEYBOARD = ReplyKeyboardMarkup(
     keyboard=[
         [KeyboardButton(text="VID"), KeyboardButton(text="TOKENS")],
@@ -282,7 +288,7 @@ async def refresh_about(message: Message, settings: Settings, reviews_service: R
 
 
 def _is_cancel(text: str) -> bool:
-    return text in {BTN_CANCEL, "❌ Отменить"}
+    return text in {BTN_CANCEL, "❌ Отменить", "❌ Отмена"}
 
 
 def _is_back(text: str) -> bool:
@@ -313,7 +319,7 @@ def _calc_line(category: str, qty: Decimal, unit_price: Decimal) -> tuple[str, D
 
 def _items_text(items: list[dict[str, Any]]) -> str:
     if not items:
-        return "Позиции пока не добавлены."
+        return "🧾 Позиции пока не добавлены. Нажмите ➕ «Добавить позицию»."
     lines = ["Позиции:"]
     for idx, item in enumerate(items, start=1):
         lines.append(
@@ -724,7 +730,7 @@ async def _show_items_menu(message: Message, state: FSMContext) -> None:
         message.bot,
         message.chat.id,
         f"{_items_text(items)}\n\nВыберите действие с позициями:",
-        reply_markup=ITEMS_MENU_KEYBOARD,
+        reply_markup=_items_menu_keyboard(len(items)),
     )
 
 
@@ -922,12 +928,19 @@ async def add_check_items_menu(message: Message, state: FSMContext) -> None:
         await state.set_state(AddCheckFSM.item_edit_select)
         await safe_send_message(message.bot, message.chat.id, "Введите номер позиции для изменения:", reply_markup=INLINE_NAV_BACK_CANCEL)
         return
-    if text == "➡️ К файлу":
+    if text in {"✅ К чеку", "➡️ К файлу"}:
         await state.set_state(AddCheckFSM.receipt)
         await safe_send_message(message.bot, message.chat.id, "Отправьте фото/документ чека:", reply_markup=INLINE_NAV_BACK_CANCEL_SKIP)
         return
 
-    await safe_send_message(message.bot, message.chat.id, "Выберите действие кнопками.", reply_markup=ITEMS_MENU_KEYBOARD)
+    data = await state.get_data()
+    items = data.get("items", [])
+    await safe_send_message(
+        message.bot,
+        message.chat.id,
+        "Выберите действие кнопками.",
+        reply_markup=_items_menu_keyboard(len(items)),
+    )
 
 
 @router.message(AddCheckFSM.item_category)
