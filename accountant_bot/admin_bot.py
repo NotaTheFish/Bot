@@ -75,7 +75,9 @@ EXPORT_KEYBOARD = InlineKeyboardMarkup(
 
 class AddCheckFSM(StatesGroup):
     currency = State()
+    currency_custom = State()
     pay_method = State()
+    pay_method_custom = State()
     note = State()
     items_menu = State()
     item_category = State()
@@ -146,6 +148,40 @@ EDIT_FIELD_KEYBOARD = ReplyKeyboardMarkup(
         [KeyboardButton(text=BTN_BACK), KeyboardButton(text=BTN_CANCEL)],
     ],
     resize_keyboard=True,
+)
+
+CURRENCY_KEYBOARD = InlineKeyboardMarkup(
+    inline_keyboard=[
+        [
+            InlineKeyboardButton(text="₽ RUB", callback_data="add_check:currency:RUB"),
+            InlineKeyboardButton(text="₴ UAH", callback_data="add_check:currency:UAH"),
+        ],
+        [
+            InlineKeyboardButton(text="$ USD", callback_data="add_check:currency:USD"),
+            InlineKeyboardButton(text="€ EUR", callback_data="add_check:currency:EUR"),
+        ],
+        [InlineKeyboardButton(text="✍️ Другое", callback_data="add_check:currency:other")],
+        [
+            InlineKeyboardButton(text="⬅️ Назад", callback_data="add_check:currency:back"),
+            InlineKeyboardButton(text="❌ Отмена", callback_data="add_check:currency:cancel"),
+        ],
+    ]
+)
+
+PAY_METHOD_KEYBOARD = InlineKeyboardMarkup(
+    inline_keyboard=[
+        [
+            InlineKeyboardButton(text="💳 Карта", callback_data="add_check:pay_method:card"),
+            InlineKeyboardButton(text="💵 Наличные", callback_data="add_check:pay_method:cash"),
+        ],
+        [InlineKeyboardButton(text="🪙 Крипта", callback_data="add_check:pay_method:crypto")],
+        [InlineKeyboardButton(text="✍️ Другое", callback_data="add_check:pay_method:other")],
+        [InlineKeyboardButton(text="⏭ Пропустить", callback_data="add_check:pay_method:skip")],
+        [
+            InlineKeyboardButton(text="⬅️ Назад", callback_data="add_check:pay_method:back"),
+            InlineKeyboardButton(text="❌ Отмена", callback_data="add_check:pay_method:cancel"),
+        ],
+    ]
 )
 
 
@@ -510,14 +546,25 @@ async def _show_summary(message: Message, state: FSMContext) -> None:
     )
 
 
+async def _prompt_currency(message: Message, *, state: FSMContext | None = None) -> None:
+    if state is not None:
+        await state.set_state(AddCheckFSM.currency)
+    await safe_send_message(message.bot, message.chat.id, "💱 Выберите валюту:", reply_markup=CURRENCY_KEYBOARD)
+
+
+async def _prompt_pay_method(message: Message, *, state: FSMContext | None = None) -> None:
+    if state is not None:
+        await state.set_state(AddCheckFSM.pay_method)
+    await safe_send_message(message.bot, message.chat.id, "💳 Способ оплаты:", reply_markup=PAY_METHOD_KEYBOARD)
+
+
 @router.message((F.text == BTN_ADD_RECEIPT) | (F.text == BTN_ADD_RECEIPT_LEGACY))
 async def start_add_check(message: Message, state: FSMContext, settings: Settings) -> None:
     if not await _check_access(message, settings):
         return
     await state.clear()
     await state.update_data(items=[])
-    await state.set_state(AddCheckFSM.currency)
-    await safe_send_message(message.bot, message.chat.id, "Валюта (например RUB, USD):", reply_markup=NAV_BACK_CANCEL)
+    await _prompt_currency(message, state=state)
 
 
 @router.message(AddCheckFSM.currency)
@@ -527,12 +574,58 @@ async def add_check_currency(message: Message, state: FSMContext) -> None:
         await _cancel_add_check(message, state)
         return
     if _is_back(text):
-        await safe_send_message(message.bot, message.chat.id, "Это первый шаг.", reply_markup=NAV_BACK_CANCEL)
+        await safe_send_message(message.bot, message.chat.id, "Это первый шаг.", reply_markup=CURRENCY_KEYBOARD)
+        return
+    await safe_send_message(message.bot, message.chat.id, "Выберите валюту кнопками.", reply_markup=CURRENCY_KEYBOARD)
+
+
+@router.callback_query(AddCheckFSM.currency, F.data.startswith("add_check:currency:"))
+async def add_check_currency_callback(callback: CallbackQuery, state: FSMContext) -> None:
+    if callback.message is None:
+        await callback.answer()
         return
 
-    await state.update_data(currency=(text or "RUB").upper())
-    await state.set_state(AddCheckFSM.pay_method)
-    await safe_send_message(message.bot, message.chat.id, "Способ оплаты:", reply_markup=NAV_BACK_CANCEL_SKIP)
+    action = callback.data.split(":")[-1]
+    if action == "cancel":
+        await _cancel_add_check(callback.message, state)
+    elif action == "back":
+        await safe_send_message(callback.message.bot, callback.message.chat.id, "Это первый шаг.", reply_markup=CURRENCY_KEYBOARD)
+    elif action == "other":
+        await state.set_state(AddCheckFSM.currency_custom)
+        await safe_send_message(
+            callback.message.bot,
+            callback.message.chat.id,
+            "Введите валюту (2–6 символов, например AED):",
+            reply_markup=NAV_BACK_CANCEL,
+        )
+    else:
+        await state.update_data(currency=action.upper())
+        await _prompt_pay_method(callback.message, state=state)
+    await callback.answer()
+
+
+@router.message(AddCheckFSM.currency_custom)
+async def add_check_currency_custom(message: Message, state: FSMContext) -> None:
+    text = (message.text or "").strip()
+    if _is_cancel(text):
+        await _cancel_add_check(message, state)
+        return
+    if _is_back(text):
+        await _prompt_currency(message, state=state)
+        return
+
+    currency = text.upper()
+    if not (2 <= len(currency) <= 6):
+        await safe_send_message(
+            message.bot,
+            message.chat.id,
+            "Валюта должна быть длиной от 2 до 6 символов.",
+            reply_markup=NAV_BACK_CANCEL,
+        )
+        return
+
+    await state.update_data(currency=currency)
+    await _prompt_pay_method(message, state=state)
 
 
 @router.message(AddCheckFSM.pay_method)
@@ -542,12 +635,62 @@ async def add_check_pay_method(message: Message, state: FSMContext) -> None:
         await _cancel_add_check(message, state)
         return
     if _is_back(text):
-        await state.set_state(AddCheckFSM.currency)
-        await safe_send_message(message.bot, message.chat.id, "Валюта:", reply_markup=NAV_BACK_CANCEL)
+        await _prompt_currency(message, state=state)
+        return
+    await safe_send_message(message.bot, message.chat.id, "Выберите способ оплаты кнопками.", reply_markup=PAY_METHOD_KEYBOARD)
+
+
+@router.callback_query(AddCheckFSM.pay_method, F.data.startswith("add_check:pay_method:"))
+async def add_check_pay_method_callback(callback: CallbackQuery, state: FSMContext) -> None:
+    if callback.message is None:
+        await callback.answer()
         return
 
-    pay_method = None if _is_skip(text) or not text else text
-    await state.update_data(pay_method=pay_method)
+    action = callback.data.split(":")[-1]
+    pay_method_map = {
+        "card": "Карта",
+        "cash": "Наличные",
+        "crypto": "Крипта",
+    }
+    if action == "cancel":
+        await _cancel_add_check(callback.message, state)
+    elif action == "back":
+        await _prompt_currency(callback.message, state=state)
+    elif action == "skip":
+        await state.update_data(pay_method=None)
+        await state.set_state(AddCheckFSM.note)
+        await safe_send_message(callback.message.bot, callback.message.chat.id, "Комментарий к чеку:", reply_markup=NAV_BACK_CANCEL_SKIP)
+    elif action == "other":
+        await state.set_state(AddCheckFSM.pay_method_custom)
+        await safe_send_message(
+            callback.message.bot,
+            callback.message.chat.id,
+            "Введите способ оплаты:",
+            reply_markup=NAV_BACK_CANCEL,
+        )
+    elif action in pay_method_map:
+        await state.update_data(pay_method=pay_method_map[action])
+        await state.set_state(AddCheckFSM.note)
+        await safe_send_message(callback.message.bot, callback.message.chat.id, "Комментарий к чеку:", reply_markup=NAV_BACK_CANCEL_SKIP)
+    else:
+        await safe_send_message(callback.message.bot, callback.message.chat.id, "Неизвестный способ оплаты.", reply_markup=PAY_METHOD_KEYBOARD)
+    await callback.answer()
+
+
+@router.message(AddCheckFSM.pay_method_custom)
+async def add_check_pay_method_custom(message: Message, state: FSMContext) -> None:
+    text = (message.text or "").strip()
+    if _is_cancel(text):
+        await _cancel_add_check(message, state)
+        return
+    if _is_back(text):
+        await _prompt_pay_method(message, state=state)
+        return
+    if not text:
+        await safe_send_message(message.bot, message.chat.id, "Введите способ оплаты текстом.", reply_markup=NAV_BACK_CANCEL)
+        return
+
+    await state.update_data(pay_method=text)
     await state.set_state(AddCheckFSM.note)
     await safe_send_message(message.bot, message.chat.id, "Комментарий к чеку:", reply_markup=NAV_BACK_CANCEL_SKIP)
 
@@ -559,8 +702,7 @@ async def add_check_note(message: Message, state: FSMContext) -> None:
         await _cancel_add_check(message, state)
         return
     if _is_back(text):
-        await state.set_state(AddCheckFSM.pay_method)
-        await safe_send_message(message.bot, message.chat.id, "Способ оплаты:", reply_markup=NAV_BACK_CANCEL_SKIP)
+        await _prompt_pay_method(message, state=state)
         return
 
     note = None if _is_skip(text) or not text else text

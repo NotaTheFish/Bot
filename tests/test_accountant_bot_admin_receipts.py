@@ -27,10 +27,15 @@ if "openpyxl" not in sys.modules:
     sys.modules["openpyxl.styles"] = fake_styles
 
 from accountant_bot.admin_bot import (
+    CURRENCY_KEYBOARD,
+    PAY_METHOD_KEYBOARD,
     START_KEYBOARD,
     STATS_KEYBOARD,
     _receipt_details_text,
     _receipt_list_keyboard,
+    add_check_currency_callback,
+    add_check_currency_custom,
+    add_check_pay_method_callback,
     add_check_confirm,
     show_stats,
 )
@@ -40,10 +45,24 @@ from accountant_bot.config import Settings
 class _DummyState:
     def __init__(self, data=None):
         self._data = data or {}
+        self.current_state = None
         self.clear = AsyncMock()
 
     async def get_data(self):
         return self._data
+
+    async def set_state(self, new_state):
+        self.current_state = new_state
+
+    async def update_data(self, **kwargs):
+        self._data.update(kwargs)
+
+
+class _DummyCallback:
+    def __init__(self, data: str):
+        self.data = data
+        self.message = SimpleNamespace(bot=object(), chat=SimpleNamespace(id=1))
+        self.answer = AsyncMock()
 
 
 class _DummyMessage:
@@ -67,6 +86,25 @@ def test_stats_keyboard_has_expected_labels_and_callbacks():
     row = STATS_KEYBOARD.inline_keyboard[0]
     assert [button.text for button in row] == ["📅 Сегодня", "📆 7 дней", "🗓 30 дней"]
     assert [button.callback_data for button in row] == ["stats:day", "stats:week", "stats:month"]
+
+
+def test_currency_keyboard_has_expected_buttons_and_callbacks():
+    rows = CURRENCY_KEYBOARD.inline_keyboard
+    assert [button.text for button in rows[0]] == ["₽ RUB", "₴ UAH"]
+    assert [button.callback_data for button in rows[0]] == ["add_check:currency:RUB", "add_check:currency:UAH"]
+    assert [button.text for button in rows[1]] == ["$ USD", "€ EUR"]
+    assert rows[2][0].text == "✍️ Другое"
+    assert rows[3][0].text == "⬅️ Назад"
+    assert rows[3][1].text == "❌ Отмена"
+
+
+def test_pay_method_keyboard_has_expected_buttons_and_callbacks():
+    rows = PAY_METHOD_KEYBOARD.inline_keyboard
+    assert [button.text for button in rows[0]] == ["💳 Карта", "💵 Наличные"]
+    assert rows[1][0].text == "🪙 Крипта"
+    assert rows[2][0].text == "✍️ Другое"
+    assert rows[3][0].text == "⏭ Пропустить"
+    assert [button.text for button in rows[4]] == ["⬅️ Назад", "❌ Отмена"]
 
 
 def test_show_stats_uses_expected_message_format(monkeypatch):
@@ -200,3 +238,49 @@ def test_add_check_confirm_invalid_button_does_not_write_to_db(monkeypatch):
     add_receipt.assert_not_called()
     assert safe_send_message.await_count == 1
     assert "Подтвердите сохранение" in safe_send_message.await_args.args[2]
+
+
+def test_currency_callback_sets_predefined_currency_and_moves_to_pay_method(monkeypatch):
+    safe_send_message = AsyncMock()
+    monkeypatch.setattr("accountant_bot.admin_bot.safe_send_message", safe_send_message)
+
+    callback = _DummyCallback("add_check:currency:USD")
+    state = _DummyState(data={"items": []})
+
+    asyncio.run(add_check_currency_callback(callback, state))
+
+    assert state._data["currency"] == "USD"
+    assert state.current_state.state.endswith(":pay_method")
+    assert safe_send_message.await_args_list[-1].args[2] == "💳 Способ оплаты:"
+
+
+def test_currency_custom_text_validation_and_upper(monkeypatch):
+    safe_send_message = AsyncMock()
+    monkeypatch.setattr("accountant_bot.admin_bot.safe_send_message", safe_send_message)
+
+    state = _DummyState(data={"items": []})
+    invalid_message = _DummyMessage("x")
+    valid_message = _DummyMessage("usd")
+
+    asyncio.run(add_check_currency_custom(invalid_message, state))
+    assert "2 до 6" in safe_send_message.await_args.args[2]
+
+    asyncio.run(add_check_currency_custom(valid_message, state))
+    assert state._data["currency"] == "USD"
+    assert state.current_state.state.endswith(":pay_method")
+
+
+def test_pay_method_callback_paths_for_skip_and_other(monkeypatch):
+    safe_send_message = AsyncMock()
+    monkeypatch.setattr("accountant_bot.admin_bot.safe_send_message", safe_send_message)
+
+    skip_callback = _DummyCallback("add_check:pay_method:skip")
+    other_callback = _DummyCallback("add_check:pay_method:other")
+    state = _DummyState(data={"items": []})
+
+    asyncio.run(add_check_pay_method_callback(skip_callback, state))
+    assert state._data["pay_method"] is None
+    assert state.current_state.state.endswith(":note")
+
+    asyncio.run(add_check_pay_method_callback(other_callback, state))
+    assert state.current_state.state.endswith(":pay_method_custom")
