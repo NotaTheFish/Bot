@@ -2063,6 +2063,11 @@ async def buyer_contact_start(message: Message, state: FSMContext):
         await message.answer("Не удалось определить пользователя.")
         return
 
+    current_state = await state.get_state()
+    if current_state == ContactStates.waiting_message.state:
+        await message.answer("Вы уже в режиме отправки. Просто напишите сообщение.")
+        return
+
     remaining = await get_cooldown_remaining(message.from_user.id)
     if remaining > 0:
         await message.answer(f"⏳ Подождите {remaining} сек. и попробуйте снова.")
