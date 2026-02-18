@@ -5,7 +5,7 @@ from collections import Counter
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
-from telethon import TelegramClient
+from telethon import TelegramClient, events
 from telethon.errors import FloodWaitError, RPCError
 from telethon.tl.types import Channel, Chat, InputPeerChannel, InputPeerChat, User
 
@@ -14,6 +14,7 @@ from .db import (
     claim_pending_tasks,
     disable_stale_userbot_targets,
     ensure_schema,
+    get_worker_autoreply_remaining,
     get_userbot_target_state,
     load_userbot_targets_by_chat_ids,
     load_enabled_userbot_targets,
@@ -22,6 +23,7 @@ from .db import (
     mark_userbot_target_disabled,
     mark_userbot_target_success,
     remap_userbot_target_chat_id,
+    set_worker_autoreply_next_allowed,
     set_userbot_target_last_self_message_id,
     update_task_progress,
     upsert_userbot_target,
@@ -236,6 +238,34 @@ async def run_worker(settings: Settings, pool, client: TelegramClient, stop_even
     await ensure_schema(pool)
     me = await client.get_me()
     my_id = int(me.id)
+
+    @client.on(events.NewMessage(incoming=True))
+    async def _handle_private_autoreply(event):
+        if not event.is_private:
+            return
+
+        sender_id = int(getattr(event, "sender_id", 0) or 0)
+        if sender_id <= 0 or sender_id == my_id:
+            return
+
+        sender = await event.get_sender()
+        if sender is not None and bool(getattr(sender, "bot", False)):
+            return
+
+        remaining = await get_worker_autoreply_remaining(pool, user_id=sender_id)
+        if remaining > 0:
+            return
+
+        support_url = f"https://t.me/{settings.controller_bot_username}?start=support"
+        await event.respond(
+            "Это технический аккаунт для рассылок. "
+            f"По всем вопросам поддержки напишите сюда: {support_url}"
+        )
+        await set_worker_autoreply_next_allowed(
+            pool,
+            user_id=sender_id,
+            cooldown_seconds=settings.worker_autoreply_cooldown_seconds,
+        )
 
     try:
         await sync_userbot_targets(pool, client, settings)

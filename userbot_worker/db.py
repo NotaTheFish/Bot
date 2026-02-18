@@ -118,6 +118,14 @@ async def ensure_schema(db: DBOrPool) -> None:
             ON userbot_targets(enabled);
             """
         )
+        await conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS worker_autoreply_cooldown (
+              user_id BIGINT PRIMARY KEY,
+              next_allowed_at TIMESTAMPTZ NOT NULL
+            );
+            """
+        )
         await conn.execute("ALTER TABLE userbot_targets ADD COLUMN IF NOT EXISTS last_error_at TIMESTAMPTZ;")
         await conn.execute("ALTER TABLE userbot_targets ADD COLUMN IF NOT EXISTS last_success_post_at TIMESTAMPTZ;")
         await conn.execute("ALTER TABLE userbot_targets ADD COLUMN IF NOT EXISTS last_self_message_id BIGINT;")
@@ -605,5 +613,40 @@ async def remap_userbot_target_chat_id(
                 int(new_chat_id),
             )
             await conn.execute("DELETE FROM userbot_targets WHERE chat_id = $1", int(old_chat_id))
+    finally:
+        await _release_conn(db, conn)
+
+
+async def get_worker_autoreply_remaining(db: DBOrPool, user_id: int) -> int:
+    conn = await _acquire_conn(db)
+    try:
+        row = await conn.fetchrow(
+            """
+            SELECT GREATEST(0, CEIL(EXTRACT(EPOCH FROM (next_allowed_at - NOW()))))::int AS remaining
+            FROM worker_autoreply_cooldown
+            WHERE user_id = $1
+            """,
+            int(user_id),
+        )
+        if not row:
+            return 0
+        return int(row["remaining"] or 0)
+    finally:
+        await _release_conn(db, conn)
+
+
+async def set_worker_autoreply_next_allowed(db: DBOrPool, user_id: int, cooldown_seconds: int) -> None:
+    conn = await _acquire_conn(db)
+    try:
+        await conn.execute(
+            """
+            INSERT INTO worker_autoreply_cooldown(user_id, next_allowed_at)
+            VALUES ($1, NOW() + ($2::int * INTERVAL '1 second'))
+            ON CONFLICT(user_id) DO UPDATE
+            SET next_allowed_at = EXCLUDED.next_allowed_at
+            """,
+            int(user_id),
+            max(0, int(cooldown_seconds)),
+        )
     finally:
         await _release_conn(db, conn)
