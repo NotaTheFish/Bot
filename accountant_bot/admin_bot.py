@@ -106,6 +106,13 @@ CATEGORY_LABELS = {
 }
 CATEGORY_CODES_BY_LABEL = {label: code for code, label in CATEGORY_LABELS.items()}
 
+
+def category_label(code: str) -> str:
+    normalized_code = (code or "").strip()
+    if normalized_code in CATEGORY_LABELS:
+        return CATEGORY_LABELS[normalized_code]
+    return normalized_code or "OTHER"
+
 BTN_BACK = "Назад"
 BTN_CANCEL = "Отменить"
 BTN_SKIP = "Пропустить"
@@ -360,9 +367,10 @@ def _items_text(items: list[dict[str, Any]]) -> str:
         return "🧾 Позиции пока не добавлены. Нажмите ➕ «Добавить позицию»."
     lines = ["Позиции:"]
     for idx, item in enumerate(items, start=1):
+        category_code = item.get("category") or "OTHER"
         lines.append(
-            f"{idx}. [{item['category']}] {item['item_name']} — Количество: {item['qty']}, "
-            f"{_unit_price_prompt(item['category'])}: {item['unit_price']}, Итог: {item['line_total']}"
+            f"{idx}. [{category_label(category_code)}] {item['item_name']} — Количество: {item['qty']}, "
+            f"{_unit_price_prompt(category_code)}: {item['unit_price']}, Итог: {item['line_total']}"
         )
     return "\n".join(lines)
 
@@ -413,10 +421,11 @@ def _receipt_details_text(receipt: asyncpg.Record, items: list[asyncpg.Record]) 
         lines.append("— Нет позиций")
     else:
         for idx, item in enumerate(items, start=1):
+            category_code = item.get("category") or "OTHER"
             lines.append(
-                f"{idx}. [{item.get('category') or 'OTHER'}] {item.get('item_name') or '-'} — "
+                f"{idx}. [{category_label(category_code)}] {item.get('item_name') or '-'} — "
                 f"Количество: {item.get('qty') or '0'}, "
-                f"{_unit_price_prompt(item.get('category') or 'OTHER')}: {item.get('unit_price') or '0'}, "
+                f"{_unit_price_prompt(category_code)}: {item.get('unit_price') or '0'}, "
                 f"Итог: {item.get('line_total') or '0'}"
             )
             if item.get("note"):
@@ -989,7 +998,7 @@ async def add_check_items_menu(message: Message, state: FSMContext) -> None:
 
 @router.message(AddCheckFSM.item_category)
 async def add_check_item_category(message: Message, state: FSMContext) -> None:
-     text = (message.text or "").strip()
+    text = (message.text or "").strip()
     text_upper = text.upper()
     if _is_cancel(text):
         await _cancel_add_check(message, state)
