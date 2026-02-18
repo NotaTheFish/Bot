@@ -238,7 +238,7 @@ async def _check_access(event: Message | CallbackQuery, settings: Settings) -> b
 async def handle_start(message: Message, settings: Settings) -> None:
     if not await _check_access(message, settings):
         return
-    await safe_send_message(message.bot, message.chat.id, "Выберите действие:", reply_markup=START_KEYBOARD)
+    await safe_send_message(message.bot, message.chat.id, "Привет! Выберите действие 👇", reply_markup=START_KEYBOARD)
 
 
 @router.message((F.text == BTN_REVIEWS) | (F.text == BTN_REVIEWS_LEGACY))
@@ -1395,7 +1395,7 @@ async def export_excel(callback: CallbackQuery, settings: Settings, pool: asyncp
             callback.message.bot,
             callback.message.chat.id,
             document,
-            caption=f"Выгрузка: {label_by_period[period]}",
+            caption=f"📤 Отчёт Excel: {label_by_period[period]}",
         )
 
-    await callback.answer("Файл отправлен")
+    await callback.answer("✅ Excel отправлен")
