@@ -2539,19 +2539,30 @@ async def contact_message_forward(message: Message, state: FSMContext):
 
 
 @dp.message(F.chat.type == "private")
-async def save_storage_chat_from_forward(message: Message, state: FSMContext):
-    if not ensure_admin(message):
+async def private_message_fallback(message: Message, state: FSMContext):
+    if ensure_admin(message):
+        current_state = await state.get_state()
+        if current_state is not None:
+            return
+
+        if not message.forward_from_chat:
+            return
+
+        await set_storage_chat_id(message.forward_from_chat.id)
+        await message.answer("Storage чат сохранён")
         return
 
     current_state = await state.get_state()
-    if current_state is not None:
+    if current_state in {
+        SupportStates.waiting_message.state,
+        ContactStates.waiting_message.state,
+    }:
         return
 
-    if not message.forward_from_chat:
-        return
-
-    await set_storage_chat_id(message.forward_from_chat.id)
-    await message.answer("Storage чат сохранён")
+    await message.answer(
+        "Здравствуйте! Хотите написать продавцу? Нажмите кнопку ниже 👇",
+        reply_markup=buyer_contact_keyboard(),
+    )
 
 
 async def restore_scheduler() -> None:
