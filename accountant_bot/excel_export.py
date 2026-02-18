@@ -9,6 +9,8 @@ from typing import Any
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 
+from .category_labels import CATEGORY_LABELS
+
 RECEIPTS_HEADERS = [
     "receipt_id",
     "created_at",
@@ -35,13 +37,6 @@ ITEMS_HEADERS = [
     "line_total",
     "note",
 ]
-
-CATEGORY_LABELS = {
-    "VID": "Видео",
-    "TOKENS": "Токены",
-    "MUSHROOMS": "Грибы",
-    "OTHER": "Другое",
-}
 
 UNIT_BASIS_LABELS = {
     "unit": "шт",

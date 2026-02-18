@@ -20,6 +20,7 @@ from aiogram.types import (
 )
 
 from .accounting import add_receipt_with_items
+from .category_labels import CATEGORY_LABELS
 from .config import Settings
 from .db import cancel_receipt, get_receipt_with_items, list_receipts_by_period, refund_receipt
 from .excel_export import build_transactions_report
@@ -98,12 +99,6 @@ class ReceiptLookupFSM(StatesGroup):
 
 
 ITEM_CATEGORIES = ("VID", "TOKENS", "MUSHROOMS", "OTHER")
-CATEGORY_LABELS = {
-    "VID": "🐉 Вид",
-    "TOKENS": "🪙 Токены",
-    "MUSHROOMS": "🍄 Грибы",
-    "OTHER": "✍️ Другое",
-}
 CATEGORY_CODES_BY_LABEL = {label: code for code, label in CATEGORY_LABELS.items()}
 
 
