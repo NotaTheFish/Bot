@@ -52,9 +52,9 @@ START_KEYBOARD = ReplyKeyboardMarkup(
 STATS_KEYBOARD = InlineKeyboardMarkup(
     inline_keyboard=[
         [
-            InlineKeyboardButton(text="Сегодня", callback_data="stats:day"),
-            InlineKeyboardButton(text="7 дней", callback_data="stats:week"),
-            InlineKeyboardButton(text="30 дней", callback_data="stats:month"),
+            InlineKeyboardButton(text="📅 Сегодня", callback_data="stats:day"),
+            InlineKeyboardButton(text="📆 7 дней", callback_data="stats:week"),
+            InlineKeyboardButton(text="🗓 30 дней", callback_data="stats:month"),
         ]
     ]
 )
@@ -201,10 +201,10 @@ async def show_stats(callback: CallbackQuery, settings: Settings, reviews_servic
     await safe_send_message(
         callback.message.bot,
         callback.message.chat.id,
-        f"📊 Статистика ({period_to_label[period]})\n"
-        f"Добавлено: {stats['added']}\n"
-        f"Удалено: {stats['deleted']}\n"
-        f"Активных: {stats['active']}",
+        f"📊 Статистика отзывов ({period_to_label[period]})\n"
+        f"➕ Добавлено: {stats['added']}\n"
+        f"➖ Удалено: {stats['deleted']}\n"
+        f"✅ Активных: {stats['active']}",
     )
     await callback.answer()
 

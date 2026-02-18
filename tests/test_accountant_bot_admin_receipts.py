@@ -28,9 +28,11 @@ if "openpyxl" not in sys.modules:
 
 from accountant_bot.admin_bot import (
     START_KEYBOARD,
+    STATS_KEYBOARD,
     _receipt_details_text,
     _receipt_list_keyboard,
     add_check_confirm,
+    show_stats,
 )
 from accountant_bot.config import Settings
 
@@ -59,6 +61,44 @@ def test_start_keyboard_has_expected_rows_and_labels():
         ["📤 Excel", "🔎 Найти чек"],
         ["🧾 Последние чеки"],
     ]
+
+
+def test_stats_keyboard_has_expected_labels_and_callbacks():
+    row = STATS_KEYBOARD.inline_keyboard[0]
+    assert [button.text for button in row] == ["📅 Сегодня", "📆 7 дней", "🗓 30 дней"]
+    assert [button.callback_data for button in row] == ["stats:day", "stats:week", "stats:month"]
+
+
+def test_show_stats_uses_expected_message_format(monkeypatch):
+    safe_send_message = AsyncMock()
+    monkeypatch.setattr("accountant_bot.admin_bot.safe_send_message", safe_send_message)
+
+    callback = SimpleNamespace(
+        from_user=SimpleNamespace(id=1),
+        data="stats:week",
+        message=SimpleNamespace(bot=object(), chat=SimpleNamespace(id=1)),
+        answer=AsyncMock(),
+    )
+    settings = Settings(
+        ACCOUNTANT_BOT_TOKEN="token",
+        ACCOUNTANT_ADMIN_IDS=[1],
+        DATABASE_URL="postgresql://localhost/test",
+        REVIEWS_CHANNEL_ID=777,
+        TG_API_ID=123,
+        TG_API_HASH="hash",
+        ACCOUNTANT_TG_STRING_SESSION="session",
+    )
+    reviews_service = SimpleNamespace(get_stats_reviews=AsyncMock(return_value={"added": 10, "deleted": 3, "active": 7}))
+
+    asyncio.run(show_stats(callback, settings, reviews_service))
+
+    sent_text = safe_send_message.await_args.args[2]
+    assert sent_text == (
+        "📊 Статистика отзывов (7 дней)\n"
+        "➕ Добавлено: 10\n"
+        "➖ Удалено: 3\n"
+        "✅ Активных: 7"
+    )
 
 
 def test_receipt_details_text_contains_status_sum_and_items():
