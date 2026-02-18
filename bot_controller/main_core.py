@@ -1,4 +1,5 @@
 import asyncio
+import html
 import json
 import logging
 import os
@@ -77,6 +78,8 @@ CONFIGURED_BOT_USERNAME = _normalize_username(_get_env_str("BOT_USERNAME", ""))
 SUPPORT_PAYLOAD = "support"
 CONTACT_PAYLOAD_PREFIX = "contact_"
 CONTACT_CTA_TEXT = "✉️ Написать продавцу"
+BUYER_CONTACT_BUTTON_TEXT = "✉️ Связаться с продавцом"
+BUYER_CONTACT_COOLDOWN_SECONDS = _get_env_int("BUYER_CONTACT_COOLDOWN_SECONDS", 60)
 
 def _parse_int_list_csv(raw: str) -> list[int]:
     raw = (raw or "").strip()
@@ -192,6 +195,13 @@ class ContactStates(StatesGroup):
     waiting_message = State()
 
 
+def buyer_contact_keyboard(button_text: str = BUYER_CONTACT_BUTTON_TEXT) -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        keyboard=[[KeyboardButton(text=button_text)]],
+        resize_keyboard=True,
+    )
+
+
 CREATE_TABLES_SQL = [
     """
     CREATE TABLE IF NOT EXISTS chats (
@@ -288,6 +298,12 @@ CREATE_TABLES_SQL = [
     CREATE UNIQUE INDEX IF NOT EXISTS idx_userbot_tasks_dedupe_active
     ON userbot_tasks(dedupe_key)
     WHERE dedupe_key IS NOT NULL AND status IN ('pending', 'processing')
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS buyer_contact_cooldown (
+        user_id BIGINT PRIMARY KEY,
+        next_allowed_at TIMESTAMPTZ NOT NULL
+    )
     """,
 ]
 
@@ -974,6 +990,35 @@ async def save_buyer_reply_template(storage_chat_id: int, message_id: int) -> No
         """,
         storage_chat_id,
         message_id,
+    )
+
+
+async def get_cooldown_remaining(user_id: int) -> int:
+    pool = await get_db_pool()
+    row = await pool.fetchrow(
+        """
+        SELECT GREATEST(0, CEIL(EXTRACT(EPOCH FROM (next_allowed_at - NOW())))::INT) AS remaining
+        FROM buyer_contact_cooldown
+        WHERE user_id = $1
+        """,
+        user_id,
+    )
+    if not row:
+        return 0
+    return int(row["remaining"] or 0)
+
+
+async def set_next_allowed(user_id: int, cooldown_seconds: int) -> None:
+    pool = await get_db_pool()
+    await pool.execute(
+        """
+        INSERT INTO buyer_contact_cooldown(user_id, next_allowed_at)
+        VALUES ($1, NOW() + ($2::INT * INTERVAL '1 second'))
+        ON CONFLICT(user_id)
+        DO UPDATE SET next_allowed_at = excluded.next_allowed_at
+        """,
+        user_id,
+        max(0, cooldown_seconds),
     )
 
 
@@ -1933,6 +1978,19 @@ async def confirm_daily_broadcast(callback: CallbackQuery):
     await broadcast_once()
 
 
+async def _start_support_flow(message: Message, state: FSMContext, concise: bool = False) -> None:
+    await state.set_state(SupportStates.waiting_message)
+    if concise:
+        await message.answer("Напишите сообщение одним сообщением — я перешлю продавцу.")
+        return
+    if SELLER_USERNAME:
+        await message.answer(
+            f"Напишите сообщение здесь, я тут же передам его продавцу или свяжитесь с ним лично @{SELLER_USERNAME}"
+        )
+    else:
+        await message.answer("Напишите сообщение одним сообщением — я перешлю продавцу.")
+
+
 @dp.message(CommandStart())
 async def on_start(message: Message, state: FSMContext):
     args = (message.text or "").split(maxsplit=1)
@@ -1956,20 +2014,22 @@ async def on_start(message: Message, state: FSMContext):
         return
 
     if payload == SUPPORT_PAYLOAD and message.chat.type == "private":
-        await state.set_state(SupportStates.waiting_message)
-        if SELLER_USERNAME:
-            await message.answer(
-                f"Напишите сообщение здесь, я тут же передам его продавцу или свяжитесь с ним лично @{SELLER_USERNAME}"
-            )
-        else:
-            await message.answer("Напишите сообщение здесь, я тут же передам его продавцу.")
+        await _start_support_flow(message, state, concise=True)
         return
 
     if message.chat.type == "private" and message.from_user and is_admin_user(message.from_user.id):
         await state.clear()
         await message.answer("Главное меню:", reply_markup=admin_menu_keyboard())
+    elif message.chat.type == "private":
+        await message.answer(
+            "Здравствуйте! Хотите написать продавцу? Нажмите кнопку ниже 👇",
+            reply_markup=buyer_contact_keyboard(),
+        )
     else:
-        await message.answer("Здравствуйте! Используйте кнопку из поста для связи с продавцом.")
+        await message.answer(
+            "Здравствуйте! Используйте кнопку из поста для связи с продавцом.",
+            reply_markup=buyer_contact_keyboard(),
+        )
 
 
 @dp.message(Command("menu"))
@@ -1984,6 +2044,26 @@ async def on_menu_fallback(message: Message, state: FSMContext):
     if message.chat.type == "private" and message.from_user and is_admin_user(message.from_user.id):
         await state.clear()
         await message.answer("Главное меню:", reply_markup=admin_menu_keyboard())
+
+
+@dp.message(F.text == BUYER_CONTACT_BUTTON_TEXT, F.chat.type == "private")
+async def buyer_contact_start(message: Message, state: FSMContext):
+    if ensure_admin(message):
+        return
+    if not message.from_user:
+        await message.answer("Не удалось определить пользователя.")
+        return
+
+    remaining = await get_cooldown_remaining(message.from_user.id)
+    if remaining > 0:
+        await message.answer(
+            f"⏳ Подождите ещё {remaining} сек.",
+            reply_markup=buyer_contact_keyboard(f"⏳ Связаться ({remaining}с)"),
+        )
+        return
+
+    await set_next_allowed(message.from_user.id, BUYER_CONTACT_COOLDOWN_SECONDS)
+    await _start_support_flow(message, state, concise=True)
 
 
 @dp.message(F.text == "📌 Добавить пост")
@@ -2355,28 +2435,45 @@ async def schedule_edit_save(message: Message, state: FSMContext):
     await send_schedule_list(message)
 
 
+async def _notify_admin_about_buyer_message(message: Message, token: str) -> None:
+    sender = message.from_user
+    sender_id = sender.id if sender else None
+    username = f"@{sender.username}" if sender and sender.username else "без username"
+    full_name = (sender.full_name if sender else "") or "без имени"
+    safe_name = html.escape(full_name)
+    user_link = (
+        f'<a href="tg://user?id={sender_id}">{safe_name}</a>' if sender_id else safe_name
+    )
+    body = message.text or message.caption or "[без текста]"
+
+    await bot.forward_message(ADMIN_ID, message.chat.id, message.message_id)
+    await bot.send_message(
+        ADMIN_ID,
+        "\n".join(
+            [
+                "📩 Новое сообщение покупателя",
+                f"token: {token}",
+                f"user: {user_link}",
+                f"user_id: {sender_id if sender_id is not None else 'unknown'}",
+                f"username: {username}",
+                f"full_name: {safe_name}",
+                "",
+                body,
+            ]
+        ),
+        parse_mode="HTML",
+    )
+
+
 @dp.message(SupportStates.waiting_message, F.chat.type == "private")
 async def support_message_forward(message: Message, state: FSMContext):
     if ensure_admin(message):
         await state.clear()
         return
 
-    sender = message.from_user
-    sender_name = f"@{sender.username}" if sender and sender.username else "без username"
-
     try:
-        if message.photo:
-            await bot.send_photo(
-                ADMIN_ID,
-                photo=message.photo[-1].file_id,
-                caption=f"Сообщение поддержки от {sender_name} (id={sender.id})\n{message.caption or ''}",
-            )
-        else:
-            await bot.send_message(
-                ADMIN_ID,
-                f"Сообщение поддержки от {sender_name} (id={sender.id}):\n{message.text or '[без текста]'}",
-            )
-        await message.answer("Сообщение отправлено продавцу ✅")
+        await _notify_admin_about_buyer_message(message, SUPPORT_PAYLOAD)
+        await _send_buyer_reply(message.chat.id)
         await state.clear()
     except Exception as exc:
         logger.error("Support forward error: %s", exc)
@@ -2397,25 +2494,9 @@ async def contact_message_forward(message: Message, state: FSMContext):
         return
 
     sender = message.from_user
-    username = f"@{sender.username}" if sender and sender.username else "без username"
-    full_name = (sender.full_name if sender else "") or "без имени"
-    body = message.text or message.caption or "[без текста]"
 
     try:
-        await bot.send_message(
-            ADMIN_ID,
-            "\n".join(
-                [
-                    "📩 Новое сообщение покупателя",
-                    f"token: {token}",
-                    f"user_id: {sender.id if sender else 'unknown'}",
-                    f"username: {username}",
-                    f"full_name: {full_name}",
-                    "",
-                    body,
-                ]
-            ),
-        )
+        await _notify_admin_about_buyer_message(message, token)
         logger.info("Forwarded buyer message user_id=%s token=%s", sender.id if sender else None, token)
         await _send_buyer_reply(message.chat.id)
         await state.clear()
