@@ -195,11 +195,20 @@ class ContactStates(StatesGroup):
     waiting_message = State()
 
 
-def buyer_contact_keyboard(button_text: str = BUYER_CONTACT_BUTTON_TEXT) -> ReplyKeyboardMarkup:
+def buyer_contact_keyboard() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
-        keyboard=[[KeyboardButton(text=button_text)]],
+        keyboard=[[KeyboardButton(text=BUYER_CONTACT_BUTTON_TEXT)]],
         resize_keyboard=True,
     )
+
+
+def is_buyer_contact_text(text: str | None) -> bool:
+    normalized = (text or "").strip()
+    if not normalized:
+        return False
+    if normalized == BUYER_CONTACT_BUTTON_TEXT:
+        return True
+    return normalized.startswith("✉️") and "Связаться" in normalized
 
 
 CREATE_TABLES_SQL = [
@@ -2046,7 +2055,7 @@ async def on_menu_fallback(message: Message, state: FSMContext):
         await message.answer("Главное меню:", reply_markup=admin_menu_keyboard())
 
 
-@dp.message(F.text == BUYER_CONTACT_BUTTON_TEXT, F.chat.type == "private")
+@dp.message(F.chat.type == "private", lambda message: is_buyer_contact_text(message.text))
 async def buyer_contact_start(message: Message, state: FSMContext):
     if ensure_admin(message):
         return
@@ -2056,10 +2065,7 @@ async def buyer_contact_start(message: Message, state: FSMContext):
 
     remaining = await get_cooldown_remaining(message.from_user.id)
     if remaining > 0:
-        await message.answer(
-            f"⏳ Подождите ещё {remaining} сек.",
-            reply_markup=buyer_contact_keyboard(f"⏳ Связаться ({remaining}с)"),
-        )
+        await message.answer(f"⏳ Подождите {remaining} сек. и попробуйте снова.")
         return
 
     await set_next_allowed(message.from_user.id, BUYER_CONTACT_COOLDOWN_SECONDS)
