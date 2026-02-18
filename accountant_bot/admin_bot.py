@@ -209,7 +209,6 @@ async def show_stats(callback: CallbackQuery, settings: Settings, reviews_servic
     await callback.answer()
 
 
-@router.message(F.text == "🔄 Обновить описание")
 @router.message(Command("refresh_about"))
 async def refresh_about(message: Message, settings: Settings, reviews_service: ReviewsService) -> None:
     if not await _check_access(message, settings):
