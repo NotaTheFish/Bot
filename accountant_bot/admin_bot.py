@@ -105,6 +105,8 @@ BTN_SKIP = "Пропустить"
 BTN_SAVE = "Сохранить"
 BTN_FIX = "Исправить"
 
+ADD_CHECK_NAV_PREFIX = "add_check:nav"
+
 NAV_BACK_CANCEL = ReplyKeyboardMarkup(
     keyboard=[[KeyboardButton(text=BTN_BACK), KeyboardButton(text=BTN_CANCEL)]],
     resize_keyboard=True,
@@ -150,6 +152,25 @@ EDIT_FIELD_KEYBOARD = ReplyKeyboardMarkup(
     resize_keyboard=True,
 )
 
+INLINE_NAV_BACK_CANCEL = InlineKeyboardMarkup(
+    inline_keyboard=[
+        [
+            InlineKeyboardButton(text="⬅️ Назад", callback_data=f"{ADD_CHECK_NAV_PREFIX}:back"),
+            InlineKeyboardButton(text="❌ Отмена", callback_data=f"{ADD_CHECK_NAV_PREFIX}:cancel"),
+        ]
+    ]
+)
+
+INLINE_NAV_BACK_CANCEL_SKIP = InlineKeyboardMarkup(
+    inline_keyboard=[
+        [InlineKeyboardButton(text="⏭ Пропустить", callback_data=f"{ADD_CHECK_NAV_PREFIX}:skip")],
+        [
+            InlineKeyboardButton(text="⬅️ Назад", callback_data=f"{ADD_CHECK_NAV_PREFIX}:back"),
+            InlineKeyboardButton(text="❌ Отмена", callback_data=f"{ADD_CHECK_NAV_PREFIX}:cancel"),
+        ],
+    ]
+)
+
 CURRENCY_KEYBOARD = InlineKeyboardMarkup(
     inline_keyboard=[
         [
@@ -162,8 +183,8 @@ CURRENCY_KEYBOARD = InlineKeyboardMarkup(
         ],
         [InlineKeyboardButton(text="✍️ Другое", callback_data="add_check:currency:other")],
         [
-            InlineKeyboardButton(text="⬅️ Назад", callback_data="add_check:currency:back"),
-            InlineKeyboardButton(text="❌ Отмена", callback_data="add_check:currency:cancel"),
+            InlineKeyboardButton(text="⬅️ Назад", callback_data=f"{ADD_CHECK_NAV_PREFIX}:back"),
+            InlineKeyboardButton(text="❌ Отмена", callback_data=f"{ADD_CHECK_NAV_PREFIX}:cancel"),
         ],
     ]
 )
@@ -176,10 +197,10 @@ PAY_METHOD_KEYBOARD = InlineKeyboardMarkup(
         ],
         [InlineKeyboardButton(text="🪙 Крипта", callback_data="add_check:pay_method:crypto")],
         [InlineKeyboardButton(text="✍️ Другое", callback_data="add_check:pay_method:other")],
-        [InlineKeyboardButton(text="⏭ Пропустить", callback_data="add_check:pay_method:skip")],
+        [InlineKeyboardButton(text="⏭ Пропустить", callback_data=f"{ADD_CHECK_NAV_PREFIX}:skip")],
         [
-            InlineKeyboardButton(text="⬅️ Назад", callback_data="add_check:pay_method:back"),
-            InlineKeyboardButton(text="❌ Отмена", callback_data="add_check:pay_method:cancel"),
+             InlineKeyboardButton(text="⬅️ Назад", callback_data=f"{ADD_CHECK_NAV_PREFIX}:back"),
+            InlineKeyboardButton(text="❌ Отмена", callback_data=f"{ADD_CHECK_NAV_PREFIX}:cancel"),
         ],
     ]
 )
@@ -515,6 +536,186 @@ async def _cancel_add_check(message: Message, state: FSMContext) -> None:
     await safe_send_message(message.bot, message.chat.id, "Добавление чека отменено.", reply_markup=START_KEYBOARD)
 
 
+ADD_CHECK_PREV_STATE: dict[str, State | None] = {
+    AddCheckFSM.currency.state: None,
+    AddCheckFSM.currency_custom.state: AddCheckFSM.currency,
+    AddCheckFSM.pay_method.state: AddCheckFSM.currency,
+    AddCheckFSM.pay_method_custom.state: AddCheckFSM.pay_method,
+    AddCheckFSM.note.state: AddCheckFSM.pay_method,
+    AddCheckFSM.items_menu.state: AddCheckFSM.note,
+    AddCheckFSM.item_category.state: AddCheckFSM.items_menu,
+    AddCheckFSM.item_name.state: AddCheckFSM.item_category,
+    AddCheckFSM.item_qty.state: AddCheckFSM.item_name,
+    AddCheckFSM.item_unit_price.state: AddCheckFSM.item_qty,
+    AddCheckFSM.item_note.state: AddCheckFSM.item_unit_price,
+    AddCheckFSM.item_delete.state: AddCheckFSM.items_menu,
+    AddCheckFSM.item_edit_select.state: AddCheckFSM.items_menu,
+    AddCheckFSM.item_edit_field.state: AddCheckFSM.item_edit_select,
+    AddCheckFSM.item_edit_value.state: AddCheckFSM.item_edit_field,
+    AddCheckFSM.receipt.state: AddCheckFSM.items_menu,
+    AddCheckFSM.confirm.state: AddCheckFSM.receipt,
+}
+
+
+async def _render_add_check_state(message: Message, state: FSMContext, target_state: State | None) -> None:
+    if target_state is None:
+        await safe_send_message(message.bot, message.chat.id, "Это первый шаг.", reply_markup=CURRENCY_KEYBOARD)
+        return
+
+    if target_state == AddCheckFSM.currency:
+        await _prompt_currency(message, state=state)
+        return
+    if target_state == AddCheckFSM.pay_method:
+        await _prompt_pay_method(message, state=state)
+        return
+    if target_state == AddCheckFSM.note:
+        await state.set_state(AddCheckFSM.note)
+        await safe_send_message(message.bot, message.chat.id, "Комментарий к чеку:", reply_markup=INLINE_NAV_BACK_CANCEL_SKIP)
+        return
+    if target_state == AddCheckFSM.items_menu:
+        await _show_items_menu(message, state)
+        return
+    if target_state == AddCheckFSM.item_category:
+        await state.set_state(AddCheckFSM.item_category)
+        await safe_send_message(message.bot, message.chat.id, "Выберите категорию:", reply_markup=CATEGORY_KEYBOARD)
+        return
+    if target_state == AddCheckFSM.item_name:
+        await state.set_state(AddCheckFSM.item_name)
+        await safe_send_message(message.bot, message.chat.id, "Название товара:", reply_markup=INLINE_NAV_BACK_CANCEL)
+        return
+    if target_state == AddCheckFSM.item_qty:
+        data = await state.get_data()
+        item_draft = data.get("item_draft", {})
+        category = item_draft.get("category", "OTHER")
+        await state.set_state(AddCheckFSM.item_qty)
+        await safe_send_message(
+            message.bot,
+            message.chat.id,
+            "Количество (для MUSHROOMS — в штуках):" if category == "MUSHROOMS" else "Количество:",
+            reply_markup=INLINE_NAV_BACK_CANCEL,
+        )
+        return
+    if target_state == AddCheckFSM.item_unit_price:
+        data = await state.get_data()
+        item_draft = data.get("item_draft", {})
+        category = item_draft.get("category", "OTHER")
+        await state.set_state(AddCheckFSM.item_unit_price)
+        await safe_send_message(message.bot, message.chat.id, f"{_unit_price_prompt(category)}:", reply_markup=INLINE_NAV_BACK_CANCEL)
+        return
+    if target_state == AddCheckFSM.item_note:
+        await state.set_state(AddCheckFSM.item_note)
+        await safe_send_message(message.bot, message.chat.id, "Комментарий к позиции:", reply_markup=INLINE_NAV_BACK_CANCEL_SKIP)
+        return
+    if target_state == AddCheckFSM.item_delete:
+        await state.set_state(AddCheckFSM.item_delete)
+        await safe_send_message(
+            message.bot,
+            message.chat.id,
+            "Введите номер позиции для удаления:",
+            reply_markup=INLINE_NAV_BACK_CANCEL,
+        )
+        return
+    if target_state == AddCheckFSM.item_edit_select:
+        await state.set_state(AddCheckFSM.item_edit_select)
+        await safe_send_message(
+            message.bot,
+            message.chat.id,
+            "Введите номер позиции для изменения:",
+            reply_markup=INLINE_NAV_BACK_CANCEL,
+        )
+        return
+    if target_state == AddCheckFSM.item_edit_field:
+        await state.set_state(AddCheckFSM.item_edit_field)
+        await safe_send_message(message.bot, message.chat.id, "Что изменить?", reply_markup=EDIT_FIELD_KEYBOARD)
+        return
+    if target_state == AddCheckFSM.item_edit_value:
+        data = await state.get_data()
+        edit_field = data.get("edit_field")
+        kb = CATEGORY_KEYBOARD if edit_field == "category" else (INLINE_NAV_BACK_CANCEL_SKIP if edit_field == "note" else INLINE_NAV_BACK_CANCEL)
+        await state.set_state(AddCheckFSM.item_edit_value)
+        await safe_send_message(message.bot, message.chat.id, "Введите новое значение:", reply_markup=kb)
+        return
+    if target_state == AddCheckFSM.receipt:
+        await state.set_state(AddCheckFSM.receipt)
+        await safe_send_message(message.bot, message.chat.id, "Отправьте фото/документ чека:", reply_markup=INLINE_NAV_BACK_CANCEL_SKIP)
+        return
+    if target_state == AddCheckFSM.confirm:
+        await _show_summary(message, state)
+
+
+@router.callback_query(F.data.startswith(f"{ADD_CHECK_NAV_PREFIX}:"))
+async def add_check_navigation_callback(callback: CallbackQuery, state: FSMContext) -> None:
+    if callback.message is None:
+        await callback.answer()
+        return
+
+    action = callback.data.split(":")[-1]
+    current_state = await state.get_state()
+    if not current_state or not current_state.startswith("AddCheckFSM:"):
+        await callback.answer()
+        return
+
+    if action == "cancel":
+        await _cancel_add_check(callback.message, state)
+        await callback.answer()
+        return
+
+    if action == "skip":
+        if current_state == AddCheckFSM.pay_method.state:
+            await state.update_data(pay_method=None)
+            await state.set_state(AddCheckFSM.note)
+            await safe_send_message(callback.message.bot, callback.message.chat.id, "Комментарий к чеку:", reply_markup=INLINE_NAV_BACK_CANCEL_SKIP)
+            await callback.answer()
+            return
+        if current_state == AddCheckFSM.note.state:
+            await state.update_data(note=None)
+            await _show_items_menu(callback.message, state)
+            await callback.answer()
+            return
+        if current_state == AddCheckFSM.item_note.state:
+            data = await state.get_data()
+            item_draft = data.get("item_draft", {})
+            item_draft["note"] = None
+
+            items = data.get("items", [])
+            edit_index = data.get("edit_index")
+            if edit_index is None:
+                items.append(item_draft)
+            else:
+                items[edit_index] = item_draft
+            await state.update_data(items=items, item_draft={}, edit_index=None)
+            await _show_items_menu(callback.message, state)
+            await callback.answer()
+            return
+        if current_state == AddCheckFSM.receipt.state:
+            await state.update_data(receipt_file_id=None, receipt_file_type=None)
+            await _show_summary(callback.message, state)
+            await callback.answer()
+            return
+        if current_state == AddCheckFSM.item_edit_value.state:
+            data = await state.get_data()
+            if data.get("edit_field") == "note":
+                idx = data.get("edit_index")
+                items = data.get("items", [])
+                if idx is not None and 0 <= idx < len(items):
+                    items[idx]["note"] = None
+                    await state.update_data(items=items, edit_index=None, edit_field=None)
+                    await _show_items_menu(callback.message, state)
+                    await callback.answer()
+                    return
+
+        await callback.answer("Для этого шага пропуск недоступен", show_alert=True)
+        return
+
+    if action == "back":
+        prev_state = ADD_CHECK_PREV_STATE.get(current_state)
+        await _render_add_check_state(callback.message, state, prev_state)
+        await callback.answer()
+        return
+
+    await callback.answer()
+
+
 async def _show_items_menu(message: Message, state: FSMContext) -> None:
     data = await state.get_data()
     items = data.get("items", [])
@@ -586,17 +787,13 @@ async def add_check_currency_callback(callback: CallbackQuery, state: FSMContext
         return
 
     action = callback.data.split(":")[-1]
-    if action == "cancel":
-        await _cancel_add_check(callback.message, state)
-    elif action == "back":
-        await safe_send_message(callback.message.bot, callback.message.chat.id, "Это первый шаг.", reply_markup=CURRENCY_KEYBOARD)
-    elif action == "other":
+    if action == "other":
         await state.set_state(AddCheckFSM.currency_custom)
         await safe_send_message(
             callback.message.bot,
             callback.message.chat.id,
             "Введите валюту (2–6 символов, например AED):",
-            reply_markup=NAV_BACK_CANCEL,
+            reply_markup=INLINE_NAV_BACK_CANCEL,
         )
     else:
         await state.update_data(currency=action.upper())
@@ -620,7 +817,7 @@ async def add_check_currency_custom(message: Message, state: FSMContext) -> None
             message.bot,
             message.chat.id,
             "Валюта должна быть длиной от 2 до 6 символов.",
-            reply_markup=NAV_BACK_CANCEL,
+            reply_markup=INLINE_NAV_BACK_CANCEL,
         )
         return
 
@@ -652,26 +849,18 @@ async def add_check_pay_method_callback(callback: CallbackQuery, state: FSMConte
         "cash": "Наличные",
         "crypto": "Крипта",
     }
-    if action == "cancel":
-        await _cancel_add_check(callback.message, state)
-    elif action == "back":
-        await _prompt_currency(callback.message, state=state)
-    elif action == "skip":
-        await state.update_data(pay_method=None)
-        await state.set_state(AddCheckFSM.note)
-        await safe_send_message(callback.message.bot, callback.message.chat.id, "Комментарий к чеку:", reply_markup=NAV_BACK_CANCEL_SKIP)
-    elif action == "other":
+    if action == "other":
         await state.set_state(AddCheckFSM.pay_method_custom)
         await safe_send_message(
             callback.message.bot,
             callback.message.chat.id,
             "Введите способ оплаты:",
-            reply_markup=NAV_BACK_CANCEL,
+            reply_markup=INLINE_NAV_BACK_CANCEL,
         )
     elif action in pay_method_map:
         await state.update_data(pay_method=pay_method_map[action])
         await state.set_state(AddCheckFSM.note)
-        await safe_send_message(callback.message.bot, callback.message.chat.id, "Комментарий к чеку:", reply_markup=NAV_BACK_CANCEL_SKIP)
+        await safe_send_message(callback.message.bot, callback.message.chat.id, "Комментарий к чеку:", reply_markup=INLINE_NAV_BACK_CANCEL_SKIP)
     else:
         await safe_send_message(callback.message.bot, callback.message.chat.id, "Неизвестный способ оплаты.", reply_markup=PAY_METHOD_KEYBOARD)
     await callback.answer()
@@ -687,12 +876,12 @@ async def add_check_pay_method_custom(message: Message, state: FSMContext) -> No
         await _prompt_pay_method(message, state=state)
         return
     if not text:
-        await safe_send_message(message.bot, message.chat.id, "Введите способ оплаты текстом.", reply_markup=NAV_BACK_CANCEL)
+        await safe_send_message(message.bot, message.chat.id, "Введите способ оплаты текстом.", reply_markup=INLINE_NAV_BACK_CANCEL)
         return
 
     await state.update_data(pay_method=text)
     await state.set_state(AddCheckFSM.note)
-    await safe_send_message(message.bot, message.chat.id, "Комментарий к чеку:", reply_markup=NAV_BACK_CANCEL_SKIP)
+    await safe_send_message(message.bot, message.chat.id, "Комментарий к чеку:", reply_markup=INLINE_NAV_BACK_CANCEL_SKIP)
 
 
 @router.message(AddCheckFSM.note)
@@ -718,7 +907,7 @@ async def add_check_items_menu(message: Message, state: FSMContext) -> None:
         return
     if _is_back(text):
         await state.set_state(AddCheckFSM.note)
-        await safe_send_message(message.bot, message.chat.id, "Комментарий к чеку:", reply_markup=NAV_BACK_CANCEL_SKIP)
+        await safe_send_message(message.bot, message.chat.id, "Комментарий к чеку:", reply_markup=INLINE_NAV_BACK_CANCEL_SKIP)
         return
     if text == "➕ Добавить позицию":
         await state.update_data(item_draft={}, edit_index=None)
@@ -727,15 +916,15 @@ async def add_check_items_menu(message: Message, state: FSMContext) -> None:
         return
     if text == "🗑 Удалить позицию":
         await state.set_state(AddCheckFSM.item_delete)
-        await safe_send_message(message.bot, message.chat.id, "Введите номер позиции для удаления:", reply_markup=NAV_BACK_CANCEL)
+        await safe_send_message(message.bot, message.chat.id, "Введите номер позиции для удаления:", reply_markup=INLINE_NAV_BACK_CANCEL)
         return
     if text in {f"✏️ {BTN_FIX} позицию", "✏️ Изменить позицию"}:
         await state.set_state(AddCheckFSM.item_edit_select)
-        await safe_send_message(message.bot, message.chat.id, "Введите номер позиции для изменения:", reply_markup=NAV_BACK_CANCEL)
+        await safe_send_message(message.bot, message.chat.id, "Введите номер позиции для изменения:", reply_markup=INLINE_NAV_BACK_CANCEL)
         return
     if text == "➡️ К файлу":
         await state.set_state(AddCheckFSM.receipt)
-        await safe_send_message(message.bot, message.chat.id, "Отправьте фото/документ чека:", reply_markup=NAV_BACK_CANCEL_SKIP)
+        await safe_send_message(message.bot, message.chat.id, "Отправьте фото/документ чека:", reply_markup=INLINE_NAV_BACK_CANCEL_SKIP)
         return
 
     await safe_send_message(message.bot, message.chat.id, "Выберите действие кнопками.", reply_markup=ITEMS_MENU_KEYBOARD)
@@ -759,7 +948,7 @@ async def add_check_item_category(message: Message, state: FSMContext) -> None:
     item_draft["category"] = text
     await state.update_data(item_draft=item_draft)
     await state.set_state(AddCheckFSM.item_name)
-    await safe_send_message(message.bot, message.chat.id, "Название товара:", reply_markup=NAV_BACK_CANCEL)
+    await safe_send_message(message.bot, message.chat.id, "Название товара:", reply_markup=INLINE_NAV_BACK_CANCEL)
 
 
 @router.message(AddCheckFSM.item_name)
@@ -781,7 +970,7 @@ async def add_check_item_name(message: Message, state: FSMContext) -> None:
     item_draft["item_name"] = text
     await state.update_data(item_draft=item_draft)
     await state.set_state(AddCheckFSM.item_qty)
-    await safe_send_message(message.bot, message.chat.id, "Количество:", reply_markup=NAV_BACK_CANCEL)
+    await safe_send_message(message.bot, message.chat.id, "Количество:", reply_markup=INLINE_NAV_BACK_CANCEL)
 
 
 @router.message(AddCheckFSM.item_qty)
@@ -792,7 +981,7 @@ async def add_check_item_qty(message: Message, state: FSMContext) -> None:
         return
     if _is_back(text):
         await state.set_state(AddCheckFSM.item_name)
-        await safe_send_message(message.bot, message.chat.id, "Название товара:", reply_markup=NAV_BACK_CANCEL)
+        await safe_send_message(message.bot, message.chat.id, "Название товара:", reply_markup=INLINE_NAV_BACK_CANCEL)
         return
     qty = _parse_decimal(text)
     if qty is None:
@@ -808,7 +997,7 @@ async def add_check_item_qty(message: Message, state: FSMContext) -> None:
         message.bot,
         message.chat.id,
         f"{_unit_price_prompt(item_draft.get('category', 'OTHER'))}:",
-        reply_markup=NAV_BACK_CANCEL,
+        reply_markup=INLINE_NAV_BACK_CANCEL,
     )
 
 
@@ -822,7 +1011,7 @@ async def add_check_item_unit_price(message: Message, state: FSMContext) -> None
         return
     if _is_back(text):
         await state.set_state(AddCheckFSM.item_qty)
-        await safe_send_message(message.bot, message.chat.id, "Количество:", reply_markup=NAV_BACK_CANCEL)
+        await safe_send_message(message.bot, message.chat.id, "Количество:", reply_markup=INLINE_NAV_BACK_CANCEL)
         return
     unit_price = _parse_decimal(text)
     if unit_price is None:
@@ -842,7 +1031,7 @@ async def add_check_item_unit_price(message: Message, state: FSMContext) -> None
     item_draft["line_total"] = str(line_total)
     await state.update_data(item_draft=item_draft)
     await state.set_state(AddCheckFSM.item_note)
-    await safe_send_message(message.bot, message.chat.id, "Комментарий к позиции:", reply_markup=NAV_BACK_CANCEL_SKIP)
+    await safe_send_message(message.bot, message.chat.id, "Комментарий к позиции:", reply_markup=INLINE_NAV_BACK_CANCEL_SKIP)
 
 
 @router.message(AddCheckFSM.item_note)
@@ -859,7 +1048,7 @@ async def add_check_item_note(message: Message, state: FSMContext) -> None:
             message.bot,
             message.chat.id,
             f"{_unit_price_prompt(item_draft.get('category', 'OTHER'))}:",
-            reply_markup=NAV_BACK_CANCEL,
+            reply_markup=INLINE_NAV_BACK_CANCEL,
         )
         return
 
@@ -937,7 +1126,7 @@ async def add_check_item_edit_field(message: Message, state: FSMContext) -> None
         return
     if _is_back(text):
         await state.set_state(AddCheckFSM.item_edit_select)
-        await safe_send_message(message.bot, message.chat.id, "Введите номер позиции для изменения:", reply_markup=NAV_BACK_CANCEL)
+        await safe_send_message(message.bot, message.chat.id, "Введите номер позиции для изменения:", reply_markup=INLINE_NAV_BACK_CANCEL)
         return
 
     field_map = {
@@ -954,7 +1143,7 @@ async def add_check_item_edit_field(message: Message, state: FSMContext) -> None
 
     await state.update_data(edit_field=field)
     await state.set_state(AddCheckFSM.item_edit_value)
-    kb = CATEGORY_KEYBOARD if field == "category" else (NAV_BACK_CANCEL_SKIP if field == "note" else NAV_BACK_CANCEL)
+    kb = CATEGORY_KEYBOARD if field == "category" else (INLINE_NAV_BACK_CANCEL_SKIP if field == "note" else INLINE_NAV_BACK_CANCEL)
     await safe_send_message(message.bot, message.chat.id, "Введите новое значение:", reply_markup=kb)
 
 
@@ -1050,7 +1239,7 @@ async def add_check_confirm(
         return
     if _is_back(text):
         await state.set_state(AddCheckFSM.receipt)
-        await safe_send_message(message.bot, message.chat.id, "Отправьте фото/документ чека:", reply_markup=NAV_BACK_CANCEL_SKIP)
+        await safe_send_message(message.bot, message.chat.id, "Отправьте фото/документ чека:", reply_markup=INLINE_NAV_BACK_CANCEL_SKIP)
         return
     if text != BTN_SAVE:
         await safe_send_message(message.bot, message.chat.id, "Подтвердите сохранение кнопкой «Сохранить».", reply_markup=CONFIRM_KEYBOARD)
