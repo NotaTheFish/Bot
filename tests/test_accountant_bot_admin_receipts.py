@@ -156,15 +156,42 @@ def test_receipt_details_text_contains_status_sum_and_items():
             "unit_price": Decimal("100"),
             "line_total": Decimal("200"),
             "note": "item note",
-        }
+        },
+        {
+            "category": "TOKENS",
+            "item_name": "Item B",
+            "qty": Decimal("3"),
+            "unit_price": Decimal("10"),
+            "line_total": Decimal("30"),
+            "note": "",
+        },
+        {
+            "category": "MUSHROOMS",
+            "item_name": "Item C",
+            "qty": Decimal("1"),
+            "unit_price": Decimal("50"),
+            "line_total": Decimal("50"),
+            "note": "",
+        },
+        {
+            "category": "OTHER",
+            "item_name": "Item D",
+            "qty": Decimal("4"),
+            "unit_price": Decimal("5"),
+            "line_total": Decimal("20"),
+            "note": "",
+        },
     ]
 
     text = _receipt_details_text(receipt, items)
 
     assert "🧾 Чек #123" in text
     assert "Статус: created" in text
-    assert "Сумма: 200 RUB" in text
-    assert "[VID] Item A" in text
+    assert "Сумма: 300 RUB" in text
+    assert "[🐉 Вид] Item A" in text
+    assert "[🪙 Токены] Item B" in text
+    assert "[🍄 Грибы] Item C" in text
+    assert "[✍️ Другое] Item D" in text
     assert "💬 item note" in text
 
 

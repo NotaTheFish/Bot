@@ -43,6 +43,15 @@ class AccountantBotExcelExportTests(unittest.TestCase):
                 "status": "refunded",
                 "items": [
                     {
+                        "category": "TOKENS",
+                        "item_name": "Tip",
+                        "qty": "2",
+                        "unit_price": "20",
+                        "unit_basis": "unit",
+                        "line_total": "40",
+                        "note": "",
+                    },
+                    {
                         "category": "MUSHROOMS",
                         "item_name": "Tea",
                         "qty": "1000",
@@ -50,6 +59,15 @@ class AccountantBotExcelExportTests(unittest.TestCase):
                         "unit_basis": "per_1000",
                         "line_total": "5",
                         "note": "promo",
+                    },
+                    {
+                        "category": "OTHER",
+                        "item_name": "Pack",
+                        "qty": "1",
+                        "unit_price": "7",
+                        "unit_basis": "unit",
+                        "line_total": "7",
+                        "note": "",
                     }
                 ],
             },
@@ -67,8 +85,11 @@ class AccountantBotExcelExportTests(unittest.TestCase):
         self.assertEqual(ws_receipts["I3"].value, "REFUND")
 
         ws_items = wb["Items"]
-        self.assertEqual(ws_items["F2"].value, "Видео")
-        self.assertEqual(ws_items["J3"].value, "за 1000")
+        self.assertEqual(ws_items["F2"].value, "🐉 Вид")
+        self.assertEqual(ws_items["F3"].value, "🪙 Токены")
+        self.assertEqual(ws_items["F4"].value, "🍄 Грибы")
+        self.assertEqual(ws_items["F5"].value, "✍️ Другое")
+        self.assertEqual(ws_items["J4"].value, "за 1000")
 
         ws_summary = wb["Summary"]
         summary_values = [tuple(row) for row in ws_summary.iter_rows(min_row=2, max_row=ws_summary.max_row, values_only=True)]
