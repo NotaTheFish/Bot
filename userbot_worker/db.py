@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Union
 
 import asyncpg
+from asyncpg.types import Json
 
 DBOrPool = Union[str, asyncpg.Pool]
 
@@ -74,6 +75,24 @@ async def ensure_schema(db: DBOrPool) -> None:
         await conn.execute("ALTER TABLE userbot_tasks ADD COLUMN IF NOT EXISTS error_count INTEGER NOT NULL DEFAULT 0;")
         await conn.execute("ALTER TABLE userbot_tasks ADD COLUMN IF NOT EXISTS dedupe_key TEXT;")
         await conn.execute("ALTER TABLE userbot_tasks ADD COLUMN IF NOT EXISTS skipped_breakdown JSONB;")
+        await conn.execute(
+            """
+            DO $$
+            BEGIN
+                IF EXISTS (
+                    SELECT 1
+                    FROM information_schema.columns
+                    WHERE table_name='userbot_tasks'
+                      AND column_name='skipped_breakdown'
+                      AND data_type='text'
+                ) THEN
+                    ALTER TABLE userbot_tasks
+                    ALTER COLUMN skipped_breakdown TYPE JSONB
+                    USING skipped_breakdown::jsonb;
+                END IF;
+            END$$;
+            """
+        )
 
         await conn.execute("UPDATE userbot_tasks SET target_chat_ids='{}' WHERE target_chat_ids IS NULL;")
         await conn.execute("UPDATE userbot_tasks SET storage_message_ids='{}' WHERE storage_message_ids IS NULL;")
@@ -239,7 +258,7 @@ async def update_task_progress(
             int(sent_count),
             int(error_count),
             (str(last_error)[:4000] if last_error else None),
-            skipped_breakdown,
+            (Json(skipped_breakdown) if skipped_breakdown is not None else None),
         )
     finally:
         await _release_conn(db, conn)
@@ -272,7 +291,7 @@ async def mark_task_done(
             int(sent_count),
             int(error_count),
             (str(last_error)[:4000] if last_error else None),
-            skipped_breakdown,
+            (Json(skipped_breakdown) if skipped_breakdown is not None else None),
         )
     finally:
         await _release_conn(db, conn)
