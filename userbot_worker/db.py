@@ -1,11 +1,11 @@
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Union
 
 import asyncpg
-from asyncpg.types import Json
 
 DBOrPool = Union[str, asyncpg.Pool]
 
@@ -88,7 +88,7 @@ async def ensure_schema(db: DBOrPool) -> None:
                 ) THEN
                     ALTER TABLE userbot_tasks
                     ALTER COLUMN skipped_breakdown TYPE JSONB
-                    USING skipped_breakdown::jsonb;
+                    USING NULLIF(skipped_breakdown, '')::jsonb;
                 END IF;
             END$$;
             """
@@ -243,6 +243,8 @@ async def update_task_progress(
     last_error: Optional[str] = None,
     skipped_breakdown: Optional[Dict[str, int]] = None,
 ) -> None:
+    skipped_breakdown_json = json.dumps(skipped_breakdown) if skipped_breakdown is not None else None
+
     conn = await _acquire_conn(db)
     try:
         await conn.execute(
@@ -251,14 +253,17 @@ async def update_task_progress(
             SET sent_count = $2,
                 error_count = $3,
                 last_error = $4,
-                skipped_breakdown = COALESCE($5::jsonb, skipped_breakdown)
+                skipped_breakdown = CASE
+                    WHEN $5 IS NULL THEN NULL
+                    ELSE $5::jsonb
+                END
             WHERE id = $1
             """,
             int(task_id),
             int(sent_count),
             int(error_count),
             (str(last_error)[:4000] if last_error else None),
-            (Json(skipped_breakdown) if skipped_breakdown is not None else None),
+            skipped_breakdown_json,
         )
     finally:
         await _release_conn(db, conn)
@@ -274,6 +279,8 @@ async def mark_task_done(
     skipped_breakdown: Optional[Dict[str, int]] = None,
     final_status: str = "done",
 ) -> None:
+    skipped_breakdown_json = json.dumps(skipped_breakdown) if skipped_breakdown is not None else None
+
     conn = await _acquire_conn(db)
     try:
         await conn.execute(
@@ -283,7 +290,10 @@ async def mark_task_done(
                 sent_count=$3,
                 error_count=$4,
                 last_error=$5,
-                skipped_breakdown = COALESCE($6::jsonb, skipped_breakdown)
+                skipped_breakdown = CASE
+                    WHEN $6 IS NULL THEN NULL
+                    ELSE $6::jsonb
+                END
             WHERE id = $1
             """,
             int(task_id),
@@ -291,7 +301,7 @@ async def mark_task_done(
             int(sent_count),
             int(error_count),
             (str(last_error)[:4000] if last_error else None),
-            (Json(skipped_breakdown) if skipped_breakdown is not None else None),
+            skipped_breakdown_json,
         )
     finally:
         await _release_conn(db, conn)
