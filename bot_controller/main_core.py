@@ -1330,26 +1330,40 @@ def _build_contact_cta_entities(prefix_text: str, cta_text: str, contact_url: st
 
 
 def build_contact_cta(
+    content_text: str,
+    original_entities: Optional[list[MessageEntity]],
     token: str,
     *,
-    prefix_text: str = "",
+    bot_username: str,
+    seller_username: str,
     mode: str = "text_link",
+    force_cta_only: bool = False,
     include_start_hint: bool = False,
-) -> tuple[str, list[MessageEntity]]:
-    bot_username = _resolve_bot_username()
+) -> tuple[str, list[MessageEntity], bool]:
+    base_text = "" if force_cta_only else (content_text or "")
+    base_entities: list[MessageEntity] = [] if force_cta_only else list(original_entities or [])
+
+    if not force_cta_only and _contains_contact_cta(base_text):
+        return base_text, base_entities, False
+
+    prefix_text = f"{base_text}\n\n" if base_text else ""
+
     if mode == "text_link" and bot_username:
         payload = f"{CONTACT_PAYLOAD_PREFIX}{token}"
         contact_url = f"https://t.me/{bot_username}?start={payload}"
-        return CONTACT_CTA_TEXT, _build_contact_cta_entities(prefix_text, CONTACT_CTA_TEXT, contact_url)
+        cta_entities = _build_contact_cta_entities(prefix_text, CONTACT_CTA_TEXT, contact_url)
+        updated = f"{prefix_text}{CONTACT_CTA_TEXT}" if prefix_text else CONTACT_CTA_TEXT
+        return updated, _merge_entities(base_entities, cta_entities), False
 
-    fallback_username = bot_username or SELLER_USERNAME
+    fallback_username = bot_username or seller_username
     if fallback_username:
         cta_text = f"{CONTACT_CTA_TEXT}: @{fallback_username}"
     else:
         cta_text = "✉️ Для связи напишите администратору"
     if include_start_hint and bot_username:
         cta_text = f"{cta_text}\nНапишите боту: /start"
-    return cta_text, []
+    updated = f"{prefix_text}{cta_text}" if prefix_text else cta_text
+    return updated, base_entities, True
 
 
 def _merge_entities(original_entities: Optional[list[MessageEntity]], extra_entities: list[MessageEntity]) -> list[MessageEntity]:
@@ -1398,9 +1412,7 @@ async def _send_post_with_cta(
     content_text = raw_caption if has_media else raw_text
     original_entities = list(source_message.caption_entities or []) if has_media else list(source_message.entities or [])
 
-    should_append_cta = not force_cta_only and not _contains_contact_cta(content_text)
-
-    if not force_cta_only and not should_append_cta:
+    if not force_cta_only and _contains_contact_cta(content_text):
         copied = await bot.copy_message(
             chat_id=storage_chat_id,
             from_chat_id=source_message.chat.id,
@@ -1409,16 +1421,15 @@ async def _send_post_with_cta(
         return copied.message_id
 
     cta_mode = "text_link" if bot_username else "fallback"
-    if should_append_cta and content_text:
-        new_tail, cta_entities = build_contact_cta(token, prefix_text=f"{content_text}\n\n", mode=cta_mode)
-        updated = f"{content_text}\n\n{new_tail}"
-    elif should_append_cta and not content_text:
-        new_tail, cta_entities = build_contact_cta(token, mode=cta_mode)
-        updated = new_tail
-    else:
-        new_tail, cta_entities = build_contact_cta(token, mode=cta_mode)
-        updated = new_tail
-    entities = _merge_entities(original_entities, cta_entities)
+    updated, entities, _ = build_contact_cta(
+        content_text,
+        original_entities,
+        token,
+        bot_username=bot_username,
+        seller_username=SELLER_USERNAME,
+        mode=cta_mode,
+        force_cta_only=force_cta_only,
+    )
 
     if has_media:
         copied = await bot.copy_message(
@@ -1497,12 +1508,18 @@ async def _publish_post_messages(messages: list[Message], state: FSMContext, med
         or first_message.animation
     )
     first_content = first_message.caption if first_has_media else first_message.text
+    first_entities = list(first_message.caption_entities or []) if first_has_media else list(first_message.entities or [])
     bot_username = _resolve_bot_username()
     cta_mode = "text_link" if bot_username else "fallback"
-    cta_text, _ = build_contact_cta(token, mode=cta_mode)
-    will_add_cta = not _contains_contact_cta(first_content)
-    cta_appendix = f"\n\n{cta_text}" if first_content else cta_text
-    final_content = (first_content or "") + (cta_appendix if will_add_cta else "")
+    final_content, _, _ = build_contact_cta(
+        first_content or "",
+        first_entities,
+        token,
+        bot_username=bot_username,
+        seller_username=SELLER_USERNAME,
+        mode=cta_mode,
+    )
+    will_add_cta = final_content != (first_content or "")
     max_len = 1024 if first_has_media else 4096
     if len(final_content) > max_len:
         if first_has_media:
@@ -1524,12 +1541,13 @@ async def _publish_post_messages(messages: list[Message], state: FSMContext, med
             for idx, item in enumerate(sorted_messages):
                 if idx == 0 and will_add_cta:
                     original_caption = item.caption or ""
-                    prefix = f"{original_caption}\n\n" if original_caption else ""
-                    cta_text, cta_entities = build_contact_cta(token, prefix_text=prefix, mode=cta_mode)
-                    updated_caption = f"{original_caption}\n\n{cta_text}" if original_caption else cta_text
-                    entities = _merge_entities(
+                    updated_caption, entities, _ = build_contact_cta(
+                        original_caption,
                         list(item.caption_entities or []),
-                        cta_entities,
+                        token,
+                        bot_username=bot_username,
+                        seller_username=SELLER_USERNAME,
+                        mode=cta_mode,
                     )
                     copied = await bot.copy_message(
                         chat_id=storage_chat_id,
