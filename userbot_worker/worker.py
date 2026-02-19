@@ -366,6 +366,38 @@ async def run_worker(settings: Settings, pool, client: TelegramClient, stop_even
                 )
                 continue
 
+            if not client.is_connected():
+                logger.warning("Telegram client disconnected before task processing task_id=%s; reconnecting", task.id)
+                try:
+                    await client.connect()
+                except Exception as e:
+                    logger.warning(
+                        "Telegram client reconnect failed task_id=%s err=%s text=%s",
+                        task.id,
+                        type(e).__name__,
+                        str(e),
+                    )
+
+            if not client.is_connected():
+                logger.warning("Telegram client is still disconnected task_id=%s; marking task error", task.id)
+                await update_task_progress(
+                    pool,
+                    task_id=task.id,
+                    sent_count=task.sent_count,
+                    error_count=task.error_count,
+                    last_error="disconnected",
+                )
+                await mark_task_error(
+                    pool,
+                    task_id=task.id,
+                    attempts=task.attempts,
+                    max_attempts=settings.max_task_attempts,
+                    error="disconnected",
+                    sent_count=task.sent_count,
+                    error_count=task.error_count,
+                )
+                continue
+
             sent = 0
             errors = 0
             skipped = 0
