@@ -243,7 +243,7 @@ async def update_task_progress(
     last_error: Optional[str] = None,
     skipped_breakdown: Optional[Dict[str, int]] = None,
 ) -> None:
-    skipped_breakdown_json = json.dumps(skipped_breakdown) if skipped_breakdown is not None else None
+    skipped_breakdown_json = json.dumps(skipped_breakdown) if skipped_breakdown else None
 
     conn = await _acquire_conn(db)
     try:
@@ -253,10 +253,7 @@ async def update_task_progress(
             SET sent_count = $2,
                 error_count = $3,
                 last_error = $4,
-                skipped_breakdown = CASE
-                    WHEN $5 IS NULL THEN NULL
-                    ELSE $5::jsonb
-                END
+                skipped_breakdown = NULLIF($5, '')::jsonb
             WHERE id = $1
             """,
             int(task_id),
@@ -279,7 +276,7 @@ async def mark_task_done(
     skipped_breakdown: Optional[Dict[str, int]] = None,
     final_status: str = "done",
 ) -> None:
-    skipped_breakdown_json = json.dumps(skipped_breakdown) if skipped_breakdown is not None else None
+    skipped_breakdown_json = json.dumps(skipped_breakdown) if skipped_breakdown else None
 
     conn = await _acquire_conn(db)
     try:
@@ -290,10 +287,7 @@ async def mark_task_done(
                 sent_count=$3,
                 error_count=$4,
                 last_error=$5,
-                skipped_breakdown = CASE
-                    WHEN $6 IS NULL THEN NULL
-                    ELSE $6::jsonb
-                END
+                skipped_breakdown = NULLIF($6, '')::jsonb
             WHERE id = $1
             """,
             int(task_id),
