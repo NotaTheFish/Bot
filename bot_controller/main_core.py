@@ -68,7 +68,7 @@ LAST_STORAGE_MESSAGE_ID_META_KEY = "last_storage_message_id"
 LAST_STORAGE_MESSAGE_IDS_META_KEY = "last_storage_message_ids"
 LAST_STORAGE_CHAT_ID_META_KEY = "last_storage_chat_id"
 MEDIA_GROUP_BUFFER_TIMEOUT_SECONDS = max(0.5, float(_get_env_str("MEDIA_GROUP_BUFFER_TIMEOUT_SECONDS", "1.5")))
-STORAGE_KEEP_LAST_POSTS = max(1, _get_env_int("STORAGE_KEEP_LAST_POSTS", 10))
+STORAGE_KEEP_LAST_POSTS = max(1, _get_env_int("STORAGE_KEEP_LAST_POSTS", 1))
 STORAGE_CLEANUP_EVERY_SECONDS = max(60, _get_env_int("STORAGE_CLEANUP_EVERY_SECONDS", 600))
 
 
@@ -83,6 +83,9 @@ CONTACT_PAYLOAD_PREFIX = "contact_"
 CONTACT_CTA_TEXT = "✉️ Написать продавцу"
 BUYER_CONTACT_BUTTON_TEXT = "✉️ Связаться с продавцом"
 BUYER_CONTACT_COOLDOWN_SECONDS = _get_env_int("BUYER_CONTACT_COOLDOWN_SECONDS", 60)
+CONTACT_CTA_MODE = _get_env_str("CONTACT_CTA_MODE", "mention").lower() or "mention"
+if CONTACT_CTA_MODE not in {"mention", "deep_link"}:
+    CONTACT_CTA_MODE = "mention"
 
 def _parse_int_list_csv(raw: str) -> list[int]:
     raw = (raw or "").strip()
@@ -1306,11 +1309,16 @@ def _resolve_bot_username() -> str:
     return BOT_USERNAME or CONFIGURED_BOT_USERNAME
 
 
-def _contains_contact_cta(text: Optional[str]) -> bool:
+def _contains_contact_cta(text: Optional[str], *, bot_username: str = "") -> bool:
     if not text:
         return False
     lowered = text.lower()
+    if CONTACT_CTA_TEXT.casefold() in text.casefold():
+        return True
     if "start=contact_" in lowered:
+        return True
+    normalized_bot_username = _normalize_username(bot_username)
+    if normalized_bot_username and f"@{normalized_bot_username}" in lowered and "продав" in lowered:
         return True
     return text.rstrip().casefold().endswith("написать продавцу")
 
@@ -1337,19 +1345,19 @@ def build_contact_cta(
     *,
     bot_username: str,
     seller_username: str,
-    mode: str = "text_link",
+    mode: str = "mention",
     force_cta_only: bool = False,
     include_start_hint: bool = False,
 ) -> tuple[str, list[MessageEntity], bool]:
     base_text = "" if force_cta_only else (content_text or "")
     base_entities: list[MessageEntity] = [] if force_cta_only else list(original_entities or [])
 
-    if not force_cta_only and _contains_contact_cta(base_text):
+    if not force_cta_only and _contains_contact_cta(base_text, bot_username=bot_username):
         return base_text, base_entities, False
 
     prefix_text = f"{base_text}\n\n" if base_text else ""
 
-    if mode == "text_link" and bot_username:
+    if mode == "deep_link" and bot_username:
         payload = f"{CONTACT_PAYLOAD_PREFIX}{token}"
         contact_url = f"https://t.me/{bot_username}?start={payload}"
         cta_entities = _build_contact_cta_entities(prefix_text, CONTACT_CTA_TEXT, contact_url)
@@ -1452,7 +1460,7 @@ async def _send_post_with_cta(
     content_text = raw_caption if has_media else raw_text
     original_entities = list(source_message.caption_entities or []) if has_media else list(source_message.entities or [])
 
-    if not force_cta_only and _contains_contact_cta(content_text):
+    if not force_cta_only and _contains_contact_cta(content_text, bot_username=bot_username):
         copied = await bot.copy_message(
             chat_id=storage_chat_id,
             from_chat_id=source_message.chat.id,
@@ -1460,7 +1468,7 @@ async def _send_post_with_cta(
         )
         return copied.message_id
 
-    cta_mode = "text_link" if bot_username else "fallback"
+    cta_mode = "deep_link" if CONTACT_CTA_MODE == "deep_link" and bot_username else "mention"
     updated, entities, _ = build_contact_cta(
         content_text,
         original_entities,
@@ -1476,7 +1484,7 @@ async def _send_post_with_cta(
         token,
         bot_username=bot_username,
         seller_username=SELLER_USERNAME,
-        mode="fallback",
+        mode="mention",
         force_cta_only=force_cta_only,
     )
     updated, entities = _ensure_safe_publish_text(
@@ -1519,13 +1527,38 @@ async def send_post_preview(message: Message) -> None:
 
 
 
-async def _delete_previous_storage_post(storage_chat_id: int) -> None:
-    previous_storage_chat_id, previous_storage_message_ids = await get_last_storage_messages()
+async def _delete_previous_storage_post(
+    storage_chat_id: int,
+    previous_storage_chat_id: Optional[int],
+    previous_storage_message_ids: list[int],
+) -> None:
     if not previous_storage_message_ids:
         return
 
     delete_chat_id = previous_storage_chat_id or storage_chat_id
+    pool = await get_db_pool()
+    active_rows = await pool.fetch(
+        """
+        SELECT storage_message_ids
+        FROM userbot_tasks
+        WHERE status IN ('pending', 'processing')
+          AND storage_chat_id = $1
+        """,
+        delete_chat_id,
+    )
+    active_ids: set[int] = set()
+    for row in active_rows:
+        for msg_id in row["storage_message_ids"] or []:
+            active_ids.add(int(msg_id))
+
     for previous_storage_message_id in previous_storage_message_ids:
+       if int(previous_storage_message_id) in active_ids:
+            logger.info(
+                "Skipping previous storage post deletion because task is active chat_id=%s message_id=%s",
+                delete_chat_id,
+                previous_storage_message_id,
+            )
+            continue
         logger.info(
             "Trying to delete previous storage post chat_id=%s message_id=%s",
             delete_chat_id,
@@ -1552,6 +1585,7 @@ async def _publish_post_messages(messages: list[Message], state: FSMContext, med
         return
 
     token = _generate_contact_token()
+    previous_storage_chat_id, previous_storage_message_ids = await get_last_storage_messages()
     sorted_messages = sorted(messages, key=lambda msg: msg.message_id)
     copied_ids: list[int] = []
 
@@ -1566,7 +1600,7 @@ async def _publish_post_messages(messages: list[Message], state: FSMContext, med
     first_content = first_message.caption if first_has_media else first_message.text
     first_entities = list(first_message.caption_entities or []) if first_has_media else list(first_message.entities or [])
     bot_username = _resolve_bot_username()
-    cta_mode = "text_link" if bot_username else "fallback"
+    cta_mode = "deep_link" if CONTACT_CTA_MODE == "deep_link" and bot_username else "mention"
     final_content, _, _ = build_contact_cta(
         first_content or "",
         first_entities,
@@ -1611,7 +1645,7 @@ async def _publish_post_messages(messages: list[Message], state: FSMContext, med
                         token,
                         bot_username=bot_username,
                         seller_username=SELLER_USERNAME,
-                        mode="fallback",
+                        mode="mention",
                     )
                     updated_caption, entities = _ensure_safe_publish_text(
                         updated_caption,
@@ -1653,6 +1687,13 @@ async def _publish_post_messages(messages: list[Message], state: FSMContext, med
         logger.exception("Failed to persist storage metadata")
         await messages[-1].answer(f"❌ Новый пост отправлен, но не удалось сохранить его в БД: {exc}")
         return
+
+    await _delete_previous_storage_post(
+        storage_chat_id,
+        previous_storage_chat_id,
+        previous_storage_message_ids,
+    )
+    await safe_cleanup_storage_posts()
 
     data = await state.get_data()
     mode = data.get("mode")
