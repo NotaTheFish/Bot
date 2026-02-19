@@ -252,7 +252,7 @@ async def update_task_progress(
     last_error: Optional[str] = None,
     skipped_breakdown: Optional[Dict[str, int]] = None,
 ) -> None:
-    skipped_breakdown_json = json.dumps(skipped_breakdown) if skipped_breakdown else None
+    skipped_breakdown_json = json.dumps(skipped_breakdown) if skipped_breakdown is not None else None
 
     conn = await _acquire_conn(db)
     try:
@@ -285,7 +285,7 @@ async def mark_task_done(
     skipped_breakdown: Optional[Dict[str, int]] = None,
     final_status: str = "done",
 ) -> None:
-    skipped_breakdown_json = json.dumps(skipped_breakdown) if skipped_breakdown else None
+    skipped_breakdown_json = json.dumps(skipped_breakdown) if skipped_breakdown is not None else None
 
     conn = await _acquire_conn(db)
     try:
