@@ -1559,7 +1559,7 @@ async def _delete_previous_storage_post(
                 previous_storage_message_id,
             )
             continue
-        logger.info(
+            logger.info(
             "Trying to delete previous storage post chat_id=%s message_id=%s",
             delete_chat_id,
             previous_storage_message_id,
