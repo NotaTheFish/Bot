@@ -183,6 +183,15 @@ def _to_int_list(v: Any) -> List[int]:
 
 
 def _row_to_task(row: asyncpg.Record) -> TaskRow:
+    raw_skipped_breakdown = row.get("skipped_breakdown")
+    if isinstance(raw_skipped_breakdown, str):
+        try:
+            raw_skipped_breakdown = json.loads(raw_skipped_breakdown)
+        except json.JSONDecodeError:
+            raw_skipped_breakdown = {}
+    elif raw_skipped_breakdown is None:
+        raw_skipped_breakdown = {}
+
     return TaskRow(
         id=int(row["id"]),
         status=str(row["status"]),
@@ -195,7 +204,7 @@ def _row_to_task(row: asyncpg.Record) -> TaskRow:
         sent_count=int(row.get("sent_count") or 0),
         error_count=int(row.get("error_count") or 0),
         dedupe_key=(str(row["dedupe_key"]) if row.get("dedupe_key") is not None else None),
-        skipped_breakdown={str(k): int(v) for k, v in ((row.get("skipped_breakdown") or {}).items())},
+        skipped_breakdown={str(k): int(v) for k, v in raw_skipped_breakdown.items()},
     )
 
 
