@@ -88,6 +88,18 @@ def _is_write_permission_error(exc: BaseException) -> bool:
     return type(exc).__name__ in _DISABLE_RPC_ERRORS or any(marker in text for marker in markers)
 
 
+def _is_disconnect_state_error(exc: BaseException) -> bool:
+    if isinstance(exc, ConnectionError):
+        return True
+    text = f"{type(exc).__name__} {exc}".lower()
+    markers = (
+        "cannot send requests while disconnected",
+        "disconnected",
+        "connection",
+    )
+    return any(marker in text for marker in markers)
+
+
 def _now_utc() -> datetime:
     return datetime.now(tz=timezone.utc)
 
@@ -403,6 +415,7 @@ async def run_worker(settings: Settings, pool, client: TelegramClient, stop_even
             skipped = 0
             skip_reasons: Counter[str] = Counter()
             last_error: Optional[str] = None
+            disconnected_mid_task = False
             fingerprint = _build_post_fingerprint(int(task.storage_chat_id), list(task.storage_message_ids))
 
             for chat_id in target_ids:
@@ -514,6 +527,27 @@ async def run_worker(settings: Settings, pool, client: TelegramClient, stop_even
                         wait_s = int(getattr(e, "seconds", 0) or 0)
                         await asyncio.sleep(max(wait_s, 1))
                         continue
+                    except ConnectionError as e:
+                        if not _is_disconnect_state_error(e):
+                            raise
+                        last_error = "disconnected_mid_task"
+                        errors += 1
+                        disconnected_mid_task = True
+                        logger.warning(
+                            "task_aborted reason=disconnected_mid_task task_id=%s chat_id=%s err=%s text=%s",
+                            task.id,
+                            current_chat_id,
+                            type(e).__name__,
+                            str(e),
+                        )
+                        await update_task_progress(
+                            pool,
+                            task_id=task.id,
+                            sent_count=sent,
+                            error_count=errors,
+                            last_error=last_error,
+                        )
+                        break
                     except RPCError as e:
                         migrated_chat_id = extract_migrated_chat_id(e)
                         if retried_after_migration or migrated_chat_id is None:
@@ -551,6 +585,9 @@ async def run_worker(settings: Settings, pool, client: TelegramClient, stop_even
                         await update_task_progress(pool, task_id=task.id, sent_count=sent, error_count=errors, last_error=last_error)
                         break
 
+                if disconnected_mid_task:
+                    break
+
             skipped_breakdown = {
                 "skipped_activity_gate": int(skip_reasons.get("activity_gate", 0)),
                 "skipped_cooldown": int(skip_reasons.get("cooldown", 0)),
@@ -586,6 +623,18 @@ async def run_worker(settings: Settings, pool, client: TelegramClient, stop_even
                     last_error=last_error,
                     skipped_breakdown=skipped_breakdown,
                     final_status="canceled_done",
+                )
+                continue
+
+            if last_error == "disconnected_mid_task":
+                await mark_task_error(
+                    pool,
+                    task_id=task.id,
+                    attempts=task.attempts,
+                    max_attempts=settings.max_task_attempts,
+                    error=last_error,
+                    sent_count=sent,
+                    error_count=errors,
                 )
                 continue
 
