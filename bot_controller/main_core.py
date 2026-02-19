@@ -1552,25 +1552,28 @@ async def _delete_previous_storage_post(
             active_ids.add(int(msg_id))
 
     for previous_storage_message_id in previous_storage_message_ids:
-       if int(previous_storage_message_id) in active_ids:
+        msg_id = int(previous_storage_message_id)
+
+        if msg_id in active_ids:
             logger.info(
                 "Skipping previous storage post deletion because task is active chat_id=%s message_id=%s",
                 delete_chat_id,
-                previous_storage_message_id,
+                msg_id,
             )
             continue
+
         logger.info(
             "Trying to delete previous storage post chat_id=%s message_id=%s",
             delete_chat_id,
-            previous_storage_message_id,
+            msg_id,
         )
         try:
-            await bot.delete_message(delete_chat_id, previous_storage_message_id)
+            await bot.delete_message(delete_chat_id, msg_id)
         except TelegramBadRequest as exc:
             logger.warning(
                 "Skipping previous storage post deletion chat_id=%s message_id=%s: %s",
                 delete_chat_id,
-                previous_storage_message_id,
+                msg_id,
                 exc,
             )
 
