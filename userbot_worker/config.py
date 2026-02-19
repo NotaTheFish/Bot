@@ -73,6 +73,7 @@ class Settings:
     anti_dup_minutes: int
     controller_bot_username: str
     worker_autoreply_cooldown_seconds: int
+    authkey_duplicated_cooldown_seconds: int
 
 
 def _getbool(name: str, default: bool) -> bool:
@@ -104,6 +105,7 @@ def load_settings() -> Settings:
         anti_dup_minutes=max(0, _getint("ANTI_DUP_MINUTES", 10)),
         controller_bot_username=_getenv("CONTROLLER_BOT_USERNAME"),
         worker_autoreply_cooldown_seconds=max(0, _getint("WORKER_AUTOREPLY_COOLDOWN_SECONDS", 3600)),
+        authkey_duplicated_cooldown_seconds=max(0, _getint("AUTHKEY_DUPLICATED_COOLDOWN_SECONDS", 120)),
     )
 
     if settings.max_seconds_between_chats < settings.min_seconds_between_chats:

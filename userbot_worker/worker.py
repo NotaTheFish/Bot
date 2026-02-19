@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from telethon import TelegramClient, events
-from telethon.errors import FloodWaitError, RPCError
+from telethon.errors import AuthKeyDuplicatedError, FloodWaitError, RPCError
 from telethon.tl.types import Channel, Chat, InputPeerChannel, InputPeerChat, User
 
 from .config import Settings
@@ -102,6 +102,12 @@ def _is_disconnect_state_error(exc: BaseException) -> bool:
 
 def _now_utc() -> datetime:
     return datetime.now(tz=timezone.utc)
+
+
+async def _handle_authkey_duplicated(client: TelegramClient, settings: Settings) -> datetime:
+    logger.error("AuthKeyDuplicatedError — another session is using this account")
+    await client.disconnect()
+    return _now_utc() + timedelta(seconds=settings.authkey_duplicated_cooldown_seconds)
 
 
 def _build_post_fingerprint(storage_chat_id: int, storage_message_ids: list[int]) -> str:
@@ -280,17 +286,26 @@ async def run_worker(settings: Settings, pool, client: TelegramClient, stop_even
             cooldown_seconds=settings.worker_autoreply_cooldown_seconds,
         )
 
+    authkey_duplicated_cooldown_until: Optional[datetime] = None
     try:
         await sync_userbot_targets(pool, client, settings)
+    except AuthKeyDuplicatedError:
+        authkey_duplicated_cooldown_until = await _handle_authkey_duplicated(client, settings)
     except Exception:
         logger.exception("Initial userbot targets sync failed")
     last_targets_sync_at = _now_utc()
 
     while not stop_event.is_set():
         now_utc = _now_utc()
+        if authkey_duplicated_cooldown_until and now_utc < authkey_duplicated_cooldown_until:
+            await asyncio.sleep(min(settings.worker_poll_seconds, (authkey_duplicated_cooldown_until - now_utc).total_seconds()))
+            continue
         if (now_utc - last_targets_sync_at).total_seconds() >= settings.targets_sync_seconds:
             try:
                 await sync_userbot_targets(pool, client, settings)
+            except AuthKeyDuplicatedError:
+                authkey_duplicated_cooldown_until = await _handle_authkey_duplicated(client, settings)
+                continue
             except Exception:
                 logger.exception("Periodic userbot targets sync failed")
             last_targets_sync_at = now_utc
@@ -298,6 +313,9 @@ async def run_worker(settings: Settings, pool, client: TelegramClient, stop_even
         if (now_utc - last_targets_sync_at).total_seconds() >= settings.targets_sync_seconds:
             try:
                 await sync_userbot_targets(pool, client, settings)
+            except AuthKeyDuplicatedError:
+                authkey_duplicated_cooldown_until = await _handle_authkey_duplicated(client, settings)
+                continue
             except Exception:
                 logger.exception("Lazy pre-task userbot targets sync failed")
             last_targets_sync_at = now_utc
@@ -382,6 +400,9 @@ async def run_worker(settings: Settings, pool, client: TelegramClient, stop_even
                 logger.warning("Telegram client disconnected before task processing task_id=%s; reconnecting", task.id)
                 try:
                     await client.connect()
+                except AuthKeyDuplicatedError:
+                    authkey_duplicated_cooldown_until = await _handle_authkey_duplicated(client, settings)
+                    break
                 except Exception as e:
                     logger.warning(
                         "Telegram client reconnect failed task_id=%s err=%s text=%s",
@@ -458,6 +479,11 @@ async def run_worker(settings: Settings, pool, client: TelegramClient, stop_even
                             my_id=my_id,
                             threshold=activity_threshold,
                         )
+                    except AuthKeyDuplicatedError:
+                        authkey_duplicated_cooldown_until = await _handle_authkey_duplicated(client, settings)
+                        last_error = "authkey_duplicated"
+                        disconnected_mid_task = True
+                        break
                     except Exception as exc:
                         last_error = str(exc)
                         errors += 1
@@ -500,6 +526,11 @@ async def run_worker(settings: Settings, pool, client: TelegramClient, stop_even
                         sent += 1
                         logger.info("chat_result=sent task_id=%s chat_id=%s sent_message_id=%s", task.id, current_chat_id, sent_message_id)
                         await update_task_progress(pool, task_id=task.id, sent_count=sent, error_count=errors, last_error=None)
+                        break
+                    except AuthKeyDuplicatedError:
+                        authkey_duplicated_cooldown_until = await _handle_authkey_duplicated(client, settings)
+                        last_error = "authkey_duplicated"
+                        disconnected_mid_task = True
                         break
                     except ValueError as e:
                         last_error = str(e)
@@ -623,6 +654,18 @@ async def run_worker(settings: Settings, pool, client: TelegramClient, stop_even
                     last_error=last_error,
                     skipped_breakdown=skipped_breakdown,
                     final_status="canceled_done",
+                )
+                continue
+
+            if last_error == "authkey_duplicated":
+                await mark_task_error(
+                    pool,
+                    task_id=task.id,
+                    attempts=task.attempts,
+                    max_attempts=settings.max_task_attempts,
+                    error=last_error,
+                    sent_count=sent,
+                    error_count=errors,
                 )
                 continue
 

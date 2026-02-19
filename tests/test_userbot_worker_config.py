@@ -33,6 +33,7 @@ class UserbotWorkerConfigTests(unittest.TestCase):
                 "COOLDOWN_MINUTES": None,
                 "ACTIVITY_GATE_MIN_MESSAGES": None,
                 "ANTI_DUP_MINUTES": None,
+                "AUTHKEY_DUPLICATED_COOLDOWN_SECONDS": None,
             }
         ):
             settings = load_settings()
@@ -40,6 +41,7 @@ class UserbotWorkerConfigTests(unittest.TestCase):
         self.assertEqual(settings.cooldown_minutes, 10)
         self.assertEqual(settings.activity_gate_min_messages, 5)
         self.assertEqual(settings.anti_dup_minutes, 10)
+        self.assertEqual(settings.authkey_duplicated_cooldown_seconds, 120)
 
     def test_new_guard_env_values_are_clamped_to_non_negative(self):
         with _temp_env(
@@ -50,6 +52,7 @@ class UserbotWorkerConfigTests(unittest.TestCase):
                 "COOLDOWN_MINUTES": "-7",
                 "ACTIVITY_GATE_MIN_MESSAGES": "-2",
                 "ANTI_DUP_MINUTES": "-10",
+                "AUTHKEY_DUPLICATED_COOLDOWN_SECONDS": "-77",
             }
         ):
             settings = load_settings()
@@ -57,6 +60,7 @@ class UserbotWorkerConfigTests(unittest.TestCase):
         self.assertEqual(settings.cooldown_minutes, 0)
         self.assertEqual(settings.activity_gate_min_messages, 0)
         self.assertEqual(settings.anti_dup_minutes, 0)
+        self.assertEqual(settings.authkey_duplicated_cooldown_seconds, 0)
 
 
 if __name__ == "__main__":
