@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import random
+import re
 import uuid
 from contextlib import suppress
 from datetime import datetime, timezone
@@ -1374,6 +1375,45 @@ def _merge_entities(original_entities: Optional[list[MessageEntity]], extra_enti
     return merged
 
 
+_BANNED_URL_SUBSTRINGS = ("http://", "https://", "t.me/")
+_BANNED_URL_PATTERN = re.compile(r"https?://\S+|t\.me/\S+", re.IGNORECASE)
+
+
+def _has_banned_url(text: str) -> bool:
+    lowered = (text or "").lower()
+    return any(item in lowered for item in _BANNED_URL_SUBSTRINGS)
+
+
+def _sanitize_text_without_urls(text: str) -> str:
+    cleaned = _BANNED_URL_PATTERN.sub("", text or "")
+    cleaned = re.sub(r"[ \t]{2,}", " ", cleaned)
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+    return cleaned.strip()
+
+
+def _drop_text_link_entities(entities: Optional[list[MessageEntity]]) -> list[MessageEntity]:
+    return [entity for entity in (entities or []) if entity.type != "text_link"]
+
+
+def _ensure_safe_publish_text(
+    text: str,
+    entities: Optional[list[MessageEntity]],
+    *,
+    fallback_text: str,
+    fallback_entities: Optional[list[MessageEntity]],
+    context: str,
+) -> tuple[str, list[MessageEntity]]:
+    if not _has_banned_url(text):
+        return text, list(entities or [])
+
+    safe_text = _sanitize_text_without_urls(fallback_text)
+    if not safe_text:
+        safe_text = "✉️ Для связи напишите администратору"
+    safe_entities = _drop_text_link_entities(fallback_entities)
+    logger.warning("Unsafe URL detected in %s; switched to fallback text without URL/text_link.", context)
+    return safe_text, safe_entities
+
+
 async def _send_buyer_reply(user_id: int) -> None:
     storage_chat_id, message_id = await get_buyer_reply_template()
     if storage_chat_id and message_id:
@@ -1429,6 +1469,22 @@ async def _send_post_with_cta(
         seller_username=SELLER_USERNAME,
         mode=cta_mode,
         force_cta_only=force_cta_only,
+    )
+    fallback_text, fallback_entities, _ = build_contact_cta(
+        content_text,
+        original_entities,
+        token,
+        bot_username=bot_username,
+        seller_username=SELLER_USERNAME,
+        mode="fallback",
+        force_cta_only=force_cta_only,
+    )
+    updated, entities = _ensure_safe_publish_text(
+        updated,
+        entities,
+        fallback_text=fallback_text,
+        fallback_entities=fallback_entities,
+        context="single-message publish",
     )
 
     if has_media:
@@ -1548,6 +1604,21 @@ async def _publish_post_messages(messages: list[Message], state: FSMContext, med
                         bot_username=bot_username,
                         seller_username=SELLER_USERNAME,
                         mode=cta_mode,
+                    )
+                    fallback_caption, fallback_entities, _ = build_contact_cta(
+                        original_caption,
+                        list(item.caption_entities or []),
+                        token,
+                        bot_username=bot_username,
+                        seller_username=SELLER_USERNAME,
+                        mode="fallback",
+                    )
+                    updated_caption, entities = _ensure_safe_publish_text(
+                        updated_caption,
+                        entities,
+                        fallback_text=fallback_caption,
+                        fallback_entities=fallback_entities,
+                        context="media-group first message publish",
                     )
                     copied = await bot.copy_message(
                         chat_id=storage_chat_id,
