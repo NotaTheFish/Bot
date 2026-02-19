@@ -65,12 +65,19 @@ class Settings:
     max_task_attempts: int
     target_chat_ids: list[int]
     targets_sync_seconds: int
+    targets_stale_grace_days: int
+    targets_disable_on_entity_error: bool
     auto_targets_mode: str
     cooldown_minutes: int
     activity_gate_min_messages: int
     anti_dup_minutes: int
     controller_bot_username: str
     worker_autoreply_cooldown_seconds: int
+
+
+def _getbool(name: str, default: bool) -> bool:
+    raw = _getenv(name, "1" if default else "0").lower()
+    return raw in {"1", "true", "yes", "on"}
 
 
 def load_settings() -> Settings:
@@ -89,6 +96,8 @@ def load_settings() -> Settings:
         max_task_attempts=max(1, _getint("MAX_TASK_ATTEMPTS", 3)),
         target_chat_ids=_getintlist_csv("TARGET_CHAT_IDS"),
         targets_sync_seconds=max(30, _getint("TARGETS_SYNC_SECONDS", 600)),
+        targets_stale_grace_days=max(1, _getint("TARGETS_STALE_GRACE_DAYS", 7)),
+        targets_disable_on_entity_error=_getbool("TARGETS_DISABLE_ON_ENTITY_ERROR", True),
         auto_targets_mode=(_getenv("AUTO_TARGETS_MODE", "groups_only").lower() or "groups_only"),
         cooldown_minutes=max(0, _getint("COOLDOWN_MINUTES", 10)),
         activity_gate_min_messages=max(0, _getint("ACTIVITY_GATE_MIN_MESSAGES", 5)),

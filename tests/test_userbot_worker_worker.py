@@ -22,10 +22,14 @@ def _build_settings(*, cooldown_minutes: int, anti_dup_minutes: int) -> Settings
         max_task_attempts=1,
         target_chat_ids=[],
         targets_sync_seconds=30,
+        targets_stale_grace_days=7,
+        targets_disable_on_entity_error=True,
         auto_targets_mode="groups_only",
         cooldown_minutes=cooldown_minutes,
         activity_gate_min_messages=0,
         anti_dup_minutes=anti_dup_minutes,
+        controller_bot_username="controller_bot",
+        worker_autoreply_cooldown_seconds=3600,
     )
 
 

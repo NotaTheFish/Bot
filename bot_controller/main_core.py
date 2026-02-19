@@ -67,6 +67,8 @@ LAST_STORAGE_MESSAGE_ID_META_KEY = "last_storage_message_id"
 LAST_STORAGE_MESSAGE_IDS_META_KEY = "last_storage_message_ids"
 LAST_STORAGE_CHAT_ID_META_KEY = "last_storage_chat_id"
 MEDIA_GROUP_BUFFER_TIMEOUT_SECONDS = max(0.5, float(_get_env_str("MEDIA_GROUP_BUFFER_TIMEOUT_SECONDS", "1.5")))
+STORAGE_KEEP_LAST_POSTS = max(1, _get_env_int("STORAGE_KEEP_LAST_POSTS", 10))
+STORAGE_CLEANUP_EVERY_SECONDS = max(60, _get_env_int("STORAGE_CLEANUP_EVERY_SECONDS", 600))
 
 
 def _normalize_username(value: str) -> str:
@@ -296,7 +298,8 @@ CREATE_TABLES_SQL = [
       storage_message_ids BIGINT[] NOT NULL DEFAULT '{}',
       target_chat_ids BIGINT[] NOT NULL DEFAULT '{}',
       sent_count INT NOT NULL DEFAULT 0,
-      error_count INT NOT NULL DEFAULT 0
+      error_count INT NOT NULL DEFAULT 0,
+      skipped_breakdown JSONB
     )
     """,
     """
@@ -332,6 +335,10 @@ USERBOT_TASKS_MIGRATIONS_SQL = [
     """
     ALTER TABLE userbot_tasks
     ADD COLUMN IF NOT EXISTS dedupe_key TEXT
+    """,
+    """
+    ALTER TABLE userbot_tasks
+    ADD COLUMN IF NOT EXISTS skipped_breakdown JSONB
     """,
     """
     DO $$
@@ -444,7 +451,8 @@ USERBOT_TASKS_BASE_SQL = [
       storage_message_ids BIGINT[] NOT NULL DEFAULT '{}',
       target_chat_ids BIGINT[] NOT NULL DEFAULT '{}',
       sent_count INT NOT NULL DEFAULT 0,
-      error_count INT NOT NULL DEFAULT 0
+      error_count INT NOT NULL DEFAULT 0,
+      skipped_breakdown JSONB
     )
     """,
     """
@@ -613,7 +621,10 @@ def admin_menu_keyboard() -> ReplyKeyboardMarkup:
                 KeyboardButton(text="📝 Изменить автоответ"),
                 KeyboardButton(text="📊 Статус"),
             ],
-            [KeyboardButton(text="🚀 Запустить сейчас")],
+            [
+                KeyboardButton(text="🚀 Запустить сейчас"),
+                KeyboardButton(text="⛔ Остановить рассылку"),
+            ],
         ],
         resize_keyboard=True,
     )
@@ -1489,8 +1500,6 @@ async def _publish_post_messages(messages: list[Message], state: FSMContext, med
             )
         return
 
-    previous_storage_chat_id, previous_storage_message_ids = await get_last_storage_messages()
-
     try:
         if len(sorted_messages) == 1:
             copied_ids.append(await _send_post_with_cta(sorted_messages[0], storage_chat_id, token))
@@ -1540,19 +1549,6 @@ async def _publish_post_messages(messages: list[Message], state: FSMContext, med
         logger.exception("Failed to persist storage metadata")
         await messages[-1].answer(f"❌ Новый пост отправлен, но не удалось сохранить его в БД: {exc}")
         return
-
-    if previous_storage_message_ids:
-        delete_chat_id = previous_storage_chat_id or storage_chat_id
-        for previous_storage_message_id in previous_storage_message_ids:
-            try:
-                await bot.delete_message(delete_chat_id, previous_storage_message_id)
-            except TelegramBadRequest as exc:
-                logger.warning(
-                    "Skipping previous storage post deletion chat_id=%s message_id=%s: %s",
-                    delete_chat_id,
-                    previous_storage_message_id,
-                    exc,
-                )
 
     data = await state.get_data()
     mode = data.get("mode")
@@ -1625,6 +1621,67 @@ async def send_post_actions(message: Message) -> None:
         ),
     )
 
+
+
+
+async def cancel_active_userbot_tasks() -> int:
+    pool = await get_db_pool()
+    await ensure_userbot_tasks_schema(pool)
+    result = await pool.execute(
+        """
+        UPDATE userbot_tasks
+        SET status = 'canceled',
+            last_error = COALESCE(last_error, 'canceled_by_admin')
+        WHERE status IN ('pending', 'processing')
+        """
+    )
+    try:
+        return int(str(result).split()[-1])
+    except Exception:
+        return 0
+
+
+async def safe_cleanup_storage_posts() -> None:
+    post = await get_post()
+    storage_chat_id = int(post.get("source_chat_id") or 0)
+    latest_ids = [int(x) for x in (post.get("source_message_ids") or [])]
+    if storage_chat_id == 0:
+        return
+
+    pool = await get_db_pool()
+    active_rows = await pool.fetch(
+        """
+        SELECT storage_message_ids
+        FROM userbot_tasks
+        WHERE status IN ('pending', 'processing')
+        """
+    )
+    active_ids: set[int] = set()
+    for row in active_rows:
+        for msg_id in row["storage_message_ids"] or []:
+            active_ids.add(int(msg_id))
+
+    rows = await pool.fetch(
+        """
+        SELECT DISTINCT unnest(storage_message_ids) AS message_id
+        FROM userbot_tasks
+        WHERE storage_chat_id = $1
+        """,
+        storage_chat_id,
+    )
+    candidate_ids = sorted({int(r["message_id"]) for r in rows if r["message_id"] is not None})
+    if latest_ids:
+        keep_ids = set(sorted(latest_ids)[-STORAGE_KEEP_LAST_POSTS:])
+    else:
+        keep_ids = set()
+
+    for message_id in candidate_ids:
+        if message_id in active_ids or message_id in keep_ids:
+            continue
+        try:
+            await bot.delete_message(storage_chat_id, message_id)
+        except TelegramBadRequest as exc:
+            logger.warning("Safe cleanup skipped storage message deletion chat_id=%s message_id=%s: %s", storage_chat_id, message_id, exc)
 
 async def send_admin_report(report: dict) -> None:
     if report.get("errors", 0) <= 0:
@@ -2076,6 +2133,19 @@ async def buyer_contact_start(message: Message, state: FSMContext):
     await set_next_allowed(message.from_user.id, BUYER_CONTACT_COOLDOWN_SECONDS)
     await _start_support_flow(message, state, concise=True)
 
+
+
+
+@dp.message(F.text == "⛔ Остановить рассылку")
+async def stop_userbot_broadcast(message: Message) -> None:
+    if not ensure_admin(message):
+        return
+    if DELIVERY_MODE != "userbot":
+        await message.answer("Команда доступна только в режиме userbot.")
+        return
+
+    canceled = await cancel_active_userbot_tasks()
+    await message.answer(f"Остановлено активных задач: {canceled} ✅")
 
 @dp.message(F.text == "📌 Добавить пост")
 async def add_post_start(message: Message, state: FSMContext):
@@ -2594,6 +2664,7 @@ async def main() -> None:
         me = await bot.get_me()
         BOT_USERNAME = me.username or ""
         BOT_ID = me.id
+        scheduler.add_job(safe_cleanup_storage_posts, "interval", seconds=STORAGE_CLEANUP_EVERY_SECONDS, id="storage_safe_cleanup", replace_existing=True)
         scheduler.start()
         await restore_scheduler()
         await dp.start_polling(bot)

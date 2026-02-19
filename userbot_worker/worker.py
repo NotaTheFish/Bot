@@ -14,6 +14,7 @@ from .db import (
     claim_pending_tasks,
     disable_stale_userbot_targets,
     ensure_schema,
+    get_task_status,
     get_worker_autoreply_remaining,
     get_userbot_target_state,
     load_userbot_targets_by_chat_ids,
@@ -28,7 +29,7 @@ from .db import (
     update_task_progress,
     upsert_userbot_target,
 )
-from .sender import extract_migrated_chat_id, send_post_to_chat
+from .sender import SourceMessageMissingError, extract_migrated_chat_id, send_post_to_chat
 from .tasks import remap_chat_id_everywhere
 
 logger = logging.getLogger(__name__)
@@ -195,7 +196,7 @@ async def sync_userbot_targets(pool, client: TelegramClient, settings: Settings)
         if inserted:
             new_count += 1
 
-    disabled_count = await disable_stale_userbot_targets(pool, grace_days=30)
+    disabled_count = await disable_stale_userbot_targets(pool, grace_days=settings.targets_stale_grace_days)
     logger.info("Disabled stale targets: %s", disabled_count)
     enabled_count = len(await load_enabled_userbot_targets(pool))
     stats = {
@@ -282,6 +283,13 @@ async def run_worker(settings: Settings, pool, client: TelegramClient, stop_even
                 logger.exception("Periodic userbot targets sync failed")
             last_targets_sync_at = now_utc
 
+        if (now_utc - last_targets_sync_at).total_seconds() >= settings.targets_sync_seconds:
+            try:
+                await sync_userbot_targets(pool, client, settings)
+            except Exception:
+                logger.exception("Lazy pre-task userbot targets sync failed")
+            last_targets_sync_at = now_utc
+
         try:
             tasks = await claim_pending_tasks(pool, limit=25, now=now_utc)
         except Exception:
@@ -294,6 +302,19 @@ async def run_worker(settings: Settings, pool, client: TelegramClient, stop_even
             continue
 
         for task in tasks:
+            if task.status == "canceled":
+                await mark_task_done(
+                    pool,
+                    task_id=task.id,
+                    sent_count=task.sent_count,
+                    error_count=task.error_count,
+                    last_error=task.last_error,
+                    skipped_breakdown=task.skipped_breakdown,
+                    final_status="canceled_done",
+                )
+                logger.info("Task canceled before processing task_id=%s", task.id)
+                continue
+
             if task.target_chat_ids:
                 task_targets = await load_userbot_targets_by_chat_ids(pool, chat_ids=list(task.target_chat_ids))
                 target_map = {item.chat_id: item for item in task_targets}
@@ -326,6 +347,14 @@ async def run_worker(settings: Settings, pool, client: TelegramClient, stop_even
             target_ids = filtered_target_ids
 
             if not target_ids:
+                await update_task_progress(
+                    pool,
+                    task_id=task.id,
+                    sent_count=task.sent_count,
+                    error_count=task.error_count,
+                    last_error="No targets: join group chats or enable AUTO_TARGETS_MODE, or set TARGET_CHAT_IDS.",
+                    skipped_breakdown={"peer_missing": len(target_ids)},
+                )
                 await mark_task_error(
                     pool,
                     task_id=task.id,
@@ -345,6 +374,12 @@ async def run_worker(settings: Settings, pool, client: TelegramClient, stop_even
             fingerprint = _build_post_fingerprint(int(task.storage_chat_id), list(task.storage_message_ids))
 
             for chat_id in target_ids:
+                task_status = await get_task_status(pool, task_id=task.id)
+                if task_status == "canceled":
+                    last_error = "canceled_by_admin"
+                    logger.info("Task canceled during processing task_id=%s", task.id)
+                    break
+
                 current_chat_id = int(chat_id)
                 target_peer = target_map.get(current_chat_id)
                 if target_peer is None:
@@ -426,8 +461,22 @@ async def run_worker(settings: Settings, pool, client: TelegramClient, stop_even
                         errors += 1
                         logger.warning("chat_result=error task_id=%s chat_id=%s err=ValueError text=%s", task.id, current_chat_id, last_error)
                         reason = "entity_missing" if "input entity" in last_error.lower() else "invalid_target"
-                        await mark_userbot_target_disabled(pool, chat_id=current_chat_id, error_text=f"{reason}: {last_error}")
+                        if settings.targets_disable_on_entity_error:
+                            await mark_userbot_target_disabled(pool, chat_id=current_chat_id, error_text=f"{reason}: {last_error}")
                         await update_task_progress(pool, task_id=task.id, sent_count=sent, error_count=errors, last_error=last_error)
+                        break
+                    except SourceMessageMissingError:
+                        last_error = "source_message_missing"
+                        logger.warning("task_aborted reason=source_message_missing task_id=%s", task.id)
+                        await mark_task_error(
+                            pool,
+                            task_id=task.id,
+                            attempts=settings.max_task_attempts,
+                            max_attempts=settings.max_task_attempts,
+                            error=last_error,
+                            sent_count=sent,
+                            error_count=errors,
+                        )
                         break
                     except FloodWaitError as e:
                         wait_s = int(getattr(e, "seconds", 0) or 0)
@@ -439,7 +488,7 @@ async def run_worker(settings: Settings, pool, client: TelegramClient, stop_even
                             last_error = str(e)
                             errors += 1
                             logger.warning("chat_result=error task_id=%s chat_id=%s err=%s text=%s", task.id, current_chat_id, type(e).__name__, str(e))
-                            if _is_write_permission_error(e):
+                            if _is_write_permission_error(e) or (settings.targets_disable_on_entity_error and "input entity" in str(e).lower()):
                                 await mark_userbot_target_disabled(pool, chat_id=current_chat_id, error_text=last_error)
                             await update_task_progress(pool, task_id=task.id, sent_count=sent, error_count=errors, last_error=last_error)
                             break
@@ -465,19 +514,48 @@ async def run_worker(settings: Settings, pool, client: TelegramClient, stop_even
                         last_error = repr(e)
                         errors += 1
                         logger.warning("chat_result=error task_id=%s chat_id=%s err=%s text=%s", task.id, current_chat_id, type(e).__name__, str(e))
-                        if _is_write_permission_error(e):
+                        if _is_write_permission_error(e) or (settings.targets_disable_on_entity_error and "input entity" in str(e).lower()):
                             await mark_userbot_target_disabled(pool, chat_id=current_chat_id, error_text=last_error)
                         await update_task_progress(pool, task_id=task.id, sent_count=sent, error_count=errors, last_error=last_error)
                         break
 
+            skipped_breakdown = {
+                "skipped_activity_gate": int(skip_reasons.get("activity_gate", 0)),
+                "skipped_cooldown": int(skip_reasons.get("cooldown", 0)),
+                "skipped_anti_dup": int(skip_reasons.get("anti_dup", 0)),
+                **{k: int(v) for k, v in skip_reasons.items() if k not in {"activity_gate", "cooldown", "anti_dup"}},
+            }
             logger.info(
                 "Task summary task_id=%s sent=%s errors=%s skipped=%s skipped_breakdown=%s",
                 task.id,
                 sent,
                 errors,
                 skipped,
-                dict(skip_reasons),
+                skipped_breakdown,
             )
+
+            if last_error == "source_message_missing":
+                await update_task_progress(
+                    pool,
+                    task_id=task.id,
+                    sent_count=sent,
+                    error_count=errors,
+                    last_error=last_error,
+                    skipped_breakdown=skipped_breakdown,
+                )
+                continue
+
+            if last_error == "canceled_by_admin":
+                await mark_task_done(
+                    pool,
+                    task_id=task.id,
+                    sent_count=sent,
+                    error_count=errors,
+                    last_error=last_error,
+                    skipped_breakdown=skipped_breakdown,
+                    final_status="canceled_done",
+                )
+                continue
 
             if errors == 0:
                 await mark_task_done(
@@ -486,10 +564,19 @@ async def run_worker(settings: Settings, pool, client: TelegramClient, stop_even
                     sent_count=sent,
                     error_count=errors,
                     last_error=None,
+                    skipped_breakdown=skipped_breakdown,
                 )
                 continue
 
             err_text = last_error or f"Broadcast completed with {errors} errors."
+            await update_task_progress(
+                pool,
+                task_id=task.id,
+                sent_count=sent,
+                error_count=errors,
+                last_error=err_text,
+                skipped_breakdown=skipped_breakdown,
+            )
             await mark_task_error(
                 pool,
                 task_id=task.id,

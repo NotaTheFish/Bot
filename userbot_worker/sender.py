@@ -7,10 +7,15 @@ import re
 from typing import Any, Optional, Sequence, Union
 
 from telethon import TelegramClient
-from telethon.errors import FloodWaitError, RPCError
+from telethon.errors import FloodWaitError, MessageIdInvalidError, RPCError
 from telethon.tl.types import TypeInputPeer
 
 logger = logging.getLogger(__name__)
+
+
+class SourceMessageMissingError(RuntimeError):
+    """Storage source message(s) are missing or no longer accessible."""
+
 
 # В логах/ошибках Telethon часто встречаются такие формулировки миграции
 # Примеры:
@@ -145,6 +150,9 @@ async def forward_post(
         except FloodWaitError as exc:
             logger.warning("FloodWaitError target=%s wait=%s", target, exc.seconds)
             await asyncio.sleep(int(exc.seconds))
+
+        except MessageIdInvalidError as exc:
+            raise SourceMessageMissingError("source_message_missing") from exc
 
         except RPCError as exc:
             if _is_forward_restricted_error(exc):

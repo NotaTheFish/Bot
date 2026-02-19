@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any, List, Optional, Union
+from typing import Any, Dict, List, Optional, Union
 
 import asyncpg
 
@@ -22,6 +22,7 @@ class TaskRow:
     sent_count: int
     error_count: int
     dedupe_key: Optional[str]
+    skipped_breakdown: Dict[str, int]
 
 
 async def create_pool(database_url: str) -> asyncpg.Pool:
@@ -72,6 +73,7 @@ async def ensure_schema(db: DBOrPool) -> None:
         await conn.execute("ALTER TABLE userbot_tasks ADD COLUMN IF NOT EXISTS sent_count INTEGER NOT NULL DEFAULT 0;")
         await conn.execute("ALTER TABLE userbot_tasks ADD COLUMN IF NOT EXISTS error_count INTEGER NOT NULL DEFAULT 0;")
         await conn.execute("ALTER TABLE userbot_tasks ADD COLUMN IF NOT EXISTS dedupe_key TEXT;")
+        await conn.execute("ALTER TABLE userbot_tasks ADD COLUMN IF NOT EXISTS skipped_breakdown JSONB;")
 
         await conn.execute("UPDATE userbot_tasks SET target_chat_ids='{}' WHERE target_chat_ids IS NULL;")
         await conn.execute("UPDATE userbot_tasks SET storage_message_ids='{}' WHERE storage_message_ids IS NULL;")
@@ -174,6 +176,7 @@ def _row_to_task(row: asyncpg.Record) -> TaskRow:
         sent_count=int(row.get("sent_count") or 0),
         error_count=int(row.get("error_count") or 0),
         dedupe_key=(str(row["dedupe_key"]) if row.get("dedupe_key") is not None else None),
+        skipped_breakdown={str(k): int(v) for k, v in ((row.get("skipped_breakdown") or {}).items())},
     )
 
 
@@ -219,6 +222,7 @@ async def update_task_progress(
     sent_count: int,
     error_count: int,
     last_error: Optional[str] = None,
+    skipped_breakdown: Optional[Dict[str, int]] = None,
 ) -> None:
     conn = await _acquire_conn(db)
     try:
@@ -227,13 +231,15 @@ async def update_task_progress(
             UPDATE userbot_tasks
             SET sent_count = $2,
                 error_count = $3,
-                last_error = $4
+                last_error = $4,
+                skipped_breakdown = COALESCE($5::jsonb, skipped_breakdown)
             WHERE id = $1
             """,
             int(task_id),
             int(sent_count),
             int(error_count),
             (str(last_error)[:4000] if last_error else None),
+            skipped_breakdown,
         )
     finally:
         await _release_conn(db, conn)
@@ -246,22 +252,27 @@ async def mark_task_done(
     sent_count: int,
     error_count: int,
     last_error: Optional[str] = None,
+    skipped_breakdown: Optional[Dict[str, int]] = None,
+    final_status: str = "done",
 ) -> None:
     conn = await _acquire_conn(db)
     try:
         await conn.execute(
             """
             UPDATE userbot_tasks
-            SET status='done',
-                sent_count=$2,
-                error_count=$3,
-                last_error=$4
+            SET status=$2,
+                sent_count=$3,
+                error_count=$4,
+                last_error=$5,
+                skipped_breakdown = COALESCE($6::jsonb, skipped_breakdown)
             WHERE id = $1
             """,
             int(task_id),
+            str(final_status),
             int(sent_count),
             int(error_count),
             (str(last_error)[:4000] if last_error else None),
+            skipped_breakdown,
         )
     finally:
         await _release_conn(db, conn)
@@ -648,5 +659,13 @@ async def set_worker_autoreply_next_allowed(db: DBOrPool, user_id: int, cooldown
             int(user_id),
             max(0, int(cooldown_seconds)),
         )
+    finally:
+        await _release_conn(db, conn)
+
+async def get_task_status(db: DBOrPool, *, task_id: int) -> Optional[str]:
+    conn = await _acquire_conn(db)
+    try:
+        value = await conn.fetchval("SELECT status FROM userbot_tasks WHERE id = $1", int(task_id))
+        return str(value) if value is not None else None
     finally:
         await _release_conn(db, conn)
