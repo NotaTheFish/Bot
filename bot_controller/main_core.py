@@ -135,7 +135,19 @@ logger.info("STORAGE_CHAT_ID=%s", STORAGE_CHAT_ID)
 class UpdateLoggingMiddleware(BaseMiddleware):
     async def __call__(self, handler, event, data):
         if isinstance(event, Message):
-            logger.info("update message chat_id=%s from_user_id=%s text=%r", event.chat.id, event.from_user.id if event.from_user else None, event.text)
+            fsm_ctx = data.get("state")
+            fsm_state = await fsm_ctx.get_state() if isinstance(fsm_ctx, FSMContext) else None
+            logger.info(
+                "update message chat_id=%s from_user_id=%s text=%r message_thread_id=%s message_id=%s media_group_id=%s content_type=%s fsm_state=%s",
+                event.chat.id,
+                event.from_user.id if event.from_user else None,
+                event.text,
+                event.message_thread_id,
+                event.message_id,
+                event.media_group_id,
+                event.content_type,
+                fsm_state,
+            )
         return await handler(event, data)
 
 
@@ -1715,6 +1727,14 @@ async def _publish_post_messages(messages: list[Message], state: FSMContext, med
         return
 
     await state.clear()
+    state_after = await state.get_state()
+    logger.info(
+        "storage_post state cleared chat_id=%s user_id=%s media_group_id=%s state_after=%s",
+        messages[-1].chat.id,
+        messages[-1].from_user.id if messages[-1].from_user else None,
+        media_group_id,
+        state_after,
+    )
     response_lines = ["✅ Сохранено и закреплено"]
     if pin_warning:
         response_lines.append(pin_warning)
@@ -2372,7 +2392,12 @@ async def edit_post_selected(callback: CallbackQuery, state: FSMContext):
 @dp.message(Command(commands=["create_post", "post"]))
 @dp.message(F.text.regexp(r"^/create_post(?:@\w+)?(?:\s|$)"))
 async def create_post_in_storage(message: Message, state: FSMContext):
-    logger.info("HANDLER create_post fired chat_id=%s text=%r", message.chat.id, message.text)
+    logger.info(
+        "HANDLER create_post fired chat_id=%s message_thread_id=%s text=%r",
+        message.chat.id,
+        message.message_thread_id,
+        message.text,
+    )
     try:
         if int(message.chat.id) != int(STORAGE_CHAT_ID):
             return
@@ -2413,6 +2438,15 @@ async def handle_storage_post(message: Message, state: FSMContext):
     if not message.from_user or message.from_user.id not in ADMIN_IDS:
         return
 
+    state_before = await state.get_state()
+    logger.info(
+        "storage_post handler enter chat_id=%s user_id=%s thread_id=%s state_before=%s",
+        message.chat.id,
+        message.from_user.id,
+        message.message_thread_id,
+        state_before,
+    )
+
     logger.info(
         "HANDLER storage_post fired chat_id=%s user_id=%s text=%r caption=%r content_type=%s has_photo=%s has_video=%s has_doc=%s media_group_id=%s msg_id=%s",
         message.chat.id,
@@ -2432,6 +2466,14 @@ async def handle_storage_post(message: Message, state: FSMContext):
         return
 
     if message.media_group_id:
+        logger.info(
+            "storage_post branch=album chat_id=%s user_id=%s thread_id=%s media_group_id=%s message_id=%s",
+            message.chat.id,
+            message.from_user.id,
+            message.message_thread_id,
+            message.media_group_id,
+            message.message_id,
+        )
         buffer_data = media_group_buffers.get(message.media_group_id)
         if not buffer_data:
             task = asyncio.create_task(_flush_media_group_with_delay(message.media_group_id, state))
@@ -2440,6 +2482,13 @@ async def handle_storage_post(message: Message, state: FSMContext):
         buffer_data["messages"].append(message)
         return
 
+    logger.info(
+        "storage_post branch=single chat_id=%s user_id=%s thread_id=%s message_id=%s",
+        message.chat.id,
+        message.from_user.id,
+        message.message_thread_id,
+        message.message_id,
+    )
     await _publish_post_messages([message], state, media_group_id=None)
 
 
