@@ -36,6 +36,7 @@ class StoragePostFlowTests(unittest.IsolatedAsyncioTestCase):
             chat=SimpleNamespace(id=999),
             from_user=SimpleNamespace(id=1),
             text="/create_post",
+            message_thread_id=None,
             answer=AsyncMock(),
         )
 
@@ -50,6 +51,7 @@ class StoragePostFlowTests(unittest.IsolatedAsyncioTestCase):
             chat=SimpleNamespace(id=-100123),
             from_user=SimpleNamespace(id=777),
             text="/create_post",
+            message_thread_id=None,
             answer=AsyncMock(),
         )
 
@@ -65,6 +67,7 @@ class StoragePostFlowTests(unittest.IsolatedAsyncioTestCase):
             chat=SimpleNamespace(id=-100123),
             from_user=SimpleNamespace(id=1),
             text="/create_post",
+            message_thread_id=None,
             answer=AsyncMock(),
         )
 
@@ -90,6 +93,7 @@ class StoragePostFlowTests(unittest.IsolatedAsyncioTestCase):
             voice=None,
             sticker=None,
             content_type="text",
+            message_thread_id=None,
             answer=AsyncMock(),
         )
 
@@ -125,6 +129,7 @@ class StoragePostFlowTests(unittest.IsolatedAsyncioTestCase):
             voice=None,
             sticker=None,
             content_type="photo",
+            message_thread_id=None,
             answer=AsyncMock(),
         )
 
@@ -156,6 +161,7 @@ class StoragePostFlowTests(unittest.IsolatedAsyncioTestCase):
             voice=None,
             sticker=None,
             content_type="service",
+            message_thread_id=None,
             answer=AsyncMock(),
         )
 
@@ -163,7 +169,68 @@ class StoragePostFlowTests(unittest.IsolatedAsyncioTestCase):
             await main_core.handle_storage_post(message, state)
 
         publish.assert_not_called()
-        message.answer.assert_awaited_once_with("пришлите текст или медиа")
+        message.answer.assert_awaited_once_with("Этот тип сообщения не поддерживается, пришлите текст/медиа/альбом.")
+
+
+    async def test_album_flow_flushes_once_and_confirms(self):
+        state = AsyncMock()
+
+        first = SimpleNamespace(
+            chat=SimpleNamespace(id=-100123),
+            from_user=SimpleNamespace(id=1),
+            message_id=301,
+            media_group_id="album-42",
+            text=None,
+            caption="photo 1",
+            photo=[object()],
+            video=None,
+            document=None,
+            animation=None,
+            audio=None,
+            voice=None,
+            sticker=None,
+            content_type="photo",
+            message_thread_id=None,
+            answer=AsyncMock(),
+        )
+        second = SimpleNamespace(
+            chat=SimpleNamespace(id=-100123),
+            from_user=SimpleNamespace(id=1),
+            message_id=302,
+            media_group_id="album-42",
+            text=None,
+            caption="photo 2",
+            photo=[object()],
+            video=None,
+            document=None,
+            animation=None,
+            audio=None,
+            voice=None,
+            sticker=None,
+            content_type="photo",
+            message_thread_id=None,
+            answer=AsyncMock(),
+        )
+
+        created_coroutines = []
+
+        def _fake_create_task(coro):
+            created_coroutines.append(coro)
+            return object()
+
+        with patch.object(main_core.asyncio, "create_task", side_effect=_fake_create_task):
+            await main_core.handle_storage_post(first, state)
+            await main_core.handle_storage_post(second, state)
+
+        self.assertEqual(len(created_coroutines), 1)
+        for coro in created_coroutines:
+            coro.close()
+
+        with patch.object(main_core, "_publish_post_messages", AsyncMock()) as publish:
+            await main_core._flush_media_group("album-42", state)
+            await main_core._flush_media_group("album-42", state)
+
+        publish.assert_awaited_once_with([first, second], state, media_group_id="album-42")
 
     async def test_send_post_preview_uses_storage_ids(self):
         message = SimpleNamespace(chat=SimpleNamespace(id=1), answer=AsyncMock())

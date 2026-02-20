@@ -1748,8 +1748,11 @@ async def _publish_post_messages(messages: list[Message], state: FSMContext, med
 async def _flush_media_group(media_group_id: str, state: FSMContext) -> None:
     buffer_data = media_group_buffers.pop(media_group_id, None)
     if not buffer_data:
+        logger.info("storage_post flush skipped media_group_id=%s (buffer missing)", media_group_id)
         return
-    await _publish_post_messages(buffer_data["messages"], state, media_group_id=media_group_id)
+    messages = buffer_data.get("messages", [])
+    logger.info("storage_post flush media_group_id=%s messages=%s", media_group_id, len(messages))
+    await _publish_post_messages(messages, state, media_group_id=media_group_id)
 
 async def send_schedule_list(message: Message) -> None:
     schedules = await get_schedules()
@@ -2417,8 +2420,8 @@ async def create_post_in_storage(message: Message, state: FSMContext):
         await message.answer(f"Ошибка: {e}")
 
 
-def _is_valid_storage_post_message(message: Message) -> bool:
-    return bool(
+def _is_valid_storage_post_message(message: Message) -> tuple[bool, str | None]:
+    if (
         message.text
         or message.caption
         or message.photo
@@ -2428,7 +2431,9 @@ def _is_valid_storage_post_message(message: Message) -> bool:
         or message.audio
         or message.voice
         or message.sticker
-    )
+    ):
+        return True, None
+    return False, "Этот тип сообщения не поддерживается, пришлите текст/медиа/альбом."
 
 
 @dp.message(AdminStates.waiting_storage_post)
@@ -2461,8 +2466,16 @@ async def handle_storage_post(message: Message, state: FSMContext):
         message.message_id,
     )
 
-    if not _is_valid_storage_post_message(message):
-        await message.answer("пришлите текст или медиа")
+    is_valid, validation_error = _is_valid_storage_post_message(message)
+    if not is_valid:
+        logger.info(
+            "storage_post invalid content_type=%s chat_id=%s user_id=%s msg_id=%s",
+            message.content_type,
+            message.chat.id,
+            message.from_user.id,
+            message.message_id,
+        )
+        await message.answer(validation_error or "Этот тип сообщения не поддерживается, пришлите текст/медиа/альбом.")
         return
 
     if message.media_group_id:
@@ -2479,6 +2492,10 @@ async def handle_storage_post(message: Message, state: FSMContext):
             task = asyncio.create_task(_flush_media_group_with_delay(message.media_group_id, state))
             buffer_data = {"messages": [], "task": task}
             media_group_buffers[message.media_group_id] = buffer_data
+            logger.info("storage_post album created buffer media_group_id=%s", message.media_group_id)
+        elif buffer_data.get("task") is None:
+            buffer_data["task"] = asyncio.create_task(_flush_media_group_with_delay(message.media_group_id, state))
+            logger.info("storage_post album restored flush task media_group_id=%s", message.media_group_id)
         buffer_data["messages"].append(message)
         return
 
@@ -2505,6 +2522,7 @@ async def edit_back_selected(callback: CallbackQuery, state: FSMContext):
 async def _flush_media_group_with_delay(media_group_id: str, state: FSMContext) -> None:
     try:
         await asyncio.sleep(MEDIA_GROUP_BUFFER_TIMEOUT_SECONDS)
+        logger.info("storage_post flush delayed media_group_id=%s", media_group_id)
         await _flush_media_group(media_group_id, state)
     except asyncio.CancelledError:
         pass
