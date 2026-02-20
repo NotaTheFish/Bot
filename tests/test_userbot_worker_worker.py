@@ -29,7 +29,6 @@ def _build_settings(*, cooldown_minutes: int, anti_dup_minutes: int) -> Settings
         activity_gate_min_messages=0,
         anti_dup_minutes=anti_dup_minutes,
         controller_bot_username="controller_bot",
-        worker_autoreply_cooldown_seconds=3600,
         authkey_duplicated_cooldown_seconds=120,
     )
 

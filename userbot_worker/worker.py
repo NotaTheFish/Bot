@@ -15,7 +15,10 @@ from .db import (
     disable_stale_userbot_targets,
     ensure_schema,
     get_task_status,
+    get_worker_autoreply_contact,
     get_worker_autoreply_remaining,
+    get_worker_autoreply_settings,
+    get_worker_state_last_outgoing_at,
     get_userbot_target_state,
     load_userbot_targets_by_chat_ids,
     load_enabled_userbot_targets,
@@ -24,8 +27,9 @@ from .db import (
     mark_userbot_target_disabled,
     mark_userbot_target_success,
     remap_userbot_target_chat_id,
-    set_worker_autoreply_next_allowed,
     set_userbot_target_last_self_message_id,
+    touch_worker_last_outgoing_at,
+    upsert_worker_autoreply_contact,
     update_task_progress,
     upsert_userbot_target,
 )
@@ -271,20 +275,44 @@ async def run_worker(settings: Settings, pool, client: TelegramClient, stop_even
         if sender is not None and bool(getattr(sender, "bot", False)):
             return
 
-        remaining = await get_worker_autoreply_remaining(pool, user_id=sender_id)
+        settings_row = await get_worker_autoreply_settings(pool)
+        await upsert_worker_autoreply_contact(pool, user_id=sender_id, replied=False)
+
+        if not settings_row.enabled:
+            return
+
+        remaining = await get_worker_autoreply_remaining(
+            pool,
+            user_id=sender_id,
+            cooldown_seconds=settings_row.cooldown_seconds,
+        )
         if remaining > 0:
             return
 
-        support_url = f"https://t.me/{settings.controller_bot_username}?start=support"
-        await event.respond(
-            "Это технический аккаунт для рассылок. "
-            f"По всем вопросам поддержки напишите сюда: {support_url}"
-        )
-        await set_worker_autoreply_next_allowed(
-            pool,
-            user_id=sender_id,
-            cooldown_seconds=settings.worker_autoreply_cooldown_seconds,
-        )
+        contact = await get_worker_autoreply_contact(pool, user_id=sender_id)
+        is_first_message = not bool(contact and contact.get("last_replied_at"))
+
+        should_reply = False
+        if settings_row.trigger_mode == "first_message_only":
+            should_reply = is_first_message
+        elif settings_row.trigger_mode == "offline_over_minutes":
+            last_outgoing_at = await get_worker_state_last_outgoing_at(pool)
+            if last_outgoing_at is None:
+                should_reply = True
+            else:
+                delta = _now_utc() - last_outgoing_at
+                should_reply = delta.total_seconds() >= settings_row.offline_threshold_minutes * 60
+        else:  # both (OR)
+            last_outgoing_at = await get_worker_state_last_outgoing_at(pool)
+            offline_ok = True if last_outgoing_at is None else (_now_utc() - last_outgoing_at).total_seconds() >= settings_row.offline_threshold_minutes * 60
+            should_reply = is_first_message or offline_ok
+
+        if not should_reply:
+            return
+
+        await event.respond(settings_row.reply_text)
+        await upsert_worker_autoreply_contact(pool, user_id=sender_id, replied=True)
+        await touch_worker_last_outgoing_at(pool)
 
     authkey_duplicated_cooldown_until: Optional[datetime] = None
     try:
@@ -517,6 +545,7 @@ async def run_worker(settings: Settings, pool, client: TelegramClient, stop_even
                             min_delay=settings.min_seconds_between_chats,
                             max_delay=settings.max_seconds_between_chats,
                         )
+                        await touch_worker_last_outgoing_at(pool)
                         await mark_userbot_target_success(
                             pool,
                             chat_id=current_chat_id,

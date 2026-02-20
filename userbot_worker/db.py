@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Union
 
 import asyncpg
@@ -25,6 +25,16 @@ class TaskRow:
     dedupe_key: Optional[str]
     skipped_breakdown: Dict[str, int]
 
+
+
+
+@dataclass(frozen=True)
+class WorkerAutoreplySettings:
+    enabled: bool
+    reply_text: str
+    trigger_mode: str
+    offline_threshold_minutes: int
+    cooldown_seconds: int
 
 async def create_pool(database_url: str) -> asyncpg.Pool:
     return await asyncpg.create_pool(dsn=database_url, min_size=1, max_size=5)
@@ -141,12 +151,36 @@ async def ensure_schema(db: DBOrPool) -> None:
         )
         await conn.execute(
             """
-            CREATE TABLE IF NOT EXISTS worker_autoreply_cooldown (
-              user_id BIGINT PRIMARY KEY,
-              next_allowed_at TIMESTAMPTZ NOT NULL
+            CREATE TABLE IF NOT EXISTS worker_autoreply_settings (
+              id INTEGER PRIMARY KEY DEFAULT 1,
+              enabled BOOLEAN NOT NULL DEFAULT TRUE,
+              reply_text TEXT NOT NULL DEFAULT 'Здравствуйте! Я технический аккаунт рассылки. Ответим вам позже.',
+              trigger_mode TEXT NOT NULL DEFAULT 'both',
+              offline_threshold_minutes INTEGER NOT NULL DEFAULT 60,
+              cooldown_seconds INTEGER NOT NULL DEFAULT 3600,
+              updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
             );
             """
         )
+        await conn.execute("INSERT INTO worker_autoreply_settings(id) VALUES (1) ON CONFLICT(id) DO NOTHING;")
+        await conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS worker_autoreply_contacts (
+              user_id BIGINT PRIMARY KEY,
+              first_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+              last_replied_at TIMESTAMPTZ
+            );
+            """
+        )
+        await conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS worker_state (
+              id INTEGER PRIMARY KEY DEFAULT 1,
+              last_outgoing_at TIMESTAMPTZ
+            );
+            """
+        )
+        await conn.execute("INSERT INTO worker_state(id,last_outgoing_at) VALUES (1, NULL) ON CONFLICT(id) DO NOTHING;")
         await conn.execute("ALTER TABLE userbot_targets ADD COLUMN IF NOT EXISTS last_error_at TIMESTAMPTZ;")
         await conn.execute("ALTER TABLE userbot_targets ADD COLUMN IF NOT EXISTS last_success_post_at TIMESTAMPTZ;")
         await conn.execute("ALTER TABLE userbot_targets ADD COLUMN IF NOT EXISTS last_self_message_id BIGINT;")
@@ -660,39 +694,109 @@ async def remap_userbot_target_chat_id(
         await _release_conn(db, conn)
 
 
-async def get_worker_autoreply_remaining(db: DBOrPool, user_id: int) -> int:
+async def get_worker_autoreply_settings(db: DBOrPool) -> WorkerAutoreplySettings:
     conn = await _acquire_conn(db)
     try:
         row = await conn.fetchrow(
             """
-            SELECT GREATEST(0, CEIL(EXTRACT(EPOCH FROM (next_allowed_at - NOW()))))::int AS remaining
-            FROM worker_autoreply_cooldown
-            WHERE user_id = $1
-            """,
-            int(user_id),
+            SELECT enabled, reply_text, trigger_mode, offline_threshold_minutes, cooldown_seconds
+            FROM worker_autoreply_settings
+            WHERE id = 1
+            """
         )
         if not row:
-            return 0
-        return int(row["remaining"] or 0)
+            return WorkerAutoreplySettings(
+                enabled=True,
+                reply_text="Здравствуйте! Я технический аккаунт рассылки. Ответим вам позже.",
+                trigger_mode="both",
+                offline_threshold_minutes=60,
+                cooldown_seconds=3600,
+            )
+        mode = str(row["trigger_mode"] or "both")
+        if mode not in {"first_message_only", "offline_over_minutes", "both"}:
+            mode = "both"
+        return WorkerAutoreplySettings(
+            enabled=bool(row["enabled"]),
+            reply_text=str(row["reply_text"] or "Здравствуйте! Я технический аккаунт рассылки. Ответим вам позже."),
+            trigger_mode=mode,
+            offline_threshold_minutes=max(0, int(row["offline_threshold_minutes"] or 60)),
+            cooldown_seconds=max(0, int(row["cooldown_seconds"] or 3600)),
+        )
     finally:
         await _release_conn(db, conn)
 
 
-async def set_worker_autoreply_next_allowed(db: DBOrPool, user_id: int, cooldown_seconds: int) -> None:
+async def get_worker_state_last_outgoing_at(db: DBOrPool) -> Optional[datetime]:
+    conn = await _acquire_conn(db)
+    try:
+        value = await conn.fetchval("SELECT last_outgoing_at FROM worker_state WHERE id = 1")
+        return value
+    finally:
+        await _release_conn(db, conn)
+
+
+async def touch_worker_last_outgoing_at(db: DBOrPool) -> None:
     conn = await _acquire_conn(db)
     try:
         await conn.execute(
             """
-            INSERT INTO worker_autoreply_cooldown(user_id, next_allowed_at)
-            VALUES ($1, NOW() + ($2::int * INTERVAL '1 second'))
-            ON CONFLICT(user_id) DO UPDATE
-            SET next_allowed_at = EXCLUDED.next_allowed_at
-            """,
-            int(user_id),
-            max(0, int(cooldown_seconds)),
+            INSERT INTO worker_state(id, last_outgoing_at)
+            VALUES (1, NOW())
+            ON CONFLICT(id) DO UPDATE SET last_outgoing_at = EXCLUDED.last_outgoing_at
+            """
         )
     finally:
         await _release_conn(db, conn)
+
+
+async def get_worker_autoreply_contact(db: DBOrPool, user_id: int) -> Optional[dict]:
+    conn = await _acquire_conn(db)
+    try:
+        row = await conn.fetchrow(
+            "SELECT user_id, first_seen_at, last_replied_at FROM worker_autoreply_contacts WHERE user_id = $1",
+            int(user_id),
+        )
+        if not row:
+            return None
+        return {"user_id": int(row["user_id"]), "first_seen_at": row["first_seen_at"], "last_replied_at": row["last_replied_at"]}
+    finally:
+        await _release_conn(db, conn)
+
+
+async def upsert_worker_autoreply_contact(db: DBOrPool, user_id: int, replied: bool = False) -> None:
+    conn = await _acquire_conn(db)
+    try:
+        if replied:
+            await conn.execute(
+                """
+                INSERT INTO worker_autoreply_contacts(user_id, first_seen_at, last_replied_at)
+                VALUES ($1, NOW(), NOW())
+                ON CONFLICT(user_id) DO UPDATE
+                SET last_replied_at = NOW()
+                """,
+                int(user_id),
+            )
+        else:
+            await conn.execute(
+                """
+                INSERT INTO worker_autoreply_contacts(user_id, first_seen_at)
+                VALUES ($1, NOW())
+                ON CONFLICT(user_id) DO NOTHING
+                """,
+                int(user_id),
+            )
+    finally:
+        await _release_conn(db, conn)
+
+
+async def get_worker_autoreply_remaining(db: DBOrPool, user_id: int, cooldown_seconds: int) -> int:
+    contact = await get_worker_autoreply_contact(db, user_id=user_id)
+    if not contact or not contact.get("last_replied_at"):
+        return 0
+    delta = datetime.now(timezone.utc) - contact["last_replied_at"]
+    left = int(max(0, cooldown_seconds - delta.total_seconds()))
+    return left
+
 
 async def get_task_status(db: DBOrPool, *, task_id: int) -> Optional[str]:
     conn = await _acquire_conn(db)

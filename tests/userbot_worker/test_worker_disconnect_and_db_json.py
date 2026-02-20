@@ -48,7 +48,6 @@ def _settings() -> Settings:
         activity_gate_min_messages=0,
         anti_dup_minutes=0,
         controller_bot_username="controller_bot",
-        worker_autoreply_cooldown_seconds=3600,
         authkey_duplicated_cooldown_seconds=120,
     )
 

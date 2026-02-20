@@ -27,12 +27,8 @@ class ContactCtaBuilderTests(unittest.TestCase):
         )
 
         self.assertFalse(used_fallback)
-        self.assertIn(main_core.CONTACT_CTA_TEXT, text)
-        self.assertNotIn("https://", text)
-        self.assertNotIn("t.me/", text)
-        self.assertEqual(len(entities), 1)
-        self.assertEqual(entities[0].type, "text_link")
-        self.assertEqual(entities[0].url, "https://t.me/my_shop_bot?start=contact_abc123token")
+        self.assertEqual(text, "Исходный текст")
+        self.assertEqual(entities, [])
 
     def test_fallback_without_url_when_no_bot_username(self):
         text, entities, used_fallback = main_core.build_contact_cta(
@@ -44,11 +40,9 @@ class ContactCtaBuilderTests(unittest.TestCase):
             mode="fallback",
         )
 
-        self.assertTrue(used_fallback)
-        self.assertIn("@seller_login", text)
-        self.assertNotIn("https://", text)
-        self.assertNotIn("t.me/", text)
-        self.assertEqual([e for e in entities if e.type == "text_link"], [])
+        self.assertFalse(used_fallback)
+        self.assertEqual(text, "Исходный текст")
+        self.assertEqual(entities, [])
 
     def test_fallback_without_url_when_text_link_is_sanitized(self):
         unsafe_text = "Проверка https://t.me/bot?start=contact_abc\n\n✉️ Написать продавцу"
@@ -80,7 +74,6 @@ class ContactCtaBuilderTests(unittest.TestCase):
         original_entities = [
             MessageEntity(type="bold", offset=0, length=2),
             MessageEntity(type="italic", offset=3, length=2),
-            MessageEntity(type="text_link", offset=0, length=2, url="https://example.com"),
         ]
 
         caption, entities, used_fallback = main_core.build_contact_cta(
@@ -93,20 +86,8 @@ class ContactCtaBuilderTests(unittest.TestCase):
         )
 
         self.assertFalse(used_fallback)
-        self.assertLessEqual(len(caption), 1024)
-        self.assertEqual(len(entities), 4)
-
-        cta_entity = [entity for entity in entities if entity.type == "text_link" and entity.url and "start=contact_" in entity.url][0]
-        prefix = f"{base_caption}\n\n"
-        expected_offset = len(prefix.encode("utf-16-le")) // 2
-        expected_length = len(main_core.CONTACT_CTA_TEXT.encode("utf-16-le")) // 2
-        self.assertEqual(cta_entity.offset, expected_offset)
-        self.assertEqual(cta_entity.length, expected_length)
-
-        entity_types = [entity.type for entity in entities]
-        self.assertIn("bold", entity_types)
-        self.assertIn("italic", entity_types)
-        self.assertEqual(len([entity for entity in entities if entity.type == "text_link"]), 2)
+        self.assertEqual(caption, base_caption)
+        self.assertEqual(len(entities), 2)
 
 
 class WorkerPathRegressionTests(unittest.IsolatedAsyncioTestCase):

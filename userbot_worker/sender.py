@@ -80,40 +80,6 @@ def _is_forward_restricted_error(exc: BaseException) -> bool:
     return any(marker in text for marker in markers)
 
 
-async def _copy_messages_as_text(
-    client: TelegramClient,
-    *,
-    source_chat_id: int,
-    source_message_id: Union[int, Sequence[int]],
-    target: Union[int, TypeInputPeer],
-) -> int:
-    message_ids = (
-        [int(source_message_id)]
-        if isinstance(source_message_id, int)
-        else [int(message_id) for message_id in source_message_id]
-    )
-    source_messages = await client.get_messages(source_chat_id, ids=message_ids)
-    if not source_messages:
-        raise RuntimeError("Cannot copy message: source message not found")
-
-    if not isinstance(source_messages, list):
-        source_messages = [source_messages]
-
-    last_sent = None
-    for source_message in source_messages:
-        text = getattr(source_message, "raw_text", None) or getattr(source_message, "message", None) or ""
-        sent = await client.send_message(
-            entity=target,
-            message=text if text else " ",
-            buttons=getattr(source_message, "buttons", None),
-        )
-        last_sent = sent
-
-    if last_sent is None:
-        raise RuntimeError("Cannot copy message: no messages were sent")
-    return int(last_sent.id)
-
-
 async def forward_post(
     client: TelegramClient,
     source_chat_id: int,
@@ -154,19 +120,7 @@ async def forward_post(
         except MessageIdInvalidError as exc:
             raise SourceMessageMissingError("source_message_missing") from exc
 
-        except RPCError as exc:
-            if _is_forward_restricted_error(exc):
-                logger.warning(
-                    "Forward restricted chat=%s source_chat=%s. Fallback to text copy",
-                    target,
-                    source_chat_id,
-                )
-                return await _copy_messages_as_text(
-                    client,
-                    source_chat_id=source_chat_id,
-                    source_message_id=source_message_id,
-                    target=target,
-                )
+        except RPCError:
             # Ничего не скрываем — пусть воркер решает, что делать дальше
             raise
 

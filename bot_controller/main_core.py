@@ -83,9 +83,7 @@ CONTACT_PAYLOAD_PREFIX = "contact_"
 CONTACT_CTA_TEXT = "✉️ Написать продавцу"
 BUYER_CONTACT_BUTTON_TEXT = "✉️ Связаться с продавцом"
 BUYER_CONTACT_COOLDOWN_SECONDS = _get_env_int("BUYER_CONTACT_COOLDOWN_SECONDS", 60)
-CONTACT_CTA_MODE = _get_env_str("CONTACT_CTA_MODE", "mention").lower() or "mention"
-if CONTACT_CTA_MODE not in {"mention", "deep_link"}:
-    CONTACT_CTA_MODE = "mention"
+CONTACT_CTA_MODE = "off"
 
 def _parse_int_list_csv(raw: str) -> list[int]:
     raw = (raw or "").strip()
@@ -186,11 +184,13 @@ if DELIVERY_MODE not in {"bot", "userbot"}:
 
 
 class AdminStates(StatesGroup):
-    waiting_post_content = State()
     waiting_daily_time = State()
     waiting_weekly_time = State()
     waiting_edit_time = State()
     waiting_buyer_reply_template = State()
+    waiting_autoreply_text = State()
+    waiting_autoreply_offline_threshold = State()
+    waiting_autoreply_cooldown = State()
 
 
 class SupportStates(StatesGroup):
@@ -320,6 +320,41 @@ CREATE_TABLES_SQL = [
         user_id BIGINT PRIMARY KEY,
         next_allowed_at TIMESTAMPTZ NOT NULL
     )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS worker_autoreply_settings (
+        id INTEGER PRIMARY KEY DEFAULT 1,
+        enabled BOOLEAN NOT NULL DEFAULT TRUE,
+        reply_text TEXT NOT NULL DEFAULT 'Здравствуйте! Я технический аккаунт рассылки. Ответим вам позже.',
+        trigger_mode TEXT NOT NULL DEFAULT 'both',
+        offline_threshold_minutes INTEGER NOT NULL DEFAULT 60,
+        cooldown_seconds INTEGER NOT NULL DEFAULT 3600,
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        CONSTRAINT worker_autoreply_settings_single_row CHECK (id = 1)
+    )
+    """,
+    """
+    INSERT INTO worker_autoreply_settings (id)
+    VALUES (1)
+    ON CONFLICT (id) DO NOTHING
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS worker_autoreply_contacts (
+        user_id BIGINT PRIMARY KEY,
+        first_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        last_replied_at TIMESTAMPTZ
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS worker_state (
+        id INTEGER PRIMARY KEY DEFAULT 1,
+        last_outgoing_at TIMESTAMPTZ
+    )
+    """,
+    """
+    INSERT INTO worker_state (id, last_outgoing_at)
+    VALUES (1, NULL)
+    ON CONFLICT (id) DO NOTHING
     """,
 ]
 
@@ -618,15 +653,15 @@ def admin_menu_keyboard() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[
             [
-                KeyboardButton(text="📌 Добавить пост"),
-                KeyboardButton(text="✏️ Изменить пост"),
-            ],
-            [
-                KeyboardButton(text="📝 Изменить автоответ"),
+                KeyboardButton(text="📌 Выбрать последний пост из Storage"),
                 KeyboardButton(text="📊 Статус"),
             ],
             [
-                KeyboardButton(text="🚀 Запустить сейчас"),
+                KeyboardButton(text="🤖 Автоответчик"),
+                KeyboardButton(text="📝 Изменить автоответ"),
+            ],
+            [
+                KeyboardButton(text="✅ Запустить рассылку"),
                 KeyboardButton(text="⛔ Остановить рассылку"),
             ],
         ],
@@ -1349,30 +1384,10 @@ def build_contact_cta(
     force_cta_only: bool = False,
     include_start_hint: bool = False,
 ) -> tuple[str, list[MessageEntity], bool]:
+    _ = (token, bot_username, seller_username, mode, include_start_hint)
     base_text = "" if force_cta_only else (content_text or "")
     base_entities: list[MessageEntity] = [] if force_cta_only else list(original_entities or [])
-
-    if not force_cta_only and _contains_contact_cta(base_text, bot_username=bot_username):
-        return base_text, base_entities, False
-
-    prefix_text = f"{base_text}\n\n" if base_text else ""
-
-    if mode == "deep_link" and bot_username:
-        payload = f"{CONTACT_PAYLOAD_PREFIX}{token}"
-        contact_url = f"https://t.me/{bot_username}?start={payload}"
-        cta_entities = _build_contact_cta_entities(prefix_text, CONTACT_CTA_TEXT, contact_url)
-        updated = f"{prefix_text}{CONTACT_CTA_TEXT}" if prefix_text else CONTACT_CTA_TEXT
-        return updated, _merge_entities(base_entities, cta_entities), False
-
-    fallback_username = bot_username or seller_username
-    if fallback_username:
-        cta_text = f"{CONTACT_CTA_TEXT}: @{fallback_username}"
-    else:
-        cta_text = "✉️ Для связи напишите администратору"
-    if include_start_hint and bot_username:
-        cta_text = f"{cta_text}\nНапишите боту: /start"
-    updated = f"{prefix_text}{cta_text}" if prefix_text else cta_text
-    return updated, base_entities, True
+    return base_text, base_entities, False
 
 
 def _merge_entities(original_entities: Optional[list[MessageEntity]], extra_entities: list[MessageEntity]) -> list[MessageEntity]:
@@ -1579,6 +1594,7 @@ async def _delete_previous_storage_post(
 
 
 async def _publish_post_messages(messages: list[Message], state: FSMContext, media_group_id: Optional[str]) -> None:
+    _ = media_group_id
     if not messages:
         return
 
@@ -1587,126 +1603,28 @@ async def _publish_post_messages(messages: list[Message], state: FSMContext, med
         await messages[-1].answer("Ошибка: STORAGE_CHAT_ID не настроен.")
         return
 
-    token = _generate_contact_token()
-    previous_storage_chat_id, previous_storage_message_ids = await get_last_storage_messages()
     sorted_messages = sorted(messages, key=lambda msg: msg.message_id)
-    copied_ids: list[int] = []
+    source_message_ids = [int(msg.message_id) for msg in sorted_messages]
 
     first_message = sorted_messages[0]
-    first_has_media = bool(
-        first_message.media_group_id
-        or first_message.photo
-        or first_message.video
-        or first_message.document
-        or first_message.animation
-    )
-    first_content = first_message.caption if first_has_media else first_message.text
-    first_entities = list(first_message.caption_entities or []) if first_has_media else list(first_message.entities or [])
-    bot_username = _resolve_bot_username()
-    cta_mode = "deep_link" if CONTACT_CTA_MODE == "deep_link" and bot_username else "mention"
-    final_content, _, _ = build_contact_cta(
-        first_content or "",
-        first_entities,
-        token,
-        bot_username=bot_username,
-        seller_username=SELLER_USERNAME,
-        mode=cta_mode,
-    )
-    will_add_cta = final_content != (first_content or "")
-    max_len = 1024 if first_has_media else 4096
-    if len(final_content) > max_len:
-        if first_has_media:
-            await messages[-1].answer(
-                f"❌ Слишком длинная подпись (caption). Лимит 1024 символа. Сейчас: {len(final_content)}. "
-                "Сократите текст или сделайте пост текстовым сообщением."
-            )
-        else:
-            await messages[-1].answer(
-                f"❌ Слишком длинный текст. Лимит 4096 символов. Сейчас: {len(final_content)}. "
-                "Сократите текст."
-            )
-        return
+    has_media = bool(first_message.photo or first_message.video or first_message.animation or first_message.document)
 
     try:
-        if len(sorted_messages) == 1:
-            copied_ids.append(await _send_post_with_cta(sorted_messages[0], storage_chat_id, token))
-        else:
-            for idx, item in enumerate(sorted_messages):
-                if idx == 0 and will_add_cta:
-                    original_caption = item.caption or ""
-                    updated_caption, entities, _ = build_contact_cta(
-                        original_caption,
-                        list(item.caption_entities or []),
-                        token,
-                        bot_username=bot_username,
-                        seller_username=SELLER_USERNAME,
-                        mode=cta_mode,
-                    )
-                    fallback_caption, fallback_entities, _ = build_contact_cta(
-                        original_caption,
-                        list(item.caption_entities or []),
-                        token,
-                        bot_username=bot_username,
-                        seller_username=SELLER_USERNAME,
-                        mode="mention",
-                    )
-                    updated_caption, entities = _ensure_safe_publish_text(
-                        updated_caption,
-                        entities,
-                        fallback_text=fallback_caption,
-                        fallback_entities=fallback_entities,
-                        context="media-group first message publish",
-                    )
-                    copied = await bot.copy_message(
-                        chat_id=storage_chat_id,
-                        from_chat_id=item.chat.id,
-                        message_id=item.message_id,
-                        caption=updated_caption,
-                        caption_entities=entities,
-                    )
-                else:
-                    copied = await bot.copy_message(
-                        chat_id=storage_chat_id,
-                        from_chat_id=item.chat.id,
-                        message_id=item.message_id,
-                    )
-                copied_ids.append(copied.message_id)
-    except Exception as exc:
-        logger.exception("Failed to publish new storage post")
-        await messages[-1].answer(f"❌ Не удалось опубликовать новый пост в storage: {exc}")
-        return
-
-    logger.info("Published new storage post chat_id=%s message_ids=%s", storage_chat_id, copied_ids)
-    try:
-        await set_last_storage_messages(storage_chat_id, copied_ids)
+        await set_last_storage_messages(storage_chat_id, source_message_ids)
         await save_post(
             source_chat_id=storage_chat_id,
-            source_message_ids=copied_ids,
-            has_media=any(msg.photo or msg.video or msg.animation or msg.document for msg in messages),
-            media_group_id=media_group_id,
-            contact_token=token,
+            source_message_ids=source_message_ids,
+            has_media=has_media,
+            media_group_id=str(first_message.media_group_id) if first_message.media_group_id else None,
+            contact_token=None,
         )
     except Exception as exc:
         logger.exception("Failed to persist storage metadata")
-        await messages[-1].answer(f"❌ Новый пост отправлен, но не удалось сохранить его в БД: {exc}")
+        await messages[-1].answer(f"❌ Не удалось сохранить пост в БД: {exc}")
         return
 
-    await _delete_previous_storage_post(
-        storage_chat_id,
-        previous_storage_chat_id,
-        previous_storage_message_ids,
-    )
-    await safe_cleanup_storage_posts()
-
-    data = await state.get_data()
-    mode = data.get("mode")
     await state.clear()
-
-    if mode == "edit":
-        await messages[-1].answer("Пост обновлён. Существующие расписания сохранены ✅")
-    else:
-        await messages[-1].answer("Пост сохранён ✅")
-
+    await messages[-1].answer("Пост из Storage выбран ✅")
     await send_post_actions(messages[-1])
 
 
@@ -1919,6 +1837,7 @@ async def broadcast_once() -> None:
     broadcast_recorded = False
 
     if DELIVERY_MODE == "userbot":
+        await cancel_active_userbot_tasks()
         run_at = datetime.now(timezone.utc)
         target_chat_ids_to_store = TARGET_CHAT_IDS if TARGET_CHAT_IDS else None
         task_id = await create_userbot_task(source_chat_id, source_message_ids, target_chat_ids_to_store, run_at)
@@ -2149,7 +2068,7 @@ async def admin_status(message: Message):
     await message.answer("\n".join(lines))
 
 
-@dp.message(F.text == "🚀 Запустить сейчас")
+@dp.message(F.text.in_({"✅ Запустить рассылку", "🚀 Запустить сейчас"}))
 async def admin_broadcast_now(message: Message) -> None:
     if not ensure_admin(message):
         return
@@ -2235,15 +2154,9 @@ async def on_start(message: Message, state: FSMContext):
         await state.clear()
         await message.answer("Главное меню:", reply_markup=admin_menu_keyboard())
     elif message.chat.type == "private":
-        await message.answer(
-            "Здравствуйте! Хотите написать продавцу? Нажмите кнопку ниже 👇",
-            reply_markup=buyer_contact_keyboard(),
-        )
+        await message.answer("Здравствуйте!")
     else:
-        await message.answer(
-            "Здравствуйте! Используйте кнопку из поста для связи с продавцом.",
-            reply_markup=buyer_contact_keyboard(),
-        )
+        await message.answer("Здравствуйте!")
 
 
 @dp.message(Command("menu"))
@@ -2295,21 +2208,19 @@ async def stop_userbot_broadcast(message: Message) -> None:
     canceled = await cancel_active_userbot_tasks()
     await message.answer(f"Остановлено активных задач: {canceled} ✅")
 
-@dp.message(F.text == "📌 Добавить пост")
-async def add_post_start(message: Message, state: FSMContext):
+@dp.message(F.text.in_({"📌 Выбрать последний пост из Storage", "📌 Добавить пост"}))
+async def pick_last_storage_post(message: Message, state: FSMContext):
     if not ensure_admin(message):
         return
-    await state.set_state(AdminStates.waiting_post_content)
-    await state.update_data(mode="add")
-    await message.answer("Отправьте пост (текст или фото с подписью).")
+    await state.clear()
+    await message.answer("Перешлите сюда последнее сообщение из Storage (или любое сообщение из альбома).")
 
 
 @dp.message(F.text == "✏️ Изменить пост")
 async def edit_post_start(message: Message, state: FSMContext):
     if not ensure_admin(message):
         return
-    await state.clear()
-    await send_edit_post_menu(message)
+    await message.answer("Используйте кнопку: 📌 Выбрать последний пост из Storage")
 
 
 @dp.message(F.text.in_({"/settings", "/admin", "📝 Изменить автоответ", "📝 Изменить автоответ покупателю"}))
@@ -2351,9 +2262,8 @@ async def edit_post_selected(callback: CallbackQuery, state: FSMContext):
     if not callback.message or not is_admin_user(callback.from_user.id):
         await callback.answer("Недоступно", show_alert=True)
         return
-    await state.set_state(AdminStates.waiting_post_content)
-    await state.update_data(mode="edit")
-    await callback.message.answer("Отправьте новый пост (текст или фото с подписью).")
+    await state.clear()
+    await callback.message.answer("Используйте кнопку: 📌 Выбрать последний пост из Storage")
     await callback.answer()
 
 
@@ -2365,30 +2275,6 @@ async def edit_back_selected(callback: CallbackQuery, state: FSMContext):
     await state.clear()
     await callback.message.answer("Главное меню:", reply_markup=admin_menu_keyboard())
     await callback.answer()
-
-
-@dp.message(AdminStates.waiting_post_content)
-async def receive_post_content(message: Message, state: FSMContext):
-    if not ensure_admin(message):
-        return
-
-    if not message.media_group_id:
-        await _publish_post_messages([message], state, media_group_id=None)
-        return
-
-    media_group_id = str(message.media_group_id)
-    buffer_data = media_group_buffers.get(media_group_id)
-    if not buffer_data:
-        buffer_data = {"messages": []}
-        media_group_buffers[media_group_id] = buffer_data
-
-    buffer_data["messages"].append(message)
-
-    pending_task = buffer_data.get("task")
-    if pending_task:
-        pending_task.cancel()
-
-    buffer_data["task"] = asyncio.create_task(_flush_media_group_with_delay(media_group_id, state))
 
 
 async def _flush_media_group_with_delay(media_group_id: str, state: FSMContext) -> None:
@@ -2763,11 +2649,10 @@ async def private_message_fallback(message: Message, state: FSMContext):
         if current_state is not None:
             return
 
-        if not message.forward_from_chat:
+        if not message.forward_from_chat or int(message.forward_from_chat.id) != int(STORAGE_CHAT_ID):
             return
 
-        await set_storage_chat_id(message.forward_from_chat.id)
-        await message.answer("Storage чат сохранён")
+        await _publish_post_messages([message], state, media_group_id=None)
         return
 
     current_state = await state.get_state()
@@ -2777,10 +2662,192 @@ async def private_message_fallback(message: Message, state: FSMContext):
     }:
         return
 
-    await message.answer(
-        "Здравствуйте! Хотите написать продавцу? Нажмите кнопку ниже 👇",
-        reply_markup=buyer_contact_keyboard(),
+    await message.answer("Здравствуйте!")
+
+
+VALID_AUTOREPLY_MODES = {"first_message_only", "offline_over_minutes", "both"}
+
+
+async def get_worker_autoreply_settings() -> dict:
+    pool = await get_db_pool()
+    row = await pool.fetchrow(
+        """
+        SELECT enabled, reply_text, trigger_mode, offline_threshold_minutes, cooldown_seconds
+        FROM worker_autoreply_settings
+        WHERE id = 1
+        """
     )
+    if not row:
+        return {
+            "enabled": True,
+            "reply_text": "Здравствуйте! Я технический аккаунт рассылки. Ответим вам позже.",
+            "trigger_mode": "both",
+            "offline_threshold_minutes": 60,
+            "cooldown_seconds": 3600,
+        }
+    mode = str(row["trigger_mode"] or "both")
+    if mode not in VALID_AUTOREPLY_MODES:
+        mode = "both"
+    return {
+        "enabled": bool(row["enabled"]),
+        "reply_text": str(row["reply_text"] or "Здравствуйте! Я технический аккаунт рассылки. Ответим вам позже."),
+        "trigger_mode": mode,
+        "offline_threshold_minutes": max(0, int(row["offline_threshold_minutes"] or 60)),
+        "cooldown_seconds": max(0, int(row["cooldown_seconds"] or 3600)),
+    }
+
+
+async def update_worker_autoreply_settings(**kwargs) -> None:
+    allowed = {"enabled", "reply_text", "trigger_mode", "offline_threshold_minutes", "cooldown_seconds"}
+    updates = {k: v for k, v in kwargs.items() if k in allowed and v is not None}
+    if not updates:
+        return
+    parts = []
+    values = []
+    idx = 1
+    for key, value in updates.items():
+        parts.append(f"{key} = ${idx}")
+        values.append(value)
+        idx += 1
+    parts.append("updated_at = NOW()")
+    pool = await get_db_pool()
+    await pool.execute(
+        f"UPDATE worker_autoreply_settings SET {', '.join(parts)} WHERE id = 1",
+        *values,
+    )
+
+
+def _autoreply_settings_text(settings: dict) -> str:
+    return "\n".join([
+        "🤖 Настройки автоответчика worker",
+        f"Статус: {'включен' if settings['enabled'] else 'выключен'}",
+        f"Режим: {settings['trigger_mode']}",
+        f"offline_threshold_minutes: {settings['offline_threshold_minutes']}",
+        f"cooldown_seconds: {settings['cooldown_seconds']}",
+        "",
+        f"Текст:\n{settings['reply_text']}",
+    ])
+
+
+def worker_autoreply_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✅ Включить", callback_data="wa:enable"), InlineKeyboardButton(text="⛔ Выключить", callback_data="wa:disable")],
+        [InlineKeyboardButton(text="📝 Текст", callback_data="wa:text")],
+        [InlineKeyboardButton(text="🎯 Режим: first_message_only", callback_data="wa:mode:first_message_only")],
+        [InlineKeyboardButton(text="🎯 Режим: offline_over_minutes", callback_data="wa:mode:offline_over_minutes")],
+        [InlineKeyboardButton(text="🎯 Режим: both", callback_data="wa:mode:both")],
+        [InlineKeyboardButton(text="⏱ Offline threshold", callback_data="wa:offline")],
+        [InlineKeyboardButton(text="⏳ Cooldown", callback_data="wa:cooldown")],
+    ])
+
+
+@dp.message(F.text == "🤖 Автоответчик")
+async def worker_autoreply_menu(message: Message, state: FSMContext):
+    if not ensure_admin(message):
+        return
+    await state.clear()
+    settings = await get_worker_autoreply_settings()
+    await message.answer(_autoreply_settings_text(settings), reply_markup=worker_autoreply_keyboard())
+
+
+@dp.callback_query(F.data.in_({"wa:enable", "wa:disable"}))
+async def worker_autoreply_toggle(callback: CallbackQuery):
+    if not callback.message or not is_admin_user(callback.from_user.id):
+        await callback.answer("Недоступно", show_alert=True)
+        return
+    await update_worker_autoreply_settings(enabled=callback.data == "wa:enable")
+    settings = await get_worker_autoreply_settings()
+    await callback.message.answer(_autoreply_settings_text(settings), reply_markup=worker_autoreply_keyboard())
+    await callback.answer("Сохранено")
+
+
+@dp.callback_query(F.data.startswith("wa:mode:"))
+async def worker_autoreply_mode(callback: CallbackQuery):
+    if not callback.message or not is_admin_user(callback.from_user.id):
+        await callback.answer("Недоступно", show_alert=True)
+        return
+    mode = callback.data.split(":", 2)[-1]
+    if mode not in VALID_AUTOREPLY_MODES:
+        await callback.answer("Некорректный режим", show_alert=True)
+        return
+    await update_worker_autoreply_settings(trigger_mode=mode)
+    settings = await get_worker_autoreply_settings()
+    await callback.message.answer(_autoreply_settings_text(settings), reply_markup=worker_autoreply_keyboard())
+    await callback.answer("Сохранено")
+
+
+@dp.callback_query(F.data == "wa:text")
+async def worker_autoreply_text_start(callback: CallbackQuery, state: FSMContext):
+    if not callback.message or not is_admin_user(callback.from_user.id):
+        await callback.answer("Недоступно", show_alert=True)
+        return
+    await state.set_state(AdminStates.waiting_autoreply_text)
+    await callback.message.answer("Отправьте новый текст автоответчика.")
+    await callback.answer()
+
+
+@dp.callback_query(F.data == "wa:offline")
+async def worker_autoreply_offline_start(callback: CallbackQuery, state: FSMContext):
+    if not callback.message or not is_admin_user(callback.from_user.id):
+        await callback.answer("Недоступно", show_alert=True)
+        return
+    await state.set_state(AdminStates.waiting_autoreply_offline_threshold)
+    await callback.message.answer("Введите offline_threshold_minutes (целое число).")
+    await callback.answer()
+
+
+@dp.callback_query(F.data == "wa:cooldown")
+async def worker_autoreply_cooldown_start(callback: CallbackQuery, state: FSMContext):
+    if not callback.message or not is_admin_user(callback.from_user.id):
+        await callback.answer("Недоступно", show_alert=True)
+        return
+    await state.set_state(AdminStates.waiting_autoreply_cooldown)
+    await callback.message.answer("Введите cooldown_seconds (целое число).")
+    await callback.answer()
+
+
+@dp.message(AdminStates.waiting_autoreply_text)
+async def worker_autoreply_text_save(message: Message, state: FSMContext):
+    if not ensure_admin(message):
+        return
+    text = (message.text or message.caption or "").strip()
+    if not text:
+        await message.answer("Текст не может быть пустым.")
+        return
+    await update_worker_autoreply_settings(reply_text=text)
+    await state.clear()
+    settings = await get_worker_autoreply_settings()
+    await message.answer(_autoreply_settings_text(settings), reply_markup=worker_autoreply_keyboard())
+
+
+@dp.message(AdminStates.waiting_autoreply_offline_threshold)
+async def worker_autoreply_offline_save(message: Message, state: FSMContext):
+    if not ensure_admin(message):
+        return
+    try:
+        value = max(0, int((message.text or "").strip()))
+    except ValueError:
+        await message.answer("Нужно целое число.")
+        return
+    await update_worker_autoreply_settings(offline_threshold_minutes=value)
+    await state.clear()
+    settings = await get_worker_autoreply_settings()
+    await message.answer(_autoreply_settings_text(settings), reply_markup=worker_autoreply_keyboard())
+
+
+@dp.message(AdminStates.waiting_autoreply_cooldown)
+async def worker_autoreply_cooldown_save(message: Message, state: FSMContext):
+    if not ensure_admin(message):
+        return
+    try:
+        value = max(0, int((message.text or "").strip()))
+    except ValueError:
+        await message.answer("Нужно целое число.")
+        return
+    await update_worker_autoreply_settings(cooldown_seconds=value)
+    await state.clear()
+    settings = await get_worker_autoreply_settings()
+    await message.answer(_autoreply_settings_text(settings), reply_markup=worker_autoreply_keyboard())
 
 
 async def restore_scheduler() -> None:

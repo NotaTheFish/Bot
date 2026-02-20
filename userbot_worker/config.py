@@ -72,7 +72,6 @@ class Settings:
     activity_gate_min_messages: int
     anti_dup_minutes: int
     controller_bot_username: str
-    worker_autoreply_cooldown_seconds: int
     authkey_duplicated_cooldown_seconds: int
 
 
@@ -104,7 +103,6 @@ def load_settings() -> Settings:
         activity_gate_min_messages=max(0, _getint("ACTIVITY_GATE_MIN_MESSAGES", 5)),
         anti_dup_minutes=max(0, _getint("ANTI_DUP_MINUTES", 10)),
         controller_bot_username=_getenv("CONTROLLER_BOT_USERNAME"),
-        worker_autoreply_cooldown_seconds=max(0, _getint("WORKER_AUTOREPLY_COOLDOWN_SECONDS", 3600)),
         authkey_duplicated_cooldown_seconds=max(0, _getint("AUTHKEY_DUPLICATED_COOLDOWN_SECONDS", 120)),
     )
 
