@@ -2402,9 +2402,11 @@ async def create_post_in_storage(message: Message, state: FSMContext):
         message.text,
     )
     try:
-        if int(message.chat.id) != int(STORAGE_CHAT_ID):
-            return
         if not ensure_admin(message):
+            await message.answer("Недостаточно прав")
+            return
+        if int(message.chat.id) != int(STORAGE_CHAT_ID):
+            await message.answer("используйте команду в Storage")
             return
 
         await state.set_state(AdminStates.waiting_storage_post)
@@ -2414,7 +2416,7 @@ async def create_post_in_storage(message: Message, state: FSMContext):
             message.from_user.id if message.from_user else None,
             await state.get_state(),
         )
-        await message.answer("Ок, отправьте следующим сообщением пост/альбом…")
+        await message.answer("Пришлите пост одним сообщением или альбомом. /cancel чтобы отменить.")
     except Exception as e:
         logger.exception("create_post failed: %s", e)
         await message.answer(f"Ошибка: {e}")

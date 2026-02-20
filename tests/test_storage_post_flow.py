@@ -42,7 +42,7 @@ class StoragePostFlowTests(unittest.IsolatedAsyncioTestCase):
 
         await main_core.create_post_in_storage(message, state)
 
-        message.answer.assert_not_called()
+        message.answer.assert_awaited_once_with("используйте команду в Storage")
         state.set_state.assert_not_called()
 
     async def test_create_post_command_ignores_non_admin(self):
@@ -57,7 +57,7 @@ class StoragePostFlowTests(unittest.IsolatedAsyncioTestCase):
 
         await main_core.create_post_in_storage(message, state)
 
-        message.answer.assert_not_called()
+        message.answer.assert_awaited_once_with("Недостаточно прав")
         state.set_state.assert_not_called()
 
     async def test_create_post_command_for_storage_admin_sets_state_and_answers(self):
@@ -74,7 +74,7 @@ class StoragePostFlowTests(unittest.IsolatedAsyncioTestCase):
         await main_core.create_post_in_storage(message, state)
 
         state.set_state.assert_awaited_once_with(main_core.AdminStates.waiting_storage_post)
-        message.answer.assert_awaited_once_with("Ок, отправьте следующим сообщением пост/альбом…")
+        message.answer.assert_awaited_once_with("Пришлите пост одним сообщением или альбомом. /cancel чтобы отменить.")
 
     async def test_single_storage_message_saves_storage_message_ids(self):
         state = AsyncMock()
