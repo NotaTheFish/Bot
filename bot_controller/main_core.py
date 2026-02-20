@@ -2025,7 +2025,7 @@ async def track_chat_membership(update: ChatMemberUpdated):
         await remove_chat(chat.id)
 
 
-@dp.message(F.chat.type.in_({"group", "supergroup"}))
+@dp.message(F.chat.type.in_({"group", "supergroup"}) & ~F.text.regexp(r"^/"))
 async def remember_chat_from_messages(message: Message):
     await save_chat(message.chat.id)
 
