@@ -286,15 +286,14 @@ async def run_worker(settings: Settings, pool, client: TelegramClient, stop_even
             user_id=sender_id,
             cooldown_seconds=settings_row.cooldown_seconds,
         )
-        if remaining > 0:
-            return
-
         contact = await get_worker_autoreply_contact(pool, user_id=sender_id)
-        is_first_message = not bool(contact and contact.get("last_replied_at"))
+        cooldown_ok = remaining <= 0
+        last_replied_at = contact.get("last_replied_at") if contact else None
+        is_first_message = last_replied_at is None
 
         should_reply = False
         if settings_row.trigger_mode == "first_message_only":
-            should_reply = is_first_message
+            should_reply = (last_replied_at is None) or cooldown_ok
         elif settings_row.trigger_mode == "offline_over_minutes":
             last_outgoing_at = await get_worker_state_last_outgoing_at(pool)
             if last_outgoing_at is None:
@@ -306,6 +305,9 @@ async def run_worker(settings: Settings, pool, client: TelegramClient, stop_even
             last_outgoing_at = await get_worker_state_last_outgoing_at(pool)
             offline_ok = True if last_outgoing_at is None else (_now_utc() - last_outgoing_at).total_seconds() >= settings_row.offline_threshold_minutes * 60
             should_reply = is_first_message or offline_ok
+
+        if not cooldown_ok:
+            return
 
         if not should_reply:
             return
