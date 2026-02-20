@@ -16,6 +16,7 @@ from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError, Teleg
 from aiogram.filters import Command, CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
+from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import (
     BotCommand,
     BotCommandScopeChat,
@@ -136,7 +137,7 @@ class UpdateLoggingMiddleware(BaseMiddleware):
 
 
 bot = Bot(BOT_TOKEN)
-dp = Dispatcher()
+dp = Dispatcher(storage=MemoryStorage())
 dp.message.middleware(UpdateLoggingMiddleware())
 scheduler = AsyncIOScheduler(timezone=TZ)
 BOT_USERNAME = ""
@@ -1666,14 +1667,21 @@ async def _publish_post_messages(messages: list[Message], state: FSMContext, med
             media_group_id=str(first_message.media_group_id) if first_message.media_group_id else None,
             contact_token=None,
         )
+        logger.info(
+            "saved storage post chat_id=%s ids=%s media_group_id=%s",
+            storage_chat_id,
+            storage_message_ids,
+            media_group_id,
+        )
         pin_warning = await _pin_storage_post(storage_chat_id, previous_storage_message_ids, storage_message_ids)
+        logger.info("pinned storage post chat_id=%s first_message_id=%s", storage_chat_id, storage_message_ids[0])
     except Exception as exc:
         logger.exception("Failed to persist storage metadata")
         await messages[-1].answer(f"❌ Не удалось сохранить пост в БД: {exc}")
         return
 
     await state.clear()
-    response_lines = [f"✅ Пост сохранён. Закрепил. IDs: {', '.join(str(i) for i in storage_message_ids)}"]
+    response_lines = [f"✅ Сохранено и закреплено. ids={storage_message_ids}"]
     if pin_warning:
         response_lines.append(pin_warning)
     if deletion_warnings:
@@ -2335,17 +2343,50 @@ async def create_post_in_storage(message: Message, state: FSMContext):
             return
 
         await state.set_state(AdminStates.waiting_storage_post)
+        logger.info(
+            "STATE set to waiting_storage_post for chat_id=%s user_id=%s current=%s",
+            message.chat.id,
+            message.from_user.id if message.from_user else None,
+            await state.get_state(),
+        )
         await message.answer("Ок, отправьте следующим сообщением пост/альбом…")
     except Exception as e:
         logger.exception("create_post failed: %s", e)
         await message.answer(f"Ошибка: {e}")
 
 
-@dp.message(AdminStates.waiting_storage_post)
+def _is_valid_storage_post_message(message: Message) -> bool:
+    return bool(
+        message.text
+        or message.caption
+        or message.photo
+        or message.video
+        or message.document
+        or message.animation
+        or message.audio
+        or message.voice
+        or message.sticker
+    )
+
+
+@dp.message(AdminStates.waiting_storage_post, F.chat.id == STORAGE_CHAT_ID)
 async def receive_storage_post(message: Message, state: FSMContext):
-    if int(message.chat.id) != int(STORAGE_CHAT_ID):
-        return
     if not ensure_admin(message):
+        return
+
+    logger.info(
+        "handle_storage_post fired: text=%r caption=%r has_photo=%s has_video=%s has_doc=%s media_group_id=%s msg_id=%s",
+        message.text,
+        message.caption,
+        bool(message.photo),
+        bool(message.video),
+        bool(message.document),
+        message.media_group_id,
+        message.message_id,
+    )
+
+    if not _is_valid_storage_post_message(message):
+        await message.answer("пришлите текст или медиа")
         return
 
     if message.media_group_id:

@@ -15,6 +15,9 @@ class StoragePostFlowTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self) -> None:
         main_core.media_group_buffers.clear()
 
+    def test_dispatcher_uses_memory_storage(self):
+        self.assertEqual(main_core.dp.storage.__class__.__name__, "MemoryStorage")
+
     async def test_create_post_command_outside_storage_for_admin(self):
         state = AsyncMock()
         message = SimpleNamespace(
@@ -43,9 +46,9 @@ class StoragePostFlowTests(unittest.IsolatedAsyncioTestCase):
         message.answer.assert_not_called()
         state.set_state.assert_not_called()
 
-
     async def test_create_post_command_for_storage_admin_sets_state_and_answers(self):
         state = AsyncMock()
+        state.get_state = AsyncMock(return_value=main_core.AdminStates.waiting_storage_post.state)
         message = SimpleNamespace(
             chat=SimpleNamespace(id=-100123),
             from_user=SimpleNamespace(id=1),
@@ -65,10 +68,15 @@ class StoragePostFlowTests(unittest.IsolatedAsyncioTestCase):
             from_user=SimpleNamespace(id=1),
             message_id=55,
             media_group_id=None,
+            text="hello",
+            caption=None,
             photo=None,
             video=None,
             animation=None,
             document=None,
+            audio=None,
+            voice=None,
+            sticker=None,
             answer=AsyncMock(),
         )
 
@@ -94,6 +102,16 @@ class StoragePostFlowTests(unittest.IsolatedAsyncioTestCase):
             from_user=SimpleNamespace(id=1),
             message_id=101,
             media_group_id="group-1",
+            text=None,
+            caption="album",
+            photo=[object()],
+            video=None,
+            document=None,
+            animation=None,
+            audio=None,
+            voice=None,
+            sticker=None,
+            answer=AsyncMock(),
         )
 
         def _fake_create_task(coro):
@@ -105,6 +123,32 @@ class StoragePostFlowTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertIn("group-1", main_core.media_group_buffers)
         self.assertEqual(main_core.media_group_buffers["group-1"]["messages"], [message])
+
+
+    async def test_receive_storage_post_rejects_empty_service_message(self):
+        state = AsyncMock()
+        message = SimpleNamespace(
+            chat=SimpleNamespace(id=-100123),
+            from_user=SimpleNamespace(id=1),
+            message_id=222,
+            media_group_id=None,
+            text=None,
+            caption=None,
+            photo=None,
+            video=None,
+            document=None,
+            animation=None,
+            audio=None,
+            voice=None,
+            sticker=None,
+            answer=AsyncMock(),
+        )
+
+        with patch.object(main_core, "_publish_post_messages", AsyncMock()) as publish:
+            await main_core.receive_storage_post(message, state)
+
+        publish.assert_not_called()
+        message.answer.assert_awaited_once_with("пришлите текст или медиа")
 
     async def test_send_post_preview_uses_storage_ids(self):
         message = SimpleNamespace(chat=SimpleNamespace(id=1), answer=AsyncMock())
