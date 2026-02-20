@@ -11,12 +11,15 @@ from datetime import datetime, timezone
 from typing import Optional
 
 import asyncpg
-from aiogram import Bot, Dispatcher, F
+from aiogram import BaseMiddleware, Bot, Dispatcher, F
 from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError, TelegramRetryAfter
 from aiogram.filters import Command, CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import (
+    BotCommand,
+    BotCommandScopeChat,
+    BotCommandScopeDefault,
     CallbackQuery,
     ChatMemberUpdated,
     InlineKeyboardButton,
@@ -123,9 +126,18 @@ TZ = ZoneInfo(TZ_NAME)
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 logger.info("Loaded %s admin ids: %s", len(ADMIN_IDS_LIST), ADMIN_IDS_LIST)
+logger.info("STORAGE_CHAT_ID=%s", STORAGE_CHAT_ID)
+
+class UpdateLoggingMiddleware(BaseMiddleware):
+    async def __call__(self, handler, event, data):
+        if isinstance(event, Message):
+            logger.info("update message chat_id=%s from_user_id=%s text=%r", event.chat.id, event.from_user.id if event.from_user else None, event.text)
+        return await handler(event, data)
+
 
 bot = Bot(BOT_TOKEN)
 dp = Dispatcher()
+dp.message.middleware(UpdateLoggingMiddleware())
 scheduler = AsyncIOScheduler(timezone=TZ)
 BOT_USERNAME = ""
 BOT_ID = 0
@@ -135,6 +147,7 @@ userbot_tasks_schema_ready = False
 userbot_tasks_schema_lock = asyncio.Lock()
 userbot_tasks_columns_cache: Optional[set[str]] = None
 broadcast_now_lock = asyncio.Lock()
+
 
 GLOBAL_BROADCAST_COOLDOWN_SECONDS = _get_env_int("GLOBAL_BROADCAST_COOLDOWN_SECONDS", 600)
 MIN_USER_MESSAGES_BETWEEN_POSTS = _get_env_int("MIN_USER_MESSAGES_BETWEEN_POSTS", 5)
@@ -2312,20 +2325,25 @@ async def edit_post_selected(callback: CallbackQuery, state: FSMContext):
 
 
 @dp.message(Command(commands=["create_post", "post"]))
+@dp.message(F.text.regexp(r"^/create_post(?:@\w+)?(?:\s|$)"))
 async def create_post_in_storage(message: Message, state: FSMContext):
-    if int(message.chat.id) != int(STORAGE_CHAT_ID):
-        if ensure_admin(message):
-            await message.answer("Команда доступна только в чате Storage.")
-        return
-    if not ensure_admin(message):
-        return
-
-    await state.set_state(AdminStates.waiting_storage_post)
-    await message.answer(
-        "Ок. Отправьте следующим сообщением пост (или альбом). "
-        "Важно: это сообщение должно быть переслано от вашего аккаунта/жены, "
-        "чтобы в рассылке было ‘Переслано от …’"
+    logger.info(
+        "create_post received chat_id=%s from_user_id=%s text=%r",
+        message.chat.id,
+        message.from_user.id if message.from_user else None,
+        message.text,
     )
+    try:
+        if int(message.chat.id) != int(STORAGE_CHAT_ID):
+            return
+        if not ensure_admin(message):
+            return
+
+        await state.set_state(AdminStates.waiting_storage_post)
+        await message.answer("Ок, отправьте следующим сообщением пост/альбом…")
+    except Exception as e:
+        logger.exception("create_post failed: %s", e)
+        await message.answer(f"Ошибка: {e}")
 
 
 @dp.message(AdminStates.waiting_storage_post)
@@ -2964,6 +2982,12 @@ async def main() -> None:
         me = await bot.get_me()
         BOT_USERNAME = me.username or ""
         BOT_ID = me.id
+        await bot.set_my_commands([], scope=BotCommandScopeDefault())
+        await bot.set_my_commands(
+            [BotCommand(command="create_post", description="Создать/обновить пост в Storage")],
+            scope=BotCommandScopeChat(chat_id=STORAGE_CHAT_ID),
+        )
+        logger.info("Bot commands set for storage scope chat_id=%s", STORAGE_CHAT_ID)
         scheduler.add_job(safe_cleanup_storage_posts, "interval", seconds=STORAGE_CLEANUP_EVERY_SECONDS, id="storage_safe_cleanup", replace_existing=True)
         scheduler.start()
         await restore_scheduler()

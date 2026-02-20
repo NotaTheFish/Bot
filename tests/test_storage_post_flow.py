@@ -20,19 +20,7 @@ class StoragePostFlowTests(unittest.IsolatedAsyncioTestCase):
         message = SimpleNamespace(
             chat=SimpleNamespace(id=999),
             from_user=SimpleNamespace(id=1),
-            answer=AsyncMock(),
-        )
-
-        await main_core.create_post_in_storage(message, state)
-
-        message.answer.assert_awaited_once_with("Команда доступна только в чате Storage.")
-        state.set_state.assert_not_called()
-
-    async def test_create_post_command_ignores_non_admin(self):
-        state = AsyncMock()
-        message = SimpleNamespace(
-            chat=SimpleNamespace(id=-100123),
-            from_user=SimpleNamespace(id=777),
+            text="/create_post",
             answer=AsyncMock(),
         )
 
@@ -40,6 +28,35 @@ class StoragePostFlowTests(unittest.IsolatedAsyncioTestCase):
 
         message.answer.assert_not_called()
         state.set_state.assert_not_called()
+
+    async def test_create_post_command_ignores_non_admin(self):
+        state = AsyncMock()
+        message = SimpleNamespace(
+            chat=SimpleNamespace(id=-100123),
+            from_user=SimpleNamespace(id=777),
+            text="/create_post",
+            answer=AsyncMock(),
+        )
+
+        await main_core.create_post_in_storage(message, state)
+
+        message.answer.assert_not_called()
+        state.set_state.assert_not_called()
+
+
+    async def test_create_post_command_for_storage_admin_sets_state_and_answers(self):
+        state = AsyncMock()
+        message = SimpleNamespace(
+            chat=SimpleNamespace(id=-100123),
+            from_user=SimpleNamespace(id=1),
+            text="/create_post",
+            answer=AsyncMock(),
+        )
+
+        await main_core.create_post_in_storage(message, state)
+
+        state.set_state.assert_awaited_once_with(main_core.AdminStates.waiting_storage_post)
+        message.answer.assert_awaited_once_with("Ок, отправьте следующим сообщением пост/альбом…")
 
     async def test_single_storage_message_saves_storage_message_ids(self):
         state = AsyncMock()
