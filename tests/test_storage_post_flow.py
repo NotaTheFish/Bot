@@ -3,6 +3,8 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
+from aiogram.fsm.storage.base import StorageKey
+
 os.environ.setdefault("BOT_TOKEN", "123:abc")
 os.environ.setdefault("ADMIN_ID", "1")
 os.environ.setdefault("DATABASE_URL", "postgres://localhost/db")
@@ -16,7 +18,17 @@ class StoragePostFlowTests(unittest.IsolatedAsyncioTestCase):
         main_core.media_group_buffers.clear()
 
     def test_dispatcher_uses_memory_storage(self):
-        self.assertEqual(main_core.dp.storage.__class__.__name__, "MemoryStorage")
+        self.assertEqual(main_core.dp.storage.__class__.__name__, "ThreadAgnosticMemoryStorage")
+
+    async def test_fsm_state_is_shared_between_topics_for_same_chat_and_user(self):
+        storage = main_core.dp.storage
+        key_topic_1 = StorageKey(bot_id=1, chat_id=-100123, user_id=1, thread_id=100, business_connection_id=None, destiny="default")
+        key_topic_2 = StorageKey(bot_id=1, chat_id=-100123, user_id=1, thread_id=200, business_connection_id=None, destiny="default")
+
+        await storage.set_state(key_topic_1, main_core.AdminStates.waiting_storage_post)
+        state_in_another_topic = await storage.get_state(key_topic_2)
+
+        self.assertEqual(state_in_another_topic, main_core.AdminStates.waiting_storage_post.state)
 
     async def test_create_post_command_outside_storage_for_admin(self):
         state = AsyncMock()

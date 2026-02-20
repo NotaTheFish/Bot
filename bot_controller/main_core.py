@@ -7,6 +7,7 @@ import random
 import re
 import uuid
 from contextlib import suppress
+from dataclasses import replace
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -16,6 +17,7 @@ from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError, Teleg
 from aiogram.filters import Command, CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
+from aiogram.fsm.storage.base import DefaultKeyBuilder, StorageKey
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import (
     BotCommand,
@@ -138,7 +140,38 @@ class UpdateLoggingMiddleware(BaseMiddleware):
 
 
 bot = Bot(BOT_TOKEN)
-dp = Dispatcher(storage=MemoryStorage())
+
+
+class ThreadAgnosticMemoryStorage(MemoryStorage):
+    def __init__(self, *, key_builder: DefaultKeyBuilder | None = None) -> None:
+        super().__init__()
+        self.key_builder = key_builder or DefaultKeyBuilder()
+
+    @staticmethod
+    def _without_thread(key: StorageKey) -> StorageKey:
+        if key.thread_id is None:
+            return key
+        return replace(key, thread_id=None)
+
+    async def set_state(self, key: StorageKey, state: State | str | None = None) -> None:
+        await super().set_state(self._without_thread(key), state)
+
+    async def get_state(self, key: StorageKey) -> str | None:
+        return await super().get_state(self._without_thread(key))
+
+    async def set_data(self, key: StorageKey, data: dict) -> None:
+        await super().set_data(self._without_thread(key), data)
+
+    async def get_data(self, key: StorageKey) -> dict:
+        return await super().get_data(self._without_thread(key))
+
+    async def get_value(self, storage_key: StorageKey, dict_key: str, default=None):
+        return await super().get_value(self._without_thread(storage_key), dict_key, default)
+
+
+fsm_key_builder = DefaultKeyBuilder()
+storage = ThreadAgnosticMemoryStorage(key_builder=fsm_key_builder)
+dp = Dispatcher(storage=storage)
 dp.message.middleware(UpdateLoggingMiddleware())
 scheduler = AsyncIOScheduler(timezone=TZ)
 BOT_USERNAME = ""
