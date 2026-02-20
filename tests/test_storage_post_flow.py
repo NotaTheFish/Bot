@@ -77,6 +77,7 @@ class StoragePostFlowTests(unittest.IsolatedAsyncioTestCase):
             audio=None,
             voice=None,
             sticker=None,
+            content_type="text",
             answer=AsyncMock(),
         )
 
@@ -89,7 +90,7 @@ class StoragePostFlowTests(unittest.IsolatedAsyncioTestCase):
             patch.object(main_core, "_pin_storage_post", AsyncMock(return_value=None)),
             patch.object(main_core, "send_post_actions", AsyncMock()),
         ):
-            await main_core.receive_storage_post(message, state)
+            await main_core.handle_storage_post(message, state)
 
         set_last.assert_awaited_once_with(-100123, [55])
         save_post.assert_awaited_once()
@@ -111,6 +112,7 @@ class StoragePostFlowTests(unittest.IsolatedAsyncioTestCase):
             audio=None,
             voice=None,
             sticker=None,
+            content_type="photo",
             answer=AsyncMock(),
         )
 
@@ -119,13 +121,13 @@ class StoragePostFlowTests(unittest.IsolatedAsyncioTestCase):
             return object()
 
         with patch.object(main_core.asyncio, "create_task", side_effect=_fake_create_task):
-            await main_core.receive_storage_post(message, state)
+            await main_core.handle_storage_post(message, state)
 
         self.assertIn("group-1", main_core.media_group_buffers)
         self.assertEqual(main_core.media_group_buffers["group-1"]["messages"], [message])
 
 
-    async def test_receive_storage_post_rejects_empty_service_message(self):
+    async def test_handle_storage_post_rejects_empty_service_message(self):
         state = AsyncMock()
         message = SimpleNamespace(
             chat=SimpleNamespace(id=-100123),
@@ -141,11 +143,12 @@ class StoragePostFlowTests(unittest.IsolatedAsyncioTestCase):
             audio=None,
             voice=None,
             sticker=None,
+            content_type="service",
             answer=AsyncMock(),
         )
 
         with patch.object(main_core, "_publish_post_messages", AsyncMock()) as publish:
-            await main_core.receive_storage_post(message, state)
+            await main_core.handle_storage_post(message, state)
 
         publish.assert_not_called()
         message.answer.assert_awaited_once_with("пришлите текст или медиа")

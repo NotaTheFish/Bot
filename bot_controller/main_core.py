@@ -110,6 +110,7 @@ if not _admin_ids:
         _admin_ids = [legacy_admin_id]
 
 ADMIN_IDS_LIST = _admin_ids
+ADMIN_IDS = ADMIN_IDS_LIST
 ADMIN_ID = ADMIN_IDS_LIST[0] if ADMIN_IDS_LIST else 0
 
 
@@ -1681,7 +1682,7 @@ async def _publish_post_messages(messages: list[Message], state: FSMContext, med
         return
 
     await state.clear()
-    response_lines = [f"✅ Сохранено и закреплено. ids={storage_message_ids}"]
+    response_lines = ["✅ Сохранено и закреплено"]
     if pin_warning:
         response_lines.append(pin_warning)
     if deletion_warnings:
@@ -2034,7 +2035,10 @@ async def track_chat_membership(update: ChatMemberUpdated):
 
 
 @dp.message(F.chat.type.in_({"group", "supergroup"}) & ~F.text.regexp(r"^/"))
-async def remember_chat_from_messages(message: Message):
+async def remember_chat_from_messages(message: Message, state: FSMContext):
+    if await state.get_state() == AdminStates.waiting_storage_post.state:
+        return
+
     await save_chat(message.chat.id)
 
     if not message.from_user:
@@ -2369,15 +2373,20 @@ def _is_valid_storage_post_message(message: Message) -> bool:
     )
 
 
-@dp.message(AdminStates.waiting_storage_post, F.chat.id == STORAGE_CHAT_ID)
-async def receive_storage_post(message: Message, state: FSMContext):
-    if not ensure_admin(message):
+@dp.message(AdminStates.waiting_storage_post)
+async def handle_storage_post(message: Message, state: FSMContext):
+    if message.chat.id != STORAGE_CHAT_ID:
+        return
+    if not message.from_user or message.from_user.id not in ADMIN_IDS:
         return
 
     logger.info(
-        "handle_storage_post fired: text=%r caption=%r has_photo=%s has_video=%s has_doc=%s media_group_id=%s msg_id=%s",
+        "HANDLER storage_post fired chat_id=%s user_id=%s text=%r caption=%r content_type=%s has_photo=%s has_video=%s has_doc=%s media_group_id=%s msg_id=%s",
+        message.chat.id,
+        message.from_user.id,
         message.text,
         message.caption,
+        message.content_type,
         bool(message.photo),
         bool(message.video),
         bool(message.document),
