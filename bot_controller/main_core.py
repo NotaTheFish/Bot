@@ -2327,12 +2327,7 @@ async def edit_post_selected(callback: CallbackQuery, state: FSMContext):
 @dp.message(Command(commands=["create_post", "post"]))
 @dp.message(F.text.regexp(r"^/create_post(?:@\w+)?(?:\s|$)"))
 async def create_post_in_storage(message: Message, state: FSMContext):
-    logger.info(
-        "create_post received chat_id=%s from_user_id=%s text=%r",
-        message.chat.id,
-        message.from_user.id if message.from_user else None,
-        message.text,
-    )
+    logger.info("HANDLER create_post fired chat_id=%s text=%r", message.chat.id, message.text)
     try:
         if int(message.chat.id) != int(STORAGE_CHAT_ID):
             return
