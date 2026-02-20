@@ -3070,10 +3070,33 @@ def worker_autoreply_keyboard() -> InlineKeyboardMarkup:
 
 @dp.message(F.text == "🤖 Автоответчик")
 async def worker_autoreply_menu(message: Message, state: FSMContext):
+    from_user_id = message.from_user.id if message.from_user else None
+    chat_id = message.chat.id if message.chat else None
+    text = message.text
+    logger.info(
+        "HANDLER autoreply_menu fired user_id=%s chat_id=%s text=%s",
+        from_user_id,
+        chat_id,
+        text,
+    )
     if not ensure_admin(message):
+        sender_chat_id = message.sender_chat.id if message.sender_chat else None
+        logger.info(
+            "autoreply_menu denied: from_user=%s sender_chat=%s chat_id=%s",
+            from_user_id,
+            sender_chat_id,
+            chat_id,
+        )
+        if message.chat and message.chat.type == "private":
+            await message.answer("Недоступно (нужны права админа)")
         return
     await state.clear()
-    settings = await get_worker_autoreply_settings()
+    try:
+        settings = await get_worker_autoreply_settings()
+    except Exception as exc:
+        logger.exception("Failed to load worker autoreply settings")
+        await message.answer(f"Ошибка чтения настроек из БД: {exc}")
+        return
     await message.answer(_autoreply_settings_text(settings), reply_markup=worker_autoreply_keyboard())
 
 
