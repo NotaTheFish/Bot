@@ -191,6 +191,7 @@ class AdminStates(StatesGroup):
     waiting_autoreply_text = State()
     waiting_autoreply_offline_threshold = State()
     waiting_autoreply_cooldown = State()
+    waiting_storage_post = State()
 
 
 class SupportStates(StatesGroup):
@@ -653,7 +654,7 @@ def admin_menu_keyboard() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[
             [
-                KeyboardButton(text="📌 Выбрать последний пост из Storage"),
+                KeyboardButton(text="📌 Создать пост (в Storage)"),
                 KeyboardButton(text="📊 Статус"),
             ],
             [
@@ -985,14 +986,15 @@ async def get_post() -> dict:
             "media_group_id": None,
             "contact_token": None,
         }
-    source_message_ids = list(row["storage_message_ids"] or [])
-    if not source_message_ids and row["source_message_id"] is not None:
-        source_message_ids = [row["source_message_id"]]
+    storage_message_ids = list(row["storage_message_ids"] or [])
+    if not storage_message_ids and row["source_message_id"] is not None:
+        storage_message_ids = [row["source_message_id"]]
     return {
         "source_chat_id": row["source_chat_id"],
         "source_message_id": row["source_message_id"],
         "storage_chat_id": row["storage_chat_id"],
-        "source_message_ids": source_message_ids,
+        "source_message_ids": storage_message_ids,
+        "storage_message_ids": storage_message_ids,
         "has_media": bool(row["has_media"]),
         "media_group_id": row["media_group_id"],
         "contact_token": row["contact_token"],
@@ -1000,8 +1002,8 @@ async def get_post() -> dict:
 
 
 async def save_post(
-    source_chat_id: int,
-    source_message_ids: list[int],
+    storage_chat_id: int,
+    storage_message_ids: list[int],
     has_media: bool,
     media_group_id: Optional[str],
     contact_token: Optional[str],
@@ -1019,9 +1021,9 @@ async def save_post(
             contact_token = $6
         WHERE id = 1
         """,
-        source_chat_id,
-        (source_message_ids[0] if source_message_ids else None),
-        source_message_ids,
+        storage_chat_id,
+        (storage_message_ids[0] if storage_message_ids else None),
+        storage_message_ids,
         int(has_media),
         media_group_id,
         contact_token,
@@ -1526,18 +1528,19 @@ async def _send_post_with_cta(
 
 async def send_post_preview(message: Message) -> None:
     post = await get_post()
-    source_chat_id = post["source_chat_id"]
-    source_message_ids = post["source_message_ids"]
+    storage_chat_id = post["storage_chat_id"] or post["source_chat_id"]
+    storage_message_ids = post["storage_message_ids"]
 
-    if not source_chat_id or not source_message_ids:
+    if not storage_chat_id or not storage_message_ids:
         await message.answer("Текущий пост:\n\n(пусто)")
         return
 
-    await bot.copy_message(
-        chat_id=message.chat.id,
-        from_chat_id=source_chat_id,
-        message_id=source_message_ids[0],
-    )
+    for message_id in storage_message_ids:
+        await bot.copy_message(
+            chat_id=message.chat.id,
+            from_chat_id=storage_chat_id,
+            message_id=message_id,
+        )
 
 
 
@@ -1546,9 +1549,10 @@ async def _delete_previous_storage_post(
     storage_chat_id: int,
     previous_storage_chat_id: Optional[int],
     previous_storage_message_ids: list[int],
-) -> None:
+) -> list[str]:
+    warnings: list[str] = []
     if not previous_storage_message_ids:
-        return
+        return warnings
 
     delete_chat_id = previous_storage_chat_id or storage_chat_id
     pool = await get_db_pool()
@@ -1570,6 +1574,7 @@ async def _delete_previous_storage_post(
         msg_id = int(previous_storage_message_id)
 
         if msg_id in active_ids:
+            warnings.append("⚠️ Старый пост не удалён: используется активной рассылкой")
             logger.info(
                 "Skipping previous storage post deletion because task is active chat_id=%s message_id=%s",
                 delete_chat_id,
@@ -1584,13 +1589,35 @@ async def _delete_previous_storage_post(
         )
         try:
             await bot.delete_message(delete_chat_id, msg_id)
-        except TelegramBadRequest as exc:
+        except (TelegramBadRequest, TelegramForbiddenError) as exc:
+            warnings.append(f"⚠️ Старый пост не удалён: {exc}")
             logger.warning(
                 "Skipping previous storage post deletion chat_id=%s message_id=%s: %s",
                 delete_chat_id,
                 msg_id,
                 exc,
             )
+    return warnings
+
+
+async def _pin_storage_post(storage_chat_id: int, old_message_ids: list[int], new_message_ids: list[int]) -> Optional[str]:
+    old_first_id = int(old_message_ids[0]) if old_message_ids else None
+    new_first_id = int(new_message_ids[0]) if new_message_ids else None
+    if not new_first_id:
+        return None
+
+    if old_first_id:
+        with suppress(TelegramBadRequest, TelegramForbiddenError):
+            await bot.unpin_chat_message(storage_chat_id, old_first_id)
+
+    try:
+        await bot.pin_chat_message(storage_chat_id, new_first_id, disable_notification=True)
+    except TelegramForbiddenError:
+        return "⚠️ Не смог закрепить: нет прав"
+    except TelegramBadRequest as exc:
+        logger.warning("Pin storage post failed chat_id=%s message_id=%s: %s", storage_chat_id, new_first_id, exc)
+        return "⚠️ Не смог закрепить: нет прав"
+    return None
 
 
 async def _publish_post_messages(messages: list[Message], state: FSMContext, media_group_id: Optional[str]) -> None:
@@ -1604,27 +1631,41 @@ async def _publish_post_messages(messages: list[Message], state: FSMContext, med
         return
 
     sorted_messages = sorted(messages, key=lambda msg: msg.message_id)
-    source_message_ids = [int(msg.message_id) for msg in sorted_messages]
+    storage_message_ids = [int(msg.message_id) for msg in sorted_messages]
 
     first_message = sorted_messages[0]
     has_media = bool(first_message.photo or first_message.video or first_message.animation or first_message.document)
+    previous_post = await get_post()
+    previous_storage_chat_id = previous_post.get("storage_chat_id") or previous_post.get("source_chat_id")
+    previous_storage_message_ids = [int(i) for i in (previous_post.get("storage_message_ids") or previous_post.get("source_message_ids") or [])]
 
     try:
-        await set_last_storage_messages(storage_chat_id, source_message_ids)
+        deletion_warnings = await _delete_previous_storage_post(
+            storage_chat_id=storage_chat_id,
+            previous_storage_chat_id=int(previous_storage_chat_id) if previous_storage_chat_id else None,
+            previous_storage_message_ids=previous_storage_message_ids,
+        )
+        await set_last_storage_messages(storage_chat_id, storage_message_ids)
         await save_post(
-            source_chat_id=storage_chat_id,
-            source_message_ids=source_message_ids,
+            storage_chat_id=storage_chat_id,
+            storage_message_ids=storage_message_ids,
             has_media=has_media,
             media_group_id=str(first_message.media_group_id) if first_message.media_group_id else None,
             contact_token=None,
         )
+        pin_warning = await _pin_storage_post(storage_chat_id, previous_storage_message_ids, storage_message_ids)
     except Exception as exc:
         logger.exception("Failed to persist storage metadata")
         await messages[-1].answer(f"❌ Не удалось сохранить пост в БД: {exc}")
         return
 
     await state.clear()
-    await messages[-1].answer("Пост из Storage выбран ✅")
+    response_lines = [f"✅ Пост сохранён. Закрепил. IDs: {', '.join(str(i) for i in storage_message_ids)}"]
+    if pin_warning:
+        response_lines.append(pin_warning)
+    if deletion_warnings:
+        response_lines.extend(dict.fromkeys(deletion_warnings))
+    await messages[-1].answer("\n".join(response_lines))
     await send_post_actions(messages[-1])
 
 
@@ -1709,8 +1750,8 @@ async def cancel_active_userbot_tasks() -> int:
 
 async def safe_cleanup_storage_posts() -> None:
     post = await get_post()
-    storage_chat_id = int(post.get("source_chat_id") or 0)
-    latest_ids = [int(x) for x in (post.get("source_message_ids") or [])]
+    storage_chat_id = int(post.get("storage_chat_id") or post.get("source_chat_id") or 0)
+    latest_ids = [int(x) for x in (post.get("storage_message_ids") or post.get("source_message_ids") or [])]
     if storage_chat_id == 0:
         return
 
@@ -1797,8 +1838,8 @@ async def is_manual_confirmation_required(meta: dict) -> bool:
 
 async def broadcast_once() -> None:
     post = await get_post()
-    source_chat_id = post["source_chat_id"]
-    source_message_ids = post["source_message_ids"]
+    source_chat_id = post["storage_chat_id"] or post["source_chat_id"]
+    source_message_ids = post["storage_message_ids"] or post["source_message_ids"]
 
     if not source_chat_id or not source_message_ids:
         logger.info("Broadcast skipped: empty post")
@@ -2208,19 +2249,22 @@ async def stop_userbot_broadcast(message: Message) -> None:
     canceled = await cancel_active_userbot_tasks()
     await message.answer(f"Остановлено активных задач: {canceled} ✅")
 
-@dp.message(F.text.in_({"📌 Выбрать последний пост из Storage", "📌 Добавить пост"}))
-async def pick_last_storage_post(message: Message, state: FSMContext):
+@dp.message(F.text == "📌 Создать пост (в Storage)")
+async def storage_post_instructions(message: Message, state: FSMContext):
     if not ensure_admin(message):
         return
     await state.clear()
-    await message.answer("Перешлите сюда последнее сообщение из Storage (или любое сообщение из альбома).")
+    await message.answer(
+        "Перейдите в чат Storage и отправьте команду /create_post. "
+        "Затем перешлите туда ваш рекламный пост (или альбом) от вашего аккаунта/жены."
+    )
 
 
 @dp.message(F.text == "✏️ Изменить пост")
 async def edit_post_start(message: Message, state: FSMContext):
     if not ensure_admin(message):
         return
-    await message.answer("Используйте кнопку: 📌 Выбрать последний пост из Storage")
+    await message.answer("Используйте кнопку: 📌 Создать пост (в Storage)")
 
 
 @dp.message(F.text.in_({"/settings", "/admin", "📝 Изменить автоответ", "📝 Изменить автоответ покупателю"}))
@@ -2263,8 +2307,44 @@ async def edit_post_selected(callback: CallbackQuery, state: FSMContext):
         await callback.answer("Недоступно", show_alert=True)
         return
     await state.clear()
-    await callback.message.answer("Используйте кнопку: 📌 Выбрать последний пост из Storage")
+    await callback.message.answer("Используйте кнопку: 📌 Создать пост (в Storage)")
     await callback.answer()
+
+
+@dp.message(Command(commands=["create_post", "post"]))
+async def create_post_in_storage(message: Message, state: FSMContext):
+    if int(message.chat.id) != int(STORAGE_CHAT_ID):
+        if ensure_admin(message):
+            await message.answer("Команда доступна только в чате Storage.")
+        return
+    if not ensure_admin(message):
+        return
+
+    await state.set_state(AdminStates.waiting_storage_post)
+    await message.answer(
+        "Ок. Отправьте следующим сообщением пост (или альбом). "
+        "Важно: это сообщение должно быть переслано от вашего аккаунта/жены, "
+        "чтобы в рассылке было ‘Переслано от …’"
+    )
+
+
+@dp.message(AdminStates.waiting_storage_post)
+async def receive_storage_post(message: Message, state: FSMContext):
+    if int(message.chat.id) != int(STORAGE_CHAT_ID):
+        return
+    if not ensure_admin(message):
+        return
+
+    if message.media_group_id:
+        buffer_data = media_group_buffers.get(message.media_group_id)
+        if not buffer_data:
+            task = asyncio.create_task(_flush_media_group_with_delay(message.media_group_id, state))
+            buffer_data = {"messages": [], "task": task}
+            media_group_buffers[message.media_group_id] = buffer_data
+        buffer_data["messages"].append(message)
+        return
+
+    await _publish_post_messages([message], state, media_group_id=None)
 
 
 @dp.callback_query(F.data == "edit:back")
@@ -2642,6 +2722,15 @@ async def contact_message_forward(message: Message, state: FSMContext):
         await message.answer("Не удалось отправить сообщение продавцу.")
 
 
+@dp.message(Command("current_post"))
+async def current_post_in_storage(message: Message):
+    if int(message.chat.id) != int(STORAGE_CHAT_ID):
+        return
+    if not ensure_admin(message):
+        return
+    await send_post_preview(message)
+
+
 @dp.message(F.chat.type == "private")
 async def private_message_fallback(message: Message, state: FSMContext):
     if ensure_admin(message):
@@ -2649,10 +2738,6 @@ async def private_message_fallback(message: Message, state: FSMContext):
         if current_state is not None:
             return
 
-        if not message.forward_from_chat or int(message.forward_from_chat.id) != int(STORAGE_CHAT_ID):
-            return
-
-        await _publish_post_messages([message], state, media_group_id=None)
         return
 
     current_state = await state.get_state()
