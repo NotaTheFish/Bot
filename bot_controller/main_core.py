@@ -1659,7 +1659,7 @@ async def _delete_previous_storage_post(
             msg_id,
         )
         try:
-            await bot.delete_message(delete_chat_id, msg_id)
+            await bot.delete_message(chat_id=delete_chat_id, message_id=msg_id)
         except (TelegramBadRequest, TelegramForbiddenError) as exc:
             warnings.append(f"⚠️ Старый пост не удалён: {exc}")
             logger.warning(
@@ -1679,10 +1679,14 @@ async def _pin_storage_post(storage_chat_id: int, old_message_ids: list[int], ne
 
     if old_first_id:
         with suppress(TelegramBadRequest, TelegramForbiddenError):
-            await bot.unpin_chat_message(storage_chat_id, old_first_id)
+            await bot.unpin_chat_message(chat_id=storage_chat_id, message_id=old_first_id)
 
     try:
-        await bot.pin_chat_message(storage_chat_id, new_first_id, disable_notification=True)
+        await bot.pin_chat_message(
+            chat_id=storage_chat_id,
+            message_id=new_first_id,
+            disable_notification=True,
+        )
     except TelegramForbiddenError:
         return "⚠️ Не смог закрепить: нет прав"
     except TelegramBadRequest as exc:
@@ -1888,7 +1892,7 @@ async def safe_cleanup_storage_posts() -> None:
         if message_id in active_ids or message_id in keep_ids:
             continue
         try:
-            await bot.delete_message(storage_chat_id, message_id)
+            await bot.delete_message(chat_id=storage_chat_id, message_id=message_id)
         except TelegramBadRequest as exc:
             logger.warning("Safe cleanup skipped storage message deletion chat_id=%s message_id=%s: %s", storage_chat_id, message_id, exc)
 
