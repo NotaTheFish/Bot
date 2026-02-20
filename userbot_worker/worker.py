@@ -38,6 +38,8 @@ from .tasks import remap_chat_id_everywhere
 
 logger = logging.getLogger(__name__)
 
+ONLINE_GUARD_SECONDS = 90
+
 _DISABLE_RPC_ERRORS = {
     "ChatWriteForbiddenError",
     "ChatAdminRequiredError",
@@ -106,6 +108,16 @@ def _is_disconnect_state_error(exc: BaseException) -> bool:
 
 def _now_utc() -> datetime:
     return datetime.now(tz=timezone.utc)
+
+
+def _is_offline_ok(*, last_outgoing_at: Optional[datetime], offline_threshold_minutes: int, now_utc: datetime) -> bool:
+    if last_outgoing_at is None:
+        return True
+
+    delta_seconds = (now_utc - last_outgoing_at).total_seconds()
+    if offline_threshold_minutes > 0:
+        return delta_seconds >= offline_threshold_minutes * 60
+    return delta_seconds >= ONLINE_GUARD_SECONDS
 
 
 async def _handle_authkey_duplicated(client: TelegramClient, settings: Settings) -> datetime:
@@ -291,20 +303,26 @@ async def run_worker(settings: Settings, pool, client: TelegramClient, stop_even
         last_replied_at = contact.get("last_replied_at") if contact else None
         is_first_message = last_replied_at is None
 
+        now_utc = _now_utc()
+        first_or_cooldown_ok = is_first_message or cooldown_ok
         should_reply = False
         if settings_row.trigger_mode == "first_message_only":
-            should_reply = (last_replied_at is None) or cooldown_ok
+            should_reply = first_or_cooldown_ok
         elif settings_row.trigger_mode == "offline_over_minutes":
             last_outgoing_at = await get_worker_state_last_outgoing_at(pool)
-            if last_outgoing_at is None:
-                should_reply = True
-            else:
-                delta = _now_utc() - last_outgoing_at
-                should_reply = delta.total_seconds() >= settings_row.offline_threshold_minutes * 60
-        else:  # both (OR)
+            should_reply = _is_offline_ok(
+                last_outgoing_at=last_outgoing_at,
+                offline_threshold_minutes=settings_row.offline_threshold_minutes,
+                now_utc=now_utc,
+            )
+        else:  # both
             last_outgoing_at = await get_worker_state_last_outgoing_at(pool)
-            offline_ok = True if last_outgoing_at is None else (_now_utc() - last_outgoing_at).total_seconds() >= settings_row.offline_threshold_minutes * 60
-            should_reply = is_first_message or offline_ok
+            offline_ok = _is_offline_ok(
+                last_outgoing_at=last_outgoing_at,
+                offline_threshold_minutes=settings_row.offline_threshold_minutes,
+                now_utc=now_utc,
+            )
+            should_reply = offline_ok and first_or_cooldown_ok
 
         if not cooldown_ok:
             return
