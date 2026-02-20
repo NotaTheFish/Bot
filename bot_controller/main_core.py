@@ -721,7 +721,7 @@ def admin_menu_keyboard() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[
             [
-                KeyboardButton(text="📌 Создать пост (в Storage)"),
+                KeyboardButton(text="ℹ️ Информация о посте"),
                 KeyboardButton(text="📊 Статус"),
             ],
             [
