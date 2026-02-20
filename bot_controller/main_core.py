@@ -2280,6 +2280,7 @@ async def post_info(message: Message, state: FSMContext):
             message_id=first_message_id,
             reply_markup=storage_button,
         )
+        await send_post_info_card(message, len(storage_message_ids))
         return
 
     last_copied_message: Optional[Message] = None
@@ -2297,6 +2298,26 @@ async def post_info(message: Message, state: FSMContext):
             reply_markup=storage_button,
         )
 
+
+    await send_post_info_card(message, len(storage_message_ids))
+
+
+async def send_post_info_card(message: Message, messages_count: int) -> None:
+    schedules = await get_schedules()
+    schedule_lines = [f"• {schedule_label(item)}" for item in schedules] or ["• Расписаний пока нет."]
+    lines = [
+        "📋 Детали поста",
+        f"Сообщений: {messages_count}",
+        f"Часовой пояс: {TZ.key}",
+        "Текущее расписание:",
+        *schedule_lines,
+    ]
+    await message.answer(
+        "\n".join(lines),
+        reply_markup=InlineKeyboardMarkup(
+            inline_keyboard=[[InlineKeyboardButton(text="🕒 Настроить время", callback_data="edit:time")]]
+        ),
+    )
 
 @dp.message(F.text.in_({"✅ Запустить рассылку", "🚀 Запустить сейчас"}))
 async def admin_broadcast_now(message: Message) -> None:
