@@ -2973,25 +2973,6 @@ async def current_post_in_storage(message: Message):
     await send_post_preview(message)
 
 
-@dp.message(F.chat.type == "private")
-async def private_message_fallback(message: Message, state: FSMContext):
-    if ensure_admin(message):
-        current_state = await state.get_state()
-        if current_state is not None:
-            return
-
-        return
-
-    current_state = await state.get_state()
-    if current_state in {
-        SupportStates.waiting_message.state,
-        ContactStates.waiting_message.state,
-    }:
-        return
-
-    await message.answer("Здравствуйте!")
-
-
 VALID_AUTOREPLY_MODES = {"first_message_only", "offline_over_minutes", "both"}
 
 
@@ -3070,15 +3051,15 @@ def worker_autoreply_keyboard() -> InlineKeyboardMarkup:
 
 @dp.message(F.text == "🤖 Автоответчик")
 async def worker_autoreply_menu(message: Message, state: FSMContext):
+    logger.info(
+        "HANDLER autoreply_menu fired chat_id=%s user_id=%s text=%r",
+        message.chat.id,
+        message.from_user.id if message.from_user else None,
+        message.text,
+    )
+
     from_user_id = message.from_user.id if message.from_user else None
     chat_id = message.chat.id if message.chat else None
-    text = message.text
-    logger.info(
-        "HANDLER autoreply_menu fired user_id=%s chat_id=%s text=%s",
-        from_user_id,
-        chat_id,
-        text,
-    )
     if not ensure_admin(message):
         sender_chat_id = message.sender_chat.id if message.sender_chat else None
         logger.info(
@@ -3198,6 +3179,35 @@ async def worker_autoreply_cooldown_save(message: Message, state: FSMContext):
     await state.clear()
     settings = await get_worker_autoreply_settings()
     await message.answer(_autoreply_settings_text(settings), reply_markup=worker_autoreply_keyboard())
+
+
+@dp.message(F.chat.type == "private")
+async def private_message_fallback(message: Message, state: FSMContext):
+    if ensure_admin(message):
+        logger.info(
+            "private_fallback skip for admin chat_id=%s user_id=%s text=%r",
+            message.chat.id,
+            message.from_user.id if message.from_user else None,
+            message.text,
+        )
+        # Админские сообщения НЕ обрабатываем тут, пропускаем к админ-хендлерам ниже/выше
+        raise SkipHandler()
+
+    logger.info(
+        "private_fallback handled for user chat_id=%s user_id=%s text=%r",
+        message.chat.id,
+        message.from_user.id if message.from_user else None,
+        message.text,
+    )
+
+    current_state = await state.get_state()
+    if current_state in {
+        SupportStates.waiting_message.state,
+        ContactStates.waiting_message.state,
+    }:
+        return
+
+    await message.answer("Здравствуйте!")
 
 
 async def restore_scheduler() -> None:
