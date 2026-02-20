@@ -1734,12 +1734,18 @@ async def _publish_post_messages(messages: list[Message], state: FSMContext, med
             storage_message_ids,
             media_group_id,
         )
-        pin_warning = await _pin_storage_post(storage_chat_id, previous_storage_message_ids, storage_message_ids)
-        logger.info("pinned storage post chat_id=%s first_message_id=%s", storage_chat_id, storage_message_ids[0])
     except Exception as exc:
         logger.exception("Failed to persist storage metadata")
         await messages[-1].answer(f"❌ Не удалось сохранить пост в БД: {exc}")
         return
+
+    pin_warning: Optional[str] = None
+    try:
+        pin_warning = await _pin_storage_post(storage_chat_id, previous_storage_message_ids, storage_message_ids)
+        logger.info("pinned storage post chat_id=%s first_message_id=%s", storage_chat_id, storage_message_ids[0])
+    except Exception as exc:
+        logger.warning("Failed to pin/unpin storage post chat_id=%s: %s", storage_chat_id, exc)
+        pin_warning = f"⚠️ Не смог закрепить/открепить: {exc}"
 
     await state.clear()
     state_after = await state.get_state()
@@ -1750,12 +1756,8 @@ async def _publish_post_messages(messages: list[Message], state: FSMContext, med
         media_group_id,
         state_after,
     )
-    response_lines = [
-        "✅ Сохранено и закреплено",
-        "Для отправки ипользуйте: ✅ Запустить рассылку",
-    ]
-    if pin_warning:
-        response_lines.append(pin_warning)
+    response_lines = [f"✅ Сохранено. {pin_warning}" if pin_warning else "✅ Сохранено и закреплено"]
+    response_lines.append("Для отправки ипользуйте: ✅ Запустить рассылку")
     if deletion_warnings:
         response_lines.extend(dict.fromkeys(deletion_warnings))
 

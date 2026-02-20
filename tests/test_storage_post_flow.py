@@ -149,6 +149,44 @@ class StoragePostFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("✅ Сохранено и закреплено", reply_text)
         self.assertIn("Для отправки ипользуйте: ✅ Запустить рассылку", reply_text)
 
+    async def test_single_storage_message_pin_failure_keeps_save_success_response(self):
+        state = AsyncMock()
+        message = SimpleNamespace(
+            chat=SimpleNamespace(id=-100123),
+            from_user=SimpleNamespace(id=1),
+            message_id=87,
+            media_group_id=None,
+            text="hello",
+            caption=None,
+            photo=None,
+            video=None,
+            animation=None,
+            document=None,
+            audio=None,
+            voice=None,
+            sticker=None,
+            content_type="text",
+            message_thread_id=None,
+            answer=AsyncMock(),
+        )
+
+        with (
+            patch.object(main_core, "get_storage_chat_id", AsyncMock(return_value=-100123)),
+            patch.object(main_core, "get_post", AsyncMock(return_value={"storage_chat_id": -100123, "storage_message_ids": []})),
+            patch.object(main_core, "_delete_previous_storage_post", AsyncMock(return_value=[])),
+            patch.object(main_core, "set_last_storage_messages", AsyncMock()),
+            patch.object(main_core, "save_post", AsyncMock()),
+            patch.object(main_core, "_pin_storage_post", AsyncMock(side_effect=RuntimeError("pin failed"))),
+            patch.object(main_core, "send_post_actions", AsyncMock()),
+        ):
+            await main_core.handle_storage_post(message, state)
+
+        message.answer.assert_awaited_once()
+        reply_text = message.answer.await_args.args[0]
+        self.assertIn("✅ Сохранено.", reply_text)
+        self.assertIn("⚠️ Не смог закрепить/открепить: pin failed", reply_text)
+        self.assertNotIn("❌ Не удалось сохранить пост в БД", reply_text)
+
     async def test_single_storage_message_auto_queues_userbot_when_flag_enabled(self):
         state = AsyncMock()
         message = SimpleNamespace(
