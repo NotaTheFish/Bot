@@ -2258,7 +2258,20 @@ async def post_info(message: Message, state: FSMContext):
         await message.answer("Нет доступа")
         return
 
-    post = await get_post()
+    logger.info(
+        "HANDLER post_info fired chat_id=%s user_id=%s message_id=%s",
+        message.chat.id,
+        message.from_user.id if message.from_user else None,
+        message.message_id,
+    )
+
+    try:
+        post = await get_post()
+    except Exception:
+        logger.exception("post_info: failed to read post from DB")
+        await message.answer("❌ Не удалось прочитать пост из БД. Попробуйте ещё раз позже.")
+        return
+
     storage_chat_id = post["storage_chat_id"] or post["source_chat_id"]
     storage_message_ids = post["storage_message_ids"]
 
@@ -2274,36 +2287,81 @@ async def post_info(message: Message, state: FSMContext):
     )
 
     if len(storage_message_ids) == 1:
-        await bot.copy_message(
-            chat_id=message.chat.id,
-            from_chat_id=storage_chat_id,
-            message_id=first_message_id,
-            reply_markup=storage_button,
-        )
-        await send_post_info_card(message, len(storage_message_ids))
+        try:
+            await bot.copy_message(
+                chat_id=message.chat.id,
+                from_chat_id=storage_chat_id,
+                message_id=first_message_id,
+                reply_markup=storage_button,
+            )
+        except Exception:
+            logger.exception(
+                "post_info: copy_message failed chat_id=%s from_chat_id=%s message_id=%s",
+                message.chat.id,
+                storage_chat_id,
+                first_message_id,
+            )
+            await message.answer("❌ Не удалось скопировать пост из Storage. Проверьте доступ бота к Storage.")
+            return
+
+        await send_post_info_card(message, len(storage_message_ids), edit_message=False)
         return
 
     last_copied_message: Optional[Message] = None
     for message_id in storage_message_ids:
-        last_copied_message = await bot.copy_message(
-            chat_id=message.chat.id,
-            from_chat_id=storage_chat_id,
-            message_id=message_id,
-        )
+        try:
+            last_copied_message = await bot.copy_message(
+                chat_id=message.chat.id,
+                from_chat_id=storage_chat_id,
+                message_id=message_id,
+            )
+        except Exception:
+            logger.exception(
+                "post_info: copy_message failed chat_id=%s from_chat_id=%s message_id=%s",
+                message.chat.id,
+                storage_chat_id,
+                message_id,
+            )
+            await message.answer("❌ Не удалось скопировать один из сообщений поста из Storage.")
+            return
 
     if last_copied_message:
-        await bot.edit_message_reply_markup(
-            chat_id=last_copied_message.chat.id,
-            message_id=last_copied_message.message_id,
-            reply_markup=storage_button,
-        )
+        try:
+            await bot.edit_message_reply_markup(
+                chat_id=last_copied_message.chat.id,
+                message_id=last_copied_message.message_id,
+                reply_markup=storage_button,
+            )
+        except Exception:
+            logger.exception(
+                "post_info: edit_reply_markup failed chat_id=%s message_id=%s",
+                last_copied_message.chat.id,
+                last_copied_message.message_id,
+            )
+            await message.answer("❌ Не удалось прикрепить кнопку перехода в Storage к последнему сообщению поста.")
+            return
 
 
-    await send_post_info_card(message, len(storage_message_ids))
+    await send_post_info_card(message, len(storage_message_ids), edit_message=False)
 
 
-async def send_post_info_card(message: Message, messages_count: int) -> None:
-    schedules = await get_schedules()
+def post_info_card_markup() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="🕒 Настроить время", callback_data="edit:time")],
+            [InlineKeyboardButton(text="🔄 Обновить", callback_data="post_info:refresh")],
+        ]
+    )
+
+
+async def send_post_info_card(message: Message, messages_count: int, edit_message: bool = False) -> None:
+    try:
+        schedules = await get_schedules()
+    except Exception:
+        logger.exception("post_info: failed to read schedules from DB")
+        await message.answer("❌ Не удалось прочитать расписание из БД. Попробуйте ещё раз позже.")
+        return
+
     schedule_lines = [f"• {schedule_label(item)}" for item in schedules] or ["• Расписаний пока нет."]
     lines = [
         "📋 Детали поста",
@@ -2312,12 +2370,44 @@ async def send_post_info_card(message: Message, messages_count: int) -> None:
         "Текущее расписание:",
         *schedule_lines,
     ]
-    await message.answer(
-        "\n".join(lines),
-        reply_markup=InlineKeyboardMarkup(
-            inline_keyboard=[[InlineKeyboardButton(text="🕒 Настроить время", callback_data="edit:time")]]
-        ),
-    )
+
+    if edit_message:
+        try:
+            await message.edit_text("\n".join(lines), reply_markup=post_info_card_markup())
+            return
+        except Exception:
+            logger.exception(
+                "post_info: failed to update info card chat_id=%s message_id=%s",
+                message.chat.id,
+                message.message_id,
+            )
+            await message.answer("❌ Не удалось обновить карточку поста. Отправляю новую карточку ниже.")
+
+    await message.answer("\n".join(lines), reply_markup=post_info_card_markup())
+
+
+@dp.callback_query(F.data == "post_info:refresh")
+async def post_info_refresh(callback: CallbackQuery):
+    if not callback.message or not is_admin_user(callback.from_user.id):
+        await callback.answer("Недоступно", show_alert=True)
+        return
+
+    try:
+        post = await get_post()
+    except Exception:
+        logger.exception("post_info refresh: failed to read post from DB")
+        await callback.answer("Ошибка чтения поста из БД", show_alert=True)
+        await callback.message.answer("❌ Не удалось обновить карточку: ошибка чтения поста из БД.")
+        return
+
+    storage_message_ids = post["storage_message_ids"]
+    if not storage_message_ids:
+        await callback.answer("Пост не создан", show_alert=True)
+        await callback.message.answer("❌ Пост ещё не создан. Создайте его в Storage командой /create_post")
+        return
+
+    await send_post_info_card(callback.message, len(storage_message_ids), edit_message=True)
+    await callback.answer("Карточка обновлена ✅")
 
 @dp.message(F.text.in_({"✅ Запустить рассылку", "🚀 Запустить сейчас"}))
 async def admin_broadcast_now(message: Message) -> None:

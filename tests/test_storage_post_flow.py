@@ -365,5 +365,60 @@ class StoragePostFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(copy_message.await_args_list[1].kwargs, {"chat_id": 1, "from_chat_id": -100500, "message_id": 13})
 
 
+    async def test_post_info_card_contains_refresh_button(self):
+        markup = main_core.post_info_card_markup()
+
+        rows = [[button.text for button in row] for row in markup.inline_keyboard]
+        self.assertEqual(rows, [["🕒 Настроить время"], ["🔄 Обновить"]])
+
+    async def test_post_info_refresh_updates_existing_card(self):
+        callback_message = SimpleNamespace(
+            chat=SimpleNamespace(id=1),
+            message_id=700,
+            edit_text=AsyncMock(),
+            answer=AsyncMock(),
+        )
+        callback = SimpleNamespace(
+            message=callback_message,
+            from_user=SimpleNamespace(id=1),
+            answer=AsyncMock(),
+        )
+
+        with (
+            patch.object(main_core, "get_post", AsyncMock(return_value={"storage_message_ids": [11, 12]})) as get_post,
+            patch.object(main_core, "get_schedules", AsyncMock(return_value=[])) as get_schedules,
+        ):
+            await main_core.post_info_refresh(callback)
+
+        get_post.assert_awaited_once()
+        get_schedules.assert_awaited_once()
+        callback_message.edit_text.assert_awaited_once()
+        callback.answer.assert_awaited_once_with("Карточка обновлена ✅")
+
+    async def test_post_info_refresh_not_calls_broadcast_or_create_post(self):
+        callback_message = SimpleNamespace(
+            chat=SimpleNamespace(id=1),
+            message_id=701,
+            edit_text=AsyncMock(),
+            answer=AsyncMock(),
+        )
+        callback = SimpleNamespace(
+            message=callback_message,
+            from_user=SimpleNamespace(id=1),
+            answer=AsyncMock(),
+        )
+
+        with (
+            patch.object(main_core, "get_post", AsyncMock(return_value={"storage_message_ids": [42]})),
+            patch.object(main_core, "get_schedules", AsyncMock(return_value=[])),
+            patch.object(main_core, "broadcast_once", AsyncMock()) as broadcast_once,
+            patch.object(main_core, "create_post_in_storage", AsyncMock()) as create_post_in_storage,
+        ):
+            await main_core.post_info_refresh(callback)
+
+        broadcast_once.assert_not_called()
+        create_post_in_storage.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()
