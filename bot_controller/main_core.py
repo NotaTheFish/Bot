@@ -1674,12 +1674,37 @@ async def _delete_previous_storage_post(
 async def _pin_storage_post(storage_chat_id: int, old_message_ids: list[int], new_message_ids: list[int]) -> Optional[str]:
     old_first_id = int(old_message_ids[0]) if old_message_ids else None
     new_first_id = int(new_message_ids[0]) if new_message_ids else None
+    warning_message: Optional[str] = None
     if not new_first_id:
         return None
 
     if old_first_id:
-        with suppress(TelegramBadRequest, TelegramForbiddenError):
+        try:
             await bot.unpin_chat_message(chat_id=storage_chat_id, message_id=old_first_id)
+        except TelegramBadRequest as exc:
+            if "message to unpin not found" in str(exc).lower():
+                logger.info(
+                    "Storage message already absent while unpinning chat_id=%s message_id=%s: %s",
+                    storage_chat_id,
+                    old_first_id,
+                    exc,
+                )
+            else:
+                logger.warning(
+                    "Failed to unpin storage post chat_id=%s message_id=%s: %s",
+                    storage_chat_id,
+                    old_first_id,
+                    exc,
+                )
+                warning_message = "⚠️ Не смог открепить старое закрепление"
+        except TelegramForbiddenError as exc:
+            logger.warning(
+                "Failed to unpin storage post due to missing rights chat_id=%s message_id=%s: %s",
+                storage_chat_id,
+                old_first_id,
+                exc,
+            )
+            warning_message = "⚠️ Не смог открепить старое закрепление: нет прав"
 
     try:
         await bot.pin_chat_message(
@@ -1692,7 +1717,7 @@ async def _pin_storage_post(storage_chat_id: int, old_message_ids: list[int], ne
     except TelegramBadRequest as exc:
         logger.warning("Pin storage post failed chat_id=%s message_id=%s: %s", storage_chat_id, new_first_id, exc)
         return "⚠️ Не смог закрепить: нет прав"
-    return None
+    return warning_message
 
 
 async def _publish_post_messages(messages: list[Message], state: FSMContext, media_group_id: Optional[str]) -> None:
