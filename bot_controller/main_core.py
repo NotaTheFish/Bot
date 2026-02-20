@@ -13,6 +13,7 @@ from typing import Optional
 
 import asyncpg
 from aiogram import BaseMiddleware, Bot, Dispatcher, F
+from aiogram.dispatcher.event.bases import SkipHandler
 from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError, TelegramRetryAfter
 from aiogram.filters import Command, CommandStart
 from aiogram.fsm.context import FSMContext
@@ -2118,7 +2119,12 @@ async def track_chat_membership(update: ChatMemberUpdated):
 @dp.message(F.chat.type.in_({"group", "supergroup"}) & ~F.text.regexp(r"^/"))
 async def remember_chat_from_messages(message: Message, state: FSMContext):
     if await state.get_state() == AdminStates.waiting_storage_post.state:
-        return
+        logger.info(
+            "remember_chat_from_messages skip due to waiting_storage_post chat_id=%s msg_id=%s",
+            message.chat.id,
+            message.message_id,
+        )
+        raise SkipHandler()
 
     await save_chat(message.chat.id)
 
@@ -2467,12 +2473,27 @@ def _is_valid_storage_post_message(message: Message) -> tuple[bool, str | None]:
 async def handle_storage_post(message: Message, state: FSMContext):
     if message.chat.id != STORAGE_CHAT_ID:
         return
-    if not message.from_user or message.from_user.id not in ADMIN_IDS:
+
+    if not message.from_user:
+        logger.warning(
+            "storage_post from_user is None chat_id=%s sender_chat_id=%s sender_chat_title=%r msg_id=%s",
+            message.chat.id,
+            message.sender_chat.id if message.sender_chat else None,
+            message.sender_chat.title if message.sender_chat else None,
+            message.message_id,
+        )
+        await message.answer(
+            "Вы отправили сообщение анонимно (sender_chat). "
+            "Отключите анонимность админа в этом чате или отправьте пост обычным сообщением."
+        )
+        return
+
+    if message.from_user.id not in ADMIN_IDS:
         return
 
     state_before = await state.get_state()
     logger.info(
-        "storage_post handler enter chat_id=%s user_id=%s thread_id=%s state_before=%s",
+        "storage_post handler enter chat_id=%s user_id=%s thread_id=%s state_before=%s, entered, will publish",
         message.chat.id,
         message.from_user.id,
         message.message_thread_id,
