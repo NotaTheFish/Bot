@@ -3026,12 +3026,18 @@ async def update_worker_autoreply_settings(**kwargs) -> None:
 
 
 def _autoreply_settings_text(settings: dict) -> str:
+    mode_labels = {
+        "first_message_only": "🎯 Один раз",
+        "offline_over_minutes": "🕒 Только оффлайн",
+        "both": "🧠 Умный",
+    }
+    cooldown_minutes = settings["cooldown_seconds"] // 60
     return "\n".join([
         "🤖 Настройки автоответчика worker",
         f"Статус: {'включен' if settings['enabled'] else 'выключен'}",
-        f"Режим: {settings['trigger_mode']}",
-        f"offline_threshold_minutes: {settings['offline_threshold_minutes']}",
-        f"cooldown_seconds: {settings['cooldown_seconds']}",
+        f"Режим: {mode_labels.get(settings['trigger_mode'], settings['trigger_mode'])}",
+        f"Оффлайн через: {settings['offline_threshold_minutes']} мин",
+        f"Повтор через: {cooldown_minutes} мин",
         "",
         f"Текст:\n{settings['reply_text']}",
     ])
@@ -3041,11 +3047,11 @@ def worker_autoreply_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="✅ Включить", callback_data="wa:enable"), InlineKeyboardButton(text="⛔ Выключить", callback_data="wa:disable")],
         [InlineKeyboardButton(text="📝 Текст", callback_data="wa:text")],
-        [InlineKeyboardButton(text="🎯 Режим: first_message_only", callback_data="wa:mode:first_message_only")],
-        [InlineKeyboardButton(text="🎯 Режим: offline_over_minutes", callback_data="wa:mode:offline_over_minutes")],
-        [InlineKeyboardButton(text="🎯 Режим: both", callback_data="wa:mode:both")],
-        [InlineKeyboardButton(text="⏱ Offline threshold", callback_data="wa:offline")],
-        [InlineKeyboardButton(text="⏳ Cooldown", callback_data="wa:cooldown")],
+        [InlineKeyboardButton(text="🎯 Один раз", callback_data="wa:mode:first_message_only")],
+        [InlineKeyboardButton(text="🕒 Только оффлайн", callback_data="wa:mode:offline_over_minutes")],
+        [InlineKeyboardButton(text="🧠 Умный", callback_data="wa:mode:both")],
+        [InlineKeyboardButton(text="🕒 Оффлайн через", callback_data="wa:offline")],
+        [InlineKeyboardButton(text="⏳ Повтор через", callback_data="wa:cooldown")],
     ])
 
 
