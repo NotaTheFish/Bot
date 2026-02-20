@@ -112,6 +112,83 @@ class StoragePostFlowTests(unittest.IsolatedAsyncioTestCase):
         save_post.assert_awaited_once()
         self.assertEqual(save_post.await_args.kwargs["storage_message_ids"], [55])
 
+    async def test_single_storage_message_answers_with_send_hint(self):
+        state = AsyncMock()
+        message = SimpleNamespace(
+            chat=SimpleNamespace(id=-100123),
+            from_user=SimpleNamespace(id=1),
+            message_id=88,
+            media_group_id=None,
+            text="hello",
+            caption=None,
+            photo=None,
+            video=None,
+            animation=None,
+            document=None,
+            audio=None,
+            voice=None,
+            sticker=None,
+            content_type="text",
+            message_thread_id=None,
+            answer=AsyncMock(),
+        )
+
+        with (
+            patch.object(main_core, "get_storage_chat_id", AsyncMock(return_value=-100123)),
+            patch.object(main_core, "get_post", AsyncMock(return_value={"storage_chat_id": -100123, "storage_message_ids": []})),
+            patch.object(main_core, "_delete_previous_storage_post", AsyncMock(return_value=[])),
+            patch.object(main_core, "set_last_storage_messages", AsyncMock()),
+            patch.object(main_core, "save_post", AsyncMock()),
+            patch.object(main_core, "_pin_storage_post", AsyncMock(return_value=None)),
+            patch.object(main_core, "send_post_actions", AsyncMock()),
+        ):
+            await main_core.handle_storage_post(message, state)
+
+        message.answer.assert_awaited_once()
+        reply_text = message.answer.await_args.args[0]
+        self.assertIn("✅ Сохранено и закреплено", reply_text)
+        self.assertIn("Для отправки ипользуйте: ✅ Запустить рассылку", reply_text)
+
+    async def test_single_storage_message_auto_queues_userbot_when_flag_enabled(self):
+        state = AsyncMock()
+        message = SimpleNamespace(
+            chat=SimpleNamespace(id=-100123),
+            from_user=SimpleNamespace(id=1),
+            message_id=89,
+            media_group_id=None,
+            text="hello",
+            caption=None,
+            photo=None,
+            video=None,
+            animation=None,
+            document=None,
+            audio=None,
+            voice=None,
+            sticker=None,
+            content_type="text",
+            message_thread_id=None,
+            answer=AsyncMock(),
+        )
+
+        with (
+            patch.object(main_core, "CREATE_POST_AUTO_QUEUE_USERBOT", True),
+            patch.object(main_core, "DELIVERY_MODE", "userbot"),
+            patch.object(main_core, "TARGET_CHAT_IDS", [42, 24]),
+            patch.object(main_core, "get_storage_chat_id", AsyncMock(return_value=-100123)),
+            patch.object(main_core, "get_post", AsyncMock(return_value={"storage_chat_id": -100123, "storage_message_ids": []})),
+            patch.object(main_core, "_delete_previous_storage_post", AsyncMock(return_value=[])),
+            patch.object(main_core, "set_last_storage_messages", AsyncMock()),
+            patch.object(main_core, "save_post", AsyncMock()),
+            patch.object(main_core, "_pin_storage_post", AsyncMock(return_value=None)),
+            patch.object(main_core, "send_post_actions", AsyncMock()),
+            patch.object(main_core, "create_userbot_task", AsyncMock(return_value=777)) as create_task,
+        ):
+            await main_core.handle_storage_post(message, state)
+
+        create_task.assert_awaited_once()
+        reply_text = message.answer.await_args.args[0]
+        self.assertIn("Userbot-задача автоматически поставлена в очередь.", reply_text)
+
     async def test_media_group_message_is_buffered(self):
         state = AsyncMock()
         message = SimpleNamespace(

@@ -238,6 +238,12 @@ QUIET_MODE = _get_env_str("QUIET_MODE", "0").lower() in {
     "yes",
     "on",
 }
+CREATE_POST_AUTO_QUEUE_USERBOT = _get_env_str("CREATE_POST_AUTO_QUEUE_USERBOT", "off").lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
 
 if DELIVERY_MODE not in {"bot", "userbot"}:
     raise RuntimeError("DELIVERY_MODE должен быть 'bot' или 'userbot'.")
@@ -1149,6 +1155,10 @@ async def create_userbot_task(
     target_chat_ids: list[int] | None,
     run_at: datetime,
 ) -> Optional[int]:
+    # Очередь userbot наполняется на этапе запуска рассылки (broadcast_once),
+    # а /create_post по умолчанию только сохраняет и закрепляет пост в Storage.
+    # Для опциональной автопостановки при сохранении есть флаг
+    # CREATE_POST_AUTO_QUEUE_USERBOT=on.
     def _logical_schedule_bucket(run_at_value: datetime) -> str:
         return run_at_value.strftime("%Y%m%d%H%M")
 
@@ -1735,11 +1745,24 @@ async def _publish_post_messages(messages: list[Message], state: FSMContext, med
         media_group_id,
         state_after,
     )
-    response_lines = ["✅ Сохранено и закреплено"]
+    response_lines = [
+        "✅ Сохранено и закреплено",
+        "Для отправки ипользуйте: ✅ Запустить рассылку",
+    ]
     if pin_warning:
         response_lines.append(pin_warning)
     if deletion_warnings:
         response_lines.extend(dict.fromkeys(deletion_warnings))
+
+    if CREATE_POST_AUTO_QUEUE_USERBOT and DELIVERY_MODE == "userbot":
+        run_at = datetime.now(timezone.utc)
+        target_chat_ids_to_store = TARGET_CHAT_IDS if TARGET_CHAT_IDS else None
+        task_id = await create_userbot_task(storage_chat_id, storage_message_ids, target_chat_ids_to_store, run_at)
+        if task_id:
+            response_lines.append("ℹ️ Userbot-задача автоматически поставлена в очередь.")
+        else:
+            response_lines.append("ℹ️ Аналогичная userbot-задача уже есть в очереди.")
+
     await messages[-1].answer("\n".join(response_lines))
     await send_post_actions(messages[-1])
 
@@ -1956,6 +1979,8 @@ async def broadcast_once() -> None:
     broadcast_recorded = False
 
     if DELIVERY_MODE == "userbot":
+        # Явная точка enqueue: задача ставится в очередь именно при запуске рассылки,
+        # а не во время /create_post (кроме опционального режима CREATE_POST_AUTO_QUEUE_USERBOT=on).
         await cancel_active_userbot_tasks()
         run_at = datetime.now(timezone.utc)
         target_chat_ids_to_store = TARGET_CHAT_IDS if TARGET_CHAT_IDS else None
