@@ -2252,6 +2252,52 @@ async def admin_status(message: Message):
     await message.answer("\n".join(lines))
 
 
+@dp.message(F.text == "ℹ️ Информация о посте")
+async def post_info(message: Message, state: FSMContext):
+    if not ensure_admin(message):
+        await message.answer("Нет доступа")
+        return
+
+    post = await get_post()
+    storage_chat_id = post["storage_chat_id"] or post["source_chat_id"]
+    storage_message_ids = post["storage_message_ids"]
+
+    if not storage_chat_id or not storage_message_ids:
+        await message.answer("❌ Пост ещё не создан. Создайте его в Storage командой /create_post")
+        return
+
+    first_message_id = storage_message_ids[0]
+    internal_id = abs(storage_chat_id) - 1000000000000
+    storage_url = f"https://t.me/c/{internal_id}/{first_message_id}"
+    storage_button = InlineKeyboardMarkup(
+        inline_keyboard=[[InlineKeyboardButton(text="🔗 Открыть в Storage", url=storage_url)]]
+    )
+
+    if len(storage_message_ids) == 1:
+        await bot.copy_message(
+            chat_id=message.chat.id,
+            from_chat_id=storage_chat_id,
+            message_id=first_message_id,
+            reply_markup=storage_button,
+        )
+        return
+
+    last_copied_message: Optional[Message] = None
+    for message_id in storage_message_ids:
+        last_copied_message = await bot.copy_message(
+            chat_id=message.chat.id,
+            from_chat_id=storage_chat_id,
+            message_id=message_id,
+        )
+
+    if last_copied_message:
+        await bot.edit_message_reply_markup(
+            chat_id=last_copied_message.chat.id,
+            message_id=last_copied_message.message_id,
+            reply_markup=storage_button,
+        )
+
+
 @dp.message(F.text.in_({"✅ Запустить рассылку", "🚀 Запустить сейчас"}))
 async def admin_broadcast_now(message: Message) -> None:
     if not ensure_admin(message):
