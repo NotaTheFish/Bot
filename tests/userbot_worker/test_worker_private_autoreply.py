@@ -88,15 +88,15 @@ class PrivateAutoreplyCooldownTests(unittest.IsolatedAsyncioTestCase):
 
         with (
             patch("userbot_worker.worker.get_worker_autoreply_settings", AsyncMock(return_value=settings_row)),
-            patch("userbot_worker.worker.get_worker_autoreply_remaining", AsyncMock(return_value=0)),
-            patch("userbot_worker.worker.get_worker_autoreply_contact", AsyncMock(return_value={"last_replied_at": None})),
+            patch("userbot_worker.worker.try_mark_autoreply", AsyncMock(return_value=True)) as try_mark_mock,
             patch("userbot_worker.worker.upsert_worker_autoreply_contact", AsyncMock()) as upsert_contact_mock,
             patch("userbot_worker.worker.touch_worker_last_manual_outgoing_at", AsyncMock()) as touch_mock,
         ):
             await handler(event)
 
         event.respond.assert_awaited_once_with("hello")
-        upsert_contact_mock.assert_any_await(unittest.mock.ANY, user_id=555, replied=True)
+        try_mark_mock.assert_awaited_once_with(unittest.mock.ANY, user_id=555, cooldown_seconds=60)
+        upsert_contact_mock.assert_awaited_once_with(unittest.mock.ANY, user_id=555, replied=False)
         touch_mock.assert_not_awaited()
 
     async def test_repeat_before_cooldown_does_not_reply(self):
@@ -112,50 +112,15 @@ class PrivateAutoreplyCooldownTests(unittest.IsolatedAsyncioTestCase):
 
         with (
             patch("userbot_worker.worker.get_worker_autoreply_settings", AsyncMock(return_value=settings_row)),
-            patch("userbot_worker.worker.get_worker_autoreply_remaining", AsyncMock(return_value=30)),
-            patch(
-                "userbot_worker.worker.get_worker_autoreply_contact",
-                AsyncMock(return_value={"last_replied_at": datetime.now(timezone.utc)}),
-            ),
+            patch("userbot_worker.worker.try_mark_autoreply", AsyncMock(return_value=False)) as try_mark_mock,
             patch("userbot_worker.worker.upsert_worker_autoreply_contact", AsyncMock()) as upsert_contact_mock,
             patch("userbot_worker.worker.touch_worker_last_manual_outgoing_at", AsyncMock()) as touch_mock,
         ):
             await handler(event)
 
         event.respond.assert_not_awaited()
+        try_mark_mock.assert_awaited_once_with(unittest.mock.ANY, user_id=555, cooldown_seconds=60)
         upsert_contact_mock.assert_awaited_once_with(unittest.mock.ANY, user_id=555, replied=False)
-        touch_mock.assert_not_awaited()
-
-    async def test_repeat_after_cooldown_replies_again(self):
-        handler = await self._get_private_handler()
-        event = _FakeEvent()
-        settings_row = SimpleNamespace(
-            enabled=True,
-            cooldown_seconds=60,
-            trigger_mode="first_message_only",
-            reply_text="hello",
-            offline_threshold_minutes=10,
-        )
-
-        with (
-            patch("userbot_worker.worker.get_worker_autoreply_settings", AsyncMock(return_value=settings_row)),
-            patch("userbot_worker.worker.get_worker_autoreply_remaining", AsyncMock(return_value=0)),
-            patch(
-                "userbot_worker.worker.get_worker_autoreply_contact",
-                AsyncMock(return_value={"last_replied_at": datetime.now(timezone.utc)}),
-            ),
-            patch("userbot_worker.worker.upsert_worker_autoreply_contact", AsyncMock()) as upsert_contact_mock,
-            patch("userbot_worker.worker.touch_worker_last_manual_outgoing_at", AsyncMock()) as touch_mock,
-        ):
-            await handler(event)
-
-        event.respond.assert_awaited_once_with("hello")
-        upsert_contact_mock.assert_has_awaits(
-            [
-                unittest.mock.call(unittest.mock.ANY, user_id=555, replied=False),
-                unittest.mock.call(unittest.mock.ANY, user_id=555, replied=True),
-            ]
-        )
         touch_mock.assert_not_awaited()
 
     async def test_offline_threshold_zero_with_recent_activity_does_not_reply(self):
@@ -171,52 +136,19 @@ class PrivateAutoreplyCooldownTests(unittest.IsolatedAsyncioTestCase):
 
         with (
             patch("userbot_worker.worker.get_worker_autoreply_settings", AsyncMock(return_value=settings_row)),
-            patch("userbot_worker.worker.get_worker_autoreply_remaining", AsyncMock(return_value=0)),
-            patch("userbot_worker.worker.get_worker_autoreply_contact", AsyncMock(return_value={"last_replied_at": None})),
             patch(
                 "userbot_worker.worker.get_worker_state_last_manual_outgoing_at",
                 AsyncMock(return_value=datetime.now(timezone.utc) - timedelta(seconds=30)),
             ),
+            patch("userbot_worker.worker.try_mark_autoreply", AsyncMock()) as try_mark_mock,
             patch("userbot_worker.worker.upsert_worker_autoreply_contact", AsyncMock()) as upsert_contact_mock,
             patch("userbot_worker.worker.touch_worker_last_manual_outgoing_at", AsyncMock()) as touch_mock,
         ):
             await handler(event)
 
         event.respond.assert_not_awaited()
+        try_mark_mock.assert_not_awaited()
         upsert_contact_mock.assert_awaited_once_with(unittest.mock.ANY, user_id=555, replied=False)
-        touch_mock.assert_not_awaited()
-
-    async def test_offline_threshold_positive_with_elapsed_time_replies(self):
-        handler = await self._get_private_handler()
-        event = _FakeEvent()
-        settings_row = SimpleNamespace(
-            enabled=True,
-            cooldown_seconds=60,
-            trigger_mode="offline_over_minutes",
-            reply_text="hello",
-            offline_threshold_minutes=10,
-        )
-
-        with (
-            patch("userbot_worker.worker.get_worker_autoreply_settings", AsyncMock(return_value=settings_row)),
-            patch("userbot_worker.worker.get_worker_autoreply_remaining", AsyncMock(return_value=0)),
-            patch("userbot_worker.worker.get_worker_autoreply_contact", AsyncMock(return_value={"last_replied_at": None})),
-            patch(
-                "userbot_worker.worker.get_worker_state_last_manual_outgoing_at",
-                AsyncMock(return_value=datetime.now(timezone.utc) - timedelta(minutes=11)),
-            ),
-            patch("userbot_worker.worker.upsert_worker_autoreply_contact", AsyncMock()) as upsert_contact_mock,
-            patch("userbot_worker.worker.touch_worker_last_manual_outgoing_at", AsyncMock()) as touch_mock,
-        ):
-            await handler(event)
-
-        event.respond.assert_awaited_once_with("hello")
-        upsert_contact_mock.assert_has_awaits(
-            [
-                unittest.mock.call(unittest.mock.ANY, user_id=555, replied=False),
-                unittest.mock.call(unittest.mock.ANY, user_id=555, replied=True),
-            ]
-        )
         touch_mock.assert_not_awaited()
 
     async def test_both_mode_requires_offline_and_first_or_cooldown(self):
@@ -232,22 +164,51 @@ class PrivateAutoreplyCooldownTests(unittest.IsolatedAsyncioTestCase):
 
         with (
             patch("userbot_worker.worker.get_worker_autoreply_settings", AsyncMock(return_value=settings_row)),
-            patch("userbot_worker.worker.get_worker_autoreply_remaining", AsyncMock(return_value=0)),
-            patch(
-                "userbot_worker.worker.get_worker_autoreply_contact",
-                AsyncMock(return_value={"last_replied_at": datetime.now(timezone.utc)}),
-            ),
             patch(
                 "userbot_worker.worker.get_worker_state_last_manual_outgoing_at",
                 AsyncMock(return_value=datetime.now(timezone.utc) - timedelta(minutes=5)),
             ),
+            patch("userbot_worker.worker.try_mark_autoreply", AsyncMock()) as try_mark_mock,
             patch("userbot_worker.worker.upsert_worker_autoreply_contact", AsyncMock()) as upsert_contact_mock,
             patch("userbot_worker.worker.touch_worker_last_manual_outgoing_at", AsyncMock()) as touch_mock,
         ):
             await handler(event)
 
         event.respond.assert_not_awaited()
+        try_mark_mock.assert_not_awaited()
         upsert_contact_mock.assert_awaited_once_with(unittest.mock.ANY, user_id=555, replied=False)
+        touch_mock.assert_not_awaited()
+
+    async def test_two_quick_messages_only_one_reply(self):
+        handler = await self._get_private_handler()
+        first_event = _FakeEvent()
+        second_event = _FakeEvent()
+        settings_row = SimpleNamespace(
+            enabled=True,
+            cooldown_seconds=60,
+            trigger_mode="first_message_only",
+            reply_text="hello",
+            offline_threshold_minutes=10,
+        )
+
+        with (
+            patch("userbot_worker.worker.get_worker_autoreply_settings", AsyncMock(return_value=settings_row)),
+            patch("userbot_worker.worker.try_mark_autoreply", AsyncMock(side_effect=[True, False])) as try_mark_mock,
+            patch("userbot_worker.worker.upsert_worker_autoreply_contact", AsyncMock()) as upsert_contact_mock,
+            patch("userbot_worker.worker.touch_worker_last_manual_outgoing_at", AsyncMock()) as touch_mock,
+        ):
+            await handler(first_event)
+            await handler(second_event)
+
+        first_event.respond.assert_awaited_once_with("hello")
+        second_event.respond.assert_not_awaited()
+        self.assertEqual(try_mark_mock.await_count, 2)
+        upsert_contact_mock.assert_has_awaits(
+            [
+                unittest.mock.call(unittest.mock.ANY, user_id=555, replied=False),
+                unittest.mock.call(unittest.mock.ANY, user_id=555, replied=False),
+            ]
+        )
         touch_mock.assert_not_awaited()
 
 

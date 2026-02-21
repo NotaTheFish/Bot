@@ -15,8 +15,6 @@ from .db import (
     disable_stale_userbot_targets,
     ensure_schema,
     get_task_status,
-    get_worker_autoreply_contact,
-    get_worker_autoreply_remaining,
     get_worker_autoreply_settings,
     get_worker_state_last_manual_outgoing_at,
     get_userbot_target_state,
@@ -30,6 +28,7 @@ from .db import (
     set_userbot_target_last_self_message_id,
     touch_worker_last_manual_outgoing_at,
     touch_worker_last_outgoing_at,
+    try_mark_autoreply,
     upsert_worker_autoreply_contact,
     update_task_progress,
     upsert_userbot_target,
@@ -294,45 +293,37 @@ async def run_worker(settings: Settings, pool, client: TelegramClient, stop_even
         if not settings_row.enabled:
             return
 
-        remaining = await get_worker_autoreply_remaining(
-            pool,
-            user_id=sender_id,
-            cooldown_seconds=settings_row.cooldown_seconds,
-        )
-        contact = await get_worker_autoreply_contact(pool, user_id=sender_id)
-        cooldown_ok = remaining <= 0
-        last_replied_at = contact.get("last_replied_at") if contact else None
-        is_first_message = last_replied_at is None
-
         now_utc = _now_utc()
-        first_or_cooldown_ok = is_first_message or cooldown_ok
-        should_reply = False
+        should_try_mark = False
         if settings_row.trigger_mode == "first_message_only":
-            should_reply = first_or_cooldown_ok
+            should_try_mark = True
         elif settings_row.trigger_mode == "offline_over_minutes":
             last_manual_outgoing_at = await get_worker_state_last_manual_outgoing_at(pool)
-            should_reply = _is_offline_ok(
+            should_try_mark = _is_offline_ok(
                 last_outgoing_at=last_manual_outgoing_at,
                 offline_threshold_minutes=settings_row.offline_threshold_minutes,
                 now_utc=now_utc,
             )
         else:  # both
             last_manual_outgoing_at = await get_worker_state_last_manual_outgoing_at(pool)
-            offline_ok = _is_offline_ok(
+            should_try_mark = _is_offline_ok(
                 last_outgoing_at=last_manual_outgoing_at,
                 offline_threshold_minutes=settings_row.offline_threshold_minutes,
                 now_utc=now_utc,
             )
-            should_reply = offline_ok and first_or_cooldown_ok
 
-        if not cooldown_ok:
+        if not should_try_mark:
             return
 
+        should_reply = await try_mark_autoreply(
+            pool,
+            user_id=sender_id,
+            cooldown_seconds=settings_row.cooldown_seconds,
+        )
         if not should_reply:
             return
 
         await event.respond(settings_row.reply_text)
-        await upsert_worker_autoreply_contact(pool, user_id=sender_id, replied=True)
 
 
     @client.on(events.NewMessage(outgoing=True))
