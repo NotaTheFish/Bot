@@ -361,17 +361,17 @@ CREATE_TABLES_SQL = [
     )
     """,
     """
-    INSERT INTO bot_settings (id, buyer_reply_storage_chat_id, buyer_reply_message_id, buyer_reply_pre_text, buyer_reply_post_text)
-    VALUES (1, NULL, NULL, NULL, NULL)
-    ON CONFLICT (id) DO NOTHING
-    """,
-    """
     ALTER TABLE bot_settings
     ADD COLUMN IF NOT EXISTS buyer_reply_pre_text TEXT
     """,
     """
     ALTER TABLE bot_settings
     ADD COLUMN IF NOT EXISTS buyer_reply_post_text TEXT
+    """,
+    """
+    INSERT INTO bot_settings (id)
+    VALUES (1)
+    ON CONFLICT (id) DO NOTHING
     """,
     """
     UPDATE bot_settings
