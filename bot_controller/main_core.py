@@ -91,6 +91,8 @@ CONTACT_CTA_TEXT = "✉️ Написать продавцу"
 BUYER_CONTACT_BUTTON_TEXT = "✉️ Связаться с продавцом"
 BUYER_CONTACT_COOLDOWN_SECONDS = _get_env_int("BUYER_CONTACT_COOLDOWN_SECONDS", 60)
 CONTACT_CTA_MODE = "off"
+DEFAULT_BUYER_REPLY_PRE_TEXT = "Здравствуйте!"
+DEFAULT_BUYER_REPLY_POST_TEXT = "Спасибо! Ваше сообщение отправлено продавцу ✅"
 
 def _parse_int_list_csv(raw: str) -> list[int]:
     raw = (raw or "").strip()
@@ -254,7 +256,7 @@ class AdminStates(StatesGroup):
     waiting_daily_time = State()
     waiting_weekly_time = State()
     waiting_edit_time = State()
-    waiting_buyer_reply_template = State()
+    waiting_buyer_reply_post_text = State()
     waiting_autoreply_text = State()
     waiting_autoreply_offline_threshold = State()
     waiting_autoreply_cooldown = State()
@@ -343,17 +345,33 @@ CREATE_TABLES_SQL = [
         id INTEGER PRIMARY KEY,
         buyer_reply_storage_chat_id BIGINT,
         buyer_reply_message_id BIGINT,
-        buyer_reply_pre_text TEXT
+        buyer_reply_pre_text TEXT,
+        buyer_reply_post_text TEXT
     )
     """,
     """
-    INSERT INTO bot_settings (id, buyer_reply_storage_chat_id, buyer_reply_message_id, buyer_reply_pre_text)
-    VALUES (1, NULL, NULL, NULL)
+    INSERT INTO bot_settings (id, buyer_reply_storage_chat_id, buyer_reply_message_id, buyer_reply_pre_text, buyer_reply_post_text)
+    VALUES (1, NULL, NULL, NULL, NULL)
     ON CONFLICT (id) DO NOTHING
     """,
     """
     ALTER TABLE bot_settings
     ADD COLUMN IF NOT EXISTS buyer_reply_pre_text TEXT
+    """,
+    """
+    ALTER TABLE bot_settings
+    ADD COLUMN IF NOT EXISTS buyer_reply_post_text TEXT
+    """,
+    """
+    UPDATE bot_settings
+    SET buyer_reply_pre_text = 'Здравствуйте!'
+    WHERE buyer_reply_pre_text IS NULL OR btrim(buyer_reply_pre_text) = ''
+    """,
+    """
+    UPDATE bot_settings
+    SET buyer_reply_post_text = 'Спасибо! Ваше сообщение отправлено продавцу ✅'
+    WHERE buyer_reply_post_text IS NULL
+      AND buyer_reply_message_id IS NOT NULL
     """,
     """
     CREATE UNIQUE INDEX IF NOT EXISTS idx_schedules_unique
@@ -1110,14 +1128,6 @@ async def save_post(
     )
 
 
-async def get_buyer_reply_template() -> tuple[Optional[int], Optional[int]]:
-    pool = await get_db_pool()
-    row = await pool.fetchrow("SELECT buyer_reply_storage_chat_id, buyer_reply_message_id FROM bot_settings WHERE id = 1")
-    if not row:
-        return None, None
-    return row["buyer_reply_storage_chat_id"], row["buyer_reply_message_id"]
-
-
 async def get_buyer_reply_pre_text() -> Optional[str]:
     pool = await get_db_pool()
     value = await pool.fetchval("SELECT buyer_reply_pre_text FROM bot_settings WHERE id = 1")
@@ -1127,19 +1137,38 @@ async def get_buyer_reply_pre_text() -> Optional[str]:
     return normalized or None
 
 
-async def save_buyer_reply_template(storage_chat_id: int, message_id: int) -> None:
+async def get_buyer_reply_post_text() -> Optional[str]:
+    pool = await get_db_pool()
+    value = await pool.fetchval("SELECT buyer_reply_post_text FROM bot_settings WHERE id = 1")
+    if value is None:
+        return None
+    normalized = str(value).strip()
+    return normalized or None
+
+
+async def save_buyer_reply_pre_text(text: str) -> None:
     pool = await get_db_pool()
     await pool.execute(
         """
-        INSERT INTO bot_settings (id, buyer_reply_storage_chat_id, buyer_reply_message_id)
-        VALUES (1, $1, $2)
+        INSERT INTO bot_settings (id, buyer_reply_pre_text)
+        VALUES (1, $1)
         ON CONFLICT (id)
-        DO UPDATE SET
-            buyer_reply_storage_chat_id = excluded.buyer_reply_storage_chat_id,
-            buyer_reply_message_id = excluded.buyer_reply_message_id
+        DO UPDATE SET buyer_reply_pre_text = excluded.buyer_reply_pre_text
         """,
-        storage_chat_id,
-        message_id,
+        text.strip(),
+    )
+
+
+async def save_buyer_reply_post_text(text: str) -> None:
+    pool = await get_db_pool()
+    await pool.execute(
+        """
+        INSERT INTO bot_settings (id, buyer_reply_post_text)
+        VALUES (1, $1)
+        ON CONFLICT (id)
+        DO UPDATE SET buyer_reply_post_text = excluded.buyer_reply_post_text
+        """,
+        text.strip(),
     )
 
 
@@ -1533,36 +1562,17 @@ def _ensure_safe_publish_text(
 
 
 async def _send_buyer_reply(user_id: int) -> None:
-    storage_chat_id, message_id = await get_buyer_reply_template()
-    if storage_chat_id and message_id:
-        try:
-            await bot.copy_message(chat_id=user_id, from_chat_id=storage_chat_id, message_id=message_id)
-            return
-        except Exception as exc:
-            logger.warning("Failed to send buyer reply template copy, fallback to text: %s", exc)
-    await bot.send_message(user_id, "Спасибо! Ваше сообщение отправлено продавцу ✅")
+    post_text = await get_buyer_reply_post_text()
+    await bot.send_message(user_id, post_text or DEFAULT_BUYER_REPLY_POST_TEXT)
 
 
 async def send_buyer_pre_reply(chat_id: int) -> None:
     pre_text = await get_buyer_reply_pre_text()
     await bot.send_message(
         chat_id,
-        pre_text or "Здравствуйте!",
+        pre_text or DEFAULT_BUYER_REPLY_PRE_TEXT,
         reply_markup=buyer_contact_inline_keyboard(),
     )
-
-
-async def _save_buyer_reply_template_from_message(message: Message) -> None:
-    storage_chat_id = await get_storage_chat_id()
-    if storage_chat_id == 0:
-        raise RuntimeError("STORAGE_CHAT_ID не настроен")
-
-    copied = await bot.copy_message(
-        chat_id=storage_chat_id,
-        from_chat_id=message.chat.id,
-        message_id=message.message_id,
-    )
-    await save_buyer_reply_template(storage_chat_id, copied.message_id)
 
 
 async def _send_post_with_cta(
@@ -2671,22 +2681,21 @@ async def edit_post_start(message: Message, state: FSMContext):
 async def buyer_reply_settings_start(message: Message, state: FSMContext):
     if not ensure_admin(message):
         return
-    await state.set_state(AdminStates.waiting_buyer_reply_template)
-    await message.answer("Отправьте новое сообщение-автоответ (можно с премиум эмодзи).")
+    await state.set_state(AdminStates.waiting_buyer_reply_post_text)
+    await message.answer("Отправьте новый текст автоответа покупателю.")
 
 
-@dp.message(AdminStates.waiting_buyer_reply_template)
+@dp.message(AdminStates.waiting_buyer_reply_post_text)
 async def buyer_reply_settings_save(message: Message, state: FSMContext):
     if not ensure_admin(message):
         return
 
-    try:
-        await _save_buyer_reply_template_from_message(message)
-    except Exception as exc:
-        logger.error("Buyer reply template save failed: %s", exc)
-        await message.answer("Не удалось сохранить автоответ. Проверьте STORAGE_CHAT_ID и попробуйте снова.")
+    text = (message.text or message.caption or "").strip()
+    if not text:
+        await message.answer("Нужен текст. Отправьте текстовое сообщение для автоответа.")
         return
 
+    await save_buyer_reply_post_text(text)
     await state.clear()
     await message.answer("Автоответ обновлён ✅")
 
