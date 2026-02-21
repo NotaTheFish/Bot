@@ -256,6 +256,8 @@ class AdminStates(StatesGroup):
     waiting_daily_time = State()
     waiting_weekly_time = State()
     waiting_edit_time = State()
+    choosing_buyer_reply_variant = State()
+    waiting_buyer_reply_pre_text = State()
     waiting_buyer_reply_post_text = State()
     waiting_autoreply_text = State()
     waiting_autoreply_offline_threshold = State()
@@ -282,6 +284,15 @@ def buyer_contact_inline_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(text=BUYER_CONTACT_BUTTON_TEXT, callback_data="contact:open")]
+        ]
+    )
+
+
+def buyer_reply_variant_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="✍️ Изменить ДО", callback_data="buyer_reply:edit_pre")],
+            [InlineKeyboardButton(text="✅ Изменить ПОСЛЕ", callback_data="buyer_reply:edit_post")],
         ]
     )
 
@@ -2681,23 +2692,73 @@ async def edit_post_start(message: Message, state: FSMContext):
 async def buyer_reply_settings_start(message: Message, state: FSMContext):
     if not ensure_admin(message):
         return
+    await state.set_state(AdminStates.choosing_buyer_reply_variant)
+    await message.answer(
+        "Что хотите изменить в автоответе покупателю?",
+        reply_markup=buyer_reply_variant_keyboard(),
+    )
+
+
+@dp.callback_query(F.data == "buyer_reply:edit_pre")
+async def buyer_reply_choose_pre(callback: CallbackQuery, state: FSMContext):
+    if not callback.message or not is_admin_user(callback.from_user.id):
+        await callback.answer("Недоступно", show_alert=True)
+        return
+    await state.set_state(AdminStates.waiting_buyer_reply_pre_text)
+    await callback.message.answer("Отправьте текст, который будет добавляться ДО сообщения покупателя.")
+    await callback.answer()
+
+
+@dp.callback_query(F.data == "buyer_reply:edit_post")
+async def buyer_reply_choose_post(callback: CallbackQuery, state: FSMContext):
+    if not callback.message or not is_admin_user(callback.from_user.id):
+        await callback.answer("Недоступно", show_alert=True)
+        return
     await state.set_state(AdminStates.waiting_buyer_reply_post_text)
-    await message.answer("Отправьте новый текст автоответа покупателю.")
+    await callback.message.answer("Отправьте текст, который будет отправляться ПОСЛЕ сообщения покупателя.")
+    await callback.answer()
 
 
-@dp.message(AdminStates.waiting_buyer_reply_post_text)
-async def buyer_reply_settings_save(message: Message, state: FSMContext):
+async def _send_buyer_reply_settings_preview(message: Message) -> None:
+    pre_text = await get_buyer_reply_pre_text()
+    post_text = await get_buyer_reply_post_text()
+    await message.answer(
+        "Текущие тексты автоответа:\n\n"
+        f"ДО:\n{pre_text}\n\n"
+        f"ПОСЛЕ:\n{post_text}"
+    )
+
+
+@dp.message(AdminStates.waiting_buyer_reply_pre_text)
+async def buyer_reply_settings_save_pre(message: Message, state: FSMContext):
     if not ensure_admin(message):
         return
 
     text = (message.text or message.caption or "").strip()
     if not text:
-        await message.answer("Нужен текст. Отправьте текстовое сообщение для автоответа.")
+        await message.answer("Нужен текст. Отправьте текстовое сообщение для блока ДО.")
+        return
+
+    await save_buyer_reply_pre_text(text)
+    await state.clear()
+    await message.answer("Текст ДО обновлён ✅")
+    await _send_buyer_reply_settings_preview(message)
+
+
+@dp.message(AdminStates.waiting_buyer_reply_post_text)
+async def buyer_reply_settings_save_post(message: Message, state: FSMContext):
+    if not ensure_admin(message):
+        return
+
+    text = (message.text or message.caption or "").strip()
+    if not text:
+        await message.answer("Нужен текст. Отправьте текстовое сообщение для блока ПОСЛЕ.")
         return
 
     await save_buyer_reply_post_text(text)
     await state.clear()
-    await message.answer("Автоответ обновлён ✅")
+    await message.answer("Текст ПОСЛЕ обновлён ✅")
+    await _send_buyer_reply_settings_preview(message)
 
 
 @dp.callback_query(F.data == "edit:time")
