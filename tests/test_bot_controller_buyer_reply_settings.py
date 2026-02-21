@@ -43,14 +43,16 @@ class BuyerReplySettingsHandlersTests(unittest.IsolatedAsyncioTestCase):
         message.from_user = SimpleNamespace(id=1)
         message.text = "Новый префикс"
         message.caption = None
+        message.chat = SimpleNamespace(id=123)
+        message.message_id = 55
 
         with (
-            patch.object(main_core, "save_buyer_reply_pre_text", AsyncMock()) as save_pre,
+            patch.object(main_core, "save_buyer_reply_pre_source", AsyncMock()) as save_pre,
             patch.object(main_core, "_send_buyer_reply_settings_preview", AsyncMock()) as send_preview,
         ):
             await main_core.buyer_reply_settings_save_pre(message, state)
 
-        save_pre.assert_awaited_once_with("Новый префикс")
+        save_pre.assert_awaited_once_with(source_chat_id=message.chat.id, source_message_id=message.message_id)
         state.clear.assert_awaited_once()
         send_preview.assert_awaited_once_with(message)
 
@@ -60,14 +62,16 @@ class BuyerReplySettingsHandlersTests(unittest.IsolatedAsyncioTestCase):
         message.from_user = SimpleNamespace(id=1)
         message.text = "Новый постфикс"
         message.caption = None
+        message.chat = SimpleNamespace(id=123)
+        message.message_id = 56
 
         with (
-            patch.object(main_core, "save_buyer_reply_post_text", AsyncMock()) as save_post,
+            patch.object(main_core, "save_buyer_reply_post_source", AsyncMock()) as save_post,
             patch.object(main_core, "_send_buyer_reply_settings_preview", AsyncMock()) as send_preview,
         ):
             await main_core.buyer_reply_settings_save_post(message, state)
 
-        save_post.assert_awaited_once_with("Новый постфикс")
+        save_post.assert_awaited_once_with(source_chat_id=message.chat.id, source_message_id=message.message_id)
         state.clear.assert_awaited_once()
         send_preview.assert_awaited_once_with(message)
 

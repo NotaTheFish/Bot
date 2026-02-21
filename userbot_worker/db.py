@@ -743,7 +743,7 @@ async def get_worker_autoreply_settings(db: DBOrPool) -> WorkerAutoreplySettings
         if mode not in {"first_message_only", "offline_over_minutes", "both"}:
             mode = "both"
         template_source = str(row["template_source"] or "text")
-        if template_source not in {"text", "storage_forward"}:
+        if template_source not in {"text", "storage"}:
             template_source = "text"
         return WorkerAutoreplySettings(
             enabled=bool(row["enabled"]),

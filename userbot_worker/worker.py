@@ -366,7 +366,7 @@ async def run_worker(settings: Settings, pool, client: TelegramClient, stop_even
         template_storage_chat_id = getattr(settings_row, "template_storage_chat_id", None)
         template_storage_message_ids = list(getattr(settings_row, "template_storage_message_ids", []) or [])
         sent = None
-        if template_source == "storage_forward" and template_storage_chat_id and template_storage_message_ids:
+        if template_source == "storage" and template_storage_chat_id and template_storage_message_ids:
             try:
                 sent = await client.forward_messages(
                     event.chat_id,

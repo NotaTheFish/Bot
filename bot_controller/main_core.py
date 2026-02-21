@@ -95,6 +95,8 @@ BUYER_CONTACT_COOLDOWN_SECONDS = _get_env_int("BUYER_CONTACT_COOLDOWN_SECONDS", 
 CONTACT_CTA_MODE = "off"
 DEFAULT_BUYER_REPLY_PRE_TEXT = "Здравствуйте!"
 DEFAULT_BUYER_REPLY_POST_TEXT = "Спасибо! Ваше сообщение отправлено продавцу ✅"
+WORKER_CONTACT_LINK_TEXT = "Написать продавцу"
+DEFAULT_WORKER_CONTACT_BOT_USERNAME = "CoS_Spam_bot"
 
 def _parse_int_list_csv(raw: str) -> list[int]:
     raw = (raw or "").strip()
@@ -196,6 +198,7 @@ BOT_ID = 0
 db_pool: Optional[asyncpg.Pool] = None
 media_group_buffers: dict[str, dict] = {}
 storage_admin_media_group_buffers: dict[str, dict] = {}
+worker_template_media_group_buffers: dict[str, dict] = {}
 userbot_tasks_schema_ready = False
 userbot_tasks_schema_lock = asyncio.Lock()
 userbot_tasks_columns_cache: Optional[set[str]] = None
@@ -265,7 +268,6 @@ class AdminStates(StatesGroup):
     waiting_autoreply_text = State()
     waiting_autoreply_offline_threshold = State()
     waiting_autoreply_cooldown = State()
-    waiting_worker_template_command = State()
     waiting_storage_post = State()
 
 
@@ -371,6 +373,22 @@ CREATE_TABLES_SQL = [
     """
     ALTER TABLE bot_settings
     ADD COLUMN IF NOT EXISTS buyer_reply_post_text TEXT
+    """,
+    """
+    ALTER TABLE bot_settings
+    ADD COLUMN IF NOT EXISTS buyer_pre_source_chat_id BIGINT
+    """,
+    """
+    ALTER TABLE bot_settings
+    ADD COLUMN IF NOT EXISTS buyer_pre_source_message_id BIGINT
+    """,
+    """
+    ALTER TABLE bot_settings
+    ADD COLUMN IF NOT EXISTS buyer_post_source_chat_id BIGINT
+    """,
+    """
+    ALTER TABLE bot_settings
+    ADD COLUMN IF NOT EXISTS buyer_post_source_message_id BIGINT
     """,
     """
     INSERT INTO bot_settings (id)
@@ -1195,6 +1213,23 @@ async def save_post(
     )
 
 
+async def _get_buyer_reply_source(which: str) -> tuple[Optional[int], Optional[int]]:
+    pool = await get_db_pool()
+    if which == "pre":
+        row = await pool.fetchrow(
+            "SELECT buyer_pre_source_chat_id, buyer_pre_source_message_id FROM bot_settings WHERE id = 1"
+        )
+    else:
+        row = await pool.fetchrow(
+            "SELECT buyer_post_source_chat_id, buyer_post_source_message_id FROM bot_settings WHERE id = 1"
+        )
+    if not row:
+        return None, None
+    chat_id = int(row[0]) if row[0] is not None else None
+    message_id = int(row[1]) if row[1] is not None else None
+    return chat_id, message_id
+
+
 async def get_buyer_reply_pre_text() -> Optional[str]:
     pool = await get_db_pool()
     value = await pool.fetchval("SELECT buyer_reply_pre_text FROM bot_settings WHERE id = 1")
@@ -1213,29 +1248,33 @@ async def get_buyer_reply_post_text() -> Optional[str]:
     return normalized or None
 
 
-async def save_buyer_reply_pre_text(text: str) -> None:
+async def save_buyer_reply_pre_source(*, source_chat_id: int, source_message_id: int) -> None:
     pool = await get_db_pool()
     await pool.execute(
         """
-        INSERT INTO bot_settings (id, buyer_reply_pre_text)
-        VALUES (1, $1)
+        INSERT INTO bot_settings (id, buyer_pre_source_chat_id, buyer_pre_source_message_id)
+        VALUES (1, $1, $2)
         ON CONFLICT (id)
-        DO UPDATE SET buyer_reply_pre_text = excluded.buyer_reply_pre_text
+        DO UPDATE SET buyer_pre_source_chat_id = excluded.buyer_pre_source_chat_id,
+                      buyer_pre_source_message_id = excluded.buyer_pre_source_message_id
         """,
-        text.strip(),
+        int(source_chat_id),
+        int(source_message_id),
     )
 
 
-async def save_buyer_reply_post_text(text: str) -> None:
+async def save_buyer_reply_post_source(*, source_chat_id: int, source_message_id: int) -> None:
     pool = await get_db_pool()
     await pool.execute(
         """
-        INSERT INTO bot_settings (id, buyer_reply_post_text)
-        VALUES (1, $1)
+        INSERT INTO bot_settings (id, buyer_post_source_chat_id, buyer_post_source_message_id)
+        VALUES (1, $1, $2)
         ON CONFLICT (id)
-        DO UPDATE SET buyer_reply_post_text = excluded.buyer_reply_post_text
+        DO UPDATE SET buyer_post_source_chat_id = excluded.buyer_post_source_chat_id,
+                      buyer_post_source_message_id = excluded.buyer_post_source_message_id
         """,
-        text.strip(),
+        int(source_chat_id),
+        int(source_message_id),
     )
 
 
@@ -1535,6 +1574,24 @@ def _resolve_bot_username() -> str:
     return BOT_USERNAME or CONFIGURED_BOT_USERNAME
 
 
+def _resolve_worker_contact_bot_username() -> str:
+    return _resolve_bot_username() or DEFAULT_WORKER_CONTACT_BOT_USERNAME
+
+
+def _worker_contact_link_html() -> str:
+    return f'👉 <a href="https://t.me/{_resolve_worker_contact_bot_username()}"><b>{WORKER_CONTACT_LINK_TEXT}</b></a>'
+
+
+def _append_worker_contact_html(text: Optional[str]) -> str:
+    body = (text or "").strip()
+    if WORKER_CONTACT_LINK_TEXT.casefold() in body.casefold():
+        return body
+    suffix = _worker_contact_link_html()
+    if not body:
+        return suffix
+    return f"{body}\n\n{suffix}"
+
+
 def _contains_contact_cta(text: Optional[str], *, bot_username: str = "") -> bool:
     if not text:
         return False
@@ -1629,6 +1686,10 @@ def _ensure_safe_publish_text(
 
 
 async def _send_buyer_reply(user_id: int) -> None:
+    source_chat_id, source_message_id = await _get_buyer_reply_source("post")
+    if source_chat_id and source_message_id:
+        await bot.copy_message(chat_id=user_id, from_chat_id=source_chat_id, message_id=source_message_id)
+        return
     post_text = await _get_buyer_post_reply_text()
     await bot.send_message(user_id, post_text)
 
@@ -1638,6 +1699,15 @@ async def _get_buyer_post_reply_text() -> str:
 
 
 async def send_buyer_pre_reply(chat_id: int) -> None:
+    source_chat_id, source_message_id = await _get_buyer_reply_source("pre")
+    if source_chat_id and source_message_id:
+        await bot.copy_message(
+            chat_id=chat_id,
+            from_chat_id=source_chat_id,
+            message_id=source_message_id,
+            reply_markup=buyer_contact_inline_keyboard(),
+        )
+        return
     pre_text = await get_buyer_reply_pre_text()
     await bot.send_message(
         chat_id,
@@ -2765,7 +2835,7 @@ async def buyer_reply_choose_pre(callback: CallbackQuery, state: FSMContext):
         await callback.answer("Недоступно", show_alert=True)
         return
     await state.set_state(AdminStates.waiting_buyer_reply_pre_text)
-    await callback.message.answer("Отправьте текст, который будет добавляться ДО сообщения покупателя.")
+    await callback.message.answer("Отправьте сообщение ДО (можно premium emoji/форматирование).")
     await callback.answer()
 
 
@@ -2775,18 +2845,28 @@ async def buyer_reply_choose_post(callback: CallbackQuery, state: FSMContext):
         await callback.answer("Недоступно", show_alert=True)
         return
     await state.set_state(AdminStates.waiting_buyer_reply_post_text)
-    await callback.message.answer("Отправьте текст, который будет отправляться ПОСЛЕ сообщения покупателя.")
+    await callback.message.answer("Отправьте сообщение ПОСЛЕ (можно premium emoji/форматирование).")
     await callback.answer()
 
 
 async def _send_buyer_reply_settings_preview(message: Message) -> None:
     pre_text = await get_buyer_reply_pre_text()
     post_text = await get_buyer_reply_post_text()
-    await message.answer(
-        "Текущие тексты автоответа:\n\n"
-        f"ДО:\n{pre_text}\n\n"
-        f"ПОСЛЕ:\n{post_text}"
-    )
+    await message.answer("Текущие автоответы:")
+
+    pre_source_chat_id, pre_source_message_id = await _get_buyer_reply_source("pre")
+    if pre_source_chat_id and pre_source_message_id:
+        await message.answer("ДО:")
+        await bot.copy_message(chat_id=message.chat.id, from_chat_id=pre_source_chat_id, message_id=pre_source_message_id)
+    else:
+        await message.answer(f"ДО (fallback):\n{pre_text or DEFAULT_BUYER_REPLY_PRE_TEXT}")
+
+    post_source_chat_id, post_source_message_id = await _get_buyer_reply_source("post")
+    if post_source_chat_id and post_source_message_id:
+        await message.answer("ПОСЛЕ:")
+        await bot.copy_message(chat_id=message.chat.id, from_chat_id=post_source_chat_id, message_id=post_source_message_id)
+    else:
+        await message.answer(f"ПОСЛЕ (fallback):\n{post_text or DEFAULT_BUYER_REPLY_POST_TEXT}")
 
 
 @dp.message(AdminStates.waiting_buyer_reply_pre_text)
@@ -2794,14 +2874,9 @@ async def buyer_reply_settings_save_pre(message: Message, state: FSMContext):
     if not ensure_admin(message):
         return
 
-    text = (message.text or message.caption or "").strip()
-    if not text:
-        await message.answer("Нужен текст. Отправьте текстовое сообщение для блока ДО.")
-        return
-
-    await save_buyer_reply_pre_text(text)
+    await save_buyer_reply_pre_source(source_chat_id=message.chat.id, source_message_id=message.message_id)
     await state.clear()
-    await message.answer("Текст ДО обновлён ✅")
+    await message.answer("Сообщение ДО обновлено ✅")
     await _send_buyer_reply_settings_preview(message)
 
 
@@ -2810,14 +2885,9 @@ async def buyer_reply_settings_save_post(message: Message, state: FSMContext):
     if not ensure_admin(message):
         return
 
-    text = (message.text or message.caption or "").strip()
-    if not text:
-        await message.answer("Нужен текст. Отправьте текстовое сообщение для блока ПОСЛЕ.")
-        return
-
-    await save_buyer_reply_post_text(text)
+    await save_buyer_reply_post_source(source_chat_id=message.chat.id, source_message_id=message.message_id)
     await state.clear()
-    await message.answer("Текст ПОСЛЕ обновлён ✅")
+    await message.answer("Сообщение ПОСЛЕ обновлено ✅")
     await _send_buyer_reply_settings_preview(message)
 
 
@@ -3442,7 +3512,7 @@ async def get_worker_autoreply_settings() -> dict:
     if mode not in VALID_AUTOREPLY_MODES:
         mode = "both"
     template_source = str(row["template_source"] or "text")
-    if template_source not in {"text", "storage_forward"}:
+    if template_source not in {"text", "storage"}:
         template_source = "text"
     return {
         "enabled": bool(row["enabled"]),
@@ -3492,7 +3562,7 @@ def _autoreply_settings_text(settings: dict) -> str:
         "both": "🧠 Умный",
     }
     cooldown_minutes = settings["cooldown_seconds"] // 60
-    template_mode = "⭐ Из Storage (forward)" if settings.get("template_source") == "storage_forward" else "📝 Текст"
+    template_mode = "📦 Storage-forward" if settings.get("template_source") == "storage" else "📝 Текст"
     return "\n".join([
         "🤖 Настройки автоответчика worker",
         f"Статус: {'включен' if settings['enabled'] else 'выключен'}",
@@ -3509,7 +3579,6 @@ def worker_autoreply_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="✅ Включить", callback_data="wa:enable"), InlineKeyboardButton(text="⛔ Выключить", callback_data="wa:disable")],
         [InlineKeyboardButton(text="📝 Текст", callback_data="wa:text")],
-        [InlineKeyboardButton(text="⭐ Шаблон из Storage", callback_data="wa:storage_template")],
         [InlineKeyboardButton(text="🎯 Один раз", callback_data="wa:mode:first_message_only")],
         [InlineKeyboardButton(text="🕒 Только оффлайн", callback_data="wa:mode:offline_over_minutes")],
         [InlineKeyboardButton(text="🧠 Умный", callback_data="wa:mode:both")],
@@ -3582,58 +3651,97 @@ async def worker_autoreply_text_start(callback: CallbackQuery, state: FSMContext
         await callback.answer("Недоступно", show_alert=True)
         return
     await state.set_state(AdminStates.waiting_autoreply_text)
-    await callback.message.answer("Отправьте новый текст автоответчика.")
+    await callback.message.answer("Отправьте новый шаблон автоответа воркера (можно premium emoji, фото, альбом). Я сохраню его в Storage и воркер будет пересылать его клиентам.")
     await callback.answer()
 
 
-@dp.callback_query(F.data == "wa:storage_template")
-async def worker_autoreply_storage_template_start(callback: CallbackQuery, state: FSMContext):
-    if not callback.message or not is_admin_user(callback.from_user.id):
-        await callback.answer("Недоступно", show_alert=True)
+async def _cleanup_previous_worker_storage_template() -> None:
+    settings = await get_worker_autoreply_settings()
+    if settings.get("template_source") != "storage":
         return
-    await state.set_state(AdminStates.waiting_worker_template_command)
-    await callback.message.answer(
-        "Перейдите в чат Storage и отправьте сообщение-шаблон ОТ АККАУНТА ПРОДАВЦА "
-        "(можно premium emoji, жирный текст и ссылку на @CoS_Spam_bot через редактор Telegram).\n\n"
-        "Затем нажмите кнопку ниже или отправьте /use_worker_template.",
-        reply_markup=InlineKeyboardMarkup(
-            inline_keyboard=[[InlineKeyboardButton(text="✅ Использовать последнее сообщение из Storage", callback_data="wa:use_storage_template")]]
-        ),
-    )
-    await callback.answer()
+    old_chat_id = settings.get("template_storage_chat_id")
+    old_ids = [int(v) for v in (settings.get("template_storage_message_ids") or []) if int(v) > 0]
+    if not old_chat_id or not old_ids:
+        return
+    for message_id in old_ids:
+        try:
+            await bot.delete_message(chat_id=int(old_chat_id), message_id=int(message_id))
+        except Exception:
+            logger.warning(
+                "worker template cleanup failed chat_id=%s message_id=%s",
+                old_chat_id,
+                message_id,
+                exc_info=True,
+            )
 
 
-async def _apply_last_storage_worker_template(message: Message) -> None:
-    storage_chat_id, message_ids = await get_last_storage_admin_messages()
-    if not storage_chat_id or not message_ids:
-        await message.answer("Не найден шаблон в Storage от администратора. Сначала отправьте сообщение в Storage.")
-        return
+async def _save_worker_template_from_messages(message: Message, messages: list[Message], state: FSMContext) -> None:
+    await _cleanup_previous_worker_storage_template()
+    stored_message_ids: list[int] = []
+    has_caption = any((item.caption or "").strip() for item in messages)
+
+    for item in messages:
+        is_media = bool(item.photo or item.video or item.document or item.animation)
+        if is_media:
+            if (item.caption or "").strip():
+                copied = await bot.copy_message(
+                    chat_id=STORAGE_CHAT_ID,
+                    from_chat_id=item.chat.id,
+                    message_id=item.message_id,
+                    caption=_append_worker_contact_html(item.html_caption or html.escape(item.caption or "")),
+                    parse_mode="HTML",
+                )
+            else:
+                copied = await bot.copy_message(
+                    chat_id=STORAGE_CHAT_ID,
+                    from_chat_id=item.chat.id,
+                    message_id=item.message_id,
+                )
+            stored_message_ids.append(int(copied.message_id))
+            continue
+
+        text_html = item.html_text or html.escape(item.text or item.caption or "")
+        sent = await bot.send_message(
+            STORAGE_CHAT_ID,
+            _append_worker_contact_html(text_html),
+            parse_mode="HTML",
+            disable_web_page_preview=True,
+        )
+        stored_message_ids.append(int(sent.message_id))
+
+    if messages and not has_caption and any(bool(item.photo or item.video or item.document or item.animation) for item in messages):
+        link_message = await bot.send_message(
+            STORAGE_CHAT_ID,
+            _worker_contact_link_html(),
+            parse_mode="HTML",
+            disable_web_page_preview=True,
+        )
+        stored_message_ids.append(int(link_message.message_id))
+
     await update_worker_autoreply_settings(
-        template_source="storage_forward",
-        template_storage_chat_id=int(storage_chat_id),
-        template_storage_message_ids=[int(v) for v in message_ids],
+        template_source="storage",
+        template_storage_chat_id=int(STORAGE_CHAT_ID),
+        template_storage_message_ids=stored_message_ids,
     )
-    await message.answer("✅ Шаблон установлен. Будет пересылаться как «переслано от продавца».")
+    await state.clear()
+    await message.answer("✅ Шаблон воркера обновлён")
+    for mid in stored_message_ids:
+        await bot.copy_message(chat_id=message.chat.id, from_chat_id=STORAGE_CHAT_ID, message_id=mid)
     settings = await get_worker_autoreply_settings()
     await message.answer(_autoreply_settings_text(settings), reply_markup=worker_autoreply_keyboard())
 
 
-@dp.callback_query(F.data == "wa:use_storage_template")
-async def worker_autoreply_use_storage_template(callback: CallbackQuery, state: FSMContext):
-    if not callback.message or not is_admin_user(callback.from_user.id):
-        await callback.answer("Недоступно", show_alert=True)
-        return
-    await state.clear()
-    await _apply_last_storage_worker_template(callback.message)
-    await callback.answer("Сохранено")
-
-
-@dp.message(Command("use_worker_template"))
-async def worker_autoreply_use_storage_template_command(message: Message, state: FSMContext):
-    if not ensure_admin(message):
-        return
-    await state.clear()
-    await _apply_last_storage_worker_template(message)
+async def _flush_worker_template_media_group_with_delay(media_group_id: str, message: Message, state: FSMContext) -> None:
+    try:
+        await asyncio.sleep(MEDIA_GROUP_BUFFER_TIMEOUT_SECONDS)
+        buffer_data = worker_template_media_group_buffers.pop(media_group_id, None)
+        if not buffer_data:
+            return
+        messages = list(buffer_data.get("messages") or [])
+        if messages:
+            await _save_worker_template_from_messages(message, messages, state)
+    except asyncio.CancelledError:
+        pass
 
 
 @dp.callback_query(F.data == "wa:offline")
@@ -3664,14 +3772,23 @@ async def worker_autoreply_cooldown_start(callback: CallbackQuery, state: FSMCon
 async def worker_autoreply_text_save(message: Message, state: FSMContext):
     if not ensure_admin(message):
         return
-    text = (message.text or message.caption or "").strip()
-    if not text:
-        await message.answer("Текст не может быть пустым.")
+
+    if message.media_group_id:
+        buffer_data = worker_template_media_group_buffers.get(message.media_group_id)
+        if not buffer_data:
+            task = asyncio.create_task(
+                _flush_worker_template_media_group_with_delay(message.media_group_id, message, state)
+            )
+            buffer_data = {"messages": [], "task": task}
+            worker_template_media_group_buffers[message.media_group_id] = buffer_data
+        buffer_data["messages"].append(message)
         return
-    await update_worker_autoreply_settings(reply_text=text)
-    await state.clear()
-    settings = await get_worker_autoreply_settings()
-    await message.answer(_autoreply_settings_text(settings), reply_markup=worker_autoreply_keyboard())
+
+    if not (message.text or message.caption or message.photo or message.video or message.document or message.animation):
+        await message.answer("Поддерживаются текст/фото/видео/документ/альбом.")
+        return
+
+    await _save_worker_template_from_messages(message, [message], state)
 
 
 @dp.message(AdminStates.waiting_autoreply_offline_threshold)

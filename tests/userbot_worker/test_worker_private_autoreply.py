@@ -143,7 +143,7 @@ class PrivateAutoreplyCooldownTests(unittest.IsolatedAsyncioTestCase):
         upsert_contact_mock.assert_awaited_once_with(unittest.mock.ANY, user_id=555, replied=False)
         touch_mock.assert_not_awaited()
 
-    async def test_storage_forward_template_sends_forward(self):
+    async def test_storage_template_sends_forward(self):
         client = _FakeClient()
         stop_event = asyncio.Event()
         stop_event.set()
@@ -170,7 +170,7 @@ class PrivateAutoreplyCooldownTests(unittest.IsolatedAsyncioTestCase):
             cooldown_seconds=60,
             trigger_mode="first_message_only",
             reply_text="hello",
-            template_source="storage_forward",
+            template_source="storage",
             template_storage_chat_id=-100123,
             template_storage_message_ids=[10],
             offline_threshold_minutes=10,
