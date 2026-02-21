@@ -74,6 +74,8 @@ STORAGE_CHAT_META_KEY = "storage_chat_id"
 LAST_STORAGE_MESSAGE_ID_META_KEY = "last_storage_message_id"
 LAST_STORAGE_MESSAGE_IDS_META_KEY = "last_storage_message_ids"
 LAST_STORAGE_CHAT_ID_META_KEY = "last_storage_chat_id"
+LAST_STORAGE_ADMIN_MESSAGE_IDS_META_KEY = "last_storage_admin_message_ids"
+LAST_STORAGE_ADMIN_CHAT_ID_META_KEY = "last_storage_admin_chat_id"
 MEDIA_GROUP_BUFFER_TIMEOUT_SECONDS = max(0.5, float(_get_env_str("MEDIA_GROUP_BUFFER_TIMEOUT_SECONDS", "1.5")))
 STORAGE_KEEP_LAST_POSTS = max(1, _get_env_int("STORAGE_KEEP_LAST_POSTS", 1))
 STORAGE_CLEANUP_EVERY_SECONDS = max(60, _get_env_int("STORAGE_CLEANUP_EVERY_SECONDS", 600))
@@ -193,6 +195,7 @@ BOT_USERNAME = ""
 BOT_ID = 0
 db_pool: Optional[asyncpg.Pool] = None
 media_group_buffers: dict[str, dict] = {}
+storage_admin_media_group_buffers: dict[str, dict] = {}
 userbot_tasks_schema_ready = False
 userbot_tasks_schema_lock = asyncio.Lock()
 userbot_tasks_columns_cache: Optional[set[str]] = None
@@ -262,6 +265,7 @@ class AdminStates(StatesGroup):
     waiting_autoreply_text = State()
     waiting_autoreply_offline_threshold = State()
     waiting_autoreply_cooldown = State()
+    waiting_worker_template_command = State()
     waiting_storage_post = State()
 
 
@@ -436,6 +440,9 @@ CREATE_TABLES_SQL = [
         id INTEGER PRIMARY KEY DEFAULT 1,
         enabled BOOLEAN NOT NULL DEFAULT TRUE,
         reply_text TEXT NOT NULL DEFAULT 'Здравствуйте! Я технический аккаунт рассылки. Ответим вам позже.',
+        template_source TEXT NOT NULL DEFAULT 'text',
+        template_storage_chat_id BIGINT,
+        template_storage_message_ids BIGINT[] DEFAULT '{}',
         trigger_mode TEXT NOT NULL DEFAULT 'both',
         offline_threshold_minutes INTEGER NOT NULL DEFAULT 60,
         cooldown_seconds INTEGER NOT NULL DEFAULT 3600,
@@ -447,6 +454,27 @@ CREATE_TABLES_SQL = [
     INSERT INTO worker_autoreply_settings (id)
     VALUES (1)
     ON CONFLICT (id) DO NOTHING
+    """,
+    """
+    ALTER TABLE worker_autoreply_settings
+    ADD COLUMN IF NOT EXISTS template_source TEXT NOT NULL DEFAULT 'text'
+    """,
+    """
+    ALTER TABLE worker_autoreply_settings
+    ADD COLUMN IF NOT EXISTS template_storage_chat_id BIGINT
+    """,
+    """
+    ALTER TABLE worker_autoreply_settings
+    ADD COLUMN IF NOT EXISTS template_storage_message_ids BIGINT[]
+    """,
+    """
+    UPDATE worker_autoreply_settings
+    SET template_storage_message_ids = '{}'
+    WHERE template_storage_message_ids IS NULL
+    """,
+    """
+    ALTER TABLE worker_autoreply_settings
+    ALTER COLUMN template_storage_message_ids SET DEFAULT '{}'
     """,
     """
     CREATE TABLE IF NOT EXISTS worker_autoreply_contacts (
@@ -1031,6 +1059,34 @@ async def set_last_storage_messages(storage_chat_id: int, message_ids: list[int]
         await set_meta(LAST_STORAGE_MESSAGE_ID_META_KEY, "")
     await set_meta(LAST_STORAGE_MESSAGE_IDS_META_KEY, json.dumps(normalized_ids))
     await set_meta(LAST_STORAGE_CHAT_ID_META_KEY, str(storage_chat_id))
+
+
+async def set_last_storage_admin_messages(storage_chat_id: int, message_ids: list[int]) -> None:
+    normalized_ids = sorted({int(message_id) for message_id in message_ids if int(message_id) > 0})
+    await set_meta(LAST_STORAGE_ADMIN_MESSAGE_IDS_META_KEY, json.dumps(normalized_ids))
+    await set_meta(LAST_STORAGE_ADMIN_CHAT_ID_META_KEY, str(storage_chat_id))
+
+
+async def get_last_storage_admin_messages() -> tuple[Optional[int], list[int]]:
+    message_ids_raw = await get_meta(LAST_STORAGE_ADMIN_MESSAGE_IDS_META_KEY)
+    message_ids: list[int] = []
+    if message_ids_raw:
+        try:
+            parsed = json.loads(message_ids_raw)
+            if isinstance(parsed, list):
+                message_ids = [int(v) for v in parsed if int(v) > 0]
+        except Exception:
+            logger.warning("Failed to parse %s", LAST_STORAGE_ADMIN_MESSAGE_IDS_META_KEY)
+
+    last_chat_raw = await get_meta(LAST_STORAGE_ADMIN_CHAT_ID_META_KEY)
+    storage_chat_id: Optional[int] = None
+    if last_chat_raw:
+        try:
+            storage_chat_id = int(last_chat_raw)
+        except ValueError:
+            storage_chat_id = None
+
+    return storage_chat_id, sorted(set(message_ids))
 
 
 async def get_last_storage_messages() -> tuple[Optional[int], list[int]]:
@@ -2853,6 +2909,8 @@ async def handle_storage_post(message: Message, state: FSMContext):
     if message.from_user.id not in ADMIN_IDS:
         return
 
+    await _remember_storage_admin_template_message(message)
+
     state_before = await state.get_state()
     logger.info(
         "storage_post handler enter chat_id=%s user_id=%s thread_id=%s state_before=%s, entered, will publish",
@@ -2934,6 +2992,37 @@ async def _flush_media_group_with_delay(media_group_id: str, state: FSMContext) 
         await asyncio.sleep(MEDIA_GROUP_BUFFER_TIMEOUT_SECONDS)
         logger.info("storage_post flush delayed media_group_id=%s", media_group_id)
         await _flush_media_group(media_group_id, state)
+    except asyncio.CancelledError:
+        pass
+
+
+async def _remember_storage_admin_template_message(message: Message) -> None:
+    if message.chat.id != STORAGE_CHAT_ID or not message.from_user or message.from_user.id not in ADMIN_IDS:
+        return
+    if message.media_group_id:
+        buffer_data = storage_admin_media_group_buffers.get(message.media_group_id)
+        if not buffer_data:
+            task = asyncio.create_task(_flush_storage_admin_media_group_with_delay(message.media_group_id))
+            buffer_data = {"message_ids": [], "task": task, "chat_id": int(message.chat.id)}
+            storage_admin_media_group_buffers[message.media_group_id] = buffer_data
+        elif buffer_data.get("task") is None:
+            buffer_data["task"] = asyncio.create_task(_flush_storage_admin_media_group_with_delay(message.media_group_id))
+        buffer_data["message_ids"].append(int(message.message_id))
+        return
+
+    await set_last_storage_admin_messages(int(message.chat.id), [int(message.message_id)])
+
+
+async def _flush_storage_admin_media_group_with_delay(media_group_id: str) -> None:
+    try:
+        await asyncio.sleep(MEDIA_GROUP_BUFFER_TIMEOUT_SECONDS)
+        buffer_data = storage_admin_media_group_buffers.pop(media_group_id, None)
+        if not buffer_data:
+            return
+        chat_id = int(buffer_data.get("chat_id") or STORAGE_CHAT_ID)
+        message_ids = sorted({int(mid) for mid in (buffer_data.get("message_ids") or []) if int(mid) > 0})
+        if message_ids:
+            await set_last_storage_admin_messages(chat_id, message_ids)
     except asyncio.CancelledError:
         pass
 
@@ -3332,7 +3421,8 @@ async def get_worker_autoreply_settings() -> dict:
     pool = await get_db_pool()
     row = await pool.fetchrow(
         """
-        SELECT enabled, reply_text, trigger_mode, offline_threshold_minutes, cooldown_seconds
+        SELECT enabled, reply_text, template_source, template_storage_chat_id, template_storage_message_ids,
+               trigger_mode, offline_threshold_minutes, cooldown_seconds
         FROM worker_autoreply_settings
         WHERE id = 1
         """
@@ -3341,6 +3431,9 @@ async def get_worker_autoreply_settings() -> dict:
         return {
             "enabled": True,
             "reply_text": "Здравствуйте! Я технический аккаунт рассылки. Ответим вам позже.",
+            "template_source": "text",
+            "template_storage_chat_id": None,
+            "template_storage_message_ids": [],
             "trigger_mode": "both",
             "offline_threshold_minutes": 60,
             "cooldown_seconds": 3600,
@@ -3348,9 +3441,15 @@ async def get_worker_autoreply_settings() -> dict:
     mode = str(row["trigger_mode"] or "both")
     if mode not in VALID_AUTOREPLY_MODES:
         mode = "both"
+    template_source = str(row["template_source"] or "text")
+    if template_source not in {"text", "storage_forward"}:
+        template_source = "text"
     return {
         "enabled": bool(row["enabled"]),
         "reply_text": str(row["reply_text"] or "Здравствуйте! Я технический аккаунт рассылки. Ответим вам позже."),
+        "template_source": template_source,
+        "template_storage_chat_id": int(row["template_storage_chat_id"]) if row["template_storage_chat_id"] is not None else None,
+        "template_storage_message_ids": [int(v) for v in (row["template_storage_message_ids"] or [])],
         "trigger_mode": mode,
         "offline_threshold_minutes": max(0, int(row["offline_threshold_minutes"] or 60)),
         "cooldown_seconds": max(0, int(row["cooldown_seconds"] or 3600)),
@@ -3358,7 +3457,16 @@ async def get_worker_autoreply_settings() -> dict:
 
 
 async def update_worker_autoreply_settings(**kwargs) -> None:
-    allowed = {"enabled", "reply_text", "trigger_mode", "offline_threshold_minutes", "cooldown_seconds"}
+    allowed = {
+        "enabled",
+        "reply_text",
+        "template_source",
+        "template_storage_chat_id",
+        "template_storage_message_ids",
+        "trigger_mode",
+        "offline_threshold_minutes",
+        "cooldown_seconds",
+    }
     updates = {k: v for k, v in kwargs.items() if k in allowed and v is not None}
     if not updates:
         return
@@ -3384,9 +3492,11 @@ def _autoreply_settings_text(settings: dict) -> str:
         "both": "🧠 Умный",
     }
     cooldown_minutes = settings["cooldown_seconds"] // 60
+    template_mode = "⭐ Из Storage (forward)" if settings.get("template_source") == "storage_forward" else "📝 Текст"
     return "\n".join([
         "🤖 Настройки автоответчика worker",
         f"Статус: {'включен' if settings['enabled'] else 'выключен'}",
+        f"Шаблон: {template_mode}",
         f"Режим: {mode_labels.get(settings['trigger_mode'], settings['trigger_mode'])}",
         f"Оффлайн через: {settings['offline_threshold_minutes']} мин",
         f"Повтор через: {cooldown_minutes} мин",
@@ -3399,6 +3509,7 @@ def worker_autoreply_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="✅ Включить", callback_data="wa:enable"), InlineKeyboardButton(text="⛔ Выключить", callback_data="wa:disable")],
         [InlineKeyboardButton(text="📝 Текст", callback_data="wa:text")],
+        [InlineKeyboardButton(text="⭐ Шаблон из Storage", callback_data="wa:storage_template")],
         [InlineKeyboardButton(text="🎯 Один раз", callback_data="wa:mode:first_message_only")],
         [InlineKeyboardButton(text="🕒 Только оффлайн", callback_data="wa:mode:offline_over_minutes")],
         [InlineKeyboardButton(text="🧠 Умный", callback_data="wa:mode:both")],
@@ -3473,6 +3584,56 @@ async def worker_autoreply_text_start(callback: CallbackQuery, state: FSMContext
     await state.set_state(AdminStates.waiting_autoreply_text)
     await callback.message.answer("Отправьте новый текст автоответчика.")
     await callback.answer()
+
+
+@dp.callback_query(F.data == "wa:storage_template")
+async def worker_autoreply_storage_template_start(callback: CallbackQuery, state: FSMContext):
+    if not callback.message or not is_admin_user(callback.from_user.id):
+        await callback.answer("Недоступно", show_alert=True)
+        return
+    await state.set_state(AdminStates.waiting_worker_template_command)
+    await callback.message.answer(
+        "Перейдите в чат Storage и отправьте сообщение-шаблон ОТ АККАУНТА ПРОДАВЦА "
+        "(можно premium emoji, жирный текст и ссылку на @CoS_Spam_bot через редактор Telegram).\n\n"
+        "Затем нажмите кнопку ниже или отправьте /use_worker_template.",
+        reply_markup=InlineKeyboardMarkup(
+            inline_keyboard=[[InlineKeyboardButton(text="✅ Использовать последнее сообщение из Storage", callback_data="wa:use_storage_template")]]
+        ),
+    )
+    await callback.answer()
+
+
+async def _apply_last_storage_worker_template(message: Message) -> None:
+    storage_chat_id, message_ids = await get_last_storage_admin_messages()
+    if not storage_chat_id or not message_ids:
+        await message.answer("Не найден шаблон в Storage от администратора. Сначала отправьте сообщение в Storage.")
+        return
+    await update_worker_autoreply_settings(
+        template_source="storage_forward",
+        template_storage_chat_id=int(storage_chat_id),
+        template_storage_message_ids=[int(v) for v in message_ids],
+    )
+    await message.answer("✅ Шаблон установлен. Будет пересылаться как «переслано от продавца».")
+    settings = await get_worker_autoreply_settings()
+    await message.answer(_autoreply_settings_text(settings), reply_markup=worker_autoreply_keyboard())
+
+
+@dp.callback_query(F.data == "wa:use_storage_template")
+async def worker_autoreply_use_storage_template(callback: CallbackQuery, state: FSMContext):
+    if not callback.message or not is_admin_user(callback.from_user.id):
+        await callback.answer("Недоступно", show_alert=True)
+        return
+    await state.clear()
+    await _apply_last_storage_worker_template(callback.message)
+    await callback.answer("Сохранено")
+
+
+@dp.message(Command("use_worker_template"))
+async def worker_autoreply_use_storage_template_command(message: Message, state: FSMContext):
+    if not ensure_admin(message):
+        return
+    await state.clear()
+    await _apply_last_storage_worker_template(message)
 
 
 @dp.callback_query(F.data == "wa:offline")

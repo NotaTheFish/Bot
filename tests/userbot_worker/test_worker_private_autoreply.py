@@ -14,6 +14,7 @@ class _FakeClient:
     def __init__(self) -> None:
         self.get_me = AsyncMock(return_value=SimpleNamespace(id=123))
         self.handlers = []
+        self.forward_messages = AsyncMock()
 
     def on(self, event_builder):
         def decorator(func):
@@ -141,6 +142,49 @@ class PrivateAutoreplyCooldownTests(unittest.IsolatedAsyncioTestCase):
         try_mark_mock.assert_awaited_once_with(unittest.mock.ANY, user_id=555, cooldown_seconds=60)
         upsert_contact_mock.assert_awaited_once_with(unittest.mock.ANY, user_id=555, replied=False)
         touch_mock.assert_not_awaited()
+
+    async def test_storage_forward_template_sends_forward(self):
+        client = _FakeClient()
+        stop_event = asyncio.Event()
+        stop_event.set()
+
+        with (
+            patch("userbot_worker.worker.ensure_schema", AsyncMock()),
+            patch("userbot_worker.worker.sync_userbot_targets", AsyncMock()),
+        ):
+            await run_worker(_settings(), pool=object(), client=client, stop_event=stop_event)
+
+        incoming_handler = None
+        for event_builder, handler in client.handlers:
+            if isinstance(event_builder, events.NewMessage) and bool(getattr(event_builder, "incoming", False)):
+                incoming_handler = handler
+                break
+        if incoming_handler is None:
+            raise AssertionError("Incoming private handler not registered")
+
+        event = _FakeEvent()
+        event.chat_id = 999
+        client.forward_messages.return_value = [SimpleNamespace(chat_id=999, id=77)]
+        settings_row = SimpleNamespace(
+            enabled=True,
+            cooldown_seconds=60,
+            trigger_mode="first_message_only",
+            reply_text="hello",
+            template_source="storage_forward",
+            template_storage_chat_id=-100123,
+            template_storage_message_ids=[10],
+            offline_threshold_minutes=10,
+        )
+
+        with (
+            patch("userbot_worker.worker.get_worker_autoreply_settings", AsyncMock(return_value=settings_row)),
+            patch("userbot_worker.worker.try_mark_autoreply", AsyncMock(return_value=True)),
+            patch("userbot_worker.worker.upsert_worker_autoreply_contact", AsyncMock()),
+        ):
+            await incoming_handler(event)
+
+        client.forward_messages.assert_awaited_once_with(999, [10], from_peer=-100123)
+        event.respond.assert_not_awaited()
 
     async def test_offline_threshold_zero_with_recent_activity_does_not_reply(self):
         handler = await self._get_private_handler()

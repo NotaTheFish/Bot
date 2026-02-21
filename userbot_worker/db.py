@@ -32,6 +32,9 @@ class TaskRow:
 class WorkerAutoreplySettings:
     enabled: bool
     reply_text: str
+    template_source: str
+    template_storage_chat_id: Optional[int]
+    template_storage_message_ids: List[int]
     trigger_mode: str
     offline_threshold_minutes: int
     cooldown_seconds: int
@@ -155,12 +158,28 @@ async def ensure_schema(db: DBOrPool) -> None:
               id INTEGER PRIMARY KEY DEFAULT 1,
               enabled BOOLEAN NOT NULL DEFAULT TRUE,
               reply_text TEXT NOT NULL DEFAULT 'Здравствуйте! Я технический аккаунт рассылки. Ответим вам позже.',
+              template_source TEXT NOT NULL DEFAULT 'text',
+              template_storage_chat_id BIGINT,
+              template_storage_message_ids BIGINT[] DEFAULT '{}'::bigint[],
               trigger_mode TEXT NOT NULL DEFAULT 'both',
               offline_threshold_minutes INTEGER NOT NULL DEFAULT 60,
               cooldown_seconds INTEGER NOT NULL DEFAULT 3600,
               updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
             );
             """
+        )
+        await conn.execute(
+            "ALTER TABLE worker_autoreply_settings ADD COLUMN IF NOT EXISTS template_source TEXT NOT NULL DEFAULT 'text';"
+        )
+        await conn.execute("ALTER TABLE worker_autoreply_settings ADD COLUMN IF NOT EXISTS template_storage_chat_id BIGINT;")
+        await conn.execute(
+            "ALTER TABLE worker_autoreply_settings ADD COLUMN IF NOT EXISTS template_storage_message_ids BIGINT[];"
+        )
+        await conn.execute(
+            "UPDATE worker_autoreply_settings SET template_storage_message_ids='{}'::bigint[] WHERE template_storage_message_ids IS NULL;"
+        )
+        await conn.execute(
+            "ALTER TABLE worker_autoreply_settings ALTER COLUMN template_storage_message_ids SET DEFAULT '{}'::bigint[];"
         )
         await conn.execute("INSERT INTO worker_autoreply_settings(id) VALUES (1) ON CONFLICT(id) DO NOTHING;")
         await conn.execute(
@@ -703,7 +722,8 @@ async def get_worker_autoreply_settings(db: DBOrPool) -> WorkerAutoreplySettings
     try:
         row = await conn.fetchrow(
             """
-            SELECT enabled, reply_text, trigger_mode, offline_threshold_minutes, cooldown_seconds
+            SELECT enabled, reply_text, template_source, template_storage_chat_id, template_storage_message_ids,
+                   trigger_mode, offline_threshold_minutes, cooldown_seconds
             FROM worker_autoreply_settings
             WHERE id = 1
             """
@@ -712,6 +732,9 @@ async def get_worker_autoreply_settings(db: DBOrPool) -> WorkerAutoreplySettings
             return WorkerAutoreplySettings(
                 enabled=True,
                 reply_text="Здравствуйте! Я технический аккаунт рассылки. Ответим вам позже.",
+                template_source="text",
+                template_storage_chat_id=None,
+                template_storage_message_ids=[],
                 trigger_mode="both",
                 offline_threshold_minutes=60,
                 cooldown_seconds=3600,
@@ -719,9 +742,15 @@ async def get_worker_autoreply_settings(db: DBOrPool) -> WorkerAutoreplySettings
         mode = str(row["trigger_mode"] or "both")
         if mode not in {"first_message_only", "offline_over_minutes", "both"}:
             mode = "both"
+        template_source = str(row["template_source"] or "text")
+        if template_source not in {"text", "storage_forward"}:
+            template_source = "text"
         return WorkerAutoreplySettings(
             enabled=bool(row["enabled"]),
             reply_text=str(row["reply_text"] or "Здравствуйте! Я технический аккаунт рассылки. Ответим вам позже."),
+            template_source=template_source,
+            template_storage_chat_id=int(row["template_storage_chat_id"]) if row["template_storage_chat_id"] is not None else None,
+            template_storage_message_ids=_to_int_list(row["template_storage_message_ids"]),
             trigger_mode=mode,
             offline_threshold_minutes=max(0, int(row["offline_threshold_minutes"] or 60)),
             cooldown_seconds=max(0, int(row["cooldown_seconds"] or 3600)),
@@ -827,7 +856,7 @@ async def try_mark_autoreply(db: DBOrPool, user_id: int, cooldown_seconds: int) 
             SET last_replied_at = NOW()
             WHERE worker_autoreply_contacts.last_replied_at IS NULL
                OR worker_autoreply_contacts.last_replied_at <= NOW() - ($2::int * INTERVAL '1 second')
-            RETURNING 1 AS should_reply
+            RETURNING CASE WHEN TRUE THEN TRUE END AS should_reply
             """,
             int(user_id),
             max(0, int(cooldown_seconds)),

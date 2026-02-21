@@ -362,9 +362,35 @@ async def run_worker(settings: Settings, pool, client: TelegramClient, stop_even
             should_reply,
         )
 
-        sent = await event.respond(settings_row.reply_text)
-        sent_chat_id = int(getattr(sent, "chat_id", 0) or 0)
-        sent_message_id = int(getattr(sent, "id", 0) or 0)
+        template_source = getattr(settings_row, "template_source", "text")
+        template_storage_chat_id = getattr(settings_row, "template_storage_chat_id", None)
+        template_storage_message_ids = list(getattr(settings_row, "template_storage_message_ids", []) or [])
+        sent = None
+        if template_source == "storage_forward" and template_storage_chat_id and template_storage_message_ids:
+            try:
+                sent = await client.forward_messages(
+                    event.chat_id,
+                    template_storage_message_ids,
+                    from_peer=int(template_storage_chat_id),
+                )
+                logger.info("autoreply_sent sender_id=%s method=forward ids=%s", sender_id, template_storage_message_ids)
+            except Exception:
+                logger.exception(
+                    "autoreply forward failed sender_id=%s storage_chat_id=%s ids=%s",
+                    sender_id,
+                    template_storage_chat_id,
+                    template_storage_message_ids,
+                )
+
+        if sent is None:
+            sent = await event.respond(settings_row.reply_text)
+            logger.info("autoreply_sent sender_id=%s method=text_fallback", sender_id)
+
+        sent_message = sent[-1] if isinstance(sent, list) and sent else sent
+        if sent_message is None:
+            return
+        sent_chat_id = int(getattr(sent_message, "chat_id", 0) or 0)
+        sent_message_id = int(getattr(sent_message, "id", 0) or 0)
         if sent_chat_id and sent_message_id:
             AUTOREPLY_SENT[(sent_chat_id, sent_message_id)] = _now_utc()
 
