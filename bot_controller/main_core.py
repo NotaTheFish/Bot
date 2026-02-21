@@ -2553,16 +2553,42 @@ async def buyer_contact_start(message: Message, state: FSMContext):
 
     current_state = await state.get_state()
     if current_state == ContactStates.waiting_message.state:
+        logger.info(
+            "reply contact button: cooldown/state result user_id=%s remaining=%s state=%s result=%s",
+            message.from_user.id,
+            0,
+            current_state,
+            "already_waiting",
+        )
         await message.answer("Вы уже в режиме отправки. Просто напишите сообщение.")
         return
 
     remaining = await get_cooldown_remaining(message.from_user.id)
     if remaining > 0:
+        logger.info(
+            "reply contact button: cooldown/state result user_id=%s remaining=%s state=%s result=%s",
+            message.from_user.id,
+            remaining,
+            current_state,
+            "cooldown_blocked",
+        )
         await message.answer(f"⏳ Подождите {remaining} сек. и попробуйте снова.")
         return
 
+    await state.set_state(ContactStates.waiting_message)
+    await state.update_data(contact_token="support")
     await set_next_allowed(message.from_user.id, BUYER_CONTACT_COOLDOWN_SECONDS)
-    await _start_support_flow(message, state, concise=True)
+    logger.info(
+        "reply contact button: cooldown/state result user_id=%s remaining=%s state=%s result=%s",
+        message.from_user.id,
+        remaining,
+        ContactStates.waiting_message.state,
+        "ok",
+    )
+    await message.answer(
+        "Напишите ваш вопрос одним сообщением.",
+        reply_markup=buyer_contact_keyboard(),
+    )
 
 
 @dp.callback_query(F.data == "contact:open")
