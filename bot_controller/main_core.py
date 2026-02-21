@@ -1573,8 +1573,12 @@ def _ensure_safe_publish_text(
 
 
 async def _send_buyer_reply(user_id: int) -> None:
-    post_text = await get_buyer_reply_post_text()
-    await bot.send_message(user_id, post_text or DEFAULT_BUYER_REPLY_POST_TEXT)
+    post_text = await _get_buyer_post_reply_text()
+    await bot.send_message(user_id, post_text)
+
+
+async def _get_buyer_post_reply_text() -> str:
+    return await get_buyer_reply_post_text() or DEFAULT_BUYER_REPLY_POST_TEXT
 
 
 async def send_buyer_pre_reply(chat_id: int) -> None:
@@ -3257,13 +3261,25 @@ async def support_message_forward(message: Message, state: FSMContext):
         await state.clear()
         return
 
+    sender = message.from_user
+
     try:
         await _notify_admin_about_buyer_message(message, SUPPORT_PAYLOAD)
+        logger.info("forward buyer message success user_id=%s token=%s", sender.id if sender else None, SUPPORT_PAYLOAD)
+    except Exception:
+        logger.exception("forward buyer message fail user_id=%s token=%s", sender.id if sender else None, SUPPORT_PAYLOAD)
+        await message.answer("Не удалось отправить ваше сообщение. Попробуйте ещё раз чуть позже.")
+        return
+
+    try:
         await _send_buyer_reply(message.chat.id)
-        await state.clear()
-    except Exception as exc:
-        logger.error("Support forward error: %s", exc)
-        await message.answer("Не удалось отправить сообщение продавцу.")
+        logger.info("post-reply success user_id=%s token=%s", sender.id if sender else None, SUPPORT_PAYLOAD)
+    except Exception:
+        logger.exception("post-reply fail user_id=%s token=%s", sender.id if sender else None, SUPPORT_PAYLOAD)
+        await message.answer("Сообщение продавцу отправлено, но не удалось отправить подтверждение. Попробуйте позже.")
+        return
+
+    await state.clear()
 
 
 @dp.message(ContactStates.waiting_message, F.chat.type == "private")
@@ -3283,12 +3299,21 @@ async def contact_message_forward(message: Message, state: FSMContext):
 
     try:
         await _notify_admin_about_buyer_message(message, token)
-        logger.info("Forwarded buyer message user_id=%s token=%s", sender.id if sender else None, token)
+        logger.info("forward buyer message success user_id=%s token=%s", sender.id if sender else None, token)
+    except Exception:
+        logger.exception("forward buyer message fail user_id=%s token=%s", sender.id if sender else None, token)
+        await message.answer("Не удалось отправить ваше сообщение. Попробуйте ещё раз чуть позже.")
+        return
+
+    try:
         await _send_buyer_reply(message.chat.id)
-        await state.clear()
-    except Exception as exc:
-        logger.error("Contact forward error user_id=%s token=%s: %s", sender.id if sender else None, token, exc)
-        await message.answer("Не удалось отправить сообщение продавцу.")
+        logger.info("post-reply success user_id=%s token=%s", sender.id if sender else None, token)
+    except Exception:
+        logger.exception("post-reply fail user_id=%s token=%s", sender.id if sender else None, token)
+        await message.answer("Сообщение продавцу отправлено, но не удалось отправить подтверждение. Попробуйте позже.")
+        return
+
+    await state.clear()
 
 
 @dp.message(Command("current_post"))
