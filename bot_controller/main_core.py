@@ -2574,6 +2574,9 @@ async def buyer_contact_start_inline(callback: CallbackQuery, state: FSMContext)
         await callback.answer("Недоступно", show_alert=True)
         return
 
+    with suppress(TelegramBadRequest):
+        await callback.message.edit_reply_markup(reply_markup=None)
+
     current_state = await state.get_state()
     if current_state == ContactStates.waiting_message.state:
         await callback.answer("Вы уже в режиме отправки")
@@ -2581,12 +2584,29 @@ async def buyer_contact_start_inline(callback: CallbackQuery, state: FSMContext)
 
     remaining = await get_cooldown_remaining(callback.from_user.id)
     if remaining > 0:
+        logger.info(
+            "Buyer contact flow blocked by cooldown user_id=%s remaining=%s",
+            callback.from_user.id,
+            remaining,
+        )
         await callback.answer(f"⏳ Подождите {remaining} сек.", show_alert=True)
         return
 
+    data = await state.get_data()
+    contact_token = data.get("contact_token") or SUPPORT_PAYLOAD
+    await state.set_state(ContactStates.waiting_message)
+    await state.update_data(contact_token=contact_token)
+    logger.info(
+        "Buyer contact flow cooldown ok user_id=%s remaining=%s",
+        callback.from_user.id,
+        remaining,
+    )
+    logger.info("Buyer contact flow state set user_id=%s token=%s", callback.from_user.id, contact_token)
+    await callback.message.answer(
+        "Напишите сообщение одним сообщением — я перешлю продавцу.",
+        reply_markup=buyer_contact_keyboard(),
+    )
     await set_next_allowed(callback.from_user.id, BUYER_CONTACT_COOLDOWN_SECONDS)
-    await state.update_data(contact_token=SUPPORT_PAYLOAD)
-    await _start_support_flow(callback.message, state, concise=True)
     await callback.answer()
 
 
