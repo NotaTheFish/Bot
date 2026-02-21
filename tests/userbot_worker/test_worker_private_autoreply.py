@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, patch
 from telethon import events
 
 from userbot_worker.config import Settings
-from userbot_worker.worker import run_worker
+from userbot_worker.worker import AUTOREPLY_SENT, run_worker
 
 
 class _FakeClient:
@@ -59,6 +59,9 @@ def _settings() -> Settings:
 
 
 class PrivateAutoreplyCooldownTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self) -> None:
+        AUTOREPLY_SENT.clear()
+
     async def _get_private_handler(self):
         client = _FakeClient()
         stop_event = asyncio.Event()
@@ -74,6 +77,22 @@ class PrivateAutoreplyCooldownTests(unittest.IsolatedAsyncioTestCase):
             if isinstance(event_builder, events.NewMessage) and bool(getattr(event_builder, "incoming", False)):
                 return handler
         raise AssertionError("Incoming private handler not registered")
+
+    async def _get_outgoing_handler(self):
+        client = _FakeClient()
+        stop_event = asyncio.Event()
+        stop_event.set()
+
+        with (
+            patch("userbot_worker.worker.ensure_schema", AsyncMock()),
+            patch("userbot_worker.worker.sync_userbot_targets", AsyncMock()),
+        ):
+            await run_worker(_settings(), pool=object(), client=client, stop_event=stop_event)
+
+        for event_builder, handler in client.handlers:
+            if isinstance(event_builder, events.NewMessage) and bool(getattr(event_builder, "outgoing", False)):
+                return handler
+        raise AssertionError("Outgoing private handler not registered")
 
     async def test_first_incoming_replies(self):
         handler = await self._get_private_handler()
@@ -210,6 +229,35 @@ class PrivateAutoreplyCooldownTests(unittest.IsolatedAsyncioTestCase):
             ]
         )
         touch_mock.assert_not_awaited()
+
+    async def test_manual_outgoing_skips_autoreply_message(self):
+        handler = await self._get_outgoing_handler()
+        AUTOREPLY_SENT[(777, 101)] = datetime.now(timezone.utc)
+        event = SimpleNamespace(
+            is_private=True,
+            via_bot_id=None,
+            chat_id=777,
+            message=SimpleNamespace(id=101),
+        )
+
+        with patch("userbot_worker.worker.touch_worker_last_manual_outgoing_at", AsyncMock()) as touch_mock:
+            await handler(event)
+
+        touch_mock.assert_not_awaited()
+
+    async def test_manual_outgoing_updates_timestamp_for_real_manual_message(self):
+        handler = await self._get_outgoing_handler()
+        event = SimpleNamespace(
+            is_private=True,
+            via_bot_id=None,
+            chat_id=888,
+            message=SimpleNamespace(id=202),
+        )
+
+        with patch("userbot_worker.worker.touch_worker_last_manual_outgoing_at", AsyncMock()) as touch_mock:
+            await handler(event)
+
+        touch_mock.assert_awaited_once_with(unittest.mock.ANY)
 
 
 if __name__ == "__main__":

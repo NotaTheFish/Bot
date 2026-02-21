@@ -39,6 +39,8 @@ from .tasks import remap_chat_id_everywhere
 logger = logging.getLogger(__name__)
 
 ONLINE_GUARD_SECONDS = 90
+AUTOREPLY_SENT_TTL_SECONDS = 60
+AUTOREPLY_SENT: dict[tuple[int, int], datetime] = {}
 
 _DISABLE_RPC_ERRORS = {
     "ChatWriteForbiddenError",
@@ -108,6 +110,14 @@ def _is_disconnect_state_error(exc: BaseException) -> bool:
 
 def _now_utc() -> datetime:
     return datetime.now(tz=timezone.utc)
+
+
+def _prune_autoreply_sent(now_utc: datetime) -> None:
+    expired_keys = [
+        key for key, sent_at in AUTOREPLY_SENT.items() if (now_utc - sent_at).total_seconds() > AUTOREPLY_SENT_TTL_SECONDS
+    ]
+    for key in expired_keys:
+        AUTOREPLY_SENT.pop(key, None)
 
 
 def _is_offline_ok(*, last_outgoing_at: Optional[datetime], offline_threshold_minutes: int, now_utc: datetime) -> bool:
@@ -295,6 +305,7 @@ async def run_worker(settings: Settings, pool, client: TelegramClient, stop_even
 
         now_utc = _now_utc()
         should_try_mark = False
+        last_manual_outgoing_at: Optional[datetime] = None
         if settings_row.trigger_mode == "first_message_only":
             should_try_mark = True
         elif settings_row.trigger_mode == "offline_over_minutes":
@@ -312,6 +323,15 @@ async def run_worker(settings: Settings, pool, client: TelegramClient, stop_even
                 now_utc=now_utc,
             )
 
+        logger.info(
+            "autoreply_check sender_id=%s trigger_mode=%s last_manual_outgoing_at=%s offline_threshold_minutes=%s should_try_mark=%s",
+            sender_id,
+            settings_row.trigger_mode,
+            last_manual_outgoing_at,
+            settings_row.offline_threshold_minutes,
+            should_try_mark,
+        )
+
         if not should_try_mark:
             return
 
@@ -321,9 +341,32 @@ async def run_worker(settings: Settings, pool, client: TelegramClient, stop_even
             cooldown_seconds=settings_row.cooldown_seconds,
         )
         if not should_reply:
+            logger.info(
+                "autoreply_mark sender_id=%s trigger_mode=%s last_manual_outgoing_at=%s offline_threshold_minutes=%s should_try_mark=%s should_reply=%s",
+                sender_id,
+                settings_row.trigger_mode,
+                last_manual_outgoing_at,
+                settings_row.offline_threshold_minutes,
+                should_try_mark,
+                should_reply,
+            )
             return
 
-        await event.respond(settings_row.reply_text)
+        logger.info(
+            "autoreply_mark sender_id=%s trigger_mode=%s last_manual_outgoing_at=%s offline_threshold_minutes=%s should_try_mark=%s should_reply=%s",
+            sender_id,
+            settings_row.trigger_mode,
+            last_manual_outgoing_at,
+            settings_row.offline_threshold_minutes,
+            should_try_mark,
+            should_reply,
+        )
+
+        sent = await event.respond(settings_row.reply_text)
+        sent_chat_id = int(getattr(sent, "chat_id", 0) or 0)
+        sent_message_id = int(getattr(sent, "id", 0) or 0)
+        if sent_chat_id and sent_message_id:
+            AUTOREPLY_SENT[(sent_chat_id, sent_message_id)] = _now_utc()
 
 
     @client.on(events.NewMessage(outgoing=True))
@@ -332,6 +375,14 @@ async def run_worker(settings: Settings, pool, client: TelegramClient, stop_even
             return
 
         if bool(getattr(event, "via_bot_id", None)):
+            return
+
+        now_utc = _now_utc()
+        _prune_autoreply_sent(now_utc)
+        chat_id = int(getattr(event, "chat_id", 0) or 0)
+        message = getattr(event, "message", None)
+        msg_id = int(getattr(message, "id", 0) or 0)
+        if chat_id and msg_id and (chat_id, msg_id) in AUTOREPLY_SENT:
             return
 
         await touch_worker_last_manual_outgoing_at(pool)

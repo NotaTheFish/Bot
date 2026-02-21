@@ -821,16 +821,29 @@ async def try_mark_autoreply(db: DBOrPool, user_id: int, cooldown_seconds: int) 
     try:
         row = await conn.fetchrow(
             """
-            INSERT INTO worker_autoreply_contacts(user_id, first_seen_at, last_replied_at)
-            VALUES ($1, NOW(), NOW())
-            ON CONFLICT(user_id) DO UPDATE
-            SET last_replied_at = CASE
-                WHEN worker_autoreply_contacts.last_replied_at IS NULL
-                    OR NOW() - worker_autoreply_contacts.last_replied_at >= ($2 * INTERVAL '1 second')
-                THEN NOW()
-                ELSE worker_autoreply_contacts.last_replied_at
-            END
-            RETURNING last_replied_at = NOW() AS should_reply
+            WITH params AS (
+                SELECT NOW() AS now_utc, ($2 * INTERVAL '1 second') AS cooldown
+            ), updated AS (
+                INSERT INTO worker_autoreply_contacts(user_id, first_seen_at, last_replied_at)
+                SELECT $1, params.now_utc, params.now_utc
+                FROM params
+                ON CONFLICT(user_id) DO UPDATE
+                SET last_replied_at = CASE
+                    WHEN worker_autoreply_contacts.last_replied_at IS NULL
+                        OR params.now_utc - worker_autoreply_contacts.last_replied_at >= params.cooldown
+                    THEN params.now_utc
+                    ELSE worker_autoreply_contacts.last_replied_at
+                END
+                FROM params
+                RETURNING
+                    CASE
+                        WHEN worker_autoreply_contacts.last_replied_at IS NULL
+                            OR params.now_utc - worker_autoreply_contacts.last_replied_at >= params.cooldown
+                        THEN TRUE
+                        ELSE FALSE
+                    END AS should_reply
+            )
+            SELECT should_reply FROM updated
             """,
             int(user_id),
             max(0, int(cooldown_seconds)),
