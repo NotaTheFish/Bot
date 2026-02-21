@@ -3491,7 +3491,11 @@ async def worker_autoreply_cooldown_start(callback: CallbackQuery, state: FSMCon
         await callback.answer("Недоступно", show_alert=True)
         return
     await state.set_state(AdminStates.waiting_autoreply_cooldown)
-    await callback.message.answer("Введите cooldown_seconds (целое число).")
+    await callback.message.answer(
+        'Введите "Повтор через" в минутах (целое число).\n'
+        "Например: 10\n"
+        "0 — отключить повтор."
+    )
     await callback.answer()
 
 
@@ -3529,11 +3533,12 @@ async def worker_autoreply_cooldown_save(message: Message, state: FSMContext):
     if not ensure_admin(message):
         return
     try:
-        value = max(0, int((message.text or "").strip()))
+        minutes = max(0, int((message.text or "").strip()))
     except ValueError:
         await message.answer("Нужно целое число.")
         return
-    await update_worker_autoreply_settings(cooldown_seconds=value)
+    cooldown_seconds = minutes * 60
+    await update_worker_autoreply_settings(cooldown_seconds=cooldown_seconds)
     await state.clear()
     settings = await get_worker_autoreply_settings()
     await message.answer(_autoreply_settings_text(settings), reply_markup=worker_autoreply_keyboard())
