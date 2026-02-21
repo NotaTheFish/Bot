@@ -3470,7 +3470,13 @@ async def private_message_fallback(message: Message, state: FSMContext):
     }:
         return
 
-    await message.answer("Здравствуйте!")
+    await send_buyer_pre_reply(message.chat.id)
+    logger.info(
+        "private fallback -> pre-reply shown chat_id=%s user_id=%s text=%r",
+        message.chat.id,
+        message.from_user.id if message.from_user else None,
+        message.text,
+    )
 
 
 async def restore_scheduler() -> None:
