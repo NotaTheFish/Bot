@@ -276,6 +276,14 @@ def buyer_contact_keyboard() -> ReplyKeyboardMarkup:
     )
 
 
+def buyer_contact_inline_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text=BUYER_CONTACT_BUTTON_TEXT, callback_data="contact:open")]
+        ]
+    )
+
+
 def is_buyer_contact_text(text: str | None) -> bool:
     normalized = (text or "").strip()
     if not normalized:
@@ -334,13 +342,18 @@ CREATE_TABLES_SQL = [
     CREATE TABLE IF NOT EXISTS bot_settings (
         id INTEGER PRIMARY KEY,
         buyer_reply_storage_chat_id BIGINT,
-        buyer_reply_message_id BIGINT
+        buyer_reply_message_id BIGINT,
+        buyer_reply_pre_text TEXT
     )
     """,
     """
-    INSERT INTO bot_settings (id, buyer_reply_storage_chat_id, buyer_reply_message_id)
-    VALUES (1, NULL, NULL)
+    INSERT INTO bot_settings (id, buyer_reply_storage_chat_id, buyer_reply_message_id, buyer_reply_pre_text)
+    VALUES (1, NULL, NULL, NULL)
     ON CONFLICT (id) DO NOTHING
+    """,
+    """
+    ALTER TABLE bot_settings
+    ADD COLUMN IF NOT EXISTS buyer_reply_pre_text TEXT
     """,
     """
     CREATE UNIQUE INDEX IF NOT EXISTS idx_schedules_unique
@@ -1105,6 +1118,15 @@ async def get_buyer_reply_template() -> tuple[Optional[int], Optional[int]]:
     return row["buyer_reply_storage_chat_id"], row["buyer_reply_message_id"]
 
 
+async def get_buyer_reply_pre_text() -> Optional[str]:
+    pool = await get_db_pool()
+    value = await pool.fetchval("SELECT buyer_reply_pre_text FROM bot_settings WHERE id = 1")
+    if value is None:
+        return None
+    normalized = str(value).strip()
+    return normalized or None
+
+
 async def save_buyer_reply_template(storage_chat_id: int, message_id: int) -> None:
     pool = await get_db_pool()
     await pool.execute(
@@ -1519,6 +1541,15 @@ async def _send_buyer_reply(user_id: int) -> None:
         except Exception as exc:
             logger.warning("Failed to send buyer reply template copy, fallback to text: %s", exc)
     await bot.send_message(user_id, "Спасибо! Ваше сообщение отправлено продавцу ✅")
+
+
+async def send_buyer_pre_reply(chat_id: int) -> None:
+    pre_text = await get_buyer_reply_pre_text()
+    await bot.send_message(
+        chat_id,
+        pre_text or "Здравствуйте!",
+        reply_markup=buyer_contact_inline_keyboard(),
+    )
 
 
 async def _save_buyer_reply_template_from_message(message: Message) -> None:
@@ -2470,34 +2501,32 @@ async def on_start(message: Message, state: FSMContext):
     args = (message.text or "").split(maxsplit=1)
     payload = args[1] if len(args) > 1 else ""
 
-    if payload.startswith(CONTACT_PAYLOAD_PREFIX) and message.chat.type == "private":
-        token = payload[len(CONTACT_PAYLOAD_PREFIX) :]
-        if not token:
-            await message.answer("Ссылка устарела или неверна.")
-            return
-
-        pool = await get_db_pool()
-        token_exists = await pool.fetchval("SELECT 1 FROM post WHERE contact_token = $1", token)
-        if not token_exists:
-            await message.answer("Ссылка устарела или неверна.")
-            return
-
-        await state.set_state(ContactStates.waiting_message)
-        await state.update_data(contact_token=token)
-        await message.answer("Напишите сообщение продавцу одним сообщением. Я перешлю.")
-        return
-
-    if payload == SUPPORT_PAYLOAD and message.chat.type == "private":
-        await _start_support_flow(message, state, concise=True)
-        return
-
     if message.chat.type == "private" and message.from_user and is_admin_user(message.from_user.id):
         await state.clear()
         await message.answer("Главное меню:", reply_markup=admin_menu_keyboard())
-    elif message.chat.type == "private":
-        await message.answer("Здравствуйте!")
-    else:
-        await message.answer("Здравствуйте!")
+        return
+
+    if payload.startswith(CONTACT_PAYLOAD_PREFIX) and message.chat.type == "private":
+        token = payload[len(CONTACT_PAYLOAD_PREFIX) :]
+        if token:
+            pool = await get_db_pool()
+            token_exists = await pool.fetchval("SELECT 1 FROM post WHERE contact_token = $1", token)
+            if token_exists:
+                await state.set_state(ContactStates.waiting_message)
+                await state.update_data(contact_token=token)
+                await message.answer("Напишите сообщение продавцу одним сообщением. Я перешлю.")
+                return
+
+    if message.chat.type == "private":
+        await send_buyer_pre_reply(message.chat.id)
+        logger.info(
+            '/start pre-reply sent + inline shown user_id=%s chat_id=%s',
+            message.from_user.id if message.from_user else None,
+            message.chat.id,
+        )
+        return
+
+    await message.answer("Здравствуйте!")
 
 
 @dp.message(Command("menu"))
@@ -2534,6 +2563,31 @@ async def buyer_contact_start(message: Message, state: FSMContext):
 
     await set_next_allowed(message.from_user.id, BUYER_CONTACT_COOLDOWN_SECONDS)
     await _start_support_flow(message, state, concise=True)
+
+
+@dp.callback_query(F.data == "contact:open")
+async def buyer_contact_start_inline(callback: CallbackQuery, state: FSMContext):
+    if not callback.message or callback.message.chat.type != "private":
+        await callback.answer()
+        return
+    if is_admin_user(callback.from_user.id):
+        await callback.answer("Недоступно", show_alert=True)
+        return
+
+    current_state = await state.get_state()
+    if current_state == ContactStates.waiting_message.state:
+        await callback.answer("Вы уже в режиме отправки")
+        return
+
+    remaining = await get_cooldown_remaining(callback.from_user.id)
+    if remaining > 0:
+        await callback.answer(f"⏳ Подождите {remaining} сек.", show_alert=True)
+        return
+
+    await set_next_allowed(callback.from_user.id, BUYER_CONTACT_COOLDOWN_SECONDS)
+    await state.update_data(contact_token=SUPPORT_PAYLOAD)
+    await _start_support_flow(callback.message, state, concise=True)
+    await callback.answer()
 
 
 
