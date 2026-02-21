@@ -18,7 +18,7 @@ from .db import (
     get_worker_autoreply_contact,
     get_worker_autoreply_remaining,
     get_worker_autoreply_settings,
-    get_worker_state_last_outgoing_at,
+    get_worker_state_last_manual_outgoing_at,
     get_userbot_target_state,
     load_userbot_targets_by_chat_ids,
     load_enabled_userbot_targets,
@@ -28,6 +28,7 @@ from .db import (
     mark_userbot_target_success,
     remap_userbot_target_chat_id,
     set_userbot_target_last_self_message_id,
+    touch_worker_last_manual_outgoing_at,
     touch_worker_last_outgoing_at,
     upsert_worker_autoreply_contact,
     update_task_progress,
@@ -309,16 +310,16 @@ async def run_worker(settings: Settings, pool, client: TelegramClient, stop_even
         if settings_row.trigger_mode == "first_message_only":
             should_reply = first_or_cooldown_ok
         elif settings_row.trigger_mode == "offline_over_minutes":
-            last_outgoing_at = await get_worker_state_last_outgoing_at(pool)
+            last_manual_outgoing_at = await get_worker_state_last_manual_outgoing_at(pool)
             should_reply = _is_offline_ok(
-                last_outgoing_at=last_outgoing_at,
+                last_outgoing_at=last_manual_outgoing_at,
                 offline_threshold_minutes=settings_row.offline_threshold_minutes,
                 now_utc=now_utc,
             )
         else:  # both
-            last_outgoing_at = await get_worker_state_last_outgoing_at(pool)
+            last_manual_outgoing_at = await get_worker_state_last_manual_outgoing_at(pool)
             offline_ok = _is_offline_ok(
-                last_outgoing_at=last_outgoing_at,
+                last_outgoing_at=last_manual_outgoing_at,
                 offline_threshold_minutes=settings_row.offline_threshold_minutes,
                 now_utc=now_utc,
             )
@@ -332,7 +333,17 @@ async def run_worker(settings: Settings, pool, client: TelegramClient, stop_even
 
         await event.respond(settings_row.reply_text)
         await upsert_worker_autoreply_contact(pool, user_id=sender_id, replied=True)
-        await touch_worker_last_outgoing_at(pool)
+
+
+    @client.on(events.NewMessage(outgoing=True))
+    async def _handle_private_manual_outgoing(event):
+        if not event.is_private:
+            return
+
+        if bool(getattr(event, "via_bot_id", None)):
+            return
+
+        await touch_worker_last_manual_outgoing_at(pool)
 
     authkey_duplicated_cooldown_until: Optional[datetime] = None
     try:

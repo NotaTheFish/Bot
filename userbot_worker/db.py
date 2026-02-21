@@ -176,11 +176,15 @@ async def ensure_schema(db: DBOrPool) -> None:
             """
             CREATE TABLE IF NOT EXISTS worker_state (
               id INTEGER PRIMARY KEY DEFAULT 1,
-              last_outgoing_at TIMESTAMPTZ
+              last_outgoing_at TIMESTAMPTZ,
+              last_manual_outgoing_at TIMESTAMPTZ
             );
             """
         )
-        await conn.execute("INSERT INTO worker_state(id,last_outgoing_at) VALUES (1, NULL) ON CONFLICT(id) DO NOTHING;")
+        await conn.execute("ALTER TABLE worker_state ADD COLUMN IF NOT EXISTS last_manual_outgoing_at TIMESTAMPTZ;")
+        await conn.execute(
+            "INSERT INTO worker_state(id,last_outgoing_at,last_manual_outgoing_at) VALUES (1, NULL, NULL) ON CONFLICT(id) DO NOTHING;"
+        )
         await conn.execute("ALTER TABLE userbot_targets ADD COLUMN IF NOT EXISTS last_error_at TIMESTAMPTZ;")
         await conn.execute("ALTER TABLE userbot_targets ADD COLUMN IF NOT EXISTS last_success_post_at TIMESTAMPTZ;")
         await conn.execute("ALTER TABLE userbot_targets ADD COLUMN IF NOT EXISTS last_self_message_id BIGINT;")
@@ -735,6 +739,15 @@ async def get_worker_state_last_outgoing_at(db: DBOrPool) -> Optional[datetime]:
         await _release_conn(db, conn)
 
 
+async def get_worker_state_last_manual_outgoing_at(db: DBOrPool) -> Optional[datetime]:
+    conn = await _acquire_conn(db)
+    try:
+        value = await conn.fetchval("SELECT last_manual_outgoing_at FROM worker_state WHERE id = 1")
+        return value
+    finally:
+        await _release_conn(db, conn)
+
+
 async def touch_worker_last_outgoing_at(db: DBOrPool) -> None:
     conn = await _acquire_conn(db)
     try:
@@ -743,6 +756,20 @@ async def touch_worker_last_outgoing_at(db: DBOrPool) -> None:
             INSERT INTO worker_state(id, last_outgoing_at)
             VALUES (1, NOW())
             ON CONFLICT(id) DO UPDATE SET last_outgoing_at = EXCLUDED.last_outgoing_at
+            """
+        )
+    finally:
+        await _release_conn(db, conn)
+
+
+async def touch_worker_last_manual_outgoing_at(db: DBOrPool) -> None:
+    conn = await _acquire_conn(db)
+    try:
+        await conn.execute(
+            """
+            INSERT INTO worker_state(id, last_manual_outgoing_at)
+            VALUES (1, NOW())
+            ON CONFLICT(id) DO UPDATE SET last_manual_outgoing_at = EXCLUDED.last_manual_outgoing_at
             """
         )
     finally:
