@@ -495,6 +495,10 @@ CREATE_TABLES_SQL = [
     ALTER COLUMN template_storage_message_ids SET DEFAULT '{}'
     """,
     """
+    ALTER TABLE worker_autoreply_settings
+    ADD COLUMN IF NOT EXISTS template_updated_at TIMESTAMPTZ
+    """,
+    """
     CREATE TABLE IF NOT EXISTS worker_autoreply_contacts (
         user_id BIGINT PRIMARY KEY,
         first_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -3492,7 +3496,7 @@ async def get_worker_autoreply_settings() -> dict:
     row = await pool.fetchrow(
         """
         SELECT enabled, reply_text, template_source, template_storage_chat_id, template_storage_message_ids,
-               trigger_mode, offline_threshold_minutes, cooldown_seconds
+               trigger_mode, offline_threshold_minutes, cooldown_seconds, template_updated_at
         FROM worker_autoreply_settings
         WHERE id = 1
         """
@@ -3507,6 +3511,7 @@ async def get_worker_autoreply_settings() -> dict:
             "trigger_mode": "both",
             "offline_threshold_minutes": 60,
             "cooldown_seconds": 3600,
+            "template_updated_at": None,
         }
     mode = str(row["trigger_mode"] or "both")
     if mode not in VALID_AUTOREPLY_MODES:
@@ -3523,6 +3528,7 @@ async def get_worker_autoreply_settings() -> dict:
         "trigger_mode": mode,
         "offline_threshold_minutes": max(0, int(row["offline_threshold_minutes"] or 60)),
         "cooldown_seconds": max(0, int(row["cooldown_seconds"] or 3600)),
+        "template_updated_at": row["template_updated_at"],
     }
 
 
@@ -3533,6 +3539,7 @@ async def update_worker_autoreply_settings(**kwargs) -> None:
         "template_source",
         "template_storage_chat_id",
         "template_storage_message_ids",
+        "template_updated_at",
         "trigger_mode",
         "offline_threshold_minutes",
         "cooldown_seconds",
@@ -3562,7 +3569,20 @@ def _autoreply_settings_text(settings: dict) -> str:
         "both": "🧠 Умный",
     }
     cooldown_minutes = settings["cooldown_seconds"] // 60
-    template_mode = "📦 Storage-forward" if settings.get("template_source") == "storage" else "📝 Текст"
+    template_source = str(settings.get("template_source") or "text")
+    is_storage_template = template_source in {"storage", "storage_forward"}
+    template_mode = "📦 Storage-forward" if is_storage_template else "📝 Текст"
+    template_updated_at = settings.get("template_updated_at")
+    if is_storage_template:
+        if isinstance(template_updated_at, datetime):
+            if template_updated_at.tzinfo is None:
+                template_updated_at = template_updated_at.replace(tzinfo=timezone.utc)
+            updated_label = template_updated_at.astimezone(TZ).strftime("%d.%m %H:%M")
+            template_text = f"Текст: ✅ обновлён ({updated_label})"
+        else:
+            template_text = "Текст: ✅ обновлён"
+    else:
+        template_text = f"Текст:\n{settings['reply_text']}"
     return "\n".join([
         "🤖 Настройки автоответчика worker",
         f"Статус: {'включен' if settings['enabled'] else 'выключен'}",
@@ -3571,7 +3591,7 @@ def _autoreply_settings_text(settings: dict) -> str:
         f"Оффлайн через: {settings['offline_threshold_minutes']} мин",
         f"Повтор через: {cooldown_minutes} мин",
         "",
-        f"Текст:\n{settings['reply_text']}",
+        template_text,
     ])
 
 
@@ -3722,6 +3742,7 @@ async def _save_worker_template_from_messages(message: Message, messages: list[M
         template_source="storage",
         template_storage_chat_id=int(STORAGE_CHAT_ID),
         template_storage_message_ids=stored_message_ids,
+        template_updated_at=datetime.now(timezone.utc),
     )
     await state.clear()
     await message.answer("✅ Шаблон воркера обновлён")
