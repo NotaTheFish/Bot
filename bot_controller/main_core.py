@@ -266,6 +266,7 @@ class AdminStates(StatesGroup):
     waiting_buyer_reply_pre_text = State()
     waiting_buyer_reply_post_text = State()
     waiting_autoreply_text = State()
+    waiting_autoreply_button_line = State()
     waiting_autoreply_offline_threshold = State()
     waiting_autoreply_cooldown = State()
     waiting_storage_post = State()
@@ -3671,7 +3672,8 @@ async def worker_autoreply_text_start(callback: CallbackQuery, state: FSMContext
         await callback.answer("Недоступно", show_alert=True)
         return
     await state.set_state(AdminStates.waiting_autoreply_text)
-    await callback.message.answer("Отправьте новый шаблон автоответа воркера (можно premium emoji, фото, альбом). Я сохраню его в Storage и воркер будет пересылать его клиентам.")
+    await state.update_data(worker_template_main_storage_ids=[])
+    await callback.message.answer("Отправьте новый автоответ (текст/фото/альбом).")
     await callback.answer()
 
 
@@ -3695,48 +3697,47 @@ async def _cleanup_previous_worker_storage_template() -> None:
             )
 
 
+async def _store_worker_messages_in_storage(messages: list[Message]) -> list[int]:
+    stored_message_ids: list[int] = []
+    for item in messages:
+        copied = await bot.copy_message(
+            chat_id=STORAGE_CHAT_ID,
+            from_chat_id=item.chat.id,
+            message_id=item.message_id,
+        )
+        stored_message_ids.append(int(copied.message_id))
+    return stored_message_ids
+
+
 async def _save_worker_template_from_messages(message: Message, messages: list[Message], state: FSMContext) -> None:
     await _cleanup_previous_worker_storage_template()
-    stored_message_ids: list[int] = []
-    has_caption = any((item.caption or "").strip() for item in messages)
+    stored_message_ids = await _store_worker_messages_in_storage(messages)
 
-    for item in messages:
-        is_media = bool(item.photo or item.video or item.document or item.animation)
-        if is_media:
-            if (item.caption or "").strip():
-                copied = await bot.copy_message(
-                    chat_id=STORAGE_CHAT_ID,
-                    from_chat_id=item.chat.id,
-                    message_id=item.message_id,
-                    caption=_append_worker_contact_html(item.html_caption or html.escape(item.caption or "")),
-                    parse_mode="HTML",
-                )
-            else:
-                copied = await bot.copy_message(
-                    chat_id=STORAGE_CHAT_ID,
-                    from_chat_id=item.chat.id,
-                    message_id=item.message_id,
-                )
-            stored_message_ids.append(int(copied.message_id))
-            continue
+    await state.update_data(worker_template_main_storage_ids=stored_message_ids)
+    await state.set_state(AdminStates.waiting_autoreply_button_line)
+    await message.answer(
+        "Теперь отправьте строку-кнопку (ОДНИМ сообщением).\n"
+        "Сделайте её вручную: выделите нужные слова → «Ссылка» → вставьте URL (например, на бота или куда хотите).\n"
+        "Формат может быть любой, например: текст (текст-ссылка) текст\n"
+        "Можно использовать premium emoji."
+    )
 
-        text_html = item.html_text or html.escape(item.text or item.caption or "")
-        sent = await bot.send_message(
-            STORAGE_CHAT_ID,
-            _append_worker_contact_html(text_html),
-            parse_mode="HTML",
-            disable_web_page_preview=True,
-        )
-        stored_message_ids.append(int(sent.message_id))
 
-    if messages and not has_caption and any(bool(item.photo or item.video or item.document or item.animation) for item in messages):
-        link_message = await bot.send_message(
-            STORAGE_CHAT_ID,
-            _worker_contact_link_html(),
-            parse_mode="HTML",
-            disable_web_page_preview=True,
-        )
-        stored_message_ids.append(int(link_message.message_id))
+async def _finalize_worker_template_with_button_line(message: Message, state: FSMContext) -> None:
+    data = await state.get_data()
+    main_ids = [int(v) for v in (data.get("worker_template_main_storage_ids") or []) if int(v) > 0]
+    if not main_ids:
+        await state.set_state(AdminStates.waiting_autoreply_text)
+        await message.answer("Не удалось найти основной шаблон. Отправьте новый автоответ (текст/фото/альбом).")
+        return
+
+    copied = await bot.copy_message(
+        chat_id=STORAGE_CHAT_ID,
+        from_chat_id=message.chat.id,
+        message_id=message.message_id,
+    )
+    button_line_id = int(copied.message_id)
+    stored_message_ids = [*main_ids, button_line_id]
 
     await update_worker_autoreply_settings(
         template_source="storage",
@@ -3810,6 +3811,19 @@ async def worker_autoreply_text_save(message: Message, state: FSMContext):
         return
 
     await _save_worker_template_from_messages(message, [message], state)
+
+
+@dp.message(AdminStates.waiting_autoreply_button_line)
+async def worker_autoreply_button_line_save(message: Message, state: FSMContext):
+    if not ensure_admin(message):
+        return
+    if message.media_group_id:
+        await message.answer("Строку-кнопку нужно отправить ОДНИМ сообщением (не альбомом).")
+        return
+    if not (message.text or message.caption):
+        await message.answer("Отправьте строку-кнопку текстом одним сообщением.")
+        return
+    await _finalize_worker_template_with_button_line(message, state)
 
 
 @dp.message(AdminStates.waiting_autoreply_offline_threshold)
