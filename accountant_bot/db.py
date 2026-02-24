@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+import re
 from typing import Any, Optional, Sequence
 
 import asyncpg
@@ -156,6 +157,24 @@ async def ensure_schema(pool: asyncpg.Pool) -> None:
             ON receipt_items(created_at DESC)
             """
         )
+        await conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS product_catalog (
+                id BIGSERIAL PRIMARY KEY,
+                category_code TEXT NOT NULL,
+                name TEXT NOT NULL,
+                name_norm TEXT NOT NULL,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                CONSTRAINT ux_product_catalog_category_name_norm UNIQUE (category_code, name_norm)
+            )
+            """
+        )
+        await conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_product_catalog_category_name_norm
+            ON product_catalog(category_code, name_norm)
+            """
+        )
 
         # Backward-compatible migration for environments where table may have
         # been created manually with partial set of columns.
@@ -178,6 +197,108 @@ async def ensure_schema(pool: asyncpg.Pool) -> None:
 async def init_db(pool: asyncpg.Pool) -> None:
     """Backward-compatible wrapper for schema initialization."""
     await ensure_schema(pool)
+
+
+def normalize_product_name(s: str) -> str:
+    return re.sub(r"\s+", " ", (s or "").strip().lower())
+
+
+async def add_product(pool: asyncpg.Pool, category_code: str, name: str) -> dict[str, Any]:
+    normalized_name = normalize_product_name(name)
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            INSERT INTO product_catalog (category_code, name, name_norm)
+            VALUES ($1, $2, $3)
+            ON CONFLICT (category_code, name_norm)
+            DO UPDATE SET name = EXCLUDED.name
+            RETURNING id, category_code, name
+            """,
+            str(category_code),
+            str(name).strip(),
+            normalized_name,
+        )
+    return dict(row) if row else {}
+
+
+async def delete_product(pool: asyncpg.Pool, category_code: str, product_id: int) -> bool:
+    async with pool.acquire() as conn:
+        result = await conn.execute(
+            """
+            DELETE FROM product_catalog
+            WHERE category_code = $1
+              AND id = $2
+            """,
+            str(category_code),
+            int(product_id),
+        )
+    return result.endswith("1")
+
+
+async def list_products(pool: asyncpg.Pool, category_code: str, offset: int, limit: int) -> list[dict[str, Any]]:
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT id, category_code, name
+            FROM product_catalog
+            WHERE category_code = $1
+            ORDER BY name_norm ASC
+            OFFSET $2 LIMIT $3
+            """,
+            str(category_code),
+            int(offset),
+            int(limit),
+        )
+    return [dict(row) for row in rows]
+
+
+async def count_products(pool: asyncpg.Pool, category_code: str) -> int:
+    async with pool.acquire() as conn:
+        return int(
+            await conn.fetchval(
+                """
+                SELECT COUNT(*)
+                FROM product_catalog
+                WHERE category_code = $1
+                """,
+                str(category_code),
+            )
+            or 0
+        )
+
+
+async def search_products(pool: asyncpg.Pool, category_code: str, query: str, limit: int = 20) -> list[dict[str, Any]]:
+    q_norm = normalize_product_name(query)
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT id, category_code, name
+            FROM product_catalog
+            WHERE category_code = $1
+              AND name_norm LIKE '%' || $2 || '%'
+            ORDER BY name_norm ASC
+            LIMIT $3
+            """,
+            str(category_code),
+            q_norm,
+            int(limit),
+        )
+    return [dict(row) for row in rows]
+
+
+async def get_product(pool: asyncpg.Pool, category_code: str, product_id: int) -> Optional[dict[str, Any]]:
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            SELECT id, category_code, name
+            FROM product_catalog
+            WHERE category_code = $1
+              AND id = $2
+            """,
+            str(category_code),
+            int(product_id),
+        )
+    return dict(row) if row else None
 
 
 async def insert_review(

@@ -79,6 +79,7 @@ def test_start_keyboard_has_expected_rows_and_labels():
         ["📊 Отзывы", "🧾 Чек"],
         ["📤 Excel", "🔎 Найти чек"],
         ["🧾 Последние чеки"],
+        ["📦 Управление товарами"],
     ]
 
 
