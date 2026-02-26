@@ -1,10 +1,14 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+import logging
 import re
 from typing import Any, Optional, Sequence
 
 import asyncpg
+
+
+logger = logging.getLogger(__name__)
 
 
 async def create_pool(database_url: str) -> asyncpg.Pool:
@@ -169,6 +173,15 @@ async def ensure_schema(pool: asyncpg.Pool) -> None:
             )
             """
         )
+
+        await conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS accountant_bot_migrations (
+                key TEXT PRIMARY KEY,
+                applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+            """
+        )
         await conn.execute(
             """
             CREATE INDEX IF NOT EXISTS idx_product_catalog_category_name_norm
@@ -192,6 +205,58 @@ async def ensure_schema(pool: asyncpg.Pool) -> None:
                 # Keep startup resilient and idempotent when old inconsistent
                 # schemas are encountered.
                 pass
+
+        migration_key = "normalize_item_names_v1"
+        async with conn.transaction():
+            already_applied = await conn.fetchval(
+                """
+                SELECT 1
+                FROM accountant_bot_migrations
+                WHERE key = $1
+                """,
+                migration_key,
+            )
+            if already_applied:
+                logger.info("Data migration %s already applied, skipping", migration_key)
+            else:
+                rules = (
+                    ("Макс рост", "Max Growth Token"),
+                    ("Ревы", "Revive Token"),
+                    ("Частицы", "Partial Growth Token"),
+                )
+                total_updated = 0
+                for old_name, new_name in rules:
+                    result = await conn.execute(
+                        """
+                        UPDATE receipt_items
+                        SET item_name = $1
+                        WHERE btrim(item_name) = $2
+                        """,
+                        new_name,
+                        old_name,
+                    )
+                    updated_count = int(result.split()[-1])
+                    total_updated += updated_count
+                    logger.info(
+                        "Data migration %s: updated %s rows (%r -> %r)",
+                        migration_key,
+                        updated_count,
+                        old_name,
+                        new_name,
+                    )
+
+                await conn.execute(
+                    """
+                    INSERT INTO accountant_bot_migrations(key)
+                    VALUES ($1)
+                    """,
+                    migration_key,
+                )
+                logger.info(
+                    "Data migration %s applied successfully, total rows updated: %s",
+                    migration_key,
+                    total_updated,
+                )
 
 
 async def init_db(pool: asyncpg.Pool) -> None:
