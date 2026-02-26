@@ -87,8 +87,16 @@ class AccountantBotExcelExportTests(unittest.TestCase):
         self.assertEqual(ws_summary["D5"].value, 207)
         self.assertEqual(ws_summary["A6"].value, "UAH")
         self.assertEqual(ws_summary["D6"].value, -40)
+        self.assertEqual(ws_summary["A8"].value, "Доход по дням")
+        self.assertEqual(ws_summary["A12"].value, "Доход по категориям")
+        self.assertEqual(ws_summary["A19"].value, "Топ товаров")
         self.assertEqual(ws_summary.freeze_panes, "A4")
         self.assertEqual(len(ws_summary._charts), 2)
+
+        chart_1_anchor = ws_summary._charts[0].anchor._from
+        chart_2_anchor = ws_summary._charts[1].anchor._from
+        self.assertEqual((chart_1_anchor.col, chart_1_anchor.row), (5, 2))
+        self.assertEqual((chart_2_anchor.col, chart_2_anchor.row), (5, 19))
 
 
 if __name__ == "__main__":

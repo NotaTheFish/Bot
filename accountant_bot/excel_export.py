@@ -231,6 +231,19 @@ def _build_summary_sheet(ws: Any, items: list[dict[str, Any]]) -> None:
     _style_table(ws, summary_header_row, summary_end, money_columns={2, 3, 4})
 
     row = ws.max_row + 2
+    ws.cell(row=row, column=1, value="Доход по дням")
+    ws.cell(row=row, column=1).font = Font(bold=True)
+    row += 1
+
+    day_headers = ["Дата", *[f"{currency}_NET" for currency in currencies]]
+    ws.append(day_headers)
+    day_header_row = row
+    for day in sorted(day_totals):
+        ws.append([day, *[day_totals[day][currency] for currency in currencies]])
+    day_end = ws.max_row
+    _style_table(ws, day_header_row, day_end, money_columns=set(range(2, len(day_headers) + 1)), date_columns={1})
+
+    row = ws.max_row + 2
     ws.cell(row=row, column=1, value="Доход по категориям")
     ws.cell(row=row, column=1).font = Font(bold=True)
     row += 1
@@ -259,19 +272,6 @@ def _build_summary_sheet(ws: Any, items: list[dict[str, Any]]) -> None:
     _style_table(ws, category_header_row, category_end, money_columns=money_cols)
 
     row = ws.max_row + 2
-    ws.cell(row=row, column=1, value="Доход по дням")
-    ws.cell(row=row, column=1).font = Font(bold=True)
-    row += 1
-
-    day_headers = ["Дата", *[f"{currency}_NET" for currency in currencies]]
-    ws.append(day_headers)
-    day_header_row = row
-    for day in sorted(day_totals):
-        ws.append([day, *[day_totals[day][currency] for currency in currencies]])
-    day_end = ws.max_row
-    _style_table(ws, day_header_row, day_end, money_columns=set(range(2, len(day_headers) + 1)), date_columns={1})
-
-    row = ws.max_row + 2
     ws.cell(row=row, column=1, value="Топ товаров")
     ws.cell(row=row, column=1).font = Font(bold=True)
     row += 1
@@ -290,7 +290,15 @@ def _build_summary_sheet(ws: Any, items: list[dict[str, Any]]) -> None:
     top_end = ws.max_row
     _style_table(ws, top_header_row, top_end, money_columns=set(range(3, len(top_headers) + 1)), qty_columns={2})
 
-    _add_summary_charts(ws, day_header_row, day_end, category_header_row, category_end, len(currencies), net_columns)
+    _add_summary_charts(
+        ws,
+        day_header_row,
+        day_end,
+        category_header_row,
+        category_end,
+        len(currencies),
+        net_columns,
+    )
 
     ws.freeze_panes = "A4"
     autosize_columns(ws)
@@ -305,6 +313,11 @@ def _add_summary_charts(
     currencies_count: int,
     category_net_columns: list[int],
 ) -> None:
+    chart_column = "F"
+    chart_1_row = 3
+    chart_height_rows = 14
+    chart_gap_rows = 3
+
     if day_end > day_header_row:
         line_chart = LineChart()
         line_chart.title = "Доход по дням"
@@ -324,7 +337,7 @@ def _add_summary_charts(
         line_chart.set_categories(day_labels)
         line_chart.height = 7
         line_chart.width = 14
-        ws.add_chart(line_chart, "F3")
+        ws.add_chart(line_chart, f"{chart_column}{chart_1_row}")
 
     if category_end > category_header_row:
         bar_chart = BarChart()
@@ -340,7 +353,8 @@ def _add_summary_charts(
         bar_chart.set_categories(labels)
         bar_chart.height = 7
         bar_chart.width = 14
-        ws.add_chart(bar_chart, "F22")
+        chart_2_row = chart_1_row + chart_height_rows + chart_gap_rows
+        ws.add_chart(bar_chart, f"{chart_column}{chart_2_row}")
 
 
 def _apply_sheet_style(
