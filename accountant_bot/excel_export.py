@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from datetime import datetime
+from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 from io import BytesIO
 from typing import Any
@@ -134,7 +134,7 @@ def _build_receipts_sheet(ws: Any, receipts: list[dict[str, Any]]) -> None:
         ws.append(
             [
                 receipt["receipt_id"],
-                receipt["created_at"],
+                _to_excel_dt(receipt["created_at"]),
                 receipt["admin"],
                 receipt["currency"],
                 receipt["pay_method"],
@@ -154,7 +154,7 @@ def _build_items_sheet(ws: Any, items: list[dict[str, Any]]) -> None:
         ws.append(
             [
                 item["receipt_id"],
-                item["created_at"],
+                _to_excel_dt(item["created_at"]),
                 item["admin"],
                 item["status"],
                 item["currency"],
@@ -486,3 +486,13 @@ def _to_decimal(value: Any) -> Decimal:
         return Decimal(str(value))
     except (InvalidOperation, ValueError):
         return Decimal("0")
+
+
+def _to_excel_dt(value: Any) -> Any:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        if value.tzinfo is not None:
+            return value.astimezone(timezone.utc).replace(tzinfo=None)
+        return value
+    return value
