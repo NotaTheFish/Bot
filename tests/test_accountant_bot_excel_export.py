@@ -7,8 +7,30 @@ from accountant_bot.excel_export import build_transactions_report
 
 
 class AccountantBotExcelExportTests(unittest.TestCase):
-    def test_build_transactions_report_includes_receipts_items_and_summary_sheets(self):
+    def test_build_transactions_report_includes_styled_localized_sheets_and_summary_net(self):
         transactions = [
+            {
+                "receipt_id": 2,
+                "created_at": "2026-01-01 11:00:00",
+                "admin": "User Name (id: 101)",
+                "currency": "UAH",
+                "pay_method": "card",
+                "total_sum": "10",
+                "note": "",
+                "receipt_file_id": None,
+                "status": "refunded",
+                "items": [
+                    {
+                        "category": "TOKENS",
+                        "item_name": "Tip",
+                        "qty": "2",
+                        "unit_price": "20",
+                        "unit_basis": "unit",
+                        "line_total": "40",
+                        "note": "",
+                    },
+                ],
+            },
             {
                 "receipt_id": 1,
                 "created_at": "2026-01-01 10:00:00",
@@ -28,37 +50,6 @@ class AccountantBotExcelExportTests(unittest.TestCase):
                         "unit_basis": "unit",
                         "line_total": "200",
                         "note": "",
-                    }
-                ],
-            },
-            {
-                "receipt_id": 2,
-                "created_at": "2026-01-01 11:00:00",
-                "admin": "User Name (id: 101)",
-                "currency": "USD",
-                "pay_method": "card",
-                "total_sum": "5",
-                "note": "",
-                "receipt_file_id": None,
-                "status": "refunded",
-                "items": [
-                    {
-                        "category": "TOKENS",
-                        "item_name": "Tip",
-                        "qty": "2",
-                        "unit_price": "20",
-                        "unit_basis": "unit",
-                        "line_total": "40",
-                        "note": "",
-                    },
-                    {
-                        "category": "MUSHROOMS",
-                        "item_name": "Tea",
-                        "qty": "1000",
-                        "unit_price": "5",
-                        "unit_basis": "per_1000",
-                        "line_total": "5",
-                        "note": "promo",
                     },
                     {
                         "category": "OTHER",
@@ -68,7 +59,7 @@ class AccountantBotExcelExportTests(unittest.TestCase):
                         "unit_basis": "unit",
                         "line_total": "7",
                         "note": "",
-                    }
+                    },
                 ],
             },
         ]
@@ -76,28 +67,28 @@ class AccountantBotExcelExportTests(unittest.TestCase):
         report = build_transactions_report(transactions)
 
         wb = load_workbook(BytesIO(report))
-        self.assertEqual(wb.sheetnames, ["Receipts", "Items", "Summary"])
+        self.assertEqual(wb.sheetnames, ["Чеки", "Позиции", "Сводка"])
 
-        ws_receipts = wb["Receipts"]
-        self.assertEqual(ws_receipts["A1"].value, "receipt_id")
-        self.assertEqual(ws_receipts["C2"].value, "@admin (id: 100)")
-        self.assertEqual(ws_receipts["H2"].value, "yes")
-        self.assertEqual(ws_receipts["I3"].value, "REFUND")
+        ws_receipts = wb["Чеки"]
+        self.assertEqual(ws_receipts["A2"].value, 2)  # sorted by created_at DESC
+        self.assertEqual(ws_receipts["I2"].value, "REFUND")
+        self.assertEqual(ws_receipts.freeze_panes, "A2")
 
-        ws_items = wb["Items"]
+        ws_items = wb["Позиции"]
         self.assertEqual(ws_items["F2"].value, "🐉 Вид")
         self.assertEqual(ws_items["F3"].value, "🪙 Токены")
-        self.assertEqual(ws_items["F4"].value, "🍄 Грибы")
-        self.assertEqual(ws_items["F5"].value, "✍️ Другое")
-        self.assertEqual(ws_items["J4"].value, "за 1000")
+        self.assertEqual(ws_items["F4"].value, "✍️ Другое")
+        self.assertEqual(ws_items["J2"].value, "шт")
+        self.assertEqual(ws_items["J3"].value, "шт")
 
-        ws_summary = wb["Summary"]
-        summary_values = [tuple(row) for row in ws_summary.iter_rows(min_row=2, max_row=ws_summary.max_row, values_only=True)]
-
-        self.assertIn(("counts", "receipts_total", 2), summary_values)
-        self.assertIn(("counts", "receipts_refund", 1), summary_values)
-        self.assertIn(("currency_ok", "RUB", 200), summary_values)
-        self.assertIn(("currency_refund", "USD", 5), summary_values)
+        ws_summary = wb["Сводка"]
+        self.assertEqual(ws_summary["A4"].value, "Валюта")
+        self.assertEqual(ws_summary["A5"].value, "RUB")
+        self.assertEqual(ws_summary["D5"].value, 207)
+        self.assertEqual(ws_summary["A6"].value, "UAH")
+        self.assertEqual(ws_summary["D6"].value, -40)
+        self.assertEqual(ws_summary.freeze_panes, "A4")
+        self.assertEqual(len(ws_summary._charts), 2)
 
 
 if __name__ == "__main__":

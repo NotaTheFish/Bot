@@ -147,6 +147,11 @@ BTN_FIX = "Исправить"
 
 ADD_CHECK_NAV_PREFIX = "add_check:nav"
 
+NAV_BACK = ReplyKeyboardMarkup(
+    keyboard=[[KeyboardButton(text=BTN_BACK)]],
+    resize_keyboard=True,
+)
+
 NAV_BACK_CANCEL = ReplyKeyboardMarkup(
     keyboard=[[KeyboardButton(text=BTN_BACK), KeyboardButton(text=BTN_CANCEL)]],
     resize_keyboard=True,
@@ -610,7 +615,7 @@ async def start_receipt_lookup(message: Message, state: FSMContext, settings: Se
         message.bot,
         message.chat.id,
         "Введите ID чека:",
-        reply_markup=NAV_BACK_CANCEL,
+        reply_markup=NAV_BACK,
     )
 
 
@@ -622,7 +627,7 @@ async def process_receipt_lookup(message: Message, state: FSMContext, pool: asyn
         await safe_send_message(message.bot, message.chat.id, "Поиск чека завершён.", reply_markup=START_KEYBOARD)
         return
     if not text.isdigit():
-        await safe_send_message(message.bot, message.chat.id, "ID должен быть числом.", reply_markup=NAV_BACK_CANCEL)
+        await safe_send_message(message.bot, message.chat.id, "ID должен быть числом.", reply_markup=NAV_BACK)
         return
 
     await _send_receipt_details(message, pool, int(text))

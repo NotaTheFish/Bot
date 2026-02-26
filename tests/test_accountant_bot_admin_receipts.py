@@ -31,6 +31,7 @@ from accountant_bot.admin_bot import (
     PAY_METHOD_KEYBOARD,
     START_KEYBOARD,
     STATS_KEYBOARD,
+    start_receipt_lookup,
     _receipt_details_text,
     _receipt_list_keyboard,
     add_check_currency_callback,
@@ -72,6 +73,30 @@ class _DummyMessage:
         self.chat = SimpleNamespace(id=1)
         self.from_user = SimpleNamespace(id=1)
 
+
+
+
+def test_start_receipt_lookup_uses_back_only_keyboard(monkeypatch):
+    safe_send_message = AsyncMock()
+    monkeypatch.setattr("accountant_bot.admin_bot.safe_send_message", safe_send_message)
+
+    settings = Settings(
+        ACCOUNTANT_BOT_TOKEN="token",
+        ACCOUNTANT_ADMIN_IDS=[1],
+        DATABASE_URL="postgresql://localhost/test",
+        REVIEWS_CHANNEL_ID=777,
+        TG_API_ID=123,
+        TG_API_HASH="hash",
+        ACCOUNTANT_TG_STRING_SESSION="session",
+    )
+    state = _DummyState()
+    message = _DummyMessage("🔎 Найти чек")
+
+    asyncio.run(start_receipt_lookup(message, state, settings))
+
+    keyboard = safe_send_message.await_args.kwargs["reply_markup"]
+    rows = [[button.text for button in row] for row in keyboard.keyboard]
+    assert rows == [["Назад"]]
 
 def test_start_keyboard_has_expected_rows_and_labels():
     rows = [[button.text for button in row] for row in START_KEYBOARD.keyboard]
