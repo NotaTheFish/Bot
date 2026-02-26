@@ -183,12 +183,7 @@ def _build_summary_sheet(ws: Any, items: list[dict[str, Any]]) -> None:
 
     currencies = sorted({(item.get("currency") or "-") for item in items} or {"-"})
 
-    row = 3
-    ws.cell(row=row, column=1, value="Общий доход по валютам")
-    ws.cell(row=row, column=1).font = Font(bold=True)
-    row += 1
-    ws.append(["Валюта", "OK", "REFUND", "NET"])
-    summary_header_row = row
+    row_cursor = 3
 
     totals: dict[str, dict[str, Decimal]] = defaultdict(lambda: {"ok": Decimal("0"), "refund": Decimal("0")})
     category_totals: dict[str, dict[str, dict[str, Decimal]]] = defaultdict(lambda: defaultdict(lambda: {"ok": Decimal("0"), "refund": Decimal("0")}))
@@ -223,62 +218,35 @@ def _build_summary_sheet(ws: Any, items: list[dict[str, Any]]) -> None:
         product_totals[product_name]["qty"] += _to_decimal(item.get("qty"))
         product_totals[product_name]["currency_net"][currency] += factor * amount
 
+    ws.cell(row=row_cursor, column=1, value="Общий доход по валютам")
+    ws.cell(row=row_cursor, column=1).font = Font(bold=True)
+    summary_header_row = row_cursor + 1
+    ws.append(["Валюта", "OK", "REFUND", "NET"])
+
     for currency in currencies:
         ok_sum = totals[currency]["ok"]
         refund_sum = totals[currency]["refund"]
         ws.append([currency, ok_sum, refund_sum, ok_sum - refund_sum])
     summary_end = ws.max_row
     _style_table(ws, summary_header_row, summary_end, money_columns={2, 3, 4})
+    row_cursor = summary_end + 4
 
-    row = ws.max_row + 2
-    ws.cell(row=row, column=1, value="Доход по дням")
-    ws.cell(row=row, column=1).font = Font(bold=True)
-    row += 1
-
+    ws.cell(row=row_cursor, column=1, value="Доход по дням")
+    ws.cell(row=row_cursor, column=1).font = Font(bold=True)
+    day_header_row = row_cursor + 1
     day_headers = ["Дата", *[f"{currency}_NET" for currency in currencies]]
     ws.append(day_headers)
-    day_header_row = row
     for day in sorted(day_totals):
         ws.append([day, *[day_totals[day][currency] for currency in currencies]])
     day_end = ws.max_row
     _style_table(ws, day_header_row, day_end, money_columns=set(range(2, len(day_headers) + 1)), date_columns={1})
+    row_cursor = day_end + 4
 
-    row = ws.max_row + 2
-    ws.cell(row=row, column=1, value="Доход по категориям")
-    ws.cell(row=row, column=1).font = Font(bold=True)
-    row += 1
-
-    category_headers = ["Категория"]
-    net_columns: list[int] = []
-    for currency in currencies:
-        category_headers.extend([f"{currency}_OK", f"{currency}_REFUND", f"{currency}_NET"])
-        net_columns.append(len(category_headers))
-    ws.append(category_headers)
-    category_header_row = row
-
-    for category_code, _ in sorted(CATEGORY_ORDER.items(), key=lambda pair: pair[1]):
-        category_label = CATEGORY_LABELS.get(category_code, category_code)
-        row_values: list[Any] = [category_label]
-        for currency in currencies:
-            data = category_totals[category_code][currency]
-            row_values.extend([data["ok"], data["refund"], data["ok"] - data["refund"]])
-        ws.append(row_values)
-        fill = category_fill(category_code)
-        for col_idx in range(1, ws.max_column + 1):
-            ws.cell(row=ws.max_row, column=col_idx).fill = fill
-
-    category_end = ws.max_row
-    money_cols = set(range(2, len(category_headers) + 1))
-    _style_table(ws, category_header_row, category_end, money_columns=money_cols)
-
-    row = ws.max_row + 2
-    ws.cell(row=row, column=1, value="Топ товаров")
-    ws.cell(row=row, column=1).font = Font(bold=True)
-    row += 1
-
+    ws.cell(row=row_cursor, column=1, value="Топ товаров")
+    ws.cell(row=row_cursor, column=1).font = Font(bold=True)
+    top_header_row = row_cursor + 1
     top_headers = ["Товар", "Продано (qty)", *[f"{currency}_NET" for currency in currencies]]
     ws.append(top_headers)
-    top_header_row = row
 
     sorted_products = sorted(
         product_totals.items(),
@@ -289,6 +257,32 @@ def _build_summary_sheet(ws: Any, items: list[dict[str, Any]]) -> None:
         ws.append([product_name, agg["qty"], *[agg["currency_net"][currency] for currency in currencies]])
     top_end = ws.max_row
     _style_table(ws, top_header_row, top_end, money_columns=set(range(3, len(top_headers) + 1)), qty_columns={2})
+    row_cursor = top_end + 4
+
+    ws.cell(row=row_cursor, column=1, value="Доход по категориям")
+    ws.cell(row=row_cursor, column=1).font = Font(bold=True)
+    category_header_row = row_cursor + 1
+
+    category_headers = ["Категория"]
+    net_columns: list[int] = []
+    for currency in currencies:
+        category_headers.extend([f"{currency}_OK", f"{currency}_REFUND", f"{currency}_NET"])
+        net_columns.append(len(category_headers))
+    ws.append(category_headers)
+
+    for category_code, _ in sorted(CATEGORY_ORDER.items(), key=lambda pair: pair[1]):
+        category_label = CATEGORY_LABELS.get(category_code, category_code)
+        row_values: list[Any] = [category_label]
+        for currency in currencies:
+            data = category_totals[category_code][currency]
+            row_values.extend([data["ok"], data["refund"], data["ok"] - data["refund"]])
+        ws.append(row_values)
+        for col_idx in range(1, ws.max_column + 1):
+            ws.cell(row=ws.max_row, column=col_idx).fill = category_fill(category_code)
+
+    category_end = ws.max_row
+    money_cols = set(range(2, len(category_headers) + 1))
+    _style_table(ws, category_header_row, category_end, money_columns=money_cols)
 
     _add_summary_charts(
         ws,
