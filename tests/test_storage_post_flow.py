@@ -17,6 +17,12 @@ class StoragePostFlowTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self) -> None:
         main_core.media_group_buffers.clear()
 
+    @staticmethod
+    def _waiting_state_mock() -> AsyncMock:
+        state = AsyncMock()
+        state.get_state = AsyncMock(return_value=main_core.AdminStates.waiting_storage_post.state)
+        return state
+
     def test_dispatcher_uses_memory_storage(self):
         self.assertEqual(main_core.dp.storage.__class__.__name__, "ThreadAgnosticMemoryStorage")
 
@@ -61,8 +67,7 @@ class StoragePostFlowTests(unittest.IsolatedAsyncioTestCase):
         state.set_state.assert_not_called()
 
     async def test_create_post_command_for_storage_admin_sets_state_and_answers(self):
-        state = AsyncMock()
-        state.get_state = AsyncMock(return_value=main_core.AdminStates.waiting_storage_post.state)
+        state = self._waiting_state_mock()
         message = SimpleNamespace(
             chat=SimpleNamespace(id=-100123),
             from_user=SimpleNamespace(id=1),
@@ -74,10 +79,13 @@ class StoragePostFlowTests(unittest.IsolatedAsyncioTestCase):
         await main_core.create_post_in_storage(message, state)
 
         state.set_state.assert_awaited_once_with(main_core.AdminStates.waiting_storage_post)
-        message.answer.assert_awaited_once_with("Пришлите пост одним сообщением или альбомом. /cancel чтобы отменить.")
+        message.answer.assert_awaited_once_with(
+            "Пришлите пост одним сообщением или альбомом. Нажмите «⛔ Отменить», чтобы отменить.",
+            reply_markup=main_core.storage_create_kb(),
+        )
 
     async def test_single_storage_message_saves_storage_message_ids(self):
-        state = AsyncMock()
+        state = self._waiting_state_mock()
         message = SimpleNamespace(
             chat=SimpleNamespace(id=-100123),
             from_user=SimpleNamespace(id=1),
@@ -98,6 +106,7 @@ class StoragePostFlowTests(unittest.IsolatedAsyncioTestCase):
         )
 
         with (
+            patch.object(main_core, "_remember_storage_admin_template_message", AsyncMock()),
             patch.object(main_core, "get_storage_chat_id", AsyncMock(return_value=-100123)),
             patch.object(main_core, "get_post", AsyncMock(return_value={"storage_chat_id": -100123, "storage_message_ids": []})),
             patch.object(main_core, "_delete_previous_storage_post", AsyncMock(return_value=[])),
@@ -113,7 +122,7 @@ class StoragePostFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(save_post.await_args.kwargs["storage_message_ids"], [55])
 
     async def test_single_storage_message_answers_with_send_hint(self):
-        state = AsyncMock()
+        state = self._waiting_state_mock()
         message = SimpleNamespace(
             chat=SimpleNamespace(id=-100123),
             from_user=SimpleNamespace(id=1),
@@ -134,6 +143,7 @@ class StoragePostFlowTests(unittest.IsolatedAsyncioTestCase):
         )
 
         with (
+            patch.object(main_core, "_remember_storage_admin_template_message", AsyncMock()),
             patch.object(main_core, "get_storage_chat_id", AsyncMock(return_value=-100123)),
             patch.object(main_core, "get_post", AsyncMock(return_value={"storage_chat_id": -100123, "storage_message_ids": []})),
             patch.object(main_core, "_delete_previous_storage_post", AsyncMock(return_value=[])),
@@ -148,9 +158,10 @@ class StoragePostFlowTests(unittest.IsolatedAsyncioTestCase):
         reply_text = message.answer.await_args.args[0]
         self.assertIn("✅ Сохранено и закреплено", reply_text)
         self.assertIn("Для отправки ипользуйте: ✅ Запустить рассылку", reply_text)
+        self.assertEqual(message.answer.await_args.kwargs["reply_markup"], main_core.storage_idle_kb())
 
     async def test_single_storage_message_pin_failure_keeps_save_success_response(self):
-        state = AsyncMock()
+        state = self._waiting_state_mock()
         message = SimpleNamespace(
             chat=SimpleNamespace(id=-100123),
             from_user=SimpleNamespace(id=1),
@@ -171,6 +182,7 @@ class StoragePostFlowTests(unittest.IsolatedAsyncioTestCase):
         )
 
         with (
+            patch.object(main_core, "_remember_storage_admin_template_message", AsyncMock()),
             patch.object(main_core, "get_storage_chat_id", AsyncMock(return_value=-100123)),
             patch.object(main_core, "get_post", AsyncMock(return_value={"storage_chat_id": -100123, "storage_message_ids": []})),
             patch.object(main_core, "_delete_previous_storage_post", AsyncMock(return_value=[])),
@@ -186,9 +198,10 @@ class StoragePostFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("✅ Сохранено.", reply_text)
         self.assertIn("⚠️ Не смог закрепить/открепить: pin failed", reply_text)
         self.assertNotIn("❌ Не удалось сохранить пост в БД", reply_text)
+        self.assertEqual(message.answer.await_args.kwargs["reply_markup"], main_core.storage_idle_kb())
 
     async def test_single_storage_message_auto_queues_userbot_when_flag_enabled(self):
-        state = AsyncMock()
+        state = self._waiting_state_mock()
         message = SimpleNamespace(
             chat=SimpleNamespace(id=-100123),
             from_user=SimpleNamespace(id=1),
@@ -209,6 +222,7 @@ class StoragePostFlowTests(unittest.IsolatedAsyncioTestCase):
         )
 
         with (
+            patch.object(main_core, "_remember_storage_admin_template_message", AsyncMock()),
             patch.object(main_core, "CREATE_POST_AUTO_QUEUE_USERBOT", True),
             patch.object(main_core, "DELIVERY_MODE", "userbot"),
             patch.object(main_core, "TARGET_CHAT_IDS", [42, 24]),
@@ -228,7 +242,7 @@ class StoragePostFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Userbot-задача автоматически поставлена в очередь.", reply_text)
 
     async def test_media_group_message_is_buffered(self):
-        state = AsyncMock()
+        state = self._waiting_state_mock()
         message = SimpleNamespace(
             chat=SimpleNamespace(id=-100123),
             from_user=SimpleNamespace(id=1),
@@ -252,7 +266,10 @@ class StoragePostFlowTests(unittest.IsolatedAsyncioTestCase):
             coro.close()
             return object()
 
-        with patch.object(main_core.asyncio, "create_task", side_effect=_fake_create_task):
+        with (
+            patch.object(main_core, "_remember_storage_admin_template_message", AsyncMock()),
+            patch.object(main_core.asyncio, "create_task", side_effect=_fake_create_task),
+        ):
             await main_core.handle_storage_post(message, state)
 
         self.assertIn("group-1", main_core.media_group_buffers)
@@ -260,7 +277,7 @@ class StoragePostFlowTests(unittest.IsolatedAsyncioTestCase):
 
 
     async def test_handle_storage_post_rejects_empty_service_message(self):
-        state = AsyncMock()
+        state = self._waiting_state_mock()
         message = SimpleNamespace(
             chat=SimpleNamespace(id=-100123),
             from_user=SimpleNamespace(id=1),
@@ -280,7 +297,10 @@ class StoragePostFlowTests(unittest.IsolatedAsyncioTestCase):
             answer=AsyncMock(),
         )
 
-        with patch.object(main_core, "_publish_post_messages", AsyncMock()) as publish:
+        with (
+            patch.object(main_core, "_remember_storage_admin_template_message", AsyncMock()),
+            patch.object(main_core, "_publish_post_messages", AsyncMock()) as publish,
+        ):
             await main_core.handle_storage_post(message, state)
 
         publish.assert_not_called()
@@ -288,7 +308,7 @@ class StoragePostFlowTests(unittest.IsolatedAsyncioTestCase):
 
 
     async def test_album_flow_flushes_once_and_confirms(self):
-        state = AsyncMock()
+        state = self._waiting_state_mock()
 
         first = SimpleNamespace(
             chat=SimpleNamespace(id=-100123),
@@ -333,7 +353,10 @@ class StoragePostFlowTests(unittest.IsolatedAsyncioTestCase):
             created_coroutines.append(coro)
             return object()
 
-        with patch.object(main_core.asyncio, "create_task", side_effect=_fake_create_task):
+        with (
+            patch.object(main_core, "_remember_storage_admin_template_message", AsyncMock()),
+            patch.object(main_core.asyncio, "create_task", side_effect=_fake_create_task),
+        ):
             await main_core.handle_storage_post(first, state)
             await main_core.handle_storage_post(second, state)
 
@@ -346,6 +369,37 @@ class StoragePostFlowTests(unittest.IsolatedAsyncioTestCase):
             await main_core._flush_media_group("album-42", state)
 
         publish.assert_awaited_once_with([first, second], state, media_group_id="album-42")
+
+    async def test_handle_storage_post_ignores_message_without_waiting_state(self):
+        state = AsyncMock()
+        state.get_state = AsyncMock(return_value=None)
+        message = SimpleNamespace(
+            chat=SimpleNamespace(id=-100123),
+            from_user=SimpleNamespace(id=1),
+            message_id=903,
+            media_group_id=None,
+            text="hello",
+            caption=None,
+            photo=None,
+            video=None,
+            animation=None,
+            document=None,
+            audio=None,
+            voice=None,
+            sticker=None,
+            content_type="text",
+            message_thread_id=None,
+            answer=AsyncMock(),
+        )
+
+        with (
+            patch.object(main_core, "_remember_storage_admin_template_message", AsyncMock()),
+            patch.object(main_core, "_publish_post_messages", AsyncMock()) as publish,
+        ):
+            await main_core.handle_storage_post(message, state)
+
+        publish.assert_not_called()
+        message.answer.assert_not_called()
 
     async def test_send_post_preview_uses_storage_ids(self):
         message = SimpleNamespace(chat=SimpleNamespace(id=1), answer=AsyncMock())

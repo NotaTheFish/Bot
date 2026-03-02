@@ -2110,6 +2110,29 @@ async def _publish_post_messages(messages: list[Message], state: FSMContext, med
         logger.warning("Failed to pin/unpin storage post chat_id=%s: %s", storage_chat_id, exc)
         pin_warning = f"⚠️ Не смог закрепить/открепить: {exc}"
 
+    await _handle_storage_post_success(
+        messages=messages,
+        state=state,
+        media_group_id=media_group_id,
+        storage_chat_id=storage_chat_id,
+        storage_message_ids=storage_message_ids,
+        caption_trimmed=caption_trimmed,
+        pin_warning=pin_warning,
+        deletion_warnings=deletion_warnings,
+    )
+
+
+async def _handle_storage_post_success(
+    *,
+    messages: list[Message],
+    state: FSMContext,
+    media_group_id: Optional[str],
+    storage_chat_id: int,
+    storage_message_ids: list[int],
+    caption_trimmed: bool,
+    pin_warning: Optional[str],
+    deletion_warnings: list[str],
+) -> None:
     await state.clear()
     state_after = await state.get_state()
     logger.info(
@@ -2119,6 +2142,7 @@ async def _publish_post_messages(messages: list[Message], state: FSMContext, med
         media_group_id,
         state_after,
     )
+
     response_lines = [f"✅ Сохранено. {pin_warning}" if pin_warning else "✅ Сохранено и закреплено"]
     if caption_trimmed:
         response_lines.append(
@@ -2137,7 +2161,7 @@ async def _publish_post_messages(messages: list[Message], state: FSMContext, med
         else:
             response_lines.append("ℹ️ Аналогичная userbot-задача уже есть в очереди.")
 
-    await messages[-1].answer("\n".join(response_lines))
+    await messages[-1].answer("\n".join(response_lines), reply_markup=storage_idle_kb())
     await send_post_actions(messages[-1])
 
 
@@ -3209,6 +3233,15 @@ async def cancel_storage_post_creation(message: Message, state: FSMContext):
 @dp.message(AdminStates.waiting_storage_post)
 async def handle_storage_post(message: Message, state: FSMContext):
     if message.chat.id != STORAGE_CHAT_ID:
+        return
+
+    if await state.get_state() != AdminStates.waiting_storage_post.state:
+        logger.info(
+            "storage_post ignored without waiting state chat_id=%s user_id=%s msg_id=%s",
+            message.chat.id,
+            message.from_user.id if message.from_user else None,
+            message.message_id,
+        )
         return
 
     if not message.from_user:
