@@ -837,6 +837,20 @@ def storage_create_post_keyboard() -> ReplyKeyboardMarkup:
     )
 
 
+def storage_idle_kb() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        keyboard=[[KeyboardButton(text="🧷 Создать пост")]],
+        resize_keyboard=True,
+    )
+
+
+def storage_create_kb() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        keyboard=[[KeyboardButton(text="⛔ Отменить")]],
+        resize_keyboard=True,
+    )
+
+
 def storage_post_actions_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
@@ -850,7 +864,7 @@ def is_storage_chat(chat_id: int) -> bool:
     return int(chat_id) == int(STORAGE_CHAT_ID)
 
 
-ALLOWED_STORAGE_KEYBOARD_IDS = {"storage_create_post", "storage_post_actions"}
+ALLOWED_STORAGE_KEYBOARD_IDS = {"storage_idle", "storage_create", "storage_post_actions"}
 
 
 async def send_with_storage_guard(
@@ -871,8 +885,8 @@ async def safe_send_admin_menu(message: Message) -> None:
         await send_with_storage_guard(
             message,
             "Используйте кнопку для создания поста в Storage:",
-            reply_markup=storage_create_post_keyboard(),
-            keyboard_id="storage_create_post",
+            reply_markup=storage_idle_kb(),
+            keyboard_id="storage_idle",
         )
         return
     await send_with_storage_guard(message, "Главное меню:", reply_markup=admin_menu_keyboard())
@@ -2936,7 +2950,7 @@ async def stop_userbot_broadcast(message: Message) -> None:
     canceled = await cancel_active_userbot_tasks()
     await message.answer(f"Остановлено активных задач: {canceled} ✅")
 
-@dp.message(F.text == "📌 Создать пост (в Storage)")
+@dp.message(F.text.in_({"📌 Создать пост (в Storage)", "🧷 Создать пост"}))
 async def storage_post_instructions(message: Message, state: FSMContext):
     if not ensure_admin(message):
         return
@@ -2951,7 +2965,7 @@ async def storage_post_instructions(message: Message, state: FSMContext):
 async def edit_post_start(message: Message, state: FSMContext):
     if not ensure_admin(message):
         return
-    await message.answer("Используйте кнопку: 📌 Создать пост (в Storage)")
+    await message.answer("Используйте кнопку: 🧷 Создать пост")
 
 
 @dp.message(F.text.in_({"/settings", "/admin", "📝 Изменить автоответ", "📝 Изменить автоответ покупателю"}))
@@ -3047,7 +3061,7 @@ async def edit_post_selected(callback: CallbackQuery, state: FSMContext):
         await callback.answer("Недоступно", show_alert=True)
         return
     await state.clear()
-    await callback.message.answer("Используйте кнопку: 📌 Создать пост (в Storage)")
+    await callback.message.answer("Используйте кнопку: 🧷 Создать пост")
     await callback.answer()
 
 
@@ -3075,7 +3089,12 @@ async def create_post_in_storage(message: Message, state: FSMContext):
             message.from_user.id if message.from_user else None,
             await state.get_state(),
         )
-        await message.answer("Пришлите пост одним сообщением или альбомом. /cancel чтобы отменить.")
+        await send_with_storage_guard(
+            message,
+            "Пришлите пост одним сообщением или альбомом. Нажмите «⛔ Отменить», чтобы отменить.",
+            reply_markup=storage_create_kb(),
+            keyboard_id="storage_create",
+        )
     except Exception as e:
         logger.exception("create_post failed: %s", e)
         await message.answer(f"Ошибка: {e}")
@@ -3095,6 +3114,24 @@ def _is_valid_storage_post_message(message: Message) -> tuple[bool, str | None]:
     ):
         return True, None
     return False, "Этот тип сообщения не поддерживается, пришлите текст/медиа/альбом."
+
+
+@dp.message(F.text == "⛔ Отменить")
+async def cancel_storage_post_creation(message: Message, state: FSMContext):
+    if not ensure_admin(message):
+        return
+    if message.chat.id != STORAGE_CHAT_ID:
+        return
+    if await state.get_state() != AdminStates.waiting_storage_post.state:
+        await message.answer("Сейчас нечего отменять.")
+        return
+    await state.clear()
+    await send_with_storage_guard(
+        message,
+        "Создание поста отменено.",
+        reply_markup=storage_idle_kb(),
+        keyboard_id="storage_idle",
+    )
 
 
 @dp.message(AdminStates.waiting_storage_post)
