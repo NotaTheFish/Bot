@@ -829,15 +829,52 @@ def admin_menu_keyboard() -> ReplyKeyboardMarkup:
     )
 
 
+def storage_create_post_keyboard() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        keyboard=[[KeyboardButton(text="📌 Создать пост (в Storage)")]],
+        resize_keyboard=True,
+    )
+
+
+def storage_post_actions_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="➕ Добавить время", callback_data="schedule:add_time")],
+            [InlineKeyboardButton(text="⬅️ Назад", callback_data="schedule:back_main")],
+        ]
+    )
+
+
 def is_storage_chat(chat_id: int) -> bool:
     return int(chat_id) == int(STORAGE_CHAT_ID)
 
 
+ALLOWED_STORAGE_KEYBOARD_IDS = {"storage_create_post", "storage_post_actions"}
+
+
+async def send_with_storage_guard(
+    message: Message,
+    text: str,
+    *,
+    reply_markup: ReplyKeyboardMarkup | InlineKeyboardMarkup | None = None,
+    keyboard_id: str | None = None,
+) -> None:
+    if is_storage_chat(message.chat.id) and reply_markup is not None and keyboard_id not in ALLOWED_STORAGE_KEYBOARD_IDS:
+        await message.answer("⚠️ В Storage доступны только команды создания поста")
+        return
+    await message.answer(text, reply_markup=reply_markup)
+
+
 async def safe_send_admin_menu(message: Message) -> None:
     if is_storage_chat(message.chat.id):
-        await message.answer("⚠️ Управление доступно только в личке")
+        await send_with_storage_guard(
+            message,
+            "Используйте кнопку для создания поста в Storage:",
+            reply_markup=storage_create_post_keyboard(),
+            keyboard_id="storage_create_post",
+        )
         return
-    await message.answer("Главное меню:", reply_markup=admin_menu_keyboard())
+    await send_with_storage_guard(message, "Главное меню:", reply_markup=admin_menu_keyboard())
 
 
 def is_admin_user(user_id: Optional[int]) -> bool:
@@ -2020,11 +2057,12 @@ async def send_schedule_list(message: Message) -> None:
         )
     rows.append([InlineKeyboardButton(text="➕ Добавить ещё", callback_data="schedule:add_time")])
     rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="schedule:back_to_post")])
-    await message.answer(title, reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
+    await send_with_storage_guard(message, title, reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
 
 
 async def send_edit_post_menu(message: Message) -> None:
-    await message.answer(
+    await send_with_storage_guard(
+        message,
         "Что вы хотите изменить?",
         reply_markup=InlineKeyboardMarkup(
             inline_keyboard=[
@@ -2048,14 +2086,11 @@ async def edit_menu_callback(callback: CallbackQuery, state: FSMContext):
 
 async def send_post_actions(message: Message) -> None:
     await send_post_preview(message)
-    await message.answer(
+    await send_with_storage_guard(
+        message,
         "Выберите действие:",
-        reply_markup=InlineKeyboardMarkup(
-            inline_keyboard=[
-                [InlineKeyboardButton(text="➕ Добавить время", callback_data="schedule:add_time")],
-                [InlineKeyboardButton(text="⬅️ Назад", callback_data="schedule:back_main")],
-            ]
-        ),
+        reply_markup=storage_post_actions_keyboard(),
+        keyboard_id="storage_post_actions",
     )
 
 
@@ -2580,7 +2615,7 @@ async def send_post_info_card(message: Message, messages_count: int, edit_messag
             )
             await message.answer("❌ Не удалось обновить карточку поста. Отправляю новую карточку ниже.")
 
-    await message.answer("\n".join(lines), reply_markup=post_info_card_markup())
+    await send_with_storage_guard(message, "\n".join(lines), reply_markup=post_info_card_markup())
 
 
 @dp.callback_query(F.data == "post_info:refresh")
@@ -3126,7 +3161,7 @@ async def schedule_add_time_menu(callback: CallbackQuery):
             [InlineKeyboardButton(text="⬅️ Назад", callback_data="schedule:back_to_post")],
         ]
     )
-    await callback.message.answer("Выберите тип расписания:", reply_markup=keyboard)
+    await send_with_storage_guard(callback.message, "Выберите тип расписания:", reply_markup=keyboard)
     await callback.answer()
 
 
@@ -3196,7 +3231,7 @@ async def schedule_weekly(callback: CallbackQuery):
             [InlineKeyboardButton(text="⬅️ Назад", callback_data="schedule:add_time")],
         ]
     )
-    await callback.message.answer("Выберите день недели:", reply_markup=keyboard)
+    await send_with_storage_guard(callback.message, "Выберите день недели:", reply_markup=keyboard)
     await callback.answer()
 
 
@@ -3292,7 +3327,7 @@ async def schedule_item_menu(callback: CallbackQuery):
             [InlineKeyboardButton(text="⬅️ Назад", callback_data="schedule:list")],
         ]
     )
-    await callback.message.answer(f"Выбрано: {schedule_label(item)}", reply_markup=keyboard)
+    await send_with_storage_guard(callback.message, f"Выбрано: {schedule_label(item)}", reply_markup=keyboard)
     await callback.answer()
 
 
@@ -3647,7 +3682,7 @@ async def worker_autoreply_menu(message: Message, state: FSMContext):
         logger.exception("Failed to load worker autoreply settings")
         await message.answer(f"Ошибка чтения настроек из БД: {exc}")
         return
-    await message.answer(_autoreply_settings_text(settings), reply_markup=worker_autoreply_keyboard())
+    await send_with_storage_guard(message, _autoreply_settings_text(settings), reply_markup=worker_autoreply_keyboard())
 
 
 @dp.callback_query(F.data.in_({"wa:enable", "wa:disable"}))
@@ -3657,7 +3692,7 @@ async def worker_autoreply_toggle(callback: CallbackQuery):
         return
     await update_worker_autoreply_settings(enabled=callback.data == "wa:enable")
     settings = await get_worker_autoreply_settings()
-    await callback.message.answer(_autoreply_settings_text(settings), reply_markup=worker_autoreply_keyboard())
+    await send_with_storage_guard(callback.message, _autoreply_settings_text(settings), reply_markup=worker_autoreply_keyboard())
     await callback.answer("Сохранено")
 
 
@@ -3672,7 +3707,7 @@ async def worker_autoreply_mode(callback: CallbackQuery):
         return
     await update_worker_autoreply_settings(trigger_mode=mode)
     settings = await get_worker_autoreply_settings()
-    await callback.message.answer(_autoreply_settings_text(settings), reply_markup=worker_autoreply_keyboard())
+    await send_with_storage_guard(callback.message, _autoreply_settings_text(settings), reply_markup=worker_autoreply_keyboard())
     await callback.answer("Сохранено")
 
 
@@ -3736,7 +3771,7 @@ async def _save_worker_template_from_messages(message: Message, messages: list[M
     await state.clear()
     await message.answer("✅ Шаблон автоответа обновлён")
     settings = await get_worker_autoreply_settings()
-    await message.answer(_autoreply_settings_text(settings), reply_markup=worker_autoreply_keyboard())
+    await send_with_storage_guard(message, _autoreply_settings_text(settings), reply_markup=worker_autoreply_keyboard())
 
 
 async def _flush_worker_template_media_group_with_delay(media_group_id: str, message: Message, state: FSMContext) -> None:
@@ -3811,7 +3846,7 @@ async def worker_autoreply_offline_save(message: Message, state: FSMContext):
     await update_worker_autoreply_settings(offline_threshold_minutes=value)
     await state.clear()
     settings = await get_worker_autoreply_settings()
-    await message.answer(_autoreply_settings_text(settings), reply_markup=worker_autoreply_keyboard())
+    await send_with_storage_guard(message, _autoreply_settings_text(settings), reply_markup=worker_autoreply_keyboard())
 
 
 @dp.message(AdminStates.waiting_autoreply_cooldown)
@@ -3827,7 +3862,7 @@ async def worker_autoreply_cooldown_save(message: Message, state: FSMContext):
     await update_worker_autoreply_settings(cooldown_seconds=cooldown_seconds)
     await state.clear()
     settings = await get_worker_autoreply_settings()
-    await message.answer(_autoreply_settings_text(settings), reply_markup=worker_autoreply_keyboard())
+    await send_with_storage_guard(message, _autoreply_settings_text(settings), reply_markup=worker_autoreply_keyboard())
 
 
 @dp.message(F.chat.type == "private")
