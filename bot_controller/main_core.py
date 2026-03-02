@@ -829,6 +829,17 @@ def admin_menu_keyboard() -> ReplyKeyboardMarkup:
     )
 
 
+def is_storage_chat(chat_id: int) -> bool:
+    return int(chat_id) == int(STORAGE_CHAT_ID)
+
+
+async def safe_send_admin_menu(message: Message) -> None:
+    if is_storage_chat(message.chat.id):
+        await message.answer("⚠️ Управление доступно только в личке")
+        return
+    await message.answer("Главное меню:", reply_markup=admin_menu_keyboard())
+
+
 def is_admin_user(user_id: Optional[int]) -> bool:
     return bool(user_id and user_id in ADMIN_IDS_LIST)
 
@@ -2658,7 +2669,7 @@ async def on_start(message: Message, state: FSMContext):
 
     if message.chat.type == "private" and message.from_user and is_admin_user(message.from_user.id):
         await state.clear()
-        await message.answer("Главное меню:", reply_markup=admin_menu_keyboard())
+        await safe_send_admin_menu(message)
         return
 
     if payload.startswith(CONTACT_PAYLOAD_PREFIX) and message.chat.type == "private":
@@ -2688,14 +2699,14 @@ async def on_start(message: Message, state: FSMContext):
 async def on_menu(message: Message, state: FSMContext):
     if message.chat.type == "private" and message.from_user and is_admin_user(message.from_user.id):
         await state.clear()
-        await message.answer("Главное меню:", reply_markup=admin_menu_keyboard())
+        await safe_send_admin_menu(message)
 
 
 @dp.message(F.text.in_({"/", "Меню", "меню"}))
 async def on_menu_fallback(message: Message, state: FSMContext):
     if message.chat.type == "private" and message.from_user and is_admin_user(message.from_user.id):
         await state.clear()
-        await message.answer("Главное меню:", reply_markup=admin_menu_keyboard())
+        await safe_send_admin_menu(message)
 
 
 @dp.message(F.chat.type == "private", lambda message: is_buyer_contact_text(message.text))
@@ -3057,7 +3068,7 @@ async def edit_back_selected(callback: CallbackQuery, state: FSMContext):
         await callback.answer()
         return
     await state.clear()
-    await callback.message.answer("Главное меню:", reply_markup=admin_menu_keyboard())
+    await safe_send_admin_menu(callback.message)
     await callback.answer()
 
 
@@ -3124,7 +3135,7 @@ async def back_main(callback: CallbackQuery):
     if not callback.message or not is_admin_user(callback.from_user.id):
         await callback.answer()
         return
-    await callback.message.answer("Главное меню:", reply_markup=admin_menu_keyboard())
+    await safe_send_admin_menu(callback.message)
     await callback.answer()
 
 
