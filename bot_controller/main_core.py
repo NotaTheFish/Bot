@@ -3054,7 +3054,7 @@ async def start_create_post_flow(message: Message, state: FSMContext) -> bool:
     )
     await send_with_storage_guard(
         message,
-        "Пришлите пост одним сообщением или альбомом. Нажмите «⛔ Отменить», чтобы отменить.",
+        "Пришлите пост/альбом…",
         reply_markup=storage_create_kb(),
         keyboard_id="storage_create",
     )
