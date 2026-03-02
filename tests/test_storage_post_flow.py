@@ -66,8 +66,8 @@ class StoragePostFlowTests(unittest.IsolatedAsyncioTestCase):
         message.answer.assert_awaited_once_with("Недостаточно прав")
         state.set_state.assert_not_called()
 
-    async def test_create_post_command_for_storage_admin_sets_state_and_answers(self):
-        state = self._waiting_state_mock()
+    async def test_create_post_command_for_storage_admin_shows_button_hint(self):
+        state = AsyncMock()
         message = SimpleNamespace(
             chat=SimpleNamespace(id=-100123),
             from_user=SimpleNamespace(id=1),
@@ -78,10 +78,10 @@ class StoragePostFlowTests(unittest.IsolatedAsyncioTestCase):
 
         await main_core.create_post_in_storage(message, state)
 
-        state.set_state.assert_awaited_once_with(main_core.AdminStates.waiting_storage_post)
+state.set_state.assert_not_called()
         message.answer.assert_awaited_once_with(
-            "Отправьте пост (сообщение или альбом). Для отмены нажмите кнопку «Отменить».",
-            reply_markup=main_core.storage_create_kb(),
+            "Используйте кнопку «🧷 Создать пост» ниже.",
+            reply_markup=main_core.storage_idle_kb(),
         )
 
     async def test_single_storage_message_saves_storage_message_ids(self):

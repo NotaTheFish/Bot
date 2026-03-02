@@ -21,7 +21,6 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.base import DefaultKeyBuilder, StorageKey
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import (
-    BotCommand,
     BotCommandScopeChat,
     BotCommandScopeDefault,
     CallbackQuery,
@@ -3161,7 +3160,10 @@ async def create_post_in_storage(message: Message, state: FSMContext):
             await message.answer("используйте команду в Storage")
             return
 
-        await start_create_post_flow(message, state)
+        await message.answer(
+            "Используйте кнопку «🧷 Создать пост» ниже.",
+            reply_markup=storage_idle_kb(),
+        )
     except Exception as e:
         logger.exception("create_post failed: %s", e)
         await message.answer(f"Ошибка: {e}")
@@ -4135,10 +4137,7 @@ async def main() -> None:
         BOT_USERNAME = me.username or ""
         BOT_ID = me.id
         await bot.set_my_commands([], scope=BotCommandScopeDefault())
-        await bot.set_my_commands(
-            [BotCommand(command="create_post", description="Создать/обновить пост в Storage")],
-            scope=BotCommandScopeChat(chat_id=STORAGE_CHAT_ID),
-        )
+        await bot.set_my_commands([], scope=BotCommandScopeChat(chat_id=STORAGE_CHAT_ID))
         await ensure_storage_panel_message()
         logger.info("Bot commands set for storage scope chat_id=%s", STORAGE_CHAT_ID)
         scheduler.add_job(safe_cleanup_storage_posts, "interval", seconds=STORAGE_CLEANUP_EVERY_SECONDS, id="storage_safe_cleanup", replace_existing=True)
