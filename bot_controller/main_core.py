@@ -2443,6 +2443,10 @@ async def remember_chat_from_messages(message: Message, state: FSMContext):
 
 @dp.message(F.text == "📊 Статус")
 async def admin_status(message: Message):
+    if int(message.chat.id) == int(STORAGE_CHAT_ID):
+        await message.answer("⚠️ Эти кнопки работают только в личке с ботом.")
+        return
+
     if not ensure_admin(message):
         return
 
@@ -2526,6 +2530,10 @@ async def admin_status(message: Message):
 
 @dp.message(F.text == "ℹ️ Информация о посте")
 async def post_info(message: Message, state: FSMContext):
+    if int(message.chat.id) == int(STORAGE_CHAT_ID):
+        await message.answer("⚠️ Эти кнопки работают только в личке с ботом.")
+        return
+
     if not ensure_admin(message):
         await message.answer("Нет доступа")
         return
@@ -2713,6 +2721,10 @@ async def post_info_refresh(callback: CallbackQuery):
 
 @dp.message(F.text.in_({"✅ Запустить рассылку", "🚀 Запустить сейчас"}))
 async def admin_broadcast_now(message: Message) -> None:
+    if int(message.chat.id) == int(STORAGE_CHAT_ID):
+        await message.answer("⚠️ Эти кнопки работают только в личке с ботом.")
+        return
+
     if not ensure_admin(message):
         return
 
@@ -2911,6 +2923,10 @@ async def buyer_contact_start_inline(callback: CallbackQuery, state: FSMContext)
 
 @dp.message(F.text == "⛔ Остановить рассылку")
 async def stop_userbot_broadcast(message: Message) -> None:
+    if int(message.chat.id) == int(STORAGE_CHAT_ID):
+        await message.answer("⚠️ Эти кнопки работают только в личке с ботом.")
+        return
+
     if not ensure_admin(message):
         return
     if DELIVERY_MODE != "userbot":
@@ -2940,6 +2956,10 @@ async def edit_post_start(message: Message, state: FSMContext):
 
 @dp.message(F.text.in_({"/settings", "/admin", "📝 Изменить автоответ", "📝 Изменить автоответ покупателю"}))
 async def buyer_reply_settings_start(message: Message, state: FSMContext):
+    if int(message.chat.id) == int(STORAGE_CHAT_ID):
+        await message.answer("⚠️ Эти кнопки работают только в личке с ботом.")
+        return
+
     if not ensure_admin(message):
         return
     await state.set_state(AdminStates.choosing_buyer_reply_variant)
@@ -3725,6 +3745,10 @@ def worker_autoreply_keyboard() -> InlineKeyboardMarkup:
 
 @dp.message(F.text == "🤖 Автоответчик")
 async def worker_autoreply_menu(message: Message, state: FSMContext):
+    if int(message.chat.id) == int(STORAGE_CHAT_ID):
+        await message.answer("⚠️ Эти кнопки работают только в личке с ботом.")
+        return
+
     logger.info(
         "HANDLER autoreply_menu fired chat_id=%s user_id=%s text=%r",
         message.chat.id,
