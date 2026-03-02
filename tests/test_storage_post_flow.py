@@ -419,6 +419,39 @@ class StoragePostFlowTests(unittest.IsolatedAsyncioTestCase):
         broadcast_once.assert_not_called()
         create_post_in_storage.assert_not_called()
 
+    async def test_ensure_storage_panel_message_edits_existing_message(self):
+        with (
+            patch.object(main_core, "get_storage_chat_id", AsyncMock(return_value=-100123)),
+            patch.object(main_core, "get_meta", AsyncMock(side_effect=["-100123", "555"])),
+            patch.object(main_core.bot, "edit_message_text", AsyncMock()) as edit_text,
+            patch.object(main_core.bot, "send_message", AsyncMock()) as send_message,
+            patch.object(main_core, "set_meta", AsyncMock()) as set_meta,
+        ):
+            await main_core.ensure_storage_panel_message()
+
+        edit_text.assert_awaited_once()
+        send_message.assert_not_called()
+        set_meta.assert_not_called()
+
+    async def test_ensure_storage_panel_message_sends_new_on_edit_failure(self):
+        sent = SimpleNamespace(message_id=777)
+        with (
+            patch.object(main_core, "get_storage_chat_id", AsyncMock(return_value=-100123)),
+            patch.object(main_core, "get_meta", AsyncMock(side_effect=["-100123", "555"])),
+            patch.object(
+                main_core.bot,
+                "edit_message_text",
+                AsyncMock(side_effect=main_core.TelegramBadRequest(method="editMessageText", message="message to edit not found")),
+            ),
+            patch.object(main_core.bot, "send_message", AsyncMock(return_value=sent)) as send_message,
+            patch.object(main_core, "set_meta", AsyncMock()) as set_meta,
+        ):
+            await main_core.ensure_storage_panel_message()
+
+        send_message.assert_awaited_once_with(-100123, "Панель Storage:", reply_markup=main_core.storage_idle_kb())
+        self.assertEqual(set_meta.await_args_list[0].args, (main_core.STORAGE_PANEL_CHAT_ID_META_KEY, "-100123"))
+        self.assertEqual(set_meta.await_args_list[1].args, (main_core.STORAGE_PANEL_MESSAGE_ID_META_KEY, "777"))
+
 
 if __name__ == "__main__":
     unittest.main()

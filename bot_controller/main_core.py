@@ -76,6 +76,8 @@ LAST_STORAGE_MESSAGE_IDS_META_KEY = "last_storage_message_ids"
 LAST_STORAGE_CHAT_ID_META_KEY = "last_storage_chat_id"
 LAST_STORAGE_ADMIN_MESSAGE_IDS_META_KEY = "last_storage_admin_message_ids"
 LAST_STORAGE_ADMIN_CHAT_ID_META_KEY = "last_storage_admin_chat_id"
+STORAGE_PANEL_MESSAGE_ID_META_KEY = "storage_panel_message_id"
+STORAGE_PANEL_CHAT_ID_META_KEY = "storage_panel_chat_id"
 MEDIA_GROUP_BUFFER_TIMEOUT_SECONDS = max(0.5, float(_get_env_str("MEDIA_GROUP_BUFFER_TIMEOUT_SECONDS", "1.5")))
 STORAGE_KEEP_LAST_POSTS = max(1, _get_env_int("STORAGE_KEEP_LAST_POSTS", 1))
 STORAGE_CLEANUP_EVERY_SECONDS = max(60, _get_env_int("STORAGE_CLEANUP_EVERY_SECONDS", 600))
@@ -890,6 +892,58 @@ async def safe_send_admin_menu(message: Message) -> None:
         )
         return
     await send_with_storage_guard(message, "Главное меню:", reply_markup=admin_menu_keyboard())
+
+
+async def ensure_storage_panel_message() -> None:
+    storage_chat_id = await get_storage_chat_id()
+    panel_text = "Панель Storage:"
+
+    last_chat_raw = await get_meta(STORAGE_PANEL_CHAT_ID_META_KEY)
+    last_message_raw = await get_meta(STORAGE_PANEL_MESSAGE_ID_META_KEY)
+
+    last_chat_id: Optional[int] = None
+    last_message_id: Optional[int] = None
+
+    if last_chat_raw:
+        with suppress(ValueError):
+            last_chat_id = int(last_chat_raw)
+    if last_message_raw:
+        with suppress(ValueError):
+            last_message_id = int(last_message_raw)
+
+    if last_chat_id is not None and last_message_id is not None:
+        try:
+            await bot.edit_message_text(
+                chat_id=last_chat_id,
+                message_id=last_message_id,
+                text=panel_text,
+                reply_markup=storage_idle_kb(),
+            )
+            return
+        except TelegramBadRequest as exc:
+            error_text = str(exc).lower()
+            if "message is not modified" in error_text:
+                try:
+                    await bot.edit_message_reply_markup(
+                        chat_id=last_chat_id,
+                        message_id=last_message_id,
+                        reply_markup=storage_idle_kb(),
+                    )
+                    return
+                except TelegramBadRequest as markup_exc:
+                    if "message is not modified" in str(markup_exc).lower():
+                        return
+            logger.info("Failed to edit Storage panel message chat_id=%s message_id=%s: %s", last_chat_id, last_message_id, exc)
+        except (TelegramForbiddenError, TelegramRetryAfter) as exc:
+            logger.info("Cannot reuse Storage panel message chat_id=%s message_id=%s: %s", last_chat_id, last_message_id, exc)
+
+    sent_message = await bot.send_message(
+        storage_chat_id,
+        panel_text,
+        reply_markup=storage_idle_kb(),
+    )
+    await set_meta(STORAGE_PANEL_CHAT_ID_META_KEY, str(storage_chat_id))
+    await set_meta(STORAGE_PANEL_MESSAGE_ID_META_KEY, str(sent_message.message_id))
 
 
 def is_admin_user(user_id: Optional[int]) -> bool:
@@ -4065,6 +4119,7 @@ async def main() -> None:
             [BotCommand(command="create_post", description="Создать/обновить пост в Storage")],
             scope=BotCommandScopeChat(chat_id=STORAGE_CHAT_ID),
         )
+        await ensure_storage_panel_message()
         logger.info("Bot commands set for storage scope chat_id=%s", STORAGE_CHAT_ID)
         scheduler.add_job(safe_cleanup_storage_posts, "interval", seconds=STORAGE_CLEANUP_EVERY_SECONDS, id="storage_safe_cleanup", replace_existing=True)
         scheduler.start()
