@@ -3014,7 +3014,7 @@ async def start_create_post_flow(message: Message, state: FSMContext) -> bool:
     )
     await send_with_storage_guard(
         message,
-        "Пришлите пост/альбом…",
+        "Отправьте пост (сообщение или альбом). Для отмены нажмите кнопку «Отменить».",
         reply_markup=storage_create_kb(),
         keyboard_id="storage_create",
     )
@@ -3185,7 +3185,7 @@ async def cancel_storage_post_creation(message: Message, state: FSMContext):
         return
     await state.clear()
     await message.answer(
-        "✅ Отменено. Нажмите «Создать пост», когда будете готовы.",
+        "Ок, отменено.",
         reply_markup=storage_idle_kb(),
     )
 

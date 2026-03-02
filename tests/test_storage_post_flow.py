@@ -80,7 +80,7 @@ class StoragePostFlowTests(unittest.IsolatedAsyncioTestCase):
 
         state.set_state.assert_awaited_once_with(main_core.AdminStates.waiting_storage_post)
         message.answer.assert_awaited_once_with(
-            "Пришлите пост/альбом…",
+            "Отправьте пост (сообщение или альбом). Для отмены нажмите кнопку «Отменить».",
             reply_markup=main_core.storage_create_kb(),
         )
 
