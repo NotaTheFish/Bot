@@ -473,38 +473,45 @@ class StoragePostFlowTests(unittest.IsolatedAsyncioTestCase):
         broadcast_once.assert_not_called()
         create_post_in_storage.assert_not_called()
 
-    async def test_ensure_storage_panel_message_edits_existing_message(self):
+    async def test_ensure_storage_panel_message_deletes_old_and_sends_new(self):
+        sent = SimpleNamespace(message_id=777)
         with (
             patch.object(main_core, "get_storage_chat_id", AsyncMock(return_value=-100123)),
             patch.object(main_core, "get_meta", AsyncMock(side_effect=["-100123", "555"])),
+            patch.object(main_core.bot, "delete_message", AsyncMock()) as delete_message,
+            patch.object(main_core.bot, "send_message", AsyncMock(return_value=sent)) as send_message,
             patch.object(main_core.bot, "edit_message_text", AsyncMock()) as edit_text,
-            patch.object(main_core.bot, "send_message", AsyncMock()) as send_message,
+            patch.object(main_core.bot, "edit_message_reply_markup", AsyncMock()) as edit_reply_markup,
             patch.object(main_core, "set_meta", AsyncMock()) as set_meta,
         ):
             await main_core.ensure_storage_panel_message()
 
-        edit_text.assert_awaited_once()
-        send_message.assert_not_called()
-        set_meta.assert_not_called()
+        delete_message.assert_awaited_once_with(chat_id=-100123, message_id=555)
+        send_message.assert_awaited_once_with(-100123, "Панель Storage:", reply_markup=main_core.storage_idle_kb())
+        edit_text.assert_not_called()
+        edit_reply_markup.assert_not_called()
+        self.assertEqual(set_meta.await_args_list[0].args, (main_core.STORAGE_PANEL_CHAT_ID_META_KEY, "-100123"))
+        self.assertEqual(set_meta.await_args_list[1].args, (main_core.STORAGE_PANEL_MESSAGE_ID_META_KEY, "777"))
 
-    async def test_ensure_storage_panel_message_sends_new_on_edit_failure(self):
-        sent = SimpleNamespace(message_id=777)
+    async def test_ensure_storage_panel_message_sends_new_when_delete_fails(self):
+        sent = SimpleNamespace(message_id=778)
         with (
             patch.object(main_core, "get_storage_chat_id", AsyncMock(return_value=-100123)),
             patch.object(main_core, "get_meta", AsyncMock(side_effect=["-100123", "555"])),
             patch.object(
                 main_core.bot,
-                "edit_message_text",
-                AsyncMock(side_effect=main_core.TelegramBadRequest(method="editMessageText", message="message to edit not found")),
-            ),
+                "delete_message",
+                AsyncMock(side_effect=main_core.TelegramBadRequest(method="deleteMessage", message="message to delete not found")),
+            ) as delete_message,
             patch.object(main_core.bot, "send_message", AsyncMock(return_value=sent)) as send_message,
             patch.object(main_core, "set_meta", AsyncMock()) as set_meta,
         ):
             await main_core.ensure_storage_panel_message()
 
+        delete_message.assert_awaited_once_with(chat_id=-100123, message_id=555)
         send_message.assert_awaited_once_with(-100123, "Панель Storage:", reply_markup=main_core.storage_idle_kb())
         self.assertEqual(set_meta.await_args_list[0].args, (main_core.STORAGE_PANEL_CHAT_ID_META_KEY, "-100123"))
-        self.assertEqual(set_meta.await_args_list[1].args, (main_core.STORAGE_PANEL_MESSAGE_ID_META_KEY, "777"))
+        self.assertEqual(set_meta.await_args_list[1].args, (main_core.STORAGE_PANEL_MESSAGE_ID_META_KEY, "778"))
 
 
 if __name__ == "__main__":

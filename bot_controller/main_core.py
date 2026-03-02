@@ -912,30 +912,8 @@ async def ensure_storage_panel_message() -> None:
             last_message_id = int(last_message_raw)
 
     if last_chat_id is not None and last_message_id is not None:
-        try:
-            await bot.edit_message_text(
-                chat_id=last_chat_id,
-                message_id=last_message_id,
-                text=panel_text,
-                reply_markup=storage_idle_kb(),
-            )
-            return
-        except TelegramBadRequest as exc:
-            error_text = str(exc).lower()
-            if "message is not modified" in error_text:
-                try:
-                    await bot.edit_message_reply_markup(
-                        chat_id=last_chat_id,
-                        message_id=last_message_id,
-                        reply_markup=storage_idle_kb(),
-                    )
-                    return
-                except TelegramBadRequest as markup_exc:
-                    if "message is not modified" in str(markup_exc).lower():
-                        return
-            logger.info("Failed to edit Storage panel message chat_id=%s message_id=%s: %s", last_chat_id, last_message_id, exc)
-        except (TelegramForbiddenError, TelegramRetryAfter) as exc:
-            logger.info("Cannot reuse Storage panel message chat_id=%s message_id=%s: %s", last_chat_id, last_message_id, exc)
+        with suppress(TelegramBadRequest, TelegramForbiddenError, TelegramRetryAfter):
+            await bot.delete_message(chat_id=last_chat_id, message_id=last_message_id)
 
     sent_message = await bot.send_message(
         storage_chat_id,
