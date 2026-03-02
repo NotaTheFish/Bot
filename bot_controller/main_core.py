@@ -3197,14 +3197,12 @@ async def cancel_storage_post_creation(message: Message, state: FSMContext):
     if message.chat.id != STORAGE_CHAT_ID:
         return
     if await state.get_state() != AdminStates.waiting_storage_post.state:
-        await message.answer("Сейчас нечего отменять.")
+        await message.answer("Нечего отменять.", reply_markup=storage_idle_kb())
         return
     await state.clear()
-    await send_with_storage_guard(
-        message,
-        "Создание поста отменено.",
+    await message.answer(
+        "✅ Отменено. Нажмите «Создать пост», когда будете готовы.",
         reply_markup=storage_idle_kb(),
-        keyboard_id="storage_idle",
     )
 
 
