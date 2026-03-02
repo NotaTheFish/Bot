@@ -2484,6 +2484,9 @@ async def track_chat_membership(update: ChatMemberUpdated):
 
 @dp.message(F.chat.type.in_({"group", "supergroup"}) & ~F.text.regexp(r"^/"))
 async def remember_chat_from_messages(message: Message, state: FSMContext):
+    if is_storage_chat(message.chat.id):
+        raise SkipHandler()
+
     if await state.get_state() == AdminStates.waiting_storage_post.state:
         logger.info(
             "remember_chat_from_messages skip due to waiting_storage_post chat_id=%s msg_id=%s",
@@ -3023,6 +3026,12 @@ async def start_create_post_flow(message: Message, state: FSMContext) -> bool:
 
 @dp.message(F.text == "🧷 Создать пост")
 async def storage_create_post_button(message: Message, state: FSMContext):
+    logger.info(
+        "HANDLER storage_create_button fired chat_id=%s thread_id=%s user_id=%s",
+        message.chat.id,
+        message.message_thread_id,
+        message.from_user.id if message.from_user else None,
+    )
     if not ensure_admin(message):
         return
     if int(message.chat.id) != int(STORAGE_CHAT_ID):
