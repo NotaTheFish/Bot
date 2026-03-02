@@ -832,13 +832,6 @@ def admin_menu_keyboard() -> ReplyKeyboardMarkup:
     )
 
 
-def storage_create_post_keyboard() -> ReplyKeyboardMarkup:
-    return ReplyKeyboardMarkup(
-        keyboard=[[KeyboardButton(text="📌 Создать пост (в Storage)")]],
-        resize_keyboard=True,
-    )
-
-
 def storage_idle_kb() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[[KeyboardButton(text="🧷 Создать пост")]],
@@ -3005,17 +2998,6 @@ async def stop_userbot_broadcast(message: Message) -> None:
 
     canceled = await cancel_active_userbot_tasks()
     await message.answer(f"Остановлено активных задач: {canceled} ✅")
-
-@dp.message(F.text == "📌 Создать пост (в Storage)")
-async def storage_post_instructions(message: Message, state: FSMContext):
-    if not ensure_admin(message):
-        return
-    await state.clear()
-    await message.answer(
-        "Перейдите в чат Storage и отправьте команду /create_post. "
-        "Затем перешлите туда ваш рекламный пост (или альбом) от вашего аккаунта/жены."
-    )
-
 
 async def start_create_post_flow(message: Message, state: FSMContext) -> bool:
     if not ensure_admin(message):
