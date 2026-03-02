@@ -3004,7 +3004,7 @@ async def stop_userbot_broadcast(message: Message) -> None:
     canceled = await cancel_active_userbot_tasks()
     await message.answer(f"Остановлено активных задач: {canceled} ✅")
 
-@dp.message(F.text.in_({"📌 Создать пост (в Storage)", "🧷 Создать пост"}))
+@dp.message(F.text == "📌 Создать пост (в Storage)")
 async def storage_post_instructions(message: Message, state: FSMContext):
     if not ensure_admin(message):
         return
@@ -3013,6 +3013,38 @@ async def storage_post_instructions(message: Message, state: FSMContext):
         "Перейдите в чат Storage и отправьте команду /create_post. "
         "Затем перешлите туда ваш рекламный пост (или альбом) от вашего аккаунта/жены."
     )
+
+
+async def start_create_post_flow(message: Message, state: FSMContext) -> bool:
+    if not ensure_admin(message):
+        return False
+    if int(message.chat.id) != int(STORAGE_CHAT_ID):
+        return False
+
+    await state.set_state(AdminStates.waiting_storage_post)
+    logger.info(
+        "STATE set to waiting_storage_post for chat_id=%s user_id=%s current=%s",
+        message.chat.id,
+        message.from_user.id if message.from_user else None,
+        await state.get_state(),
+    )
+    await send_with_storage_guard(
+        message,
+        "Пришлите пост одним сообщением или альбомом. Нажмите «⛔ Отменить», чтобы отменить.",
+        reply_markup=storage_create_kb(),
+        keyboard_id="storage_create",
+    )
+    return True
+
+
+@dp.message(F.text == "🧷 Создать пост")
+async def storage_create_post_button(message: Message, state: FSMContext):
+    if not ensure_admin(message):
+        return
+    if int(message.chat.id) != int(STORAGE_CHAT_ID):
+        return
+
+    await start_create_post_flow(message, state)
 
 
 @dp.message(F.text == "✏️ Изменить пост")
@@ -3136,19 +3168,7 @@ async def create_post_in_storage(message: Message, state: FSMContext):
             await message.answer("используйте команду в Storage")
             return
 
-        await state.set_state(AdminStates.waiting_storage_post)
-        logger.info(
-            "STATE set to waiting_storage_post for chat_id=%s user_id=%s current=%s",
-            message.chat.id,
-            message.from_user.id if message.from_user else None,
-            await state.get_state(),
-        )
-        await send_with_storage_guard(
-            message,
-            "Пришлите пост одним сообщением или альбомом. Нажмите «⛔ Отменить», чтобы отменить.",
-            reply_markup=storage_create_kb(),
-            keyboard_id="storage_create",
-        )
+        await start_create_post_flow(message, state)
     except Exception as e:
         logger.exception("create_post failed: %s", e)
         await message.answer(f"Ошибка: {e}")
