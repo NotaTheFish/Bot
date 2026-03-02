@@ -79,6 +79,7 @@ LAST_STORAGE_ADMIN_CHAT_ID_META_KEY = "last_storage_admin_chat_id"
 MEDIA_GROUP_BUFFER_TIMEOUT_SECONDS = max(0.5, float(_get_env_str("MEDIA_GROUP_BUFFER_TIMEOUT_SECONDS", "1.5")))
 STORAGE_KEEP_LAST_POSTS = max(1, _get_env_int("STORAGE_KEEP_LAST_POSTS", 1))
 STORAGE_CLEANUP_EVERY_SECONDS = max(60, _get_env_int("STORAGE_CLEANUP_EVERY_SECONDS", 600))
+STORAGE_CAPTION_SAFE_LIMIT = max(1, _get_env_int("STORAGE_CAPTION_SAFE_LIMIT", 930))
 
 
 def _normalize_username(value: str) -> str:
@@ -1965,6 +1966,41 @@ async def _publish_post_messages(messages: list[Message], state: FSMContext, med
         return
 
     sorted_messages = sorted(messages, key=lambda msg: msg.message_id)
+
+    caption_trimmed = False
+    for msg in sorted_messages:
+        caption = msg.caption or ""
+        if len(caption) <= STORAGE_CAPTION_SAFE_LIMIT:
+            continue
+        trimmed_caption = caption[:STORAGE_CAPTION_SAFE_LIMIT].rstrip()
+        try:
+            await bot.edit_message_caption(
+                chat_id=msg.chat.id,
+                message_id=msg.message_id,
+                caption=trimmed_caption,
+                caption_entities=None,
+            )
+            caption_trimmed = True
+            logger.warning(
+                "storage_post caption trimmed chat_id=%s message_id=%s from=%s to=%s",
+                msg.chat.id,
+                msg.message_id,
+                len(caption),
+                len(trimmed_caption),
+            )
+        except Exception as exc:
+            logger.exception(
+                "Failed to trim long caption chat_id=%s message_id=%s len=%s",
+                msg.chat.id,
+                msg.message_id,
+                len(caption),
+            )
+            await messages[-1].answer(
+                "❌ Подпись (caption) слишком длинная, и не удалось безопасно сократить её автоматически. "
+                "Сократите подпись медиа и отправьте пост заново."
+            )
+            return
+
     storage_message_ids = [int(msg.message_id) for msg in sorted_messages]
 
     first_message = sorted_messages[0]
@@ -2016,6 +2052,10 @@ async def _publish_post_messages(messages: list[Message], state: FSMContext, med
         state_after,
     )
     response_lines = [f"✅ Сохранено. {pin_warning}" if pin_warning else "✅ Сохранено и закреплено"]
+    if caption_trimmed:
+        response_lines.append(
+            f"ℹ️ Подпись была автоматически сокращена до {STORAGE_CAPTION_SAFE_LIMIT} символов, чтобы избежать ошибки Telegram."
+        )
     response_lines.append("Для отправки ипользуйте: ✅ Запустить рассылку")
     if deletion_warnings:
         response_lines.extend(dict.fromkeys(deletion_warnings))
@@ -2526,6 +2566,21 @@ async def post_info(message: Message, state: FSMContext):
                 message_id=first_message_id,
                 reply_markup=storage_button,
             )
+        except TelegramBadRequest as e:
+            if "caption is too long" in str(e).lower():
+                await message.answer(
+                    "⚠️ Не удалось скопировать пост: слишком длинная подпись (caption). "
+                    "Сократите подпись медиа в Storage."
+                )
+            else:
+                logger.exception(
+                    "post_info: copy_message failed chat_id=%s from_chat_id=%s message_id=%s",
+                    message.chat.id,
+                    storage_chat_id,
+                    first_message_id,
+                )
+                await message.answer("❌ Не удалось скопировать пост из Storage. Проверьте доступ бота к Storage.")
+                return
         except Exception:
             logger.exception(
                 "post_info: copy_message failed chat_id=%s from_chat_id=%s message_id=%s",
@@ -2547,6 +2602,21 @@ async def post_info(message: Message, state: FSMContext):
                 from_chat_id=storage_chat_id,
                 message_id=message_id,
             )
+        except TelegramBadRequest as e:
+            if "caption is too long" in str(e).lower():
+                await message.answer(
+                    "⚠️ Не удалось скопировать пост: слишком длинная подпись (caption). "
+                    "Сократите подпись медиа в Storage."
+                )
+                continue
+            logger.exception(
+                "post_info: copy_message failed chat_id=%s from_chat_id=%s message_id=%s",
+                message.chat.id,
+                storage_chat_id,
+                message_id,
+            )
+            await message.answer("❌ Не удалось скопировать один из сообщений поста из Storage.")
+            return
         except Exception:
             logger.exception(
                 "post_info: copy_message failed chat_id=%s from_chat_id=%s message_id=%s",
