@@ -4210,11 +4210,32 @@ async def private_message_fallback(message: Message, state: FSMContext):
     }:
         return
 
+    user_id = message.from_user.id if message.from_user else None
+    is_start_message = (message.text or "").strip().startswith("/start")
+
+    if user_id and not is_start_message:
+        buyer_state = await get_buyer_state(user_id)
+        if bool(buyer_state.get("awaiting_contact_button")):
+            nudge_sent = await try_touch_buyer_button_nudge_cooldown(user_id, cooldown_seconds=30)
+            if not nudge_sent:
+                logger.info("private nudge skipped due cooldown user_id=%s", user_id)
+                return
+
+            await message.answer(
+                "🌙 Секундочку!\n\n"
+                "Чтобы я смог передать сообщение продавцу и оформить заказ,\n"
+                "пожалуйста нажми кнопку ниже:\n\n"
+                "📩 Связаться с продавцом",
+                reply_markup=buyer_contact_inline_keyboard(),
+            )
+            logger.info("private nudge sent because awaiting_contact_button=true user_id=%s", user_id)
+            return
+
     await send_buyer_pre_reply(message.chat.id)
     logger.info(
         "private fallback -> pre-reply shown chat_id=%s user_id=%s text=%r",
         message.chat.id,
-        message.from_user.id if message.from_user else None,
+        user_id,
         message.text,
     )
 
