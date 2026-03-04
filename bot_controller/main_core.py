@@ -4224,7 +4224,7 @@ async def private_message_fallback(message: Message, state: FSMContext):
             await message.answer(
                 "🌙 Секундочку!\n\n"
                 "Чтобы я смог передать сообщение продавцу и оформить заказ,\n"
-                "Пожалуйста нажми кнопку ниже 👇\n\n"
+                "пожалуйста нажми кнопку ниже 👇\n\n",
                 reply_markup=buyer_contact_inline_keyboard(),
             )
             logger.info("private nudge sent because awaiting_contact_button=true user_id=%s", user_id)
