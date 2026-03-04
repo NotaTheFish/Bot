@@ -456,6 +456,13 @@ CREATE_TABLES_SQL = [
     )
     """,
     """
+    CREATE TABLE IF NOT EXISTS buyer_state (
+        user_id BIGINT PRIMARY KEY,
+        awaiting_contact_button BOOLEAN NOT NULL DEFAULT FALSE,
+        last_button_nudge_at TIMESTAMPTZ
+    )
+    """,
+    """
     CREATE TABLE IF NOT EXISTS worker_autoreply_settings (
         id INTEGER PRIMARY KEY DEFAULT 1,
         enabled BOOLEAN NOT NULL DEFAULT TRUE,
@@ -517,6 +524,17 @@ CREATE_TABLES_SQL = [
     INSERT INTO worker_state (id, last_outgoing_at)
     VALUES (1, NULL)
     ON CONFLICT (id) DO NOTHING
+    """,
+]
+
+BUYER_STATE_MIGRATIONS_SQL = [
+    """
+    ALTER TABLE buyer_state
+    ADD COLUMN IF NOT EXISTS awaiting_contact_button BOOLEAN NOT NULL DEFAULT FALSE
+    """,
+    """
+    ALTER TABLE buyer_state
+    ADD COLUMN IF NOT EXISTS last_button_nudge_at TIMESTAMPTZ
     """,
 ]
 
@@ -775,6 +793,8 @@ async def init_db() -> None:
             for query in USERBOT_TASKS_MIGRATIONS_SQL:
                 await conn.execute(query)
             for query in POST_MIGRATIONS_SQL:
+                await conn.execute(query)
+            for query in BUYER_STATE_MIGRATIONS_SQL:
                 await conn.execute(query)
 
 
@@ -1396,6 +1416,75 @@ async def set_next_allowed(user_id: int, cooldown_seconds: int) -> None:
         user_id,
         max(0, cooldown_seconds),
     )
+
+
+async def get_buyer_state(user_id: int) -> dict[str, object]:
+    pool = await get_db_pool()
+    row = await pool.fetchrow(
+        """
+        SELECT awaiting_contact_button, last_button_nudge_at
+        FROM buyer_state
+        WHERE user_id = $1
+        """,
+        int(user_id),
+    )
+    if not row:
+        return {
+            "awaiting_contact_button": False,
+            "last_button_nudge_at": None,
+        }
+    return {
+        "awaiting_contact_button": bool(row["awaiting_contact_button"]),
+        "last_button_nudge_at": row["last_button_nudge_at"],
+    }
+
+
+async def set_buyer_awaiting_contact_button(user_id: int, value: bool) -> None:
+    pool = await get_db_pool()
+    await pool.execute(
+        """
+        INSERT INTO buyer_state(user_id, awaiting_contact_button)
+        VALUES ($1, $2)
+        ON CONFLICT (user_id)
+        DO UPDATE SET awaiting_contact_button = excluded.awaiting_contact_button
+        """,
+        int(user_id),
+        bool(value),
+    )
+
+
+async def update_buyer_last_button_nudge_at(user_id: int, when: datetime | None = None) -> None:
+    pool = await get_db_pool()
+    target_time = when or datetime.now(timezone.utc)
+    await pool.execute(
+        """
+        INSERT INTO buyer_state(user_id, last_button_nudge_at)
+        VALUES ($1, $2)
+        ON CONFLICT (user_id)
+        DO UPDATE SET last_button_nudge_at = excluded.last_button_nudge_at
+        """,
+        int(user_id),
+        target_time,
+    )
+
+
+async def try_touch_buyer_button_nudge_cooldown(user_id: int, cooldown_seconds: int = 30) -> bool:
+    pool = await get_db_pool()
+    updated = await pool.fetchval(
+        """
+        INSERT INTO buyer_state(user_id, last_button_nudge_at)
+        VALUES ($1, NOW())
+        ON CONFLICT (user_id)
+        DO UPDATE
+        SET last_button_nudge_at = NOW()
+        WHERE buyer_state.last_button_nudge_at IS NULL
+           OR buyer_state.last_button_nudge_at <= NOW() - ($2::INT * INTERVAL '1 second')
+        RETURNING 1
+        """,
+        int(user_id),
+        max(0, int(cooldown_seconds)),
+    )
+    return bool(updated)
 
 
 async def create_userbot_task(
