@@ -2956,6 +2956,19 @@ async def on_start(message: Message, state: FSMContext):
 
     if message.chat.type == "private":
         await send_buyer_pre_reply(message.chat.id)
+        if message.from_user:
+            pool = await get_db_pool()
+            await pool.execute(
+                """
+                INSERT INTO buyer_state(user_id, awaiting_contact_button, last_button_nudge_at)
+                VALUES ($1, TRUE, NULL)
+                ON CONFLICT (user_id)
+                DO UPDATE SET awaiting_contact_button = TRUE,
+                              last_button_nudge_at = NULL
+                """,
+                message.from_user.id,
+            )
+            logger.info("/start -> awaiting_contact_button set true user_id=%s", message.from_user.id)
         logger.info(
             '/start pre-reply sent + inline shown user_id=%s chat_id=%s',
             message.from_user.id if message.from_user else None,
