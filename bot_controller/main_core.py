@@ -3027,6 +3027,11 @@ async def buyer_contact_start(message: Message, state: FSMContext):
 
     await state.set_state(ContactStates.waiting_message)
     await state.update_data(contact_token="support")
+    await set_buyer_awaiting_contact_button(message.from_user.id, False)
+    logger.info(
+        "contact button pressed -> awaiting_contact_button set false user_id=%s",
+        message.from_user.id,
+    )
     await set_next_allowed(message.from_user.id, BUYER_CONTACT_COOLDOWN_SECONDS)
     logger.info(
         "reply contact button: cooldown/state result user_id=%s remaining=%s state=%s result=%s",
@@ -3072,6 +3077,11 @@ async def buyer_contact_start_inline(callback: CallbackQuery, state: FSMContext)
     contact_token = data.get("contact_token") or SUPPORT_PAYLOAD
     await state.set_state(ContactStates.waiting_message)
     await state.update_data(contact_token=contact_token)
+    await set_buyer_awaiting_contact_button(callback.from_user.id, False)
+    logger.info(
+        "contact button pressed -> awaiting_contact_button set false user_id=%s",
+        callback.from_user.id,
+    )
     logger.info(
         "Buyer contact flow cooldown ok user_id=%s remaining=%s",
         callback.from_user.id,
