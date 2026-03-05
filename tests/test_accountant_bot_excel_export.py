@@ -15,6 +15,7 @@ class AccountantBotExcelExportTests(unittest.TestCase):
                 "receipt_id": 2,
                 "created_at": "2026-01-01 11:00:00",
                 "admin": "User Name (id: 101)",
+                "game": "DA",
                 "currency": "UAH",
                 "pay_method": "card",
                 "total_sum": "10",
@@ -37,6 +38,7 @@ class AccountantBotExcelExportTests(unittest.TestCase):
                 "receipt_id": 1,
                 "created_at": "2026-01-01 10:00:00",
                 "admin": "@admin (id: 100)",
+                "game": "COS",
                 "currency": "RUB",
                 "pay_method": "cash",
                 "total_sum": "200",
@@ -83,19 +85,24 @@ class AccountantBotExcelExportTests(unittest.TestCase):
 
         ws_receipts = wb["Чеки"]
         self.assertEqual(ws_receipts["A2"].value, 2)  # sorted by created_at DESC
-        self.assertEqual(ws_receipts["I2"].value, "REFUND")
+        self.assertEqual(ws_receipts["J2"].value, "REFUND")
+        self.assertEqual(ws_receipts["D2"].value, "DA")
+        self.assertEqual(ws_receipts["D3"].value, "COS")
         self.assertEqual(ws_receipts["B2"].value, datetime(2026, 1, 1, 20, 0))
         self.assertEqual(ws_receipts["B3"].value, datetime(2026, 1, 1, 19, 0))
         self.assertEqual(ws_receipts.freeze_panes, "A2")
 
         ws_items = wb["Позиции"]
-        self.assertEqual(ws_items["F2"].value, "🐉 Вид")
-        self.assertEqual(ws_items["F3"].value, "🪙 Токены")
-        self.assertEqual(ws_items["F4"].value, "✍️ Другое")
-        self.assertEqual(ws_items["F5"].value, "🪙 Coins")
-        self.assertEqual(ws_items["J2"].value, "шт")
-        self.assertEqual(ws_items["J3"].value, "шт")
-        self.assertEqual(ws_items["J5"].value, "за 100000")
+        self.assertEqual(ws_items["D2"].value, "COS")
+        self.assertEqual(ws_items["D3"].value, "DA")
+        self.assertEqual(ws_items["D5"].value, "COS")
+        self.assertEqual(ws_items["G2"].value, "🐉 Вид")
+        self.assertEqual(ws_items["G3"].value, "🪙 Токены")
+        self.assertEqual(ws_items["G4"].value, "✍️ Другое")
+        self.assertEqual(ws_items["G5"].value, "🪙 Coins")
+        self.assertEqual(ws_items["K2"].value, "шт")
+        self.assertEqual(ws_items["K3"].value, "шт")
+        self.assertEqual(ws_items["K5"].value, "за 100000")
 
         ws_summary = wb["Сводка"]
         self.assertEqual(ws_summary["B1"].value, "Timezone: Asia/Tokyo")

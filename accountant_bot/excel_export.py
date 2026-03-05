@@ -17,6 +17,7 @@ RECEIPTS_HEADERS = [
     "receipt_id",
     "created_at",
     "admin",
+    "game",
     "currency",
     "pay_method",
     "total_sum",
@@ -29,6 +30,7 @@ ITEMS_HEADERS = [
     "receipt_id",
     "created_at",
     "admin",
+    "game",
     "status",
     "currency",
     "category",
@@ -75,6 +77,7 @@ def build_transactions_report(transactions: list[dict[str, Any] | Any], tz: Zone
             "receipt_id": record.get("receipt_id") or record.get("id"),
             "created_at": created_at,
             "admin": str(record.get("admin") or record.get("admin_id") or ""),
+            "game": str(record.get("game") or record.get("game_code") or ""),
             "currency": str(record.get("currency") or ""),
             "pay_method": str(record.get("pay_method") or ""),
             "total_sum": _to_decimal(record.get("total_sum") if record.get("total_sum") is not None else record.get("total")),
@@ -92,6 +95,7 @@ def build_transactions_report(transactions: list[dict[str, Any] | Any], tz: Zone
                     "receipt_id": receipt["receipt_id"],
                     "created_at": created_at,
                     "admin": receipt["admin"],
+                    "game": receipt["game"],
                     "status": status,
                     "currency": receipt["currency"],
                     "category_code": category_code,
@@ -138,6 +142,7 @@ def _build_receipts_sheet(ws: Any, receipts: list[dict[str, Any]], tz: ZoneInfo)
                 receipt["receipt_id"],
                 _to_excel_dt(receipt["created_at"], tz),
                 receipt["admin"],
+                receipt["game"],
                 receipt["currency"],
                 receipt["pay_method"],
                 receipt["total_sum"],
@@ -158,6 +163,7 @@ def _build_items_sheet(ws: Any, items: list[dict[str, Any]], tz: ZoneInfo) -> No
                 item["receipt_id"],
                 _to_excel_dt(item["created_at"], tz),
                 item["admin"],
+                item["game"],
                 item["status"],
                 item["currency"],
                 item["category"],
@@ -170,7 +176,7 @@ def _build_items_sheet(ws: Any, items: list[dict[str, Any]], tz: ZoneInfo) -> No
             ]
         )
 
-    _apply_sheet_style(ws, money_columns={9, 11}, qty_columns={8}, datetime_columns={2})
+    _apply_sheet_style(ws, money_columns={10, 12}, qty_columns={9}, datetime_columns={2})
     ws.auto_filter.ref = ws.dimensions
 
     for row_idx, item in enumerate(items, start=2):

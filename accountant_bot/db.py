@@ -903,32 +903,60 @@ async def list_receipts_by_period(
     date_range: DateRange | None = None,
     period: str | None = None,
     tz: ZoneInfo | None = None,
+    game_code: str | None = None,
 ) -> list[asyncpg.Record]:
     if date_range is None:
         if period is None or tz is None:
             raise ValueError("Either date_range or both period and tz are required")
         date_range = period_to_utc_range(period, tz)
     async with pool.acquire() as conn:
+        normalized_game_code = (game_code or "").strip().upper() or None
         if date_range.start is None:
-            rows = await conn.fetch(
-                """
-                SELECT *
-                FROM receipts
-                ORDER BY created_at DESC, id DESC
-                """
-            )
+            if normalized_game_code is None:
+                rows = await conn.fetch(
+                    """
+                    SELECT *
+                    FROM receipts
+                    ORDER BY created_at DESC, id DESC
+                    """
+                )
+            else:
+                rows = await conn.fetch(
+                    """
+                    SELECT *
+                    FROM receipts
+                    WHERE game_code = $1
+                    ORDER BY created_at DESC, id DESC
+                    """,
+                    normalized_game_code,
+                )
         else:
-            rows = await conn.fetch(
-                """
-                SELECT *
-                FROM receipts
-                WHERE created_at >= $1
-                  AND created_at <= $2
-                ORDER BY created_at DESC, id DESC
-                """,
-                date_range.start,
-                date_range.end,
-            )
+            if normalized_game_code is None:
+                rows = await conn.fetch(
+                    """
+                    SELECT *
+                    FROM receipts
+                    WHERE created_at >= $1
+                      AND created_at <= $2
+                    ORDER BY created_at DESC, id DESC
+                    """,
+                    date_range.start,
+                    date_range.end,
+                )
+            else:
+                rows = await conn.fetch(
+                    """
+                    SELECT *
+                    FROM receipts
+                    WHERE created_at >= $1
+                      AND created_at <= $2
+                      AND game_code = $3
+                    ORDER BY created_at DESC, id DESC
+                    """,
+                    date_range.start,
+                    date_range.end,
+                    normalized_game_code,
+                )
     return list(rows)
 
 

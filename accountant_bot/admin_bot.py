@@ -90,18 +90,31 @@ STATS_KEYBOARD = InlineKeyboardMarkup(
     ]
 )
 
-EXPORT_KEYBOARD = InlineKeyboardMarkup(
+EXPORT_GAME_KEYBOARD = InlineKeyboardMarkup(
     inline_keyboard=[
         [
-            InlineKeyboardButton(text="Сегодня", callback_data="export:day"),
-            InlineKeyboardButton(text="7 дней", callback_data="export:week"),
-        ],
-        [
-            InlineKeyboardButton(text="30 дней", callback_data="export:month"),
-            InlineKeyboardButton(text="Всё время", callback_data="export:all"),
+            InlineKeyboardButton(text="COS", callback_data="export:game:COS"),
+            InlineKeyboardButton(text="DA", callback_data="export:game:DA"),
         ],
     ]
 )
+
+
+def export_period_keyboard(game_code: str) -> InlineKeyboardMarkup:
+    normalized_game = (game_code or "").strip().upper()
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="Сегодня", callback_data=f"export:{normalized_game}:day"),
+                InlineKeyboardButton(text="7 дней", callback_data=f"export:{normalized_game}:week"),
+            ],
+            [
+                InlineKeyboardButton(text="30 дней", callback_data=f"export:{normalized_game}:month"),
+                InlineKeyboardButton(text="Всё время", callback_data=f"export:{normalized_game}:all"),
+            ],
+            [InlineKeyboardButton(text="⬅️ Назад", callback_data="export:back")],
+        ]
+    )
 
 
 class AddCheckFSM(StatesGroup):
@@ -2063,8 +2076,6 @@ async def add_check_item_name_add_new(message: Message, state: FSMContext, pool:
 @router.message(AddCheckFSM.item_qty)
 async def add_check_item_qty(message: Message, state: FSMContext, pool: asyncpg.Pool) -> None:
     text = (message.text or "").strip()
-data = await state.get_data()
-    game_code = str(data.get("game_code") or "COS").upper()
     if _is_cancel(text):
         await _cancel_add_check(message, state)
         return
@@ -2409,7 +2420,7 @@ async def add_check_confirm(
 async def ask_export_period(message: Message, settings: Settings) -> None:
     if not await _check_access(message, settings):
         return
-    await safe_send_message(message.bot, message.chat.id, "Выберите период выгрузки:", reply_markup=EXPORT_KEYBOARD)
+    await safe_send_message(message.bot, message.chat.id, "Выберите игру для выгрузки:", reply_markup=EXPORT_GAME_KEYBOARD)
 
 
 @router.callback_query(F.data.startswith("export:"))
@@ -2417,7 +2428,38 @@ async def export_excel(callback: CallbackQuery, settings: Settings, pool: asyncp
     if not await _check_access(callback, settings):
         return
 
-    period = callback.data.split(":", maxsplit=1)[1]
+    callback_data = str(callback.data or "")
+    if callback_data == "export:back":
+        if callback.message:
+            await callback.message.edit_text("Выберите игру для выгрузки:", reply_markup=EXPORT_GAME_KEYBOARD)
+        await callback.answer()
+        return
+
+    if callback_data.startswith("export:game:"):
+        game_code = callback_data.split(":", maxsplit=2)[2].strip().upper()
+        if game_code not in GAME_CODES:
+            await callback.answer("Неверная игра", show_alert=True)
+            return
+        if callback.message:
+            await callback.message.edit_text(
+                f"Выберите период выгрузки для {game_code}:",
+                reply_markup=export_period_keyboard(game_code),
+            )
+        await callback.answer()
+        return
+
+    parts = callback_data.split(":")
+    if len(parts) != 3 or parts[0] != "export":
+        await callback.answer("Неверный формат запроса", show_alert=True)
+        return
+
+    game_code = parts[1].strip().upper()
+    period = parts[2].strip()
+
+    if game_code not in GAME_CODES:
+        await callback.answer("Неверная игра", show_alert=True)
+        return
+
     label_by_period = {
         "day": "Сегодня",
         "week": "7 дней",
@@ -2432,7 +2474,7 @@ async def export_excel(callback: CallbackQuery, settings: Settings, pool: asyncp
     admin_id = int(callback.from_user.id)
     admin_tz = get_admin_tz(settings, admin_id)
     date_range = period_to_utc_range(period_for_filter, tz=admin_tz)
-    receipts = await list_receipts_by_period(pool, date_range=date_range)
+    receipts = await list_receipts_by_period(pool, date_range=date_range, game_code=game_code)
 
     export_rows: list[dict[str, Any]] = []
     for receipt in receipts:
@@ -2457,6 +2499,7 @@ async def export_excel(callback: CallbackQuery, settings: Settings, pool: asyncp
                 "receipt_id": receipt_data.get("id"),
                 "created_at": receipt_data.get("created_at"),
                 "admin": admin_signature,
+                "game": receipt_data.get("game_code") or game_code,
                 "currency": receipt_data.get("currency"),
                 "pay_method": receipt_data.get("pay_method"),
                 "total_sum": sum((Decimal(str(item.get("line_total") or "0")) for item in items), Decimal("0")),
@@ -2468,7 +2511,7 @@ async def export_excel(callback: CallbackQuery, settings: Settings, pool: asyncp
         )
 
     report_bytes = build_transactions_report(export_rows, admin_tz)
-    filename = f"transactions_{period}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+    filename = f"transactions_{game_code}_{period}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
     document = BufferedInputFile(report_bytes, filename=filename)
 
     if callback.message:
@@ -2476,7 +2519,7 @@ async def export_excel(callback: CallbackQuery, settings: Settings, pool: asyncp
             callback.message.bot,
             callback.message.chat.id,
             document,
-            caption=f"📤 Отчёт Excel: {label_by_period[period]}\n🌍 TZ: {admin_tz.key}",
+            caption=f"📤 Отчёт Excel: {game_code}, {label_by_period[period]}\n🌍 TZ: {admin_tz.key}",
         )
 
     await callback.answer("✅ Excel отправлен")
