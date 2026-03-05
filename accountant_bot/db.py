@@ -331,17 +331,18 @@ def normalize_product_name(s: str) -> str:
     return re.sub(r"\s+", " ", (s or "").strip().lower())
 
 
-async def add_product(pool: asyncpg.Pool, category_code: str, name: str) -> dict[str, Any]:
+async def add_product(pool: asyncpg.Pool, game_code: str, category_code: str, name: str) -> dict[str, Any]:
     normalized_name = normalize_product_name(name)
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
             """
-            INSERT INTO product_catalog (category_code, name, name_norm)
-            VALUES ($1, $2, $3)
+            INSERT INTO product_catalog (game_code, category_code, name, name_norm)
+            VALUES ($1, $2, $3, $4)
             ON CONFLICT (game_code, category_code, name_norm)
             DO UPDATE SET name = EXCLUDED.name
             RETURNING id, category_code, name
             """,
+            str(game_code),
             str(category_code),
             str(name).strip(),
             normalized_name,
@@ -349,30 +350,34 @@ async def add_product(pool: asyncpg.Pool, category_code: str, name: str) -> dict
     return dict(row) if row else {}
 
 
-async def delete_product(pool: asyncpg.Pool, category_code: str, product_id: int) -> bool:
+async def delete_product(pool: asyncpg.Pool, game_code: str, category_code: str, product_id: int) -> bool:
     async with pool.acquire() as conn:
         result = await conn.execute(
             """
             DELETE FROM product_catalog
-            WHERE category_code = $1
-              AND id = $2
+            WHERE game_code = $1
+              AND category_code = $2
+              AND id = $3
             """,
+            str(game_code),
             str(category_code),
             int(product_id),
         )
     return result.endswith("1")
 
 
-async def list_products(pool: asyncpg.Pool, category_code: str, offset: int, limit: int) -> list[dict[str, Any]]:
+async def list_products(pool: asyncpg.Pool, game_code: str, category_code: str, offset: int, limit: int) -> list[dict[str, Any]]:
     async with pool.acquire() as conn:
         rows = await conn.fetch(
             """
             SELECT id, category_code, name
             FROM product_catalog
-            WHERE category_code = $1
+            WHERE game_code = $1
+              AND category_code = $2
             ORDER BY name_norm ASC
-            OFFSET $2 LIMIT $3
+            OFFSET $3 LIMIT $4
             """,
+            str(game_code),
             str(category_code),
             int(offset),
             int(limit),
@@ -380,33 +385,37 @@ async def list_products(pool: asyncpg.Pool, category_code: str, offset: int, lim
     return [dict(row) for row in rows]
 
 
-async def count_products(pool: asyncpg.Pool, category_code: str) -> int:
+async def count_products(pool: asyncpg.Pool, game_code: str, category_code: str) -> int:
     async with pool.acquire() as conn:
         return int(
             await conn.fetchval(
                 """
                 SELECT COUNT(*)
                 FROM product_catalog
-                WHERE category_code = $1
+                WHERE game_code = $1
+                  AND category_code = $2
                 """,
+                str(game_code),
                 str(category_code),
             )
             or 0
         )
 
 
-async def search_products(pool: asyncpg.Pool, category_code: str, query: str, limit: int = 20) -> list[dict[str, Any]]:
+async def search_products(pool: asyncpg.Pool, game_code: str, category_code: str, query: str, limit: int = 20) -> list[dict[str, Any]]:
     q_norm = normalize_product_name(query)
     async with pool.acquire() as conn:
         rows = await conn.fetch(
             """
             SELECT id, category_code, name
             FROM product_catalog
-            WHERE category_code = $1
-              AND name_norm LIKE '%' || $2 || '%'
+            WHERE game_code = $1
+              AND category_code = $2
+              AND name_norm LIKE '%' || $3 || '%'
             ORDER BY name_norm ASC
-            OFFSET $3 LIMIT $4
+            OFFSET $4 LIMIT $5
             """,
+            str(game_code),
             str(category_code),
             q_norm,
             0,
@@ -417,6 +426,7 @@ async def search_products(pool: asyncpg.Pool, category_code: str, query: str, li
 
 async def list_search_products(
     pool: asyncpg.Pool,
+    game_code: str,
     category_code: str,
     query: str,
     offset: int,
@@ -428,11 +438,13 @@ async def list_search_products(
             """
             SELECT id, category_code, name
             FROM product_catalog
-            WHERE category_code = $1
-              AND name_norm LIKE '%' || $2 || '%'
+            WHERE game_code = $1
+              AND category_code = $2
+              AND name_norm LIKE '%' || $3 || '%'
             ORDER BY name_norm ASC
-            OFFSET $3 LIMIT $4
+            OFFSET $4 LIMIT $5
             """,
+            str(game_code),
             str(category_code),
             q_norm,
             int(offset),
@@ -441,7 +453,7 @@ async def list_search_products(
     return [dict(row) for row in rows]
 
 
-async def count_search_products(pool: asyncpg.Pool, category_code: str, query: str) -> int:
+async def count_search_products(pool: asyncpg.Pool, game_code: str, category_code: str, query: str) -> int:
     q_norm = normalize_product_name(query)
     async with pool.acquire() as conn:
         return int(
@@ -449,9 +461,11 @@ async def count_search_products(pool: asyncpg.Pool, category_code: str, query: s
                 """
                 SELECT COUNT(*)
                 FROM product_catalog
-                WHERE category_code = $1
-                  AND name_norm LIKE '%' || $2 || '%'
+                WHERE game_code = $1
+                  AND category_code = $2
+                  AND name_norm LIKE '%' || $3 || '%'
                 """,
+                str(game_code),
                 str(category_code),
                 q_norm,
             )
@@ -459,15 +473,17 @@ async def count_search_products(pool: asyncpg.Pool, category_code: str, query: s
         )
 
 
-async def get_product(pool: asyncpg.Pool, category_code: str, product_id: int) -> Optional[dict[str, Any]]:
+async def get_product(pool: asyncpg.Pool, game_code: str, category_code: str, product_id: int) -> Optional[dict[str, Any]]:
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
             """
             SELECT id, category_code, name
             FROM product_catalog
-            WHERE category_code = $1
-              AND id = $2
+            WHERE game_code = $1
+              AND category_code = $2
+              AND id = $3
             """,
+            str(game_code),
             str(category_code),
             int(product_id),
         )

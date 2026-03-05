@@ -45,7 +45,7 @@ from .time_ranges import period_to_utc_range
 router = Router(name="admin")
 
 NO_ACCESS_TEXT = "Нет доступа"
-PRODUCT_CATEGORIES = ("VID", "TOKENS", "OTHER")
+PRODUCT_CATEGORIES = ("VID", "TOKENS", "OTHER", "DRAGONS", "POTIONS", "COINS")
 PRODUCTS_PAGE_SIZE = 8
 
 BTN_REVIEWS = "⭐ Отзывы"
@@ -135,6 +135,7 @@ class ReceiptMenuFSM(StatesGroup):
 
 
 class ProductCatalogFSM(StatesGroup):
+    choose_game = State()
     menu = State()
     add_category = State()
     add_name = State()
@@ -148,10 +149,18 @@ GAME_ITEM_CATEGORIES: dict[str, tuple[str, ...]] = {
     "DA": ("DRAGONS", "POTIONS", "COINS", "OTHER"),
 }
 CATEGORY_CODES_BY_LABEL = {label: code for code, label in CATEGORY_LABELS.items()}
-PRODUCT_CATEGORY_BUTTONS = {
-    "Виды": "VID",
-    "Токены": "TOKENS",
-    "Другое": "OTHER",
+PRODUCT_CATEGORY_BUTTONS_BY_GAME = {
+    "COS": {
+        "Виды": "VID",
+        "Токены": "TOKENS",
+        "Другое": "OTHER",
+    },
+    "DA": {
+        "DRAGONS": "DRAGONS",
+        "POTIONS": "POTIONS",
+        "COINS": "COINS",
+        "OTHER": "OTHER",
+    },
 }
 
 
@@ -246,6 +255,13 @@ PRODUCT_DELETE_CATEGORY_KEYBOARD = ReplyKeyboardMarkup(
         [KeyboardButton(text="Виды"), KeyboardButton(text="Токены")],
         [KeyboardButton(text="Другое")],
         [KeyboardButton(text=BTN_BACK)],
+    ],
+    resize_keyboard=True,
+)
+PRODUCT_GAME_KEYBOARD = ReplyKeyboardMarkup(
+    keyboard=[
+        [KeyboardButton(text="🍄 COS"), KeyboardButton(text="🐉 DA")],
+        [KeyboardButton(text="⬅️ Назад")],
     ],
     resize_keyboard=True,
 )
@@ -432,11 +448,33 @@ def _item_name_prompt() -> str:
     return "📝 Название товара (например: Revive Token) или «-» чтобы пропустить"
 
 
-def _resolve_product_category(text: str) -> Optional[str]:
-    text_upper = (text or "").strip().upper()
-    if text_upper in PRODUCT_CATEGORIES:
+def _resolve_product_category(text: str, game_code: Optional[str]) -> Optional[str]:
+    text_norm = (text or "").strip()
+    text_upper = text_norm.upper()
+    game = (game_code or "COS").upper()
+    game_mapping = PRODUCT_CATEGORY_BUTTONS_BY_GAME.get(game, PRODUCT_CATEGORY_BUTTONS_BY_GAME["COS"])
+    if text_upper in game_mapping.values():
         return text_upper
-    return PRODUCT_CATEGORY_BUTTONS.get((text or "").strip())
+    return game_mapping.get(text_norm) or game_mapping.get(text_upper)
+
+
+def _product_category_keyboard(game_code: Optional[str], *, with_cancel: bool) -> ReplyKeyboardMarkup:
+    game = (game_code or "COS").upper()
+    if game == "DA":
+        rows = [
+            [KeyboardButton(text="DRAGONS"), KeyboardButton(text="POTIONS")],
+            [KeyboardButton(text="COINS"), KeyboardButton(text="OTHER")],
+        ]
+    else:
+        rows = [
+            [KeyboardButton(text="Виды"), KeyboardButton(text="Токены")],
+            [KeyboardButton(text="Другое")],
+        ]
+    tail = [KeyboardButton(text=BTN_BACK)]
+    if with_cancel:
+        tail.append(KeyboardButton(text=BTN_CANCEL))
+    rows.append(tail)
+    return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True)
 
 
 def _build_products_keyboard(
@@ -481,6 +519,7 @@ async def _send_product_page(
     message: Message,
     *,
     pool: asyncpg.Pool,
+    game_code: str,
     category: str,
     page: int,
     mode: str,
@@ -488,11 +527,11 @@ async def _send_product_page(
 ) -> None:
     query_norm = " ".join((query or "").split())
     if mode == "delete" and query_norm:
-        total = await count_search_products(pool, category, query_norm)
+        total = await count_search_products(pool, game_code, category, query_norm)
         total_pages = max(1, (total + PRODUCTS_PAGE_SIZE - 1) // PRODUCTS_PAGE_SIZE)
         current_page = min(max(1, page), total_pages)
         offset = (current_page - 1) * PRODUCTS_PAGE_SIZE
-        products = await list_search_products(pool, category, query_norm, offset, PRODUCTS_PAGE_SIZE)
+        products = await list_search_products(pool, game_code, category, query_norm, offset, PRODUCTS_PAGE_SIZE)
         if not products:
             await safe_send_message(
                 message.bot,
@@ -517,11 +556,11 @@ async def _send_product_page(
         await safe_send_message(message.bot, message.chat.id, text, reply_markup=kb)
         return
 
-    total = await count_products(pool, category)
+    total = await count_products(pool, game_code, category)
     total_pages = max(1, (total + PRODUCTS_PAGE_SIZE - 1) // PRODUCTS_PAGE_SIZE)
     current_page = min(max(1, page), total_pages)
     offset = (current_page - 1) * PRODUCTS_PAGE_SIZE
-    products = await list_products(pool, category, offset, PRODUCTS_PAGE_SIZE)
+    products = await list_products(pool, game_code, category, offset, PRODUCTS_PAGE_SIZE)
     if not products:
         if mode == "delete":
             text = "В категории нет товаров"
@@ -815,12 +854,12 @@ async def products_menu(message: Message, settings: Settings, state: FSMContext)
     if not await _check_access(message, settings):
         return
     await state.clear()
-    await state.set_state(ProductCatalogFSM.menu)
-    await safe_send_message(message.bot, message.chat.id, "Управление товарами:", reply_markup=PRODUCTS_MENU_KEYBOARD)
+    await state.set_state(ProductCatalogFSM.choose_game)
+    await safe_send_message(message.bot, message.chat.id, "Выберите игру:", reply_markup=PRODUCT_GAME_KEYBOARD)
 
 
-@router.message(ProductCatalogFSM.menu)
-async def products_menu_actions(message: Message, state: FSMContext, settings: Settings) -> None:
+@router.message(ProductCatalogFSM.choose_game)
+async def products_choose_game(message: Message, state: FSMContext, settings: Settings) -> None:
     if not await _check_access(message, settings):
         return
     text = (message.text or "").strip()
@@ -828,14 +867,44 @@ async def products_menu_actions(message: Message, state: FSMContext, settings: S
         await state.clear()
         await safe_send_message(message.bot, message.chat.id, "Возврат в меню.", reply_markup=START_KEYBOARD)
         return
+    mapping = {"🍄": "COS", "🍄 COS": "COS", "COS": "COS", "🐉": "DA", "🐉 DA": "DA", "DA": "DA"}
+    game_code = mapping.get(text)
+    if game_code is None:
+        await safe_send_message(message.bot, message.chat.id, "Выберите игру кнопками.", reply_markup=PRODUCT_GAME_KEYBOARD)
+        return
+    await state.update_data(game_code=game_code, product_category=None, product_delete_query=None, product_delete_page=1)
+    await state.set_state(ProductCatalogFSM.menu)
+    await safe_send_message(message.bot, message.chat.id, f"Управление товарами ({game_code}):", reply_markup=PRODUCTS_MENU_KEYBOARD)
+
+
+@router.message(ProductCatalogFSM.menu)
+async def products_menu_actions(message: Message, state: FSMContext, settings: Settings) -> None:
+    if not await _check_access(message, settings):
+        return
+    text = (message.text or "").strip()
+    data = await state.get_data()
+    if text == "⬅️ Назад" or _is_back(text) or _is_cancel(text):
+        await state.set_state(ProductCatalogFSM.choose_game)
+        await safe_send_message(message.bot, message.chat.id, "Выберите игру:", reply_markup=PRODUCT_GAME_KEYBOARD)
+        return
     if text == BTN_PRODUCTS_ADD:
         await state.set_state(ProductCatalogFSM.add_category)
-        await safe_send_message(message.bot, message.chat.id, "Выберите категорию:", reply_markup=PRODUCT_ADD_CATEGORY_KEYBOARD)
+        await safe_send_message(
+            message.bot,
+            message.chat.id,
+            "Выберите категорию:",
+            reply_markup=_product_category_keyboard(data.get("game_code"), with_cancel=True),
+        )
         return
     if text == BTN_PRODUCTS_DELETE:
         await state.update_data(product_delete_query=None, product_delete_page=1)
         await state.set_state(ProductCatalogFSM.delete_category)
-        await safe_send_message(message.bot, message.chat.id, "Выберите категорию:", reply_markup=PRODUCT_DELETE_CATEGORY_KEYBOARD)
+        await safe_send_message(
+            message.bot,
+            message.chat.id,
+            "Выберите категорию:",
+            reply_markup=_product_category_keyboard(data.get("game_code"), with_cancel=True),
+        )
         return
     await safe_send_message(message.bot, message.chat.id, "Выберите действие кнопками.", reply_markup=PRODUCTS_MENU_KEYBOARD)
 
@@ -845,6 +914,8 @@ async def products_add_category(message: Message, state: FSMContext, settings: S
     if not await _check_access(message, settings):
         return
     text = (message.text or "").strip()
+    data = await state.get_data()
+    game_code = str(data.get("game_code") or "COS").upper()
     if _is_cancel(text):
         await state.set_state(ProductCatalogFSM.menu)
         await safe_send_message(message.bot, message.chat.id, "Отменено.", reply_markup=PRODUCTS_MENU_KEYBOARD)
@@ -853,9 +924,9 @@ async def products_add_category(message: Message, state: FSMContext, settings: S
         await state.set_state(ProductCatalogFSM.menu)
         await safe_send_message(message.bot, message.chat.id, "Управление товарами:", reply_markup=PRODUCTS_MENU_KEYBOARD)
         return
-    category = _resolve_product_category(text)
+        category = _resolve_product_category(text, game_code)
     if category is None:
-        await safe_send_message(message.bot, message.chat.id, "Выберите категорию из кнопок.", reply_markup=PRODUCT_ADD_CATEGORY_KEYBOARD)
+        await safe_send_message(message.bot, message.chat.id, "Выберите категорию из кнопок.", reply_markup=_product_category_keyboard(data.get("game_code"), with_cancel=True))
         return
     await state.update_data(product_category=category)
     await state.set_state(ProductCatalogFSM.add_name)
@@ -872,25 +943,26 @@ async def products_add_name(message: Message, state: FSMContext, pool: asyncpg.P
     if not await _check_access(message, settings):
         return
     text = (message.text or "").strip()
+    data = await state.get_data()
+    game_code = str(data.get("game_code") or "COS").upper()
     if _is_cancel(text):
         await state.set_state(ProductCatalogFSM.menu)
         await safe_send_message(message.bot, message.chat.id, "Отменено.", reply_markup=PRODUCTS_MENU_KEYBOARD)
         return
     if _is_back(text):
         await state.set_state(ProductCatalogFSM.add_category)
-        await safe_send_message(message.bot, message.chat.id, "Выберите категорию:", reply_markup=PRODUCT_ADD_CATEGORY_KEYBOARD)
+        await safe_send_message(message.bot, message.chat.id, "Выберите категорию:", reply_markup=_product_category_keyboard(data.get("game_code"), with_cancel=True))
         return
     clean_name = _trim_product_name(text)
     if not clean_name:
         await safe_send_message(message.bot, message.chat.id, "Название не должно быть пустым.")
         return
-    data = await state.get_data()
     category = data.get("product_category")
-    if category not in PRODUCT_CATEGORIES:
+    if category not in _valid_item_categories(data.get("game_code")):
         await state.set_state(ProductCatalogFSM.add_category)
-        await safe_send_message(message.bot, message.chat.id, "Выберите категорию:", reply_markup=PRODUCT_ADD_CATEGORY_KEYBOARD)
+        await safe_send_message(message.bot, message.chat.id, "Выберите категорию:", reply_markup=_product_category_keyboard(data.get("game_code"), with_cancel=True))
         return
-    product = await add_product(pool, category, clean_name)
+    product = await add_product(pool, game_code, category, clean_name)
     await state.set_state(ProductCatalogFSM.menu)
     await safe_send_message(
         message.bot,
@@ -905,6 +977,8 @@ async def products_delete_category(message: Message, state: FSMContext, pool: as
     if not await _check_access(message, settings):
         return
     text = (message.text or "").strip()
+    data = await state.get_data()
+    game_code = str(data.get("game_code") or "COS").upper()
     if _is_cancel(text):
         await state.set_state(ProductCatalogFSM.menu)
         await safe_send_message(message.bot, message.chat.id, "Отменено.", reply_markup=PRODUCTS_MENU_KEYBOARD)
@@ -913,9 +987,9 @@ async def products_delete_category(message: Message, state: FSMContext, pool: as
         await state.set_state(ProductCatalogFSM.menu)
         await safe_send_message(message.bot, message.chat.id, "Управление товарами:", reply_markup=PRODUCTS_MENU_KEYBOARD)
         return
-    category = _resolve_product_category(text)
+    category = _resolve_product_category(text, game_code)
     if category is None:
-        await safe_send_message(message.bot, message.chat.id, "Выберите категорию из кнопок.", reply_markup=PRODUCT_DELETE_CATEGORY_KEYBOARD)
+        await safe_send_message(message.bot, message.chat.id, "Выберите категорию из кнопок.", reply_markup=_product_category_keyboard(data.get("game_code"), with_cancel=True))
         return
     await state.update_data(product_category=category, product_delete_page=1, product_delete_query=None)
     await state.set_state(ProductCatalogFSM.delete_list)
@@ -925,7 +999,7 @@ async def products_delete_category(message: Message, state: FSMContext, pool: as
         "Введите часть названия для поиска или выберите товар кнопками. «Назад» — категории, «Отменить» — в меню.",
         reply_markup=NAV_BACK_CANCEL,
     )
-    await _send_product_page(message, pool=pool, category=category, page=1, mode="delete")
+    await _send_product_page(message, pool=pool, game_code=game_code, category=category, page=1, mode="delete")
 
 
 @router.message(ProductCatalogFSM.delete_list)
@@ -933,19 +1007,20 @@ async def products_delete_list(message: Message, state: FSMContext, pool: asyncp
     if not await _check_access(message, settings):
         return
     text = (message.text or "").strip()
+    data = await state.get_data()
+    game_code = str(data.get("game_code") or "COS").upper()
     if _is_cancel(text):
         await state.set_state(ProductCatalogFSM.menu)
         await safe_send_message(message.bot, message.chat.id, "Отменено.", reply_markup=PRODUCTS_MENU_KEYBOARD)
         return
     if _is_back(text):
         await state.set_state(ProductCatalogFSM.delete_category)
-        await safe_send_message(message.bot, message.chat.id, "Выберите категорию:", reply_markup=PRODUCT_DELETE_CATEGORY_KEYBOARD)
+        await safe_send_message(message.bot, message.chat.id, "Выберите категорию:", reply_markup=_product_category_keyboard(data.get("game_code"), with_cancel=True))
         return
-    data = await state.get_data()
     category = data.get("product_category")
-    if category not in PRODUCT_CATEGORIES:
+    if category not in _valid_item_categories(data.get("game_code")):
         await state.set_state(ProductCatalogFSM.delete_category)
-        await safe_send_message(message.bot, message.chat.id, "Выберите категорию:", reply_markup=PRODUCT_DELETE_CATEGORY_KEYBOARD)
+        await safe_send_message(message.bot, message.chat.id, "Выберите категорию:", reply_markup=_product_category_keyboard(data.get("game_code"), with_cancel=True))
         return
     query = " ".join(text.split())
     if len(query) < 2:
@@ -963,7 +1038,7 @@ async def products_delete_list(message: Message, state: FSMContext, pool: asyncp
         "Введите часть названия для поиска или выберите товар кнопками. «Назад» — категории, «Отменить» — в меню.",
         reply_markup=NAV_BACK_CANCEL,
     )
-    await _send_product_page(message, pool=pool, category=category, page=1, mode="delete", query=query)
+    await _send_product_page(message, pool=pool, game_code=game_code, category=category, page=1, mode="delete", query=query)
 
 
 @router.callback_query(F.data.startswith("receipt:open:"))
@@ -994,18 +1069,19 @@ async def products_page_callback(callback: CallbackQuery, settings: Settings, st
         await callback.answer()
         return
     _, _, category, page_raw, mode = parts
-    if category not in PRODUCT_CATEGORIES or not page_raw.isdigit() or mode not in {"pick", "delete"}:
+    data = await state.get_data()
+    game_code = str(data.get("game_code") or "COS").upper()
+    if category not in _valid_item_categories(game_code) or not page_raw.isdigit() or mode not in {"pick", "delete"}:
         await callback.answer()
         return
     page = int(page_raw)
     if mode == "delete":
-        data = await state.get_data()
         query = " ".join(str(data.get("product_delete_query") or "").split())
         if query:
-            total = await count_search_products(pool, category, query)
+            total = await count_search_products(pool, game_code, category, query)
             total_pages = max(1, (total + PRODUCTS_PAGE_SIZE - 1) // PRODUCTS_PAGE_SIZE)
             current_page = min(max(1, page), total_pages)
-            products = await list_search_products(pool, category, query, (current_page - 1) * PRODUCTS_PAGE_SIZE, PRODUCTS_PAGE_SIZE)
+            products = await list_search_products(pool, game_code, category, query, (current_page - 1) * PRODUCTS_PAGE_SIZE, PRODUCTS_PAGE_SIZE)
             text = f"Результаты поиска «{query}» (Страница {current_page} из {total_pages})"
             kb = _build_products_keyboard(
                 category=category,
@@ -1021,10 +1097,10 @@ async def products_page_callback(callback: CallbackQuery, settings: Settings, st
             await callback.answer()
             return
 
-    total = await count_products(pool, category)
+    total = await count_products(pool, game_code, category)
     total_pages = max(1, (total + PRODUCTS_PAGE_SIZE - 1) // PRODUCTS_PAGE_SIZE)
     current_page = min(max(1, page), total_pages)
-    products = await list_products(pool, category, (current_page - 1) * PRODUCTS_PAGE_SIZE, PRODUCTS_PAGE_SIZE)
+    products = await list_products(pool, game_code, category, (current_page - 1) * PRODUCTS_PAGE_SIZE, PRODUCTS_PAGE_SIZE)
     text = ("Выберите товар" if mode == "pick" else "Выберите товар для удаления") + f" (Страница {current_page} из {total_pages})"
     kb = _build_products_keyboard(
         category=category,
@@ -1052,10 +1128,10 @@ async def add_check_product_add_callback(callback: CallbackQuery, settings: Sett
         await callback.answer()
         return
     category = parts[2]
-    if category not in PRODUCT_CATEGORIES:
+    data = await state.get_data()
+    if category not in _valid_item_categories(data.get("game_code")):
         await callback.answer()
         return
-    data = await state.get_data()
     item_draft = data.get("item_draft", {})
     item_draft["category"] = category
     await state.update_data(item_draft=item_draft)
@@ -1076,7 +1152,9 @@ async def add_check_product_pick_callback(callback: CallbackQuery, settings: Set
         await callback.answer()
         return
     _, _, category, product_id_raw = parts
-    product = await get_product(pool, category, int(product_id_raw))
+    data = await state.get_data()
+    game_code = str(data.get("game_code") or "COS").upper()
+    product = await get_product(pool, game_code, category, int(product_id_raw))
     if not product:
         await callback.answer("Товар не найден", show_alert=True)
         return
@@ -1091,7 +1169,7 @@ async def add_check_product_pick_callback(callback: CallbackQuery, settings: Set
 
 
 @router.callback_query(F.data.startswith("prod:del:"))
-async def products_delete_pick_callback(callback: CallbackQuery, settings: Settings, pool: asyncpg.Pool) -> None:
+async def products_delete_pick_callback(callback: CallbackQuery, settings: Settings, state: FSMContext, pool: asyncpg.Pool) -> None:
     if not await _check_access(callback, settings):
         return
     if callback.message is None:
@@ -1102,7 +1180,9 @@ async def products_delete_pick_callback(callback: CallbackQuery, settings: Setti
         await callback.answer()
         return
     _, _, category, product_id_raw = parts
-    product = await get_product(pool, category, int(product_id_raw))
+    data = await state.get_data()
+    game_code = str(data.get("game_code") or "COS").upper()
+    product = await get_product(pool, game_code, category, int(product_id_raw))
     if not product:
         await callback.answer("Товар не найден", show_alert=True)
         return
@@ -1126,15 +1206,16 @@ async def products_delete_cancel_callback(callback: CallbackQuery, settings: Set
         await callback.answer()
         return
     data = await state.get_data()
+    game_code = str(data.get("game_code") or "COS").upper()
     category = data.get("product_category", "OTHER")
     page = int(data.get("product_delete_page") or 1)
     query = " ".join(str(data.get("product_delete_query") or "").split())
-    if category not in PRODUCT_CATEGORIES:
+    if category not in _valid_item_categories(data.get("game_code")):
         await callback.answer()
         return
 
     if query:
-        total = await count_search_products(pool, category, query)
+        total = await count_search_products(pool, game_code, category, query)
         if total == 0:
             await callback.message.edit_text(
                 f"По запросу «{query}» ничего не найдено.",
@@ -1146,7 +1227,7 @@ async def products_delete_cancel_callback(callback: CallbackQuery, settings: Set
             return
         total_pages = max(1, (total + PRODUCTS_PAGE_SIZE - 1) // PRODUCTS_PAGE_SIZE)
         page = min(max(1, page), total_pages)
-        products = await list_search_products(pool, category, query, (page - 1) * PRODUCTS_PAGE_SIZE, PRODUCTS_PAGE_SIZE)
+        products = await list_search_products(pool, game_code, category, query, (page - 1) * PRODUCTS_PAGE_SIZE, PRODUCTS_PAGE_SIZE)
         await callback.message.edit_text(
             f"Результаты поиска «{query}» (Страница {page} из {total_pages})",
             reply_markup=_build_products_keyboard(
@@ -1162,7 +1243,7 @@ async def products_delete_cancel_callback(callback: CallbackQuery, settings: Set
         await callback.answer()
         return
 
-    total = await count_products(pool, category)
+    total = await count_products(pool, game_code, category)
     if total == 0:
         await callback.message.edit_text(
             "В категории нет товаров",
@@ -1174,7 +1255,7 @@ async def products_delete_cancel_callback(callback: CallbackQuery, settings: Set
         return
     total_pages = max(1, (total + PRODUCTS_PAGE_SIZE - 1) // PRODUCTS_PAGE_SIZE)
     page = min(max(1, page), total_pages)
-    products = await list_products(pool, category, (page - 1) * PRODUCTS_PAGE_SIZE, PRODUCTS_PAGE_SIZE)
+    products = await list_products(pool, game_code, category, (page - 1) * PRODUCTS_PAGE_SIZE, PRODUCTS_PAGE_SIZE)
     await callback.message.edit_text(
         f"Выберите товар для удаления (Страница {page} из {total_pages})",
         reply_markup=_build_products_keyboard(
@@ -1201,13 +1282,14 @@ async def products_delete_confirm_callback(callback: CallbackQuery, settings: Se
         await callback.answer()
         return
     _, _, category, product_id_raw = parts
-    await delete_product(pool, category, int(product_id_raw))
     data = await state.get_data()
+    game_code = str(data.get("game_code") or "COS").upper()
+    await delete_product(pool, game_code, category, int(product_id_raw))
     page = int(data.get("product_delete_page") or 1)
     query = " ".join(str(data.get("product_delete_query") or "").split())
 
     if query:
-        total = await count_search_products(pool, category, query)
+        total = await count_search_products(pool, game_code, category, query)
         if total == 0:
             await callback.message.edit_text(
                 "✅ Удалено\n\nПо запросу ничего не найдено.",
@@ -1219,7 +1301,7 @@ async def products_delete_confirm_callback(callback: CallbackQuery, settings: Se
             return
         total_pages = max(1, (total + PRODUCTS_PAGE_SIZE - 1) // PRODUCTS_PAGE_SIZE)
         page = min(max(1, page), total_pages)
-        products = await list_search_products(pool, category, query, (page - 1) * PRODUCTS_PAGE_SIZE, PRODUCTS_PAGE_SIZE)
+        products = await list_search_products(pool, game_code, category, query, (page - 1) * PRODUCTS_PAGE_SIZE, PRODUCTS_PAGE_SIZE)
         await callback.message.edit_text(
             f"✅ Удалено\n\nРезультаты поиска «{query}» (Страница {page} из {total_pages})",
             reply_markup=_build_products_keyboard(
@@ -1235,7 +1317,7 @@ async def products_delete_confirm_callback(callback: CallbackQuery, settings: Se
         await callback.answer()
         return
 
-    total = await count_products(pool, category)
+    total = await count_products(pool, game_code, category)
     if total == 0:
         await callback.message.edit_text(
             "✅ Удалено\n\nВ категории нет товаров",
@@ -1247,7 +1329,7 @@ async def products_delete_confirm_callback(callback: CallbackQuery, settings: Se
         return
     total_pages = max(1, (total + PRODUCTS_PAGE_SIZE - 1) // PRODUCTS_PAGE_SIZE)
     page = min(max(1, page), total_pages)
-    products = await list_products(pool, category, (page - 1) * PRODUCTS_PAGE_SIZE, PRODUCTS_PAGE_SIZE)
+    products = await list_products(pool, game_code, category, (page - 1) * PRODUCTS_PAGE_SIZE, PRODUCTS_PAGE_SIZE)
     await callback.message.edit_text(
         f"✅ Удалено\n\nВыберите товар для удаления (Страница {page} из {total_pages})",
         reply_markup=_build_products_keyboard(
@@ -1270,12 +1352,13 @@ async def products_delete_reset_query_callback(callback: CallbackQuery, settings
         await callback.answer()
         return
     data = await state.get_data()
+    game_code = str(data.get("game_code") or "COS").upper()
     category = data.get("product_category")
-    if category not in PRODUCT_CATEGORIES:
+    if category not in _valid_item_categories(data.get("game_code")):
         await callback.answer()
         return
     await state.update_data(product_delete_query=None, product_delete_page=1)
-    total = await count_products(pool, category)
+    total = await count_products(pool, game_code, category)
     if total == 0:
         await callback.message.edit_text(
             "В категории нет товаров",
@@ -1286,7 +1369,7 @@ async def products_delete_reset_query_callback(callback: CallbackQuery, settings
         await callback.answer("Поиск сброшен")
         return
     total_pages = max(1, (total + PRODUCTS_PAGE_SIZE - 1) // PRODUCTS_PAGE_SIZE)
-    products = await list_products(pool, category, 0, PRODUCTS_PAGE_SIZE)
+    products = await list_products(pool, game_code, category, 0, PRODUCTS_PAGE_SIZE)
     await callback.message.edit_text(
         f"Выберите товар для удаления (Страница 1 из {total_pages})",
         reply_markup=_build_products_keyboard(
@@ -1308,13 +1391,14 @@ async def products_delete_back_callback(callback: CallbackQuery, settings: Setti
     if callback.message is None:
         await callback.answer()
         return
+    data = await state.get_data()
     await state.update_data(product_delete_query=None, product_delete_page=1)
     await state.set_state(ProductCatalogFSM.delete_category)
     await safe_send_message(
         callback.message.bot,
         callback.message.chat.id,
         "Выберите категорию:",
-        reply_markup=PRODUCT_DELETE_CATEGORY_KEYBOARD,
+        reply_markup=_product_category_keyboard(data.get("game_code"), with_cancel=True),
     )
     await callback.answer()
 
@@ -1405,7 +1489,7 @@ async def _prompt_item_name(message: Message, state: FSMContext, pool: Optional[
     category = (data.get("item_draft", {}) or {}).get("category", "OTHER")
     await state.set_state(AddCheckFSM.item_name)
     if pool is not None and category in PRODUCT_CATEGORIES:
-        await _send_product_page(message, pool=pool, category=category, page=1, mode="pick")
+        await _send_product_page(message, pool=pool, game_code=game_code, category=category, page=1, mode="pick")
         return
     await safe_send_message(message.bot, message.chat.id, _item_name_prompt(), reply_markup=INLINE_NAV_BACK_CANCEL)
 
@@ -1647,6 +1731,8 @@ async def _prompt_game(message: Message, *, state: FSMContext | None = None) -> 
 @router.message(AddCheckFSM.game)
 async def add_check_game(message: Message, state: FSMContext) -> None:
     text = (message.text or "").strip()
+    data = await state.get_data()
+    game_code = str(data.get("game_code") or "COS").upper()
     if _is_cancel(text):
         await _cancel_add_check(message, state)
         return
@@ -1678,6 +1764,8 @@ async def _prompt_pay_method(message: Message, *, state: FSMContext | None = Non
 @router.message(AddCheckFSM.currency)
 async def add_check_currency(message: Message, state: FSMContext) -> None:
     text = (message.text or "").strip()
+    data = await state.get_data()
+    game_code = str(data.get("game_code") or "COS").upper()
     if _is_cancel(text):
         await _cancel_add_check(message, state)
         return
@@ -1711,6 +1799,8 @@ async def add_check_currency_callback(callback: CallbackQuery, state: FSMContext
 @router.message(AddCheckFSM.currency_custom)
 async def add_check_currency_custom(message: Message, state: FSMContext) -> None:
     text = (message.text or "").strip()
+    data = await state.get_data()
+    game_code = str(data.get("game_code") or "COS").upper()
     if _is_cancel(text):
         await _cancel_add_check(message, state)
         return
@@ -1735,6 +1825,8 @@ async def add_check_currency_custom(message: Message, state: FSMContext) -> None
 @router.message(AddCheckFSM.pay_method)
 async def add_check_pay_method(message: Message, state: FSMContext) -> None:
     text = (message.text or "").strip()
+    data = await state.get_data()
+    game_code = str(data.get("game_code") or "COS").upper()
     if _is_cancel(text):
         await _cancel_add_check(message, state)
         return
@@ -1776,6 +1868,8 @@ async def add_check_pay_method_callback(callback: CallbackQuery, state: FSMConte
 @router.message(AddCheckFSM.pay_method_custom)
 async def add_check_pay_method_custom(message: Message, state: FSMContext) -> None:
     text = (message.text or "").strip()
+    data = await state.get_data()
+    game_code = str(data.get("game_code") or "COS").upper()
     if _is_cancel(text):
         await _cancel_add_check(message, state)
         return
@@ -1794,6 +1888,8 @@ async def add_check_pay_method_custom(message: Message, state: FSMContext) -> No
 @router.message(AddCheckFSM.note)
 async def add_check_note(message: Message, state: FSMContext) -> None:
     text = (message.text or "").strip()
+    data = await state.get_data()
+    game_code = str(data.get("game_code") or "COS").upper()
     if _is_cancel(text):
         await _cancel_add_check(message, state)
         return
@@ -1809,6 +1905,8 @@ async def add_check_note(message: Message, state: FSMContext) -> None:
 @router.message(AddCheckFSM.items_menu)
 async def add_check_items_menu(message: Message, state: FSMContext) -> None:
     text = (message.text or "").strip()
+    data = await state.get_data()
+    game_code = str(data.get("game_code") or "COS").upper()
     if _is_cancel(text):
         await _cancel_add_check(message, state)
         return
@@ -1884,6 +1982,8 @@ async def add_check_item_category(message: Message, state: FSMContext, pool: asy
 @router.message(AddCheckFSM.item_name)
 async def add_check_item_name(message: Message, state: FSMContext, pool: asyncpg.Pool) -> None:
     text = (message.text or "").strip()
+    data = await state.get_data()
+    game_code = str(data.get("game_code") or "COS").upper()
     if _is_cancel(text):
         await _cancel_add_check(message, state)
         return
@@ -1904,16 +2004,17 @@ async def add_check_item_name(message: Message, state: FSMContext, pool: asyncpg
     data = await state.get_data()
     item_draft = data.get("item_draft", {})
     category = item_draft.get("category", "OTHER")
+    game_code = str(data.get("game_code") or "COS").upper()
 
     if category in PRODUCT_CATEGORIES and not _is_dash_skip(text):
-        found = await search_products(pool, category, text, limit=20)
+        found = await search_products(pool, game_code, category, text, limit=20)
         if not found:
             await safe_send_message(
                 message.bot,
                 message.chat.id,
                 "Ничего не найдено. Можете нажать ‘➕ Добавить товар’ или попробуйте другой запрос.",
             )
-            await _send_product_page(message, pool=pool, category=category, page=1, mode="pick")
+            await _send_product_page(message, pool=pool, game_code=game_code, category=category, page=1, mode="pick")
             return
         kb = _build_products_keyboard(
             category=category,
@@ -1948,10 +2049,11 @@ async def add_check_item_name_add_new(message: Message, state: FSMContext, pool:
     data = await state.get_data()
     item_draft = data.get("item_draft", {})
     category = item_draft.get("category")
-    if category not in PRODUCT_CATEGORIES:
+    if category not in _valid_item_categories(data.get("game_code")):
         await _prompt_item_name(message, state, pool)
         return
-    product = await add_product(pool, category, text)
+    game_code = str(data.get("game_code") or "COS").upper()
+    product = await add_product(pool, game_code, category, text)
     item_draft["item_name"] = product["name"]
     await state.update_data(item_draft=item_draft)
     await state.set_state(AddCheckFSM.item_qty)
@@ -1961,6 +2063,8 @@ async def add_check_item_name_add_new(message: Message, state: FSMContext, pool:
 @router.message(AddCheckFSM.item_qty)
 async def add_check_item_qty(message: Message, state: FSMContext, pool: asyncpg.Pool) -> None:
     text = (message.text or "").strip()
+data = await state.get_data()
+    game_code = str(data.get("game_code") or "COS").upper()
     if _is_cancel(text):
         await _cancel_add_check(message, state)
         return
@@ -2023,6 +2127,8 @@ async def add_check_item_unit_price(message: Message, state: FSMContext) -> None
 @router.message(AddCheckFSM.item_note)
 async def add_check_item_note(message: Message, state: FSMContext) -> None:
     text = (message.text or "").strip()
+    data = await state.get_data()
+    game_code = str(data.get("game_code") or "COS").upper()
     if _is_cancel(text):
         await _cancel_add_check(message, state)
         return
@@ -2056,6 +2162,8 @@ async def add_check_item_note(message: Message, state: FSMContext) -> None:
 @router.message(AddCheckFSM.item_delete)
 async def add_check_item_delete(message: Message, state: FSMContext) -> None:
     text = (message.text or "").strip()
+    data = await state.get_data()
+    game_code = str(data.get("game_code") or "COS").upper()
     if _is_cancel(text):
         await _cancel_add_check(message, state)
         return
@@ -2082,6 +2190,8 @@ async def add_check_item_delete(message: Message, state: FSMContext) -> None:
 @router.message(AddCheckFSM.item_edit_select)
 async def add_check_item_edit_select(message: Message, state: FSMContext) -> None:
     text = (message.text or "").strip()
+    data = await state.get_data()
+    game_code = str(data.get("game_code") or "COS").upper()
     if _is_cancel(text):
         await _cancel_add_check(message, state)
         return
@@ -2107,6 +2217,8 @@ async def add_check_item_edit_select(message: Message, state: FSMContext) -> Non
 @router.message(AddCheckFSM.item_edit_field)
 async def add_check_item_edit_field(message: Message, state: FSMContext) -> None:
     text = (message.text or "").strip()
+    data = await state.get_data()
+    game_code = str(data.get("game_code") or "COS").upper()
     if _is_cancel(text):
         await _cancel_add_check(message, state)
         return
@@ -2148,6 +2260,8 @@ async def add_check_item_edit_field(message: Message, state: FSMContext) -> None
 @router.message(AddCheckFSM.item_edit_value)
 async def add_check_item_edit_value(message: Message, state: FSMContext) -> None:
     text = (message.text or "").strip()
+    data = await state.get_data()
+    game_code = str(data.get("game_code") or "COS").upper()
     if _is_cancel(text):
         await _cancel_add_check(message, state)
         return
@@ -2213,6 +2327,8 @@ async def add_check_item_edit_value(message: Message, state: FSMContext) -> None
 @router.message(AddCheckFSM.receipt)
 async def add_check_receipt(message: Message, state: FSMContext) -> None:
     text = (message.text or "").strip()
+    data = await state.get_data()
+    game_code = str(data.get("game_code") or "COS").upper()
     if _is_cancel(text):
         await _cancel_add_check(message, state)
         return
@@ -2245,6 +2361,8 @@ async def add_check_confirm(
     settings: Settings,
 ) -> None:
     text = (message.text or "").strip()
+    data = await state.get_data()
+    game_code = str(data.get("game_code") or "COS").upper()
     if _is_cancel(text):
         await _cancel_add_check(message, state)
         return

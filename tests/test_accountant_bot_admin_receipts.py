@@ -33,6 +33,7 @@ if "openpyxl" not in sys.modules:
 
 from accountant_bot.admin_bot import (
     PRODUCTS_MENU_KEYBOARD,
+    PRODUCT_GAME_KEYBOARD,
     ProductCatalogFSM,
     CURRENCY_KEYBOARD,
     GAME_KEYBOARD,
@@ -48,6 +49,9 @@ from accountant_bot.admin_bot import (
     add_check_pay_method_callback,
     add_check_confirm,
     products_delete_list,
+    products_menu,
+    products_choose_game,
+    products_add_name,
     show_stats,
 )
 from accountant_bot.config import Settings
@@ -110,6 +114,75 @@ def test_start_receipt_lookup_uses_back_only_keyboard(monkeypatch):
     assert rows == [["Назад"]]
 
 
+
+
+def test_products_menu_requests_game_selection(monkeypatch):
+    safe_send_message = AsyncMock()
+    monkeypatch.setattr("accountant_bot.admin_bot.safe_send_message", safe_send_message)
+
+    settings = Settings(
+        ACCOUNTANT_BOT_TOKEN="token",
+        ACCOUNTANT_ADMIN_IDS=[1],
+        DATABASE_URL="postgresql://localhost/test",
+        REVIEWS_CHANNEL_ID=777,
+        TG_API_ID=123,
+        TG_API_HASH="hash",
+        ACCOUNTANT_TG_STRING_SESSION="session",
+    )
+    state = _DummyState()
+    message = _DummyMessage("🧩 Управление товарами")
+
+    asyncio.run(products_menu(message, settings, state))
+
+    assert state.current_state == ProductCatalogFSM.choose_game
+    assert safe_send_message.await_args.kwargs["reply_markup"] == PRODUCT_GAME_KEYBOARD
+
+
+def test_products_choose_game_sets_state_and_data(monkeypatch):
+    safe_send_message = AsyncMock()
+    monkeypatch.setattr("accountant_bot.admin_bot.safe_send_message", safe_send_message)
+
+    settings = Settings(
+        ACCOUNTANT_BOT_TOKEN="token",
+        ACCOUNTANT_ADMIN_IDS=[1],
+        DATABASE_URL="postgresql://localhost/test",
+        REVIEWS_CHANNEL_ID=777,
+        TG_API_ID=123,
+        TG_API_HASH="hash",
+        ACCOUNTANT_TG_STRING_SESSION="session",
+    )
+    state = _DummyState()
+    message = _DummyMessage("🐉 DA")
+
+    asyncio.run(products_choose_game(message, state, settings))
+
+    assert state.current_state == ProductCatalogFSM.menu
+    assert state._data["game_code"] == "DA"
+
+
+def test_products_add_name_uses_game_code_in_add_product(monkeypatch):
+    safe_send_message = AsyncMock()
+    add_product_mock = AsyncMock(return_value={"name": "Dragon Egg"})
+    monkeypatch.setattr("accountant_bot.admin_bot.safe_send_message", safe_send_message)
+    monkeypatch.setattr("accountant_bot.admin_bot.add_product", add_product_mock)
+
+    settings = Settings(
+        ACCOUNTANT_BOT_TOKEN="token",
+        ACCOUNTANT_ADMIN_IDS=[1],
+        DATABASE_URL="postgresql://localhost/test",
+        REVIEWS_CHANNEL_ID=777,
+        TG_API_ID=123,
+        TG_API_HASH="hash",
+        ACCOUNTANT_TG_STRING_SESSION="session",
+    )
+    state = _DummyState(data={"game_code": "DA", "product_category": "DRAGONS"})
+    message = _DummyMessage("Dragon Egg")
+    pool = AsyncMock()
+
+    asyncio.run(products_add_name(message, state, pool=pool, settings=settings))
+
+    add_product_mock.assert_awaited_once_with(pool, "DA", "DRAGONS", "Dragon Egg")
+
 def test_products_delete_list_back_returns_to_products_menu(monkeypatch):
     safe_send_message = AsyncMock()
     monkeypatch.setattr("accountant_bot.admin_bot.safe_send_message", safe_send_message)
@@ -128,9 +201,11 @@ def test_products_delete_list_back_returns_to_products_menu(monkeypatch):
 
     asyncio.run(products_delete_list(message, state, pool=AsyncMock(), settings=settings))
 
-    assert state.current_state == ProductCatalogFSM.menu
-    assert safe_send_message.await_args.args[2] == "Управление товарами:"
-    assert safe_send_message.await_args.kwargs["reply_markup"] == PRODUCTS_MENU_KEYBOARD
+    assert state.current_state == ProductCatalogFSM.delete_category
+    assert safe_send_message.await_args.args[2] == "Выберите категорию:"
+    keyboard = safe_send_message.await_args.kwargs["reply_markup"]
+    rows = [[button.text for button in row] for row in keyboard.keyboard]
+    assert rows == [["Виды", "Токены"], ["Другое"], ["Назад", "Отменить"]]
 
 def test_start_keyboard_has_expected_rows_and_labels():
     rows = [[button.text for button in row] for row in START_KEYBOARD.keyboard]
