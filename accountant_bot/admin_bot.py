@@ -434,15 +434,21 @@ async def _send_product_page(
     offset = (current_page - 1) * PRODUCTS_PAGE_SIZE
     products = await list_products(pool, category, offset, PRODUCTS_PAGE_SIZE)
     if not products:
-        text = "Список товаров пуст."
-        kb = _build_products_keyboard(
-            category=category,
-            products=[],
-            page=1,
-            total_pages=1,
-            include_add_button=(mode == "pick"),
-            mode=mode,
-        )
+        if mode == "delete":
+            text = "В категории нет товаров"
+            kb = InlineKeyboardMarkup(
+                inline_keyboard=[[InlineKeyboardButton(text="⬅️ Назад", callback_data="prod:del_back")]]
+            )
+        else:
+            text = "Список товаров пуст."
+            kb = _build_products_keyboard(
+                category=category,
+                products=[],
+                page=1,
+                total_pages=1,
+                include_add_button=True,
+                mode=mode,
+            )
         await safe_send_message(message.bot, message.chat.id, text, reply_markup=kb)
         return
 
@@ -769,6 +775,38 @@ async def products_delete_category(message: Message, state: FSMContext, pool: as
         return
     await state.update_data(product_category=category, product_delete_page=1)
     await state.set_state(ProductCatalogFSM.delete_list)
+    await safe_send_message(
+        message.bot,
+        message.chat.id,
+        "Для выхода используйте кнопки «Назад» или «Отменить».",
+        reply_markup=NAV_BACK_CANCEL,
+    )
+    await _send_product_page(message, pool=pool, category=category, page=1, mode="delete")
+
+
+@router.message(ProductCatalogFSM.delete_list)
+async def products_delete_list(message: Message, state: FSMContext, pool: asyncpg.Pool, settings: Settings) -> None:
+    if not await _check_access(message, settings):
+        return
+    text = (message.text or "").strip()
+    if _is_cancel(text):
+        await state.set_state(ProductCatalogFSM.menu)
+        await safe_send_message(message.bot, message.chat.id, "Отменено.", reply_markup=PRODUCTS_MENU_KEYBOARD)
+        return
+    if _is_back(text):
+        await state.set_state(ProductCatalogFSM.menu)
+        await safe_send_message(message.bot, message.chat.id, "Управление товарами:", reply_markup=PRODUCTS_MENU_KEYBOARD)
+        return
+    category = _resolve_product_category(text)
+    if category is None:
+        await safe_send_message(
+            message.bot,
+            message.chat.id,
+            "Выберите товар кнопками под сообщением",
+            reply_markup=PRODUCT_CATEGORY_KEYBOARD,
+        )
+        return
+    await state.update_data(product_category=category, product_delete_page=1)
     await _send_product_page(message, pool=pool, category=category, page=1, mode="delete")
 
 
@@ -915,6 +953,15 @@ async def products_delete_cancel_callback(callback: CallbackQuery, settings: Set
         await callback.answer()
         return
     total = await count_products(pool, category)
+    if total == 0:
+        await callback.message.edit_text(
+            "В категории нет товаров",
+            reply_markup=InlineKeyboardMarkup(
+                inline_keyboard=[[InlineKeyboardButton(text="⬅️ Назад", callback_data="prod:del_back")]]
+            ),
+        )
+        await callback.answer()
+        return
     total_pages = max(1, (total + PRODUCTS_PAGE_SIZE - 1) // PRODUCTS_PAGE_SIZE)
     page = min(max(1, page), total_pages)
     products = await list_products(pool, category, (page - 1) * PRODUCTS_PAGE_SIZE, PRODUCTS_PAGE_SIZE)
@@ -948,6 +995,15 @@ async def products_delete_confirm_callback(callback: CallbackQuery, settings: Se
     data = await state.get_data()
     page = int(data.get("product_delete_page") or 1)
     total = await count_products(pool, category)
+    if total == 0:
+        await callback.message.edit_text(
+            "✅ Удалено\n\nВ категории нет товаров",
+            reply_markup=InlineKeyboardMarkup(
+                inline_keyboard=[[InlineKeyboardButton(text="⬅️ Назад", callback_data="prod:del_back")]]
+            ),
+        )
+        await callback.answer()
+        return
     total_pages = max(1, (total + PRODUCTS_PAGE_SIZE - 1) // PRODUCTS_PAGE_SIZE)
     page = min(max(1, page), total_pages)
     products = await list_products(pool, category, (page - 1) * PRODUCTS_PAGE_SIZE, PRODUCTS_PAGE_SIZE)
@@ -961,6 +1017,23 @@ async def products_delete_confirm_callback(callback: CallbackQuery, settings: Se
             include_add_button=False,
             mode="delete",
         ),
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data == "prod:del_back")
+async def products_delete_back_callback(callback: CallbackQuery, settings: Settings, state: FSMContext) -> None:
+    if not await _check_access(callback, settings):
+        return
+    if callback.message is None:
+        await callback.answer()
+        return
+    await state.set_state(ProductCatalogFSM.delete_category)
+    await safe_send_message(
+        callback.message.bot,
+        callback.message.chat.id,
+        "Выберите категорию:",
+        reply_markup=PRODUCT_CATEGORY_KEYBOARD,
     )
     await callback.answer()
 
