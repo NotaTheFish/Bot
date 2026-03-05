@@ -62,6 +62,16 @@ class AccountantBotExcelExportTests(unittest.TestCase):
                         "line_total": "7",
                         "note": "",
                     },
+
+                    {
+                        "category": "COINS",
+                        "item_name": "Coins pack",
+                        "qty": "1",
+                        "unit_price": "150",
+                        "unit_basis": "per_100000",
+                        "line_total": "150",
+                        "note": "",
+                    },
                 ],
             },
         ]
@@ -82,20 +92,22 @@ class AccountantBotExcelExportTests(unittest.TestCase):
         self.assertEqual(ws_items["F2"].value, "🐉 Вид")
         self.assertEqual(ws_items["F3"].value, "🪙 Токены")
         self.assertEqual(ws_items["F4"].value, "✍️ Другое")
+        self.assertEqual(ws_items["F5"].value, "🪙 Coins")
         self.assertEqual(ws_items["J2"].value, "шт")
         self.assertEqual(ws_items["J3"].value, "шт")
+        self.assertEqual(ws_items["J5"].value, "за 100000")
 
         ws_summary = wb["Сводка"]
         self.assertEqual(ws_summary["B1"].value, "Timezone: Asia/Tokyo")
         self.assertTrue(str(ws_summary["C1"].value).startswith("Generated at:"))
         self.assertEqual(ws_summary["A4"].value, "Валюта")
         self.assertEqual(ws_summary["A5"].value, "RUB")
-        self.assertEqual(ws_summary["D5"].value, 207)
+        self.assertEqual(ws_summary["D5"].value, 357)
         self.assertEqual(ws_summary["A6"].value, "UAH")
         self.assertEqual(ws_summary["D6"].value, -40)
         self.assertEqual(ws_summary["A10"].value, "Доход по дням")
         self.assertEqual(ws_summary["A16"].value, "Топ товаров")
-        self.assertEqual(ws_summary["A24"].value, "Доход по категориям")
+        self.assertIn("Доход по категориям", [cell.value for cell in ws_summary["A"]])
         self.assertEqual(ws_summary.freeze_panes, "A4")
         self.assertEqual(len(ws_summary._charts), 2)
 

@@ -422,3 +422,23 @@ def test_pay_method_callback_paths_for_skip_and_other(monkeypatch):
 
     asyncio.run(add_check_pay_method_callback(other_callback, state))
     assert state.current_state.state.endswith(":pay_method_custom")
+
+def test_coins_prompts_and_line_calculation():
+    from accountant_bot.admin_bot import _item_qty_prompt, _item_unit_price_prompt, _unit_price_prompt, _calc_line
+
+    assert "100k" in _item_qty_prompt("COINS")
+    assert _item_unit_price_prompt("COINS") == "💰 Цена за 100000 коинов (число)"
+    assert _unit_price_prompt("COINS") == "Цена за 100000 коинов"
+
+    unit_basis, line_total = _calc_line("COINS", Decimal("2.5"), Decimal("120"))
+    assert unit_basis == "per_100000"
+    assert line_total == Decimal("300.0")
+
+
+def test_parse_coins_qty_supports_suffixes():
+    from accountant_bot.admin_bot import _parse_coins_qty
+
+    assert _parse_coins_qty("100k") == Decimal("1")
+    assert _parse_coins_qty("2.5m") == Decimal("25")
+    assert _parse_coins_qty("3") == Decimal("0.00003")
+    assert _parse_coins_qty("bad") is None

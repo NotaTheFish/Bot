@@ -43,6 +43,7 @@ ITEMS_HEADERS = [
 UNIT_BASIS_LABELS = {
     "unit": "шт",
     "per_1000": "за 1000",
+    "per_100000": "за 100000",
 }
 
 CATEGORY_ORDER = {"VID": 1, "TOKENS": 2, "MUSHROOMS": 3, "OTHER": 4}

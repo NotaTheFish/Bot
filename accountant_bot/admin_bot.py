@@ -558,7 +558,9 @@ def _trim_product_name(value: str, max_len: int = 80) -> str:
     return (value or "").strip()[:max_len]
 
 
-def _item_qty_prompt() -> str:
+def _item_qty_prompt(category: str = "OTHER") -> str:
+    if category == "COINS":
+        return "🔢 Введите количество коинов (в 100k, например 1 или 2.5)"
     return "🔢 Количество (число)"
 
 
@@ -566,13 +568,15 @@ def _item_unit_price_prompt(category: str) -> str:
     if category == "MUSHROOMS":
         return "💰 Цена за 1000 грибов (число)"
     return "💰 Цена за 1 шт (число)"
+    if category == "COINS":
+        return "💰 Цена за 100000 коинов (число)"
 
 
 def _item_edit_value_prompt(field: str, item: dict[str, Any]) -> str:
     if field == "item_name":
         return _item_name_prompt()
     if field == "qty":
-        return _item_qty_prompt()
+        return _item_qty_prompt(item.get("category", "OTHER"))
     if field == "unit_price":
         return _item_unit_price_prompt(item.get("category", "OTHER"))
     return "Введите новое значение:"
@@ -581,7 +585,11 @@ def _item_edit_value_prompt(field: str, item: dict[str, Any]) -> str:
 
 
 def _unit_price_prompt(category: str) -> str:
-    return "Цена за 1000 грибов" if category == "MUSHROOMS" else "Цена за 1"
+    if category == "MUSHROOMS":
+        return "Цена за 1000 грибов"
+    if category == "COINS":
+        return "Цена за 100000 коинов"
+    return "Цена за 1"
 
 def _parse_decimal(raw: str) -> Optional[Decimal]:
     try:
@@ -593,7 +601,27 @@ def _parse_decimal(raw: str) -> Optional[Decimal]:
 def _calc_line(category: str, qty: Decimal, unit_price: Decimal) -> tuple[str, Decimal]:
     if category == "MUSHROOMS":
         return "per_1000", (qty / Decimal("1000")) * unit_price
+    if category == "COINS":
+        return "per_100000", qty * unit_price
     return "unit", qty * unit_price
+
+
+def _parse_coins_qty(raw: str) -> Optional[Decimal]:
+    normalized = (raw or "").strip().lower().replace(",", ".")
+    if not normalized:
+        return None
+    multiplier = Decimal("1")
+    if normalized.endswith("k"):
+        multiplier = Decimal("1000")
+        normalized = normalized[:-1]
+    elif normalized.endswith("m"):
+        multiplier = Decimal("1000000")
+        normalized = normalized[:-1]
+    try:
+        coins = Decimal(normalized.strip()) * multiplier
+    except InvalidOperation:
+        return None
+    return coins / Decimal("100000")
 
 
 def _items_text(items: list[dict[str, Any]]) -> str:
@@ -1058,7 +1086,7 @@ async def add_check_product_pick_callback(callback: CallbackQuery, settings: Set
     item_draft["category"] = category
     await state.update_data(item_draft=item_draft)
     await state.set_state(AddCheckFSM.item_qty)
-    await safe_send_message(callback.message.bot, callback.message.chat.id, _item_qty_prompt(), reply_markup=INLINE_NAV_BACK_CANCEL)
+    await safe_send_message(callback.message.bot, callback.message.chat.id, _item_qty_prompt(item_draft.get("category", "OTHER")), reply_markup=INLINE_NAV_BACK_CANCEL)
     await callback.answer()
 
 
@@ -1428,7 +1456,7 @@ async def _render_add_check_state(
         await safe_send_message(
             message.bot,
             message.chat.id,
-            _item_qty_prompt(),
+            _item_qty_prompt(data.get("item_draft", {}).get("category", "OTHER")),
             reply_markup=INLINE_NAV_BACK_CANCEL,
         )
         return
@@ -1902,7 +1930,7 @@ async def add_check_item_name(message: Message, state: FSMContext, pool: asyncpg
     item_draft["item_name"] = item_name
     await state.update_data(item_draft=item_draft)
     await state.set_state(AddCheckFSM.item_qty)
-    await safe_send_message(message.bot, message.chat.id, _item_qty_prompt(), reply_markup=INLINE_NAV_BACK_CANCEL)
+    await safe_send_message(message.bot, message.chat.id, _item_qty_prompt(item_draft.get("category", "OTHER")), reply_markup=INLINE_NAV_BACK_CANCEL)
 
 
 @router.message(AddCheckFSM.item_name_add_new)
@@ -1927,7 +1955,7 @@ async def add_check_item_name_add_new(message: Message, state: FSMContext, pool:
     item_draft["item_name"] = product["name"]
     await state.update_data(item_draft=item_draft)
     await state.set_state(AddCheckFSM.item_qty)
-    await safe_send_message(message.bot, message.chat.id, _item_qty_prompt(), reply_markup=INLINE_NAV_BACK_CANCEL)
+    await safe_send_message(message.bot, message.chat.id, _item_qty_prompt(item_draft.get("category", "OTHER")), reply_markup=INLINE_NAV_BACK_CANCEL)
 
 
 @router.message(AddCheckFSM.item_qty)
@@ -1939,13 +1967,19 @@ async def add_check_item_qty(message: Message, state: FSMContext, pool: asyncpg.
     if _is_back(text):
         await _prompt_item_name(message, state, pool)
         return
-    qty = _parse_decimal(text)
-    if qty is None:
-        await safe_send_message(message.bot, message.chat.id, NUMERIC_INPUT_ERROR_TEXT)
-        return
-
     data = await state.get_data()
     item_draft = data.get("item_draft", {})
+    category = item_draft.get("category", "OTHER")
+    qty = _parse_coins_qty(text) if category == "COINS" else _parse_decimal(text)
+    if qty is None:
+        error_text = (
+            "Введите число. Для COINS поддерживаются суффиксы k/m, например: 250k, 1m, 2.5m."
+            if category == "COINS"
+            else NUMERIC_INPUT_ERROR_TEXT
+        )
+        await safe_send_message(message.bot, message.chat.id, error_text)
+        return
+
     item_draft["qty"] = str(qty)
     await state.update_data(item_draft=item_draft)
     await state.set_state(AddCheckFSM.item_unit_price)
@@ -1967,7 +2001,7 @@ async def add_check_item_unit_price(message: Message, state: FSMContext) -> None
         return
     if _is_back(text):
         await state.set_state(AddCheckFSM.item_qty)
-        await safe_send_message(message.bot, message.chat.id, _item_qty_prompt(), reply_markup=INLINE_NAV_BACK_CANCEL)
+        await safe_send_message(message.bot, message.chat.id, _item_qty_prompt(item_draft.get("category", "OTHER")), reply_markup=INLINE_NAV_BACK_CANCEL)
         return
     unit_price = _parse_decimal(text)
     if unit_price is None:
