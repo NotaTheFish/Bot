@@ -10,7 +10,7 @@ from telethon.sessions import StringSession
 
 from .admin_bot import register_admin_handlers
 from .config import load_settings
-from .db import create_pool, ensure_schema
+from .db import acquire_singleton_lock, create_pool, ensure_schema, release_singleton_lock
 from .listener import register_listener_handlers
 from .reviews import ReviewsService
 from .taboo import load_taboo
@@ -27,6 +27,25 @@ async def main() -> None:
 
     pool = await create_pool(settings.DATABASE_URL)
     await ensure_schema(pool)
+
+    lock_conn = None
+    if settings.SINGLETON_LOCK_ENABLED:
+        try:
+            lock_conn = await acquire_singleton_lock(pool, settings.SINGLETON_LOCK_KEY)
+        except Exception as exc:
+            logging.error("Failed to acquire singleton lock due to database error: %s", exc)
+            await pool.close()
+            return
+
+        if lock_conn is None:
+            logging.info(
+                "Singleton lock key=%s is already held; another instance is running. Exiting.",
+                settings.SINGLETON_LOCK_KEY,
+            )
+            await pool.close()
+            return
+
+        logging.info("Acquired singleton lock key=%s", settings.SINGLETON_LOCK_KEY)
 
     bot = Bot(token=settings.ACCOUNTANT_BOT_TOKEN)
     dispatcher = Dispatcher()
@@ -59,7 +78,9 @@ async def main() -> None:
     stop_task: asyncio.Task[None] | None = None
 
     try:
+        logging.info("Starting Telethon client…")
         await telethon_client.start()
+        logging.info("Accountant started")
 
         # Синхронизация истории канала
         await reviews_service.sync_channel_history(telethon_client, settings.REVIEWS_CHANNEL_ID)
@@ -101,6 +122,7 @@ async def main() -> None:
             await telethon_client.disconnect()
 
         await bot.session.close()
+        await release_singleton_lock(pool, lock_conn, settings.SINGLETON_LOCK_KEY)
         await pool.close()
 
 

@@ -24,6 +24,8 @@ class Settings:
     TABOO_CHAT_IDS: list[int] | None = None
     MEDIA_GROUP_BUFFER_SECONDS: float = 1.5
     ABOUT_UPDATE_DEBOUNCE_SECONDS: float = 2.0
+    SINGLETON_LOCK_ENABLED: bool = True
+    SINGLETON_LOCK_KEY: int = 910002
 
 
     def get_admin_timezone(self, admin_id: int) -> str:
@@ -72,6 +74,15 @@ def _parse_float(name: str, raw: str) -> float:
         raise ValueError(f"{name} must be a float, got {raw!r}") from exc
 
 
+def _parse_bool(name: str, raw: str) -> bool:
+    value = raw.strip().lower()
+    if value in {"1", "true", "yes", "on"}:
+        return True
+    if value in {"0", "false", "no", "off"}:
+        return False
+    raise ValueError(f"{name} must be a boolean-like value, got {raw!r}")
+
+
 def _parse_int_list_csv(name: str, raw: str) -> list[int]:
     if not raw.strip():
         return []
@@ -93,6 +104,11 @@ def _parse_float_env(name: str, default: float) -> float:
     if not raw:
         return default
     return _parse_float(name, raw)
+
+
+def _parse_bool_env(name: str, default: bool) -> bool:
+    raw = _getenv(name, "true" if default else "false")
+    return _parse_bool(name, raw)
 
 
 def _parse_int_list_env(name: str, *, required: bool = False) -> list[int]:
@@ -179,4 +195,6 @@ def load_settings() -> Settings:
         TABOO_CHAT_IDS=taboo_chat_ids,
         MEDIA_GROUP_BUFFER_SECONDS=_parse_float_env("MEDIA_GROUP_BUFFER_SECONDS", 1.5),
         ABOUT_UPDATE_DEBOUNCE_SECONDS=_parse_float_env("ABOUT_UPDATE_DEBOUNCE_SECONDS", 2.0),
+        SINGLETON_LOCK_ENABLED=_parse_bool_env("SINGLETON_LOCK_ENABLED", True),
+        SINGLETON_LOCK_KEY=_parse_int("SINGLETON_LOCK_KEY", _getenv("SINGLETON_LOCK_KEY", "910002")),
     )

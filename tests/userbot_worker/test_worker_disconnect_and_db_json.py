@@ -49,6 +49,8 @@ def _settings() -> Settings:
         anti_dup_minutes=0,
         controller_bot_username="controller_bot",
         authkey_duplicated_cooldown_seconds=120,
+        singleton_lock_enabled=True,
+        singleton_lock_key=910001,
     )
 
 

@@ -8,7 +8,7 @@ from telethon import TelegramClient
 from telethon.sessions import StringSession
 
 from .config import load_settings
-from .db import create_pool
+from .db import acquire_singleton_lock, create_pool, release_singleton_lock
 from .worker import run_worker
 
 
@@ -27,6 +27,25 @@ async def amain() -> None:
 
     settings = load_settings()
     pool = await create_pool(settings.database_url)
+    lock_conn = None
+
+    if settings.singleton_lock_enabled:
+        try:
+            lock_conn = await acquire_singleton_lock(pool, settings.singleton_lock_key)
+        except Exception as exc:
+            logging.error("Failed to acquire singleton lock due to database error: %s", exc)
+            await pool.close()
+            return
+
+        if lock_conn is None:
+            logging.info(
+                "Singleton lock key=%s is already held; another instance is running. Exiting.",
+                settings.singleton_lock_key,
+            )
+            await pool.close()
+            return
+
+        logging.info("Acquired singleton lock key=%s", settings.singleton_lock_key)
 
     # ✅ КЛЮЧЕВОЕ ИЗМЕНЕНИЕ:
     # TELETHON_SESSION теперь воспринимается как StringSession, а не имя файла .session
@@ -48,6 +67,7 @@ async def amain() -> None:
             pass
 
     try:
+        logging.info("Starting Telethon client…")
         await client.start()
     except Exception:
         logging.exception(
@@ -57,6 +77,8 @@ async def amain() -> None:
         await pool.close()
         raise
 
+    logging.info("Worker started")
+
     try:
         await run_worker(settings, pool, client, stop_event)
     except KeyboardInterrupt:
@@ -65,6 +87,7 @@ async def amain() -> None:
         try:
             await client.disconnect()
         finally:
+            await release_singleton_lock(pool, lock_conn, settings.singleton_lock_key)
             await pool.close()
 
 

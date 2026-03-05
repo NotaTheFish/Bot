@@ -18,6 +18,29 @@ async def create_pool(database_url: str) -> asyncpg.Pool:
     return await asyncpg.create_pool(dsn=database_url, min_size=1, max_size=5)
 
 
+async def acquire_singleton_lock(pool: asyncpg.Pool, key: int) -> asyncpg.Connection | None:
+    conn = await pool.acquire()
+    try:
+        acquired = await conn.fetchval("SELECT pg_try_advisory_lock($1)", key)
+        if acquired:
+            return conn
+    except Exception:
+        await pool.release(conn)
+        raise
+    await pool.release(conn)
+    return None
+
+
+async def release_singleton_lock(pool: asyncpg.Pool, conn: asyncpg.Connection | None, key: int) -> None:
+    if conn is None:
+        return
+    try:
+        await conn.execute("SELECT pg_advisory_unlock($1)", key)
+    except Exception:
+        pass
+    await pool.release(conn)
+
+
 async def ensure_schema(pool: asyncpg.Pool) -> None:
     """Ensure database schema exists and is compatible with current bot version."""
     async with pool.acquire() as conn:
