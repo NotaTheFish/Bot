@@ -377,13 +377,58 @@ async def search_products(pool: asyncpg.Pool, category_code: str, query: str, li
             WHERE category_code = $1
               AND name_norm LIKE '%' || $2 || '%'
             ORDER BY name_norm ASC
-            LIMIT $3
+            OFFSET $3 LIMIT $4
             """,
             str(category_code),
             q_norm,
+            0,
             int(limit),
         )
     return [dict(row) for row in rows]
+
+
+async def list_search_products(
+    pool: asyncpg.Pool,
+    category_code: str,
+    query: str,
+    offset: int,
+    limit: int,
+) -> list[dict[str, Any]]:
+    q_norm = normalize_product_name(query)
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT id, category_code, name
+            FROM product_catalog
+            WHERE category_code = $1
+              AND name_norm LIKE '%' || $2 || '%'
+            ORDER BY name_norm ASC
+            OFFSET $3 LIMIT $4
+            """,
+            str(category_code),
+            q_norm,
+            int(offset),
+            int(limit),
+        )
+    return [dict(row) for row in rows]
+
+
+async def count_search_products(pool: asyncpg.Pool, category_code: str, query: str) -> int:
+    q_norm = normalize_product_name(query)
+    async with pool.acquire() as conn:
+        return int(
+            await conn.fetchval(
+                """
+                SELECT COUNT(*)
+                FROM product_catalog
+                WHERE category_code = $1
+                  AND name_norm LIKE '%' || $2 || '%'
+                """,
+                str(category_code),
+                q_norm,
+            )
+            or 0
+        )
 
 
 async def get_product(pool: asyncpg.Pool, category_code: str, product_id: int) -> Optional[dict[str, Any]]:
