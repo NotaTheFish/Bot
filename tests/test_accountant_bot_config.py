@@ -141,6 +141,79 @@ class AccountantBotConfigTests(unittest.TestCase):
         self.assertEqual(settings.TG_API_ID, 10001)
         self.assertEqual(settings.TG_API_HASH, "new_hash")
 
+    def test_admin_timezones_parsing_and_fallback(self):
+        with _temp_env(
+            {
+                "ACCOUNTANT_BOT_TOKEN": "token",
+                "ACCOUNTANT_ADMIN_IDS": "123,456",
+                "DATABASE_URL": "postgresql://localhost/test",
+                "REVIEWS_CHANNEL_ID": "777",
+                "TG_API_ID": "10001",
+                "TG_API_HASH": "hash",
+                "ACCOUNTANT_TG_STRING_SESSION": "session",
+                "DEFAULT_TIMEZONE": "Europe/Berlin",
+                "ADMIN_TIMEZONES": "123=Asia/Tokyo,456=Europe/Paris",
+                "TELEGRAM_API_ID": None,
+                "TELEGRAM_API_HASH": None,
+            }
+        ):
+            settings = load_settings()
+
+        self.assertEqual(settings.ADMIN_TIMEZONES, {123: "Asia/Tokyo", 456: "Europe/Paris"})
+        self.assertEqual(settings.get_admin_timezone(123), "Asia/Tokyo")
+        self.assertEqual(settings.get_admin_timezone(999), "Europe/Berlin")
+
+    def test_admin_timezones_raises_on_invalid_timezone(self):
+        with _temp_env(
+            {
+                "ACCOUNTANT_BOT_TOKEN": "token",
+                "ACCOUNTANT_ADMIN_IDS": "123",
+                "DATABASE_URL": "postgresql://localhost/test",
+                "REVIEWS_CHANNEL_ID": "777",
+                "TG_API_ID": "10001",
+                "TG_API_HASH": "hash",
+                "ACCOUNTANT_TG_STRING_SESSION": "session",
+                "ADMIN_TIMEZONES": "123=Bad/Timezone",
+                "TELEGRAM_API_ID": None,
+                "TELEGRAM_API_HASH": None,
+            }
+        ):
+            with self.assertRaisesRegex(ValueError, "ADMIN_TIMEZONES"):
+                load_settings()
+
+    def test_empty_admin_timezones_uses_default_timezone_then_utc(self):
+        with _temp_env(
+            {
+                "ACCOUNTANT_BOT_TOKEN": "token",
+                "ACCOUNTANT_ADMIN_IDS": "123",
+                "DATABASE_URL": "postgresql://localhost/test",
+                "REVIEWS_CHANNEL_ID": "777",
+                "TG_API_ID": "10001",
+                "TG_API_HASH": "hash",
+                "ACCOUNTANT_TG_STRING_SESSION": "session",
+                "DEFAULT_TIMEZONE": "UTC",
+                "ADMIN_TIMEZONES": "",
+                "TELEGRAM_API_ID": None,
+                "TELEGRAM_API_HASH": None,
+            }
+        ):
+            settings = load_settings()
+
+        self.assertEqual(settings.ADMIN_TIMEZONES, {})
+        self.assertEqual(settings.get_admin_timezone(123), "UTC")
+
+        settings_with_empty_default = settings.__class__(
+            ACCOUNTANT_BOT_TOKEN=settings.ACCOUNTANT_BOT_TOKEN,
+            ACCOUNTANT_ADMIN_IDS=settings.ACCOUNTANT_ADMIN_IDS,
+            DATABASE_URL=settings.DATABASE_URL,
+            REVIEWS_CHANNEL_ID=settings.REVIEWS_CHANNEL_ID,
+            TG_API_ID=settings.TG_API_ID,
+            TG_API_HASH=settings.TG_API_HASH,
+            ACCOUNTANT_TG_STRING_SESSION=settings.ACCOUNTANT_TG_STRING_SESSION,
+            DEFAULT_TIMEZONE="",
+        )
+        self.assertEqual(settings_with_empty_default.get_admin_timezone(999), "UTC")
+
 
 if __name__ == "__main__":
     unittest.main()
