@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 
 @dataclass(frozen=True)
@@ -17,10 +18,21 @@ class Settings:
 
     ABOUT_TEMPLATE: str = "Отзывов: {count}. Обновлено: {date}"
     ABOUT_DATE_FORMAT: str = "%d.%m.%Y"
+    DEFAULT_TIMEZONE: str = "UTC"
+    ADMIN_TIMEZONES: dict[int, str] = field(default_factory=dict)
 
     TABOO_CHAT_IDS: list[int] | None = None
     MEDIA_GROUP_BUFFER_SECONDS: float = 1.5
     ABOUT_UPDATE_DEBOUNCE_SECONDS: float = 2.0
+
+
+    def get_admin_timezone(self, admin_id: int) -> str:
+        mapped_timezone = self.ADMIN_TIMEZONES.get(admin_id)
+        if mapped_timezone:
+            return mapped_timezone
+        if self.DEFAULT_TIMEZONE:
+            return self.DEFAULT_TIMEZONE
+        return "UTC"
 
 
 def _getenv(name: str, default: str = "") -> str:
@@ -91,6 +103,36 @@ def _parse_int_list_env(name: str, *, required: bool = False) -> list[int]:
     return values
 
 
+def _validate_timezone_env(name: str, raw_timezone: str) -> str:
+    timezone_name = raw_timezone.strip()
+    try:
+        ZoneInfo(timezone_name)
+    except ZoneInfoNotFoundError as exc:
+        raise ValueError(f"{name} has invalid timezone: {raw_timezone!r}") from exc
+    return timezone_name
+
+
+def _parse_admin_timezones_env(name: str) -> dict[int, str]:
+    raw = _getenv(name)
+    if not raw:
+        return {}
+
+    mappings: dict[int, str] = {}
+    for idx, entry in enumerate(raw.split(","), start=1):
+        item = entry.strip()
+        if not item:
+            continue
+        if "=" not in item:
+            raise ValueError(f"{name} has invalid mapping at position {idx}: {item!r}")
+
+        admin_raw, timezone_raw = item.split("=", 1)
+        admin_id = _parse_int(name, admin_raw)
+        timezone_name = _validate_timezone_env(name, timezone_raw)
+        mappings[admin_id] = timezone_name
+
+    return mappings
+
+
 def load_settings() -> Settings:
     """
     Load app settings from environment variables.
@@ -116,6 +158,8 @@ def load_settings() -> Settings:
 
     tg_api_id_raw = _get_required_env_any("TG_API_ID", "TELEGRAM_API_ID")
     tg_api_hash = _get_required_env_any("TG_API_HASH", "TELEGRAM_API_HASH")
+    default_timezone = _validate_timezone_env("DEFAULT_TIMEZONE", _getenv("DEFAULT_TIMEZONE", "UTC"))
+    admin_timezones = _parse_admin_timezones_env("ADMIN_TIMEZONES")
 
     return Settings(
         ACCOUNTANT_BOT_TOKEN=_get_required_env("ACCOUNTANT_BOT_TOKEN"),
@@ -129,6 +173,8 @@ def load_settings() -> Settings:
 
         ABOUT_TEMPLATE=_getenv("ABOUT_TEMPLATE", "Отзывов: {count}. Обновлено: {date}"),
         ABOUT_DATE_FORMAT=_getenv("ABOUT_DATE_FORMAT", "%d.%m.%Y"),
+        DEFAULT_TIMEZONE=default_timezone,
+        ADMIN_TIMEZONES=admin_timezones,
 
         TABOO_CHAT_IDS=taboo_chat_ids,
         MEDIA_GROUP_BUFFER_SECONDS=_parse_float_env("MEDIA_GROUP_BUFFER_SECONDS", 1.5),
