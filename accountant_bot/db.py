@@ -8,7 +8,7 @@ from zoneinfo import ZoneInfo
 
 import asyncpg
 
-from .time_ranges import period_to_utc_range
+from .time_ranges import DateRange, period_to_utc_range
 
 
 logger = logging.getLogger(__name__)
@@ -741,8 +741,17 @@ async def get_receipt_with_items(pool: asyncpg.Pool, receipt_id: int) -> Optiona
     return {"receipt": receipt, "items": list(items)}
 
 
-async def list_receipts_by_period(pool: asyncpg.Pool, *, period: str, tz: ZoneInfo) -> list[asyncpg.Record]:
-    date_range = period_to_utc_range(period, tz)
+async def list_receipts_by_period(
+    pool: asyncpg.Pool,
+    *,
+    date_range: DateRange | None = None,
+    period: str | None = None,
+    tz: ZoneInfo | None = None,
+) -> list[asyncpg.Record]:
+    if date_range is None:
+        if period is None or tz is None:
+            raise ValueError("Either date_range or both period and tz are required")
+        date_range = period_to_utc_range(period, tz)
     async with pool.acquire() as conn:
         if date_range.start is None:
             rows = await conn.fetch(

@@ -38,6 +38,7 @@ from .db import (
 from .excel_export import build_transactions_report
 from .reviews import ReviewsService
 from .taboo import safe_send_document, safe_send_message
+from .time_ranges import period_to_utc_range
 
 router = Router(name="admin")
 
@@ -282,6 +283,10 @@ def _is_admin(user_id: Optional[int], settings: Settings) -> bool:
     return user_id is not None and int(user_id) in set(settings.ACCOUNTANT_ADMIN_IDS)
 
 
+def get_admin_tz(settings: Settings, admin_id: int) -> ZoneInfo:
+    return ZoneInfo(settings.get_admin_timezone(int(admin_id)))
+
+
 async def _check_access(event: Message | CallbackQuery, settings: Settings) -> bool:
     user = event.from_user
     if _is_admin(user.id if user else None, settings):
@@ -319,7 +324,10 @@ async def show_stats(callback: CallbackQuery, settings: Settings, reviews_servic
         await callback.answer("Неверный период", show_alert=True)
         return
 
-    stats = await reviews_service.get_stats_reviews(period)
+    admin_id = int(callback.from_user.id)
+    admin_tz = get_admin_tz(settings, admin_id)
+    date_range = period_to_utc_range(period, tz=admin_tz)
+    stats = await reviews_service.get_stats_reviews(date_range)
 
     await safe_send_message(
         callback.message.bot,
@@ -327,7 +335,8 @@ async def show_stats(callback: CallbackQuery, settings: Settings, reviews_servic
         f"📊 Статистика отзывов ({period_to_label[period]})\n"
         f"➕ Добавлено: {stats['added']}\n"
         f"➖ Удалено: {stats['deleted']}\n"
-        f"✅ Активных: {stats['active']}",
+        f"✅ Активных: {stats['active']}\n"
+        f"🌍 TZ: {admin_tz.key}",
     )
     await callback.answer()
 
@@ -1857,8 +1866,10 @@ async def export_excel(callback: CallbackQuery, settings: Settings, pool: asyncp
         return
 
     period_for_filter = {"day": "day", "week": "7days", "month": "30days", "all": "all"}[period]
-    admin_tz = ZoneInfo(settings.get_admin_timezone(int(callback.from_user.id)))
-    receipts = await list_receipts_by_period(pool, period=period_for_filter, tz=admin_tz)
+    admin_id = int(callback.from_user.id)
+    admin_tz = get_admin_tz(settings, admin_id)
+    date_range = period_to_utc_range(period_for_filter, tz=admin_tz)
+    receipts = await list_receipts_by_period(pool, date_range=date_range)
 
     export_rows: list[dict[str, Any]] = []
     for receipt in receipts:
@@ -1902,7 +1913,7 @@ async def export_excel(callback: CallbackQuery, settings: Settings, pool: asyncp
             callback.message.bot,
             callback.message.chat.id,
             document,
-            caption=f"📤 Отчёт Excel: {label_by_period[period]}",
+            caption=f"📤 Отчёт Excel: {label_by_period[period]}\n🌍 TZ: {admin_tz.key}",
         )
 
     await callback.answer("✅ Excel отправлен")

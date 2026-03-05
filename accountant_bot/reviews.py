@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import Optional, Sequence
 
 import asyncpg
@@ -10,6 +10,7 @@ from aiogram.exceptions import TelegramBadRequest
 
 from .config import Settings
 from .db import fetch_review_by_key, fetch_reviews_by_message_id, insert_review
+from .time_ranges import DateRange
 
 
 class ReviewsService:
@@ -180,43 +181,58 @@ class ReviewsService:
                 or 0
             )
 
-    @staticmethod
-    def _period_to_timedelta(period: str) -> timedelta:
-        p = (period or "").strip().lower()
-        if p in ("day", "today", "1day", "1 day"):
-            return timedelta(days=1)
-        if p in ("week", "7days", "7 days"):
-            return timedelta(days=7)
-        if p in ("month", "30days", "30 days"):
-            return timedelta(days=30)
-        raise ValueError(f"Unsupported period: {period!r}")
-
-    async def get_stats_reviews(self, period: str) -> dict[str, int]:
-        interval = self._period_to_timedelta(period)
-
+    async def get_stats_reviews(self, date_range: DateRange) -> dict[str, int]:
         async with self._pool.acquire() as conn:
-            added = await conn.fetchval(
-                """
-                SELECT COUNT(*)
-                FROM reviews
-                WHERE channel_id = $1
-                  AND created_at >= NOW() - $2::interval
-                """,
-                int(self._settings.REVIEWS_CHANNEL_ID),
-                interval,
-            )
+            if date_range.start is None:
+                added = await conn.fetchval(
+                    """
+                    SELECT COUNT(*)
+                    FROM reviews
+                    WHERE channel_id = $1
+                      AND created_at <= $2
+                    """,
+                    int(self._settings.REVIEWS_CHANNEL_ID),
+                    date_range.end,
+                )
 
-            deleted = await conn.fetchval(
-                """
-                SELECT COUNT(*)
-                FROM reviews
-                WHERE channel_id = $1
-                  AND deleted_at IS NOT NULL
-                  AND deleted_at >= NOW() - $2::interval
-                """,
-                int(self._settings.REVIEWS_CHANNEL_ID),
-                interval,
-            )
+                deleted = await conn.fetchval(
+                    """
+                    SELECT COUNT(*)
+                    FROM reviews
+                    WHERE channel_id = $1
+                      AND deleted_at IS NOT NULL
+                      AND deleted_at <= $2
+                    """,
+                    int(self._settings.REVIEWS_CHANNEL_ID),
+                    date_range.end,
+                )
+            else:
+                added = await conn.fetchval(
+                    """
+                    SELECT COUNT(*)
+                    FROM reviews
+                    WHERE channel_id = $1
+                      AND created_at >= $2
+                      AND created_at <= $3
+                    """,
+                    int(self._settings.REVIEWS_CHANNEL_ID),
+                    date_range.start,
+                    date_range.end,
+                )
+
+                deleted = await conn.fetchval(
+                    """
+                    SELECT COUNT(*)
+                    FROM reviews
+                    WHERE channel_id = $1
+                      AND deleted_at IS NOT NULL
+                      AND deleted_at >= $2
+                      AND deleted_at <= $3
+                    """,
+                    int(self._settings.REVIEWS_CHANNEL_ID),
+                    date_range.start,
+                    date_range.end,
+                )
 
             active = await conn.fetchval(
                 """

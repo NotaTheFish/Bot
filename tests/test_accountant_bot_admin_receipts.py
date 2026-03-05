@@ -41,6 +41,7 @@ from accountant_bot.admin_bot import (
     show_stats,
 )
 from accountant_bot.config import Settings
+from accountant_bot.time_ranges import DateRange
 
 
 class _DummyState:
@@ -156,12 +157,17 @@ def test_show_stats_uses_expected_message_format(monkeypatch):
 
     asyncio.run(show_stats(callback, settings, reviews_service))
 
+    reviews_service.get_stats_reviews.assert_awaited_once()
+    date_range = reviews_service.get_stats_reviews.await_args.args[0]
+    assert isinstance(date_range, DateRange)
+
     sent_text = safe_send_message.await_args.args[2]
     assert sent_text == (
         "📊 Статистика отзывов (7 дней)\n"
         "➕ Добавлено: 10\n"
         "➖ Удалено: 3\n"
-        "✅ Активных: 7"
+        "✅ Активных: 7\n"
+        "🌍 TZ: UTC"
     )
 
 
