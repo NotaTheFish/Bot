@@ -1499,6 +1499,7 @@ def _valid_item_categories(game_code: Optional[str]) -> tuple[str, ...]:
 
 async def _prompt_item_name(message: Message, state: FSMContext, pool: Optional[asyncpg.Pool] = None) -> None:
     data = await state.get_data()
+    game_code = str(data.get("game_code") or "COS").upper()
     category = (data.get("item_draft", {}) or {}).get("category", "OTHER")
     await state.set_state(AddCheckFSM.item_name)
     if pool is not None and category in PRODUCT_CATEGORIES:
