@@ -176,6 +176,16 @@ PRODUCT_CATEGORY_BUTTONS_BY_GAME = {
     },
 }
 
+GAME_LABELS = {
+    "COS": "🍄 Creatures of Sonaria",
+    "DA": "🐉 Dragon Adventures",
+}
+
+
+def game_label(code: str) -> str:
+    normalized_code = (code or "").strip().upper()
+    return GAME_LABELS.get(normalized_code, normalized_code or "COS")
+
 
 def category_label(code: str) -> str:
     normalized_code = (code or "").strip()
@@ -241,8 +251,8 @@ DA_CATEGORY_KEYBOARD = ReplyKeyboardMarkup(
 GAME_KEYBOARD = InlineKeyboardMarkup(
     inline_keyboard=[
         [
-            InlineKeyboardButton(text="COS", callback_data="add_check:game:COS"),
-            InlineKeyboardButton(text="DA", callback_data="add_check:game:DA"),
+            InlineKeyboardButton(text="🍄 Creatures of Sonaria", callback_data="add_check:game:COS"),
+            InlineKeyboardButton(text="🐉 Dragon Adventures", callback_data="add_check:game:DA"),
         ],
         [InlineKeyboardButton(text="❌ Отмена", callback_data=f"{ADD_CHECK_NAV_PREFIX}:cancel")],
     ]
@@ -556,7 +566,7 @@ async def _send_product_page(
             )
             return
 
-        text = f"Результаты поиска «{query_norm}» (Страница {current_page} из {total_pages})"
+        text = f"{game_label(game_code)}\nРезультаты поиска «{query_norm}» (Страница {current_page} из {total_pages})"
         kb = _build_products_keyboard(
             category=category,
             products=products,
@@ -594,7 +604,7 @@ async def _send_product_page(
         return
 
     text = "Выберите товар" if mode == "pick" else "Выберите товар для удаления"
-    text = f"{text} (Страница {current_page} из {total_pages})"
+    text = f"{game_label(game_code)}\n{text} (Страница {current_page} из {total_pages})"
     kb = _build_products_keyboard(
         category=category,
         products=products,
@@ -887,7 +897,7 @@ async def products_choose_game(message: Message, state: FSMContext, settings: Se
         return
     await state.update_data(game_code=game_code, product_category=None, product_delete_query=None, product_delete_page=1)
     await state.set_state(ProductCatalogFSM.menu)
-    await safe_send_message(message.bot, message.chat.id, f"Управление товарами ({game_code}):", reply_markup=PRODUCTS_MENU_KEYBOARD)
+    await safe_send_message(message.bot, message.chat.id, f"Управление товарами ({game_label(game_code)}):", reply_markup=PRODUCTS_MENU_KEYBOARD)
 
 
 @router.message(ProductCatalogFSM.menu)
@@ -1095,7 +1105,7 @@ async def products_page_callback(callback: CallbackQuery, settings: Settings, st
             total_pages = max(1, (total + PRODUCTS_PAGE_SIZE - 1) // PRODUCTS_PAGE_SIZE)
             current_page = min(max(1, page), total_pages)
             products = await list_search_products(pool, game_code, category, query, (current_page - 1) * PRODUCTS_PAGE_SIZE, PRODUCTS_PAGE_SIZE)
-            text = f"Результаты поиска «{query}» (Страница {current_page} из {total_pages})"
+            text = f"{game_label(game_code)}\nРезультаты поиска «{query}» (Страница {current_page} из {total_pages})"
             kb = _build_products_keyboard(
                 category=category,
                 products=products,
@@ -1114,7 +1124,7 @@ async def products_page_callback(callback: CallbackQuery, settings: Settings, st
     total_pages = max(1, (total + PRODUCTS_PAGE_SIZE - 1) // PRODUCTS_PAGE_SIZE)
     current_page = min(max(1, page), total_pages)
     products = await list_products(pool, game_code, category, (current_page - 1) * PRODUCTS_PAGE_SIZE, PRODUCTS_PAGE_SIZE)
-    text = ("Выберите товар" if mode == "pick" else "Выберите товар для удаления") + f" (Страница {current_page} из {total_pages})"
+    text = f"{game_label(game_code)}\n" + (("Выберите товар" if mode == "pick" else "Выберите товар для удаления") + f" (Страница {current_page} из {total_pages})")
     kb = _build_products_keyboard(
         category=category,
         products=products,
@@ -1242,7 +1252,7 @@ async def products_delete_cancel_callback(callback: CallbackQuery, settings: Set
         page = min(max(1, page), total_pages)
         products = await list_search_products(pool, game_code, category, query, (page - 1) * PRODUCTS_PAGE_SIZE, PRODUCTS_PAGE_SIZE)
         await callback.message.edit_text(
-            f"Результаты поиска «{query}» (Страница {page} из {total_pages})",
+            f"{game_label(game_code)}\nРезультаты поиска «{query}» (Страница {page} из {total_pages})",
             reply_markup=_build_products_keyboard(
                 category=category,
                 products=products,
@@ -1270,7 +1280,7 @@ async def products_delete_cancel_callback(callback: CallbackQuery, settings: Set
     page = min(max(1, page), total_pages)
     products = await list_products(pool, game_code, category, (page - 1) * PRODUCTS_PAGE_SIZE, PRODUCTS_PAGE_SIZE)
     await callback.message.edit_text(
-        f"Выберите товар для удаления (Страница {page} из {total_pages})",
+        f"{game_label(game_code)}\nВыберите товар для удаления (Страница {page} из {total_pages})",
         reply_markup=_build_products_keyboard(
             category=category,
             products=products,
@@ -1316,7 +1326,7 @@ async def products_delete_confirm_callback(callback: CallbackQuery, settings: Se
         page = min(max(1, page), total_pages)
         products = await list_search_products(pool, game_code, category, query, (page - 1) * PRODUCTS_PAGE_SIZE, PRODUCTS_PAGE_SIZE)
         await callback.message.edit_text(
-            f"✅ Удалено\n\nРезультаты поиска «{query}» (Страница {page} из {total_pages})",
+            f"✅ Удалено\n\n{game_label(game_code)}\nРезультаты поиска «{query}» (Страница {page} из {total_pages})",
             reply_markup=_build_products_keyboard(
                 category=category,
                 products=products,
@@ -1344,7 +1354,7 @@ async def products_delete_confirm_callback(callback: CallbackQuery, settings: Se
     page = min(max(1, page), total_pages)
     products = await list_products(pool, game_code, category, (page - 1) * PRODUCTS_PAGE_SIZE, PRODUCTS_PAGE_SIZE)
     await callback.message.edit_text(
-        f"✅ Удалено\n\nВыберите товар для удаления (Страница {page} из {total_pages})",
+        f"✅ Удалено\n\n{game_label(game_code)}\nВыберите товар для удаления (Страница {page} из {total_pages})",
         reply_markup=_build_products_keyboard(
             category=category,
             products=products,
@@ -1384,7 +1394,7 @@ async def products_delete_reset_query_callback(callback: CallbackQuery, settings
     total_pages = max(1, (total + PRODUCTS_PAGE_SIZE - 1) // PRODUCTS_PAGE_SIZE)
     products = await list_products(pool, game_code, category, 0, PRODUCTS_PAGE_SIZE)
     await callback.message.edit_text(
-        f"Выберите товар для удаления (Страница 1 из {total_pages})",
+        f"{game_label(game_code)}\nВыберите товар для удаления (Страница 1 из {total_pages})",
         reply_markup=_build_products_keyboard(
             category=category,
             products=products,
@@ -1719,7 +1729,7 @@ async def _show_summary(message: Message, state: FSMContext) -> None:
         message.bot,
         message.chat.id,
         "Проверьте чек перед сохранением:\n"
-        f"Игра: {data.get('game_code', 'COS')}\n"
+        f"Игра: {game_label(data.get('game_code', 'COS'))}\n"
         f"Валюта: {data.get('currency', 'RUB')}\n"
         f"Способ оплаты: {data.get('pay_method') or '-'}\n"
         f"Комментарий: {data.get('note') or '-'}\n"
