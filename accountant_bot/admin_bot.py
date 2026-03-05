@@ -48,25 +48,34 @@ NO_ACCESS_TEXT = "Нет доступа"
 PRODUCT_CATEGORIES = ("VID", "TOKENS", "OTHER")
 PRODUCTS_PAGE_SIZE = 8
 
-BTN_REVIEWS = "📊 Отзывы"
+BTN_REVIEWS = "⭐ Отзывы"
 BTN_REVIEWS_LEGACY = "📊 Статистика отзывов"
-BTN_ADD_RECEIPT = "🧾 Чек"
+BTN_RECEIPTS_MENU = "🧾 Управление чеками"
+BTN_ADD_RECEIPT = "➕ Создать чек"
 BTN_ADD_RECEIPT_LEGACY = "🧾 Добавить чек"
 BTN_EXPORT_EXCEL = "📤 Excel"
 BTN_EXPORT_EXCEL_LEGACY = "📤 Выгрузить Excel"
 BTN_FIND_RECEIPT = "🔎 Найти чек"
 BTN_FIND_RECEIPT_LEGACY = "🔍 Найти чек"
-BTN_RECENT_RECEIPTS = "🧾 Последние чеки"
-BTN_PRODUCTS = "📦 Управление товарами"
+BTN_RECENT_RECEIPTS = "🕘 Последние чеки"
+BTN_PRODUCTS = "🧩 Управление товарами"
 BTN_PRODUCTS_ADD = "➕ Добавить товар"
 BTN_PRODUCTS_DELETE = "➖ Удалить товар"
 
 START_KEYBOARD = ReplyKeyboardMarkup(
     keyboard=[
-        [KeyboardButton(text=BTN_REVIEWS), KeyboardButton(text=BTN_ADD_RECEIPT)],
-        [KeyboardButton(text=BTN_EXPORT_EXCEL), KeyboardButton(text=BTN_FIND_RECEIPT)],
+        [KeyboardButton(text=BTN_REVIEWS), KeyboardButton(text=BTN_RECEIPTS_MENU)],
+        [KeyboardButton(text=BTN_EXPORT_EXCEL), KeyboardButton(text=BTN_PRODUCTS)],
+    ],
+    resize_keyboard=True,
+)
+
+RECEIPTS_MENU_KEYBOARD = ReplyKeyboardMarkup(
+    keyboard=[
+        [KeyboardButton(text=BTN_ADD_RECEIPT)],
+        [KeyboardButton(text=BTN_FIND_RECEIPT)],
         [KeyboardButton(text=BTN_RECENT_RECEIPTS)],
-        [KeyboardButton(text=BTN_PRODUCTS)],
+        [KeyboardButton(text="⬅️ Назад")],
     ],
     resize_keyboard=True,
 )
@@ -118,6 +127,10 @@ class AddCheckFSM(StatesGroup):
 
 class ReceiptLookupFSM(StatesGroup):
     wait_receipt_id = State()
+
+
+class ReceiptMenuFSM(StatesGroup):
+    menu = State()
 
 
 class ProductCatalogFSM(StatesGroup):
@@ -675,11 +688,19 @@ async def _fetch_recent_receipts(pool: asyncpg.Pool, limit: int = 10) -> list[as
     return list(rows)
 
 
-@router.message((F.text == BTN_FIND_RECEIPT) | (F.text == BTN_FIND_RECEIPT_LEGACY))
-async def start_receipt_lookup(message: Message, state: FSMContext, settings: Settings) -> None:
+@router.message(F.text == BTN_RECEIPTS_MENU)
+async def receipts_menu(message: Message, settings: Settings, state: FSMContext) -> None:
     if not await _check_access(message, settings):
         return
     await state.clear()
+    await state.set_state(ReceiptMenuFSM.menu)
+    await safe_send_message(message.bot, message.chat.id, "Управление чеками:", reply_markup=RECEIPTS_MENU_KEYBOARD)
+
+
+@router.message(ReceiptMenuFSM.menu, (F.text == BTN_FIND_RECEIPT) | (F.text == BTN_FIND_RECEIPT_LEGACY))
+async def start_receipt_lookup(message: Message, state: FSMContext, settings: Settings) -> None:
+    if not await _check_access(message, settings):
+        return
     await state.set_state(ReceiptLookupFSM.wait_receipt_id)
     await safe_send_message(
         message.bot,
@@ -693,25 +714,25 @@ async def start_receipt_lookup(message: Message, state: FSMContext, settings: Se
 async def process_receipt_lookup(message: Message, state: FSMContext, pool: asyncpg.Pool) -> None:
     text = (message.text or "").strip()
     if _is_cancel(text) or _is_back(text):
-        await state.clear()
-        await safe_send_message(message.bot, message.chat.id, "Поиск чека завершён.", reply_markup=START_KEYBOARD)
+        await state.set_state(ReceiptMenuFSM.menu)
+        await safe_send_message(message.bot, message.chat.id, "Поиск чека завершён.", reply_markup=RECEIPTS_MENU_KEYBOARD)
         return
     if not text.isdigit():
         await safe_send_message(message.bot, message.chat.id, "ID должен быть числом.", reply_markup=NAV_BACK)
         return
 
     await _send_receipt_details(message, pool, int(text))
-    await state.clear()
-    await safe_send_message(message.bot, message.chat.id, "Выберите действие:", reply_markup=START_KEYBOARD)
+    await state.set_state(ReceiptMenuFSM.menu)
+    await safe_send_message(message.bot, message.chat.id, "Выберите действие:", reply_markup=RECEIPTS_MENU_KEYBOARD)
 
 
-@router.message(F.text == BTN_RECENT_RECEIPTS)
+@router.message(ReceiptMenuFSM.menu, F.text == BTN_RECENT_RECEIPTS)
 async def show_recent_receipts(message: Message, settings: Settings, pool: asyncpg.Pool) -> None:
     if not await _check_access(message, settings):
         return
     rows = await _fetch_recent_receipts(pool, limit=10)
     if not rows:
-        await safe_send_message(message.bot, message.chat.id, "Чеки пока отсутствуют.")
+        await safe_send_message(message.bot, message.chat.id, "Чеки пока отсутствуют.", reply_markup=RECEIPTS_MENU_KEYBOARD)
         return
     await safe_send_message(
         message.bot,
@@ -720,6 +741,24 @@ async def show_recent_receipts(message: Message, settings: Settings, pool: async
         reply_markup=_receipt_list_keyboard(rows),
     )
 
+
+
+
+@router.message(ReceiptMenuFSM.menu)
+async def receipts_menu_actions(message: Message, state: FSMContext, settings: Settings) -> None:
+    if not await _check_access(message, settings):
+        return
+    text = (message.text or "").strip()
+    if text == "⬅️ Назад" or _is_back(text) or _is_cancel(text):
+        await state.clear()
+        await safe_send_message(message.bot, message.chat.id, "Возврат в меню.", reply_markup=START_KEYBOARD)
+        return
+    if text == BTN_ADD_RECEIPT or text == BTN_ADD_RECEIPT_LEGACY:
+        await state.clear()
+        await state.update_data(items=[])
+        await _prompt_currency(message, state=state)
+        return
+    await safe_send_message(message.bot, message.chat.id, "Выберите действие кнопками.", reply_markup=RECEIPTS_MENU_KEYBOARD)
 
 @router.message(F.text == BTN_PRODUCTS)
 async def products_menu(message: Message, settings: Settings, state: FSMContext) -> None:
@@ -1277,8 +1316,8 @@ async def refund_receipt_action(callback: CallbackQuery, settings: Settings, poo
 
 
 async def _cancel_add_check(message: Message, state: FSMContext) -> None:
-    await state.clear()
-    await safe_send_message(message.bot, message.chat.id, "Добавление чека отменено.", reply_markup=START_KEYBOARD)
+    await state.set_state(ReceiptMenuFSM.menu)
+    await safe_send_message(message.bot, message.chat.id, "Добавление чека отменено.", reply_markup=RECEIPTS_MENU_KEYBOARD)
 
 
 ADD_CHECK_PREV_STATE: dict[str, State | None] = {
@@ -1530,15 +1569,6 @@ async def _prompt_pay_method(message: Message, *, state: FSMContext | None = Non
     if state is not None:
         await state.set_state(AddCheckFSM.pay_method)
     await safe_send_message(message.bot, message.chat.id, "💳 Способ оплаты:", reply_markup=PAY_METHOD_KEYBOARD)
-
-
-@router.message((F.text == BTN_ADD_RECEIPT) | (F.text == BTN_ADD_RECEIPT_LEGACY))
-async def start_add_check(message: Message, state: FSMContext, settings: Settings) -> None:
-    if not await _check_access(message, settings):
-        return
-    await state.clear()
-    await state.update_data(items=[])
-    await _prompt_currency(message, state=state)
 
 
 @router.message(AddCheckFSM.currency)
