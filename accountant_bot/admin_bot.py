@@ -162,18 +162,19 @@ GAME_ITEM_CATEGORIES: dict[str, tuple[str, ...]] = {
     "DA": ("DRAGONS", "POTIONS", "COINS", "OTHER"),
 }
 CATEGORY_CODES_BY_LABEL = {label: code for code, label in CATEGORY_LABELS.items()}
+DA_CATEGORY_CODES_BY_LABEL = {
+    "🐉 Драконы": "DRAGONS",
+    "🧪 Зелья": "POTIONS",
+    "🪙 Коины": "COINS",
+    "✍️ Другое": "OTHER",
+}
 PRODUCT_CATEGORY_BUTTONS_BY_GAME = {
     "COS": {
         "Виды": "VID",
         "Токены": "TOKENS",
         "Другое": "OTHER",
     },
-    "DA": {
-        "DRAGONS": "DRAGONS",
-        "POTIONS": "POTIONS",
-        "COINS": "COINS",
-        "OTHER": "OTHER",
-    },
+    "DA": DA_CATEGORY_CODES_BY_LABEL,
 }
 
 GAME_LABELS = {
@@ -242,8 +243,8 @@ CATEGORY_KEYBOARD = ReplyKeyboardMarkup(
 )
 DA_CATEGORY_KEYBOARD = ReplyKeyboardMarkup(
     keyboard=[
-        [KeyboardButton(text="DRAGONS"), KeyboardButton(text="POTIONS")],
-        [KeyboardButton(text="COINS"), KeyboardButton(text=CATEGORY_LABELS["OTHER"])],
+        [KeyboardButton(text="🐉 Драконы"), KeyboardButton(text="🧪 Зелья")],
+        [KeyboardButton(text="🪙 Коины"), KeyboardButton(text="✍️ Другое")],
         [KeyboardButton(text=BTN_BACK), KeyboardButton(text=BTN_CANCEL)],
     ],
     resize_keyboard=True,
@@ -472,21 +473,27 @@ def _item_name_prompt() -> str:
 
 
 def _resolve_product_category(text: str, game_code: Optional[str]) -> Optional[str]:
+    return _resolve_category_code(text, game_code)
+
+
+def _resolve_category_code(text: str, game_code: Optional[str]) -> Optional[str]:
     text_norm = (text or "").strip()
     text_upper = text_norm.upper()
     game = (game_code or "COS").upper()
-    game_mapping = PRODUCT_CATEGORY_BUTTONS_BY_GAME.get(game, PRODUCT_CATEGORY_BUTTONS_BY_GAME["COS"])
+    game_mapping = PRODUCT_CATEGORY_BUTTONS_BY_GAME["COS"] if game == "COS" else PRODUCT_CATEGORY_BUTTONS_BY_GAME["DA"]
     if text_upper in game_mapping.values():
         return text_upper
-    return game_mapping.get(text_norm) or game_mapping.get(text_upper)
+    if game == "COS":
+        return game_mapping.get(text_norm) or game_mapping.get(text_upper) or CATEGORY_CODES_BY_LABEL.get(text_norm)
+    return game_mapping.get(text_norm)
 
 
 def _product_category_keyboard(game_code: Optional[str], *, with_cancel: bool) -> ReplyKeyboardMarkup:
     game = (game_code or "COS").upper()
     if game == "DA":
         rows = [
-            [KeyboardButton(text="DRAGONS"), KeyboardButton(text="POTIONS")],
-            [KeyboardButton(text="COINS"), KeyboardButton(text="OTHER")],
+            [KeyboardButton(text="🐉 Драконы"), KeyboardButton(text="🧪 Зелья")],
+            [KeyboardButton(text="🪙 Коины"), KeyboardButton(text="✍️ Другое")],
         ]
     else:
         rows = [
@@ -1975,7 +1982,6 @@ async def add_check_items_menu(message: Message, state: FSMContext) -> None:
 @router.message(AddCheckFSM.item_category)
 async def add_check_item_category(message: Message, state: FSMContext, pool: asyncpg.Pool) -> None:
     text = (message.text or "").strip()
-    text_upper = text.upper()
     if _is_cancel(text):
         await _cancel_add_check(message, state)
         return
@@ -1985,7 +1991,7 @@ async def add_check_item_category(message: Message, state: FSMContext, pool: asy
 
     data = await state.get_data()
     allowed_categories = _valid_item_categories(data.get("game_code"))
-    category = text_upper if text_upper in allowed_categories else CATEGORY_CODES_BY_LABEL.get(text)
+    category = _resolve_category_code(text, data.get("game_code"))
     if category not in allowed_categories:
         category = None
     if category is None:
