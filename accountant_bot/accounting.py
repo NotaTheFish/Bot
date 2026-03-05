@@ -1,37 +1,14 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
 from decimal import Decimal
+from datetime import timezone
 from typing import Any, Optional
 
 import asyncpg
 
 from .db import create_receipt_with_items as db_create_receipt_with_items
 from .db import insert_transaction as db_insert_transaction
-
-
-@dataclass(frozen=True)
-class DateRange:
-    start: Optional[datetime]
-    end: datetime
-
-
-def period_to_range(period: str) -> DateRange:
-    """Build a UTC date range for supported export filters."""
-    now = datetime.now(timezone.utc)
-    period_normalized = period.strip().lower()
-
-    if period_normalized == "all":
-        return DateRange(start=None, end=now)
-    if period_normalized in {"day", "1day", "today"}:
-        return DateRange(start=now - timedelta(days=1), end=now)
-    if period_normalized in {"7days", "week"}:
-        return DateRange(start=now - timedelta(days=7), end=now)
-    if period_normalized in {"30days", "month"}:
-        return DateRange(start=now - timedelta(days=30), end=now)
-
-    raise ValueError("unsupported period")
+from .time_ranges import period_to_utc_range
 
 
 async def add_transaction(
@@ -89,7 +66,7 @@ async def add_receipt_with_items(
 
 
 async def list_transactions_by_period(pool: asyncpg.Pool, *, period: str) -> list[asyncpg.Record]:
-    date_range = period_to_range(period)
+    date_range = period_to_utc_range(period, timezone.utc)
     async with pool.acquire() as conn:
         if date_range.start is None:
             rows = await conn.fetch("SELECT * FROM transactions ORDER BY created_at DESC, id DESC")
@@ -99,9 +76,11 @@ async def list_transactions_by_period(pool: asyncpg.Pool, *, period: str) -> lis
                 SELECT *
                 FROM transactions
                 WHERE created_at >= $1
+                  AND created_at <= $2
                 ORDER BY created_at DESC, id DESC
                 """,
                 date_range.start,
+                date_range.end,
             )
     return list(rows)
 

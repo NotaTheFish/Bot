@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
 from typing import Any, Optional
+from zoneinfo import ZoneInfo
 
 import asyncpg
 from aiogram import Dispatcher, F, Router
@@ -1856,7 +1857,8 @@ async def export_excel(callback: CallbackQuery, settings: Settings, pool: asyncp
         return
 
     period_for_filter = {"day": "day", "week": "7days", "month": "30days", "all": "all"}[period]
-    receipts = await list_receipts_by_period(pool, period=period_for_filter)
+    admin_tz = ZoneInfo(settings.get_admin_timezone(int(callback.from_user.id)))
+    receipts = await list_receipts_by_period(pool, period=period_for_filter, tz=admin_tz)
 
     export_rows: list[dict[str, Any]] = []
     for receipt in receipts:

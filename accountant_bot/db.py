@@ -1,11 +1,14 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import datetime
 import logging
 import re
 from typing import Any, Optional, Sequence
+from zoneinfo import ZoneInfo
 
 import asyncpg
+
+from .time_ranges import period_to_utc_range
 
 
 logger = logging.getLogger(__name__)
@@ -569,22 +572,6 @@ async def fetch_transaction_by_id(pool: asyncpg.Pool, *, transaction_id: int) ->
         )
 
 
-def _period_start(period: str) -> Optional[datetime]:
-    period_normalized = (period or "").strip().lower()
-    now = datetime.now(timezone.utc)
-
-    if period_normalized == "all":
-        return None
-    if period_normalized in {"day", "1day", "today"}:
-        return now - timedelta(days=1)
-    if period_normalized in {"7days", "week"}:
-        return now - timedelta(days=7)
-    if period_normalized in {"30days", "month"}:
-        return now - timedelta(days=30)
-
-    raise ValueError("unsupported period")
-
-
 async def insert_receipt(
     pool: asyncpg.Pool,
     *,
@@ -754,10 +741,10 @@ async def get_receipt_with_items(pool: asyncpg.Pool, receipt_id: int) -> Optiona
     return {"receipt": receipt, "items": list(items)}
 
 
-async def list_receipts_by_period(pool: asyncpg.Pool, *, period: str) -> list[asyncpg.Record]:
-    start = _period_start(period)
+async def list_receipts_by_period(pool: asyncpg.Pool, *, period: str, tz: ZoneInfo) -> list[asyncpg.Record]:
+    date_range = period_to_utc_range(period, tz)
     async with pool.acquire() as conn:
-        if start is None:
+        if date_range.start is None:
             rows = await conn.fetch(
                 """
                 SELECT *
@@ -771,9 +758,11 @@ async def list_receipts_by_period(pool: asyncpg.Pool, *, period: str) -> list[as
                 SELECT *
                 FROM receipts
                 WHERE created_at >= $1
+                  AND created_at <= $2
                 ORDER BY created_at DESC, id DESC
                 """,
-                start,
+                date_range.start,
+                date_range.end,
             )
     return list(rows)
 
