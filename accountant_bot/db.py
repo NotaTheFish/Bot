@@ -129,6 +129,7 @@ async def ensure_schema(pool: asyncpg.Pool) -> None:
             CREATE TABLE IF NOT EXISTS receipts (
                 id BIGSERIAL PRIMARY KEY,
                 created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                game_code TEXT NOT NULL DEFAULT 'COS',
                 admin_id BIGINT NOT NULL,
                 currency TEXT NOT NULL DEFAULT 'RUB',
                 pay_method TEXT,
@@ -191,11 +192,13 @@ async def ensure_schema(pool: asyncpg.Pool) -> None:
             """
             CREATE TABLE IF NOT EXISTS product_catalog (
                 id BIGSERIAL PRIMARY KEY,
+                game_code TEXT NOT NULL DEFAULT 'COS',
                 category_code TEXT NOT NULL,
                 name TEXT NOT NULL,
                 name_norm TEXT NOT NULL,
                 created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                CONSTRAINT ux_product_catalog_category_name_norm UNIQUE (category_code, name_norm)
+                CONSTRAINT ux_product_catalog_game_category_name_norm
+                    UNIQUE (game_code, category_code, name_norm)
             )
             """
         )
@@ -219,8 +222,8 @@ async def ensure_schema(pool: asyncpg.Pool) -> None:
         )
         await conn.execute(
             """
-            CREATE INDEX IF NOT EXISTS idx_product_catalog_category_name_norm
-            ON product_catalog(category_code, name_norm)
+            CREATE INDEX IF NOT EXISTS idx_product_catalog_game_category_name_norm
+            ON product_catalog(game_code, category_code, name_norm)
             """
         )
 
@@ -231,14 +234,39 @@ async def ensure_schema(pool: asyncpg.Pool) -> None:
             "ALTER TABLE receipts ADD COLUMN IF NOT EXISTS status TEXT",
             "ALTER TABLE receipts ADD COLUMN IF NOT EXISTS canceled_at TIMESTAMPTZ",
             "ALTER TABLE receipts ADD COLUMN IF NOT EXISTS refunded_at TIMESTAMPTZ",
+            "ALTER TABLE receipts ADD COLUMN IF NOT EXISTS game_code TEXT",
             "ALTER TABLE receipt_items ADD COLUMN IF NOT EXISTS unit_basis TEXT",
             "ALTER TABLE receipt_items ADD COLUMN IF NOT EXISTS line_total NUMERIC",
+            "ALTER TABLE product_catalog ADD COLUMN IF NOT EXISTS game_code TEXT",
         ):
             try:
                 await conn.execute(alter_sql)
             except Exception:
                 # Keep startup resilient and idempotent when old inconsistent
                 # schemas are encountered.
+                pass
+
+        await conn.execute("UPDATE receipts SET game_code = 'COS' WHERE game_code IS NULL")
+        await conn.execute("UPDATE product_catalog SET game_code = 'COS' WHERE game_code IS NULL")
+        await conn.execute("ALTER TABLE receipts ALTER COLUMN game_code SET DEFAULT 'COS'")
+        await conn.execute("ALTER TABLE receipts ALTER COLUMN game_code SET NOT NULL")
+        await conn.execute("ALTER TABLE product_catalog ALTER COLUMN game_code SET DEFAULT 'COS'")
+        await conn.execute("ALTER TABLE product_catalog ALTER COLUMN game_code SET NOT NULL")
+
+        await conn.execute(
+            """
+            CREATE UNIQUE INDEX IF NOT EXISTS ux_product_catalog_game_category_name_norm
+            ON product_catalog(game_code, category_code, name_norm)
+            """
+        )
+        for drop_sql in (
+            "ALTER TABLE product_catalog DROP CONSTRAINT IF EXISTS ux_product_catalog_category_name_norm",
+            "DROP INDEX IF EXISTS ux_product_catalog_category_name_norm",
+            "DROP INDEX IF EXISTS idx_product_catalog_category_name_norm",
+        ):
+            try:
+                await conn.execute(drop_sql)
+            except Exception:
                 pass
 
         migration_key = "normalize_item_names_v1"
@@ -310,7 +338,7 @@ async def add_product(pool: asyncpg.Pool, category_code: str, name: str) -> dict
             """
             INSERT INTO product_catalog (category_code, name, name_norm)
             VALUES ($1, $2, $3)
-            ON CONFLICT (category_code, name_norm)
+            ON CONFLICT (game_code, category_code, name_norm)
             DO UPDATE SET name = EXCLUDED.name
             RETURNING id, category_code, name
             """,
