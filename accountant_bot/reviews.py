@@ -9,7 +9,13 @@ from aiogram import Bot
 from aiogram.exceptions import TelegramBadRequest
 
 from .config import Settings
-from .db import fetch_review_by_key, fetch_reviews_by_message_id, insert_review
+from .db import (
+    fetch_review_by_key,
+    fetch_reviews_by_message_id,
+    get_reviews_checkpoint,
+    insert_review,
+    set_reviews_checkpoint,
+)
 from .time_ranges import DateRange
 
 
@@ -74,24 +80,18 @@ class ReviewsService:
 
     async def sync_channel_history(self, tg_client, channel_id: int) -> None:
         """Синхронизирует историю канала и добавляет отсутствующие отзывы в БД."""
-        async with self._pool.acquire() as conn:
-            rows = await conn.fetch(
-                """
-                SELECT DISTINCT message_id
-                FROM reviews,
-                LATERAL unnest(message_ids) AS message_id
-                WHERE channel_id = $1
-                """,
-                int(channel_id),
-            )
-            existing_ids = {int(row["message_id"]) for row in rows}
-
+        checkpoint = await get_reviews_checkpoint(self._pool, int(channel_id))
         media_groups: dict[int, list] = {}
+        max_processed_message_id = int(checkpoint)
 
-        async for message in tg_client.iter_messages(channel_id, reverse=True):
+        async for message in tg_client.iter_messages(channel_id, reverse=True, min_id=int(checkpoint)):
             message_id = getattr(message, "id", None)
             if message_id is None:
                 continue
+
+            current_message_id = int(message_id)
+            if current_message_id > max_processed_message_id:
+                max_processed_message_id = current_message_id
 
             if getattr(message, "action", None):
                 continue
@@ -101,12 +101,7 @@ class ReviewsService:
                 media_groups.setdefault(int(grouped_id), []).append(message)
                 continue
 
-            if int(message_id) in existing_ids:
-                continue
-
-            row = await self.add_review_from_message(message)
-            if row is not None:
-                existing_ids.add(int(message_id))
+            await self.add_review_from_message(message)
 
         for grouped_id, group_messages in media_groups.items():
             message_ids = sorted(
@@ -117,19 +112,17 @@ class ReviewsService:
             if not message_ids:
                 continue
 
-            if any(message_id in existing_ids for message_id in message_ids):
-                continue
-
             root_message_id = message_ids[0]
-            row = await self.add_review(
+            await self.add_review(
                 channel_id=int(channel_id),
                 review_key=self.build_review_key(root_message_id, str(grouped_id)),
                 message_ids=message_ids,
                 source_chat_id=int(channel_id),
                 source_message_id=root_message_id,
             )
-            if row is not None:
-                existing_ids.update(message_ids)
+
+        if max_processed_message_id > int(checkpoint):
+            await set_reviews_checkpoint(self._pool, int(channel_id), max_processed_message_id)
 
     async def update_channel_about(self, bot: Bot, channel_id: int, template: str, date_format: str) -> None:
         count = await self.count_active(channel_id)

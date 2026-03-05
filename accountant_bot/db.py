@@ -187,6 +187,15 @@ async def ensure_schema(pool: asyncpg.Pool) -> None:
         )
         await conn.execute(
             """
+            CREATE TABLE IF NOT EXISTS reviews_listener_state (
+                channel_id BIGINT PRIMARY KEY,
+                last_message_id BIGINT NOT NULL DEFAULT 0,
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+            """
+        )
+        await conn.execute(
+            """
             CREATE INDEX IF NOT EXISTS idx_product_catalog_category_name_norm
             ON product_catalog(category_code, name_norm)
             """
@@ -367,6 +376,35 @@ async def get_product(pool: asyncpg.Pool, category_code: str, product_id: int) -
             int(product_id),
         )
     return dict(row) if row else None
+
+
+async def get_reviews_checkpoint(pool: asyncpg.Pool, channel_id: int) -> int:
+    async with pool.acquire() as conn:
+        value = await conn.fetchval(
+            """
+            SELECT last_message_id
+            FROM reviews_listener_state
+            WHERE channel_id = $1
+            """,
+            int(channel_id),
+        )
+    return int(value or 0)
+
+
+async def set_reviews_checkpoint(pool: asyncpg.Pool, channel_id: int, last_message_id: int) -> None:
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """
+            INSERT INTO reviews_listener_state(channel_id, last_message_id, updated_at)
+            VALUES ($1, $2, NOW())
+            ON CONFLICT (channel_id)
+            DO UPDATE SET
+                last_message_id = EXCLUDED.last_message_id,
+                updated_at = NOW()
+            """,
+            int(channel_id),
+            int(last_message_id),
+        )
 
 
 async def insert_review(

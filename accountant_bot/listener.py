@@ -6,6 +6,7 @@ import logging
 from telethon import TelegramClient, events
 
 from .config import Settings
+from .db import set_reviews_checkpoint
 from .reviews import ReviewsService
 
 logger = logging.getLogger("reviews_listener")
@@ -37,6 +38,7 @@ def register_listener_handlers(
             source_message_id=root_message_id,
         )
         if row is not None:
+            await set_reviews_checkpoint(reviews_service._pool, settings.REVIEWS_CHANNEL_ID, max(message_ids))
             reviews_service.schedule_about_update()
         else:
             logger.info("duplicate ignored review_key=%s", reviews_service.build_review_key(root_message_id, media_group_id))
@@ -95,6 +97,7 @@ def register_listener_handlers(
             review_text=message.message,
         )
         if row is not None:
+            await set_reviews_checkpoint(reviews_service._pool, settings.REVIEWS_CHANNEL_ID, message_id)
             reviews_service.schedule_about_update()
         else:
             logger.info("duplicate ignored review_key=%s", reviews_service.build_review_key(message_id, None))
