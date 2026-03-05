@@ -105,6 +105,7 @@ EXPORT_KEYBOARD = InlineKeyboardMarkup(
 
 
 class AddCheckFSM(StatesGroup):
+    game = State()
     currency = State()
     currency_custom = State()
     pay_method = State()
@@ -141,7 +142,11 @@ class ProductCatalogFSM(StatesGroup):
     delete_list = State()
 
 
-ITEM_CATEGORIES = ("VID", "TOKENS", "MUSHROOMS", "OTHER")
+GAME_CODES = ("COS", "DA")
+GAME_ITEM_CATEGORIES: dict[str, tuple[str, ...]] = {
+    "COS": ("VID", "TOKENS", "MUSHROOMS", "OTHER"),
+    "DA": ("DRAGONS", "POTIONS", "COINS", "OTHER"),
+}
 CATEGORY_CODES_BY_LABEL = {label: code for code, label in CATEGORY_LABELS.items()}
 PRODUCT_CATEGORY_BUTTONS = {
     "Виды": "VID",
@@ -202,6 +207,23 @@ CATEGORY_KEYBOARD = ReplyKeyboardMarkup(
         [KeyboardButton(text=BTN_BACK), KeyboardButton(text=BTN_CANCEL)],
     ],
     resize_keyboard=True,
+)
+DA_CATEGORY_KEYBOARD = ReplyKeyboardMarkup(
+    keyboard=[
+        [KeyboardButton(text="DRAGONS"), KeyboardButton(text="POTIONS")],
+        [KeyboardButton(text="COINS"), KeyboardButton(text=CATEGORY_LABELS["OTHER"])],
+        [KeyboardButton(text=BTN_BACK), KeyboardButton(text=BTN_CANCEL)],
+    ],
+    resize_keyboard=True,
+)
+GAME_KEYBOARD = InlineKeyboardMarkup(
+    inline_keyboard=[
+        [
+            InlineKeyboardButton(text="COS", callback_data="add_check:game:COS"),
+            InlineKeyboardButton(text="DA", callback_data="add_check:game:DA"),
+        ],
+        [InlineKeyboardButton(text="❌ Отмена", callback_data=f"{ADD_CHECK_NAV_PREFIX}:cancel")],
+    ]
 )
 PRODUCT_CATEGORY_KEYBOARD = ReplyKeyboardMarkup(
     keyboard=[
@@ -756,7 +778,7 @@ async def receipts_menu_actions(message: Message, state: FSMContext, settings: S
     if text == BTN_ADD_RECEIPT or text == BTN_ADD_RECEIPT_LEGACY:
         await state.clear()
         await state.update_data(items=[])
-        await _prompt_currency(message, state=state)
+        await _prompt_game(message, state=state)
         return
     await safe_send_message(message.bot, message.chat.id, "Выберите действие кнопками.", reply_markup=RECEIPTS_MENU_KEYBOARD)
 
@@ -1321,7 +1343,8 @@ async def _cancel_add_check(message: Message, state: FSMContext) -> None:
 
 
 ADD_CHECK_PREV_STATE: dict[str, State | None] = {
-    AddCheckFSM.currency.state: None,
+    AddCheckFSM.game.state: None,
+    AddCheckFSM.currency.state: AddCheckFSM.game,
     AddCheckFSM.currency_custom.state: AddCheckFSM.currency,
     AddCheckFSM.pay_method.state: AddCheckFSM.currency,
     AddCheckFSM.pay_method_custom.state: AddCheckFSM.pay_method,
@@ -1341,6 +1364,13 @@ ADD_CHECK_PREV_STATE: dict[str, State | None] = {
     AddCheckFSM.confirm.state: AddCheckFSM.receipt,
 }
 
+def _item_category_keyboard(game_code: Optional[str]) -> ReplyKeyboardMarkup:
+    return DA_CATEGORY_KEYBOARD if (game_code or "").upper() == "DA" else CATEGORY_KEYBOARD
+
+
+def _valid_item_categories(game_code: Optional[str]) -> tuple[str, ...]:
+    return GAME_ITEM_CATEGORIES.get((game_code or "").upper(), GAME_ITEM_CATEGORIES["COS"])
+
 
 async def _prompt_item_name(message: Message, state: FSMContext, pool: Optional[asyncpg.Pool] = None) -> None:
     data = await state.get_data()
@@ -1352,6 +1382,7 @@ async def _prompt_item_name(message: Message, state: FSMContext, pool: Optional[
     await safe_send_message(message.bot, message.chat.id, _item_name_prompt(), reply_markup=INLINE_NAV_BACK_CANCEL)
 
 
+
 async def _render_add_check_state(
     message: Message,
     state: FSMContext,
@@ -1359,9 +1390,12 @@ async def _render_add_check_state(
     pool: Optional[asyncpg.Pool] = None,
 ) -> None:
     if target_state is None:
-        await safe_send_message(message.bot, message.chat.id, "Это первый шаг.", reply_markup=CURRENCY_KEYBOARD)
+        await safe_send_message(message.bot, message.chat.id, "Это первый шаг.", reply_markup=GAME_KEYBOARD)
         return
 
+    if target_state == AddCheckFSM.game:
+        await _prompt_game(message, state=state)
+        return
     if target_state == AddCheckFSM.currency:
         await _prompt_currency(message, state=state)
         return
@@ -1376,8 +1410,14 @@ async def _render_add_check_state(
         await _show_items_menu(message, state)
         return
     if target_state == AddCheckFSM.item_category:
+        data = await state.get_data()
         await state.set_state(AddCheckFSM.item_category)
-        await safe_send_message(message.bot, message.chat.id, "Выберите категорию:", reply_markup=CATEGORY_KEYBOARD)
+        await safe_send_message(
+            message.bot,
+            message.chat.id,
+            "Выберите категорию:",
+            reply_markup=_item_category_keyboard(data.get("game_code")),
+        )
         return
     if target_state == AddCheckFSM.item_name:
         await _prompt_item_name(message, state, pool)
@@ -1431,7 +1471,11 @@ async def _render_add_check_state(
         edit_index = data.get("edit_index")
         items = data.get("items", [])
         item = items[edit_index] if edit_index is not None and 0 <= edit_index < len(items) else {}
-        kb = CATEGORY_KEYBOARD if edit_field == "category" else (INLINE_NAV_BACK_CANCEL_SKIP if edit_field == "note" else INLINE_NAV_BACK_CANCEL)
+        kb = (
+            _item_category_keyboard(data.get("game_code"))
+            if edit_field == "category"
+            else (INLINE_NAV_BACK_CANCEL_SKIP if edit_field == "note" else INLINE_NAV_BACK_CANCEL)
+        )
         await state.set_state(AddCheckFSM.item_edit_value)
         await safe_send_message(
             message.bot,
@@ -1549,6 +1593,7 @@ async def _show_summary(message: Message, state: FSMContext) -> None:
         message.bot,
         message.chat.id,
         "Проверьте чек перед сохранением:\n"
+        f"Игра: {data.get('game_code', 'COS')}\n"
         f"Валюта: {data.get('currency', 'RUB')}\n"
         f"Способ оплаты: {data.get('pay_method') or '-'}\n"
         f"Комментарий: {data.get('note') or '-'}\n"
@@ -1565,6 +1610,37 @@ async def _prompt_currency(message: Message, *, state: FSMContext | None = None)
     await safe_send_message(message.bot, message.chat.id, "💱 Выберите валюту:", reply_markup=CURRENCY_KEYBOARD)
 
 
+async def _prompt_game(message: Message, *, state: FSMContext | None = None) -> None:
+    if state is not None:
+        await state.set_state(AddCheckFSM.game)
+    await safe_send_message(message.bot, message.chat.id, "🎮 Выберите игру:", reply_markup=GAME_KEYBOARD)
+
+
+@router.message(AddCheckFSM.game)
+async def add_check_game(message: Message, state: FSMContext) -> None:
+    text = (message.text or "").strip()
+    if _is_cancel(text):
+        await _cancel_add_check(message, state)
+        return
+    await safe_send_message(message.bot, message.chat.id, "Выберите игру кнопками.", reply_markup=GAME_KEYBOARD)
+
+
+@router.callback_query(AddCheckFSM.game, F.data.startswith("add_check:game:"))
+async def add_check_game_callback(callback: CallbackQuery, state: FSMContext) -> None:
+    if callback.message is None:
+        await callback.answer()
+        return
+
+    game_code = callback.data.split(":")[-1].upper()
+    if game_code not in GAME_CODES:
+        await callback.answer("Неизвестная игра", show_alert=True)
+        return
+
+    await state.update_data(game_code=game_code)
+    await _prompt_currency(callback.message, state=state)
+    await callback.answer()
+
+
 async def _prompt_pay_method(message: Message, *, state: FSMContext | None = None) -> None:
     if state is not None:
         await state.set_state(AddCheckFSM.pay_method)
@@ -1578,7 +1654,7 @@ async def add_check_currency(message: Message, state: FSMContext) -> None:
         await _cancel_add_check(message, state)
         return
     if _is_back(text):
-        await safe_send_message(message.bot, message.chat.id, "Это первый шаг.", reply_markup=CURRENCY_KEYBOARD)
+        await _prompt_game(message, state=state)
         return
     await safe_send_message(message.bot, message.chat.id, "Выберите валюту кнопками.", reply_markup=CURRENCY_KEYBOARD)
 
@@ -1713,9 +1789,15 @@ async def add_check_items_menu(message: Message, state: FSMContext) -> None:
         await safe_send_message(message.bot, message.chat.id, "Комментарий к чеку:", reply_markup=INLINE_NAV_BACK_CANCEL_SKIP)
         return
     if text == "➕ Добавить позицию":
+        data = await state.get_data()
         await state.update_data(item_draft={}, edit_index=None)
         await state.set_state(AddCheckFSM.item_category)
-        await safe_send_message(message.bot, message.chat.id, "Выберите категорию:", reply_markup=CATEGORY_KEYBOARD)
+        await safe_send_message(
+            message.bot,
+            message.chat.id,
+            "Выберите категорию:",
+            reply_markup=_item_category_keyboard(data.get("game_code")),
+        )
         return
     if text == "🗑 Удалить позицию":
         await state.set_state(AddCheckFSM.item_delete)
@@ -1751,12 +1833,20 @@ async def add_check_item_category(message: Message, state: FSMContext, pool: asy
         await _show_items_menu(message, state)
         return
 
-    category = text_upper if text_upper in ITEM_CATEGORIES else CATEGORY_CODES_BY_LABEL.get(text)
+    data = await state.get_data()
+    allowed_categories = _valid_item_categories(data.get("game_code"))
+    category = text_upper if text_upper in allowed_categories else CATEGORY_CODES_BY_LABEL.get(text)
+    if category not in allowed_categories:
+        category = None
     if category is None:
-        await safe_send_message(message.bot, message.chat.id, "Выберите категорию из кнопок.", reply_markup=CATEGORY_KEYBOARD)
+        await safe_send_message(
+            message.bot,
+            message.chat.id,
+            "Выберите категорию из кнопок.",
+            reply_markup=_item_category_keyboard(data.get("game_code")),
+        )
         return
 
-    data = await state.get_data()
     item_draft = data.get("item_draft", {})
     item_draft["category"] = category
     await state.update_data(item_draft=item_draft)
@@ -1770,8 +1860,14 @@ async def add_check_item_name(message: Message, state: FSMContext, pool: asyncpg
         await _cancel_add_check(message, state)
         return
     if _is_back(text):
+        data = await state.get_data()
         await state.set_state(AddCheckFSM.item_category)
-        await safe_send_message(message.bot, message.chat.id, "Выберите категорию:", reply_markup=CATEGORY_KEYBOARD)
+        await safe_send_message(
+            message.bot,
+            message.chat.id,
+            "Выберите категорию:",
+            reply_markup=_item_category_keyboard(data.get("game_code")),
+        )
         return
     if not text:
         await safe_send_message(message.bot, message.chat.id, "Название не должно быть пустым.")
@@ -1997,10 +2093,21 @@ async def add_check_item_edit_field(message: Message, state: FSMContext) -> None
         await safe_send_message(message.bot, message.chat.id, "Выберите поле кнопками.", reply_markup=EDIT_FIELD_KEYBOARD)
         return
 
+    data = await state.get_data()
+    idx = data.get("edit_index")
+    items = data.get("items", [])
+    if idx is None or idx < 0 or idx >= len(items):
+        await _show_items_menu(message, state)
+        return
+
     item = items[idx]
     await state.update_data(edit_field=field)
     await state.set_state(AddCheckFSM.item_edit_value)
-    kb = CATEGORY_KEYBOARD if field == "category" else (INLINE_NAV_BACK_CANCEL_SKIP if field == "note" else INLINE_NAV_BACK_CANCEL)
+    kb = (
+        _item_category_keyboard(data.get("game_code"))
+        if field == "category"
+        else (INLINE_NAV_BACK_CANCEL_SKIP if field == "note" else INLINE_NAV_BACK_CANCEL)
+    )
     await safe_send_message(message.bot, message.chat.id, _item_edit_value_prompt(field, item), reply_markup=kb)
 
 
@@ -2026,9 +2133,17 @@ async def add_check_item_edit_value(message: Message, state: FSMContext) -> None
     item = items[idx]
     if field == "category":
         text_upper = text.upper()
-        val = text_upper if text_upper in ITEM_CATEGORIES else CATEGORY_CODES_BY_LABEL.get(text)
+        allowed_categories = _valid_item_categories(data.get("game_code"))
+        val = text_upper if text_upper in allowed_categories else CATEGORY_CODES_BY_LABEL.get(text)
+        if val not in allowed_categories:
+            val = None
         if val is None:
-            await safe_send_message(message.bot, message.chat.id, "Выберите категорию из кнопок.", reply_markup=CATEGORY_KEYBOARD)
+            await safe_send_message(
+                message.bot,
+                message.chat.id,
+                "Выберите категорию из кнопок.",
+                reply_markup=_item_category_keyboard(data.get("game_code")),
+            )
             return
         item[field] = val
     elif field in {"qty", "unit_price"}:
@@ -2120,6 +2235,7 @@ async def add_check_confirm(
     saved = await add_receipt_with_items(
         pool,
         admin_id=int(message.from_user.id),
+        game_code=data.get("game_code") or "COS",
         currency=data.get("currency") or "RUB",
         pay_method=data.get("pay_method"),
         note=data.get("note"),

@@ -710,6 +710,7 @@ async def insert_receipt(
     pool: asyncpg.Pool,
     *,
     admin_id: int,
+    game_code: str = "COS",
     currency: str = "RUB",
     pay_method: Optional[str] = None,
     note: Optional[str] = None,
@@ -722,6 +723,7 @@ async def insert_receipt(
             """
             INSERT INTO receipts (
                 admin_id,
+                game_code,
                 currency,
                 pay_method,
                 note,
@@ -729,10 +731,11 @@ async def insert_receipt(
                 receipt_file_type,
                 status
             )
-            VALUES ($1, $2, $3, $4, $5, $6, $7)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
             RETURNING *
             """,
             int(admin_id),
+            str(game_code),
             str(currency),
             pay_method,
             note,
@@ -787,6 +790,7 @@ async def create_receipt_with_items(
     pool: asyncpg.Pool,
     *,
     admin_id: int,
+    game_code: str = "COS",
     currency: str = "RUB",
     pay_method: Optional[str] = None,
     note: Optional[str] = None,
@@ -800,6 +804,7 @@ async def create_receipt_with_items(
                 """
                 INSERT INTO receipts (
                     admin_id,
+                    game_code,
                     currency,
                     pay_method,
                     note,
@@ -807,10 +812,11 @@ async def create_receipt_with_items(
                     receipt_file_type,
                     status
                 )
-                VALUES ($1, $2, $3, $4, $5, $6, 'created')
+                VALUES ($1, $2, $3, $4, $5, $6, $7, 'created')
                 RETURNING *
                 """,
                 int(admin_id),
+                str(game_code),
                 str(currency),
                 pay_method,
                 note,

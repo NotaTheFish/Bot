@@ -35,12 +35,14 @@ from accountant_bot.admin_bot import (
     PRODUCTS_MENU_KEYBOARD,
     ProductCatalogFSM,
     CURRENCY_KEYBOARD,
+    GAME_KEYBOARD,
     PAY_METHOD_KEYBOARD,
     START_KEYBOARD,
     STATS_KEYBOARD,
     start_receipt_lookup,
     _receipt_details_text,
     _receipt_list_keyboard,
+    add_check_game_callback,
     add_check_currency_callback,
     add_check_currency_custom,
     add_check_pay_method_callback,
@@ -145,6 +147,27 @@ def test_stats_keyboard_has_expected_labels_and_callbacks():
     assert [button.text for button in row] == ["📅 Сегодня", "📆 7 дней", "🗓 30 дней"]
     assert [button.callback_data for button in row] == ["stats:day", "stats:week", "stats:month"]
 
+
+
+
+def test_game_keyboard_has_expected_buttons_and_callbacks():
+    rows = GAME_KEYBOARD.inline_keyboard
+    assert [button.text for button in rows[0]] == ["COS", "DA"]
+    assert [button.callback_data for button in rows[0]] == ["add_check:game:COS", "add_check:game:DA"]
+
+
+def test_game_callback_sets_game_and_moves_to_currency(monkeypatch):
+    safe_send_message = AsyncMock()
+    monkeypatch.setattr("accountant_bot.admin_bot.safe_send_message", safe_send_message)
+
+    callback = _DummyCallback("add_check:game:DA")
+    state = _DummyState(data={"items": []})
+
+    asyncio.run(add_check_game_callback(callback, state))
+
+    assert state._data["game_code"] == "DA"
+    assert state.current_state.state.endswith(":currency")
+    assert safe_send_message.await_args_list[-1].args[2] == "💱 Выберите валюту:"
 
 def test_currency_keyboard_has_expected_buttons_and_callbacks():
     rows = CURRENCY_KEYBOARD.inline_keyboard
@@ -301,6 +324,31 @@ def test_add_check_confirm_cancel_does_not_write_to_db(monkeypatch):
 
     cancel.assert_awaited_once()
     add_receipt.assert_not_called()
+
+
+def test_add_check_confirm_passes_game_code_to_storage(monkeypatch):
+    safe_send_message = AsyncMock()
+    add_receipt = AsyncMock(return_value={"receipt": {"id": 77}, "items": [{"line_total": "100"}]})
+
+    monkeypatch.setattr("accountant_bot.admin_bot.safe_send_message", safe_send_message)
+    monkeypatch.setattr("accountant_bot.admin_bot.add_receipt_with_items", add_receipt)
+
+    settings = Settings(
+        ACCOUNTANT_BOT_TOKEN="token",
+        ACCOUNTANT_ADMIN_IDS=[1],
+        DATABASE_URL="postgresql://localhost/test",
+        REVIEWS_CHANNEL_ID=777,
+        TG_API_ID=123,
+        TG_API_HASH="hash",
+        ACCOUNTANT_TG_STRING_SESSION="session",
+    )
+
+    state = _DummyState(data={"items": [{"line_total": "100"}], "game_code": "DA", "currency": "RUB"})
+    message = _DummyMessage("Сохранить")
+
+    asyncio.run(add_check_confirm(message, state, pool=object(), settings=settings))
+
+    assert add_receipt.await_args.kwargs["game_code"] == "DA"
 
 
 def test_add_check_confirm_invalid_button_does_not_write_to_db(monkeypatch):

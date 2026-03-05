@@ -4,5 +4,8 @@ CATEGORY_LABELS = {
     "VID": "🐉 Вид",
     "TOKENS": "🪙 Токены",
     "MUSHROOMS": "🍄 Грибы",
+    "DRAGONS": "🐲 Dragons",
+    "POTIONS": "🧪 Potions",
+    "COINS": "🪙 Coins",
     "OTHER": "✍️ Другое",
 }

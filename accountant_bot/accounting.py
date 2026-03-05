@@ -46,6 +46,7 @@ async def add_receipt_with_items(
     pool: asyncpg.Pool,
     *,
     admin_id: int,
+    game_code: str,
     currency: str,
     pay_method: Optional[str],
     note: Optional[str],
@@ -56,6 +57,7 @@ async def add_receipt_with_items(
     return await db_create_receipt_with_items(
         pool,
         admin_id=admin_id,
+        game_code=game_code,
         currency=currency,
         pay_method=pay_method,
         note=note,
