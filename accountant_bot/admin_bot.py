@@ -1904,7 +1904,7 @@ async def export_excel(callback: CallbackQuery, settings: Settings, pool: asyncp
             }
         )
 
-    report_bytes = build_transactions_report(export_rows)
+    report_bytes = build_transactions_report(export_rows, admin_tz)
     filename = f"transactions_{period}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
     document = BufferedInputFile(report_bytes, filename=filename)
 

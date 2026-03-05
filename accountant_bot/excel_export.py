@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 from io import BytesIO
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from openpyxl import Workbook
 from openpyxl.chart import BarChart, LineChart, Reference
@@ -61,7 +62,7 @@ THIN_BORDER = Border(
 HEADER_FILL = PatternFill("solid", fgColor="FFF3F4F6")
 
 
-def build_transactions_report(transactions: list[dict[str, Any] | Any]) -> bytes:
+def build_transactions_report(transactions: list[dict[str, Any] | Any], tz: ZoneInfo) -> bytes:
     receipts: list[dict[str, Any]] = []
     items: list[dict[str, Any]] = []
 
@@ -115,26 +116,26 @@ def build_transactions_report(transactions: list[dict[str, Any] | Any]) -> bytes
     wb = Workbook()
     ws_receipts = wb.active
     ws_receipts.title = "Чеки"
-    _build_receipts_sheet(ws_receipts, receipts)
+    _build_receipts_sheet(ws_receipts, receipts, tz)
 
     ws_items = wb.create_sheet("Позиции")
-    _build_items_sheet(ws_items, items)
+    _build_items_sheet(ws_items, items, tz)
 
     ws_summary = wb.create_sheet("Сводка")
-    _build_summary_sheet(ws_summary, items)
+    _build_summary_sheet(ws_summary, items, tz)
 
     output = BytesIO()
     wb.save(output)
     return output.getvalue()
 
 
-def _build_receipts_sheet(ws: Any, receipts: list[dict[str, Any]]) -> None:
+def _build_receipts_sheet(ws: Any, receipts: list[dict[str, Any]], tz: ZoneInfo) -> None:
     ws.append(RECEIPTS_HEADERS)
     for receipt in receipts:
         ws.append(
             [
                 receipt["receipt_id"],
-                _to_excel_dt(receipt["created_at"]),
+                _to_excel_dt(receipt["created_at"], tz),
                 receipt["admin"],
                 receipt["currency"],
                 receipt["pay_method"],
@@ -148,13 +149,13 @@ def _build_receipts_sheet(ws: Any, receipts: list[dict[str, Any]]) -> None:
     ws.auto_filter.ref = ws.dimensions
 
 
-def _build_items_sheet(ws: Any, items: list[dict[str, Any]]) -> None:
+def _build_items_sheet(ws: Any, items: list[dict[str, Any]], tz: ZoneInfo) -> None:
     ws.append(ITEMS_HEADERS)
     for item in items:
         ws.append(
             [
                 item["receipt_id"],
-                _to_excel_dt(item["created_at"]),
+                _to_excel_dt(item["created_at"], tz),
                 item["admin"],
                 item["status"],
                 item["currency"],
@@ -177,9 +178,11 @@ def _build_items_sheet(ws: Any, items: list[dict[str, Any]]) -> None:
             ws.cell(row=row_idx, column=col_idx).fill = fill
 
 
-def _build_summary_sheet(ws: Any, items: list[dict[str, Any]]) -> None:
+def _build_summary_sheet(ws: Any, items: list[dict[str, Any]], tz: ZoneInfo) -> None:
     ws["A1"] = "Сводка по транзакциям"
     ws["A1"].font = Font(bold=True, size=14)
+    ws["B1"] = f"Timezone: {tz.key}"
+    ws["C1"] = f"Generated at: {datetime.now(tz).strftime('%Y-%m-%d %H:%M:%S')}"
 
     currencies = sorted({(item.get("currency") or "-") for item in items} or {"-"})
 
@@ -212,7 +215,9 @@ def _build_summary_sheet(ws: Any, items: list[dict[str, Any]]) -> None:
 
         created_at = item.get("created_at")
         if isinstance(created_at, datetime):
-            day_totals[created_at.date()][currency] += factor * amount
+            local_created_at = _to_excel_dt(created_at, tz)
+            if isinstance(local_created_at, datetime):
+                day_totals[local_created_at.date()][currency] += factor * amount
 
         product_name = str(item.get("item_name") or "-")
         product_totals[product_name]["qty"] += _to_decimal(item.get("qty"))
@@ -496,11 +501,11 @@ def _to_decimal(value: Any) -> Decimal:
         return Decimal("0")
 
 
-def _to_excel_dt(value: Any) -> Any:
+def _to_excel_dt(value: Any, tz: ZoneInfo) -> Any:
     if value is None:
         return None
     if isinstance(value, datetime):
         if value.tzinfo is not None:
-            return value.astimezone(timezone.utc).replace(tzinfo=None)
-        return value
+            return value.astimezone(tz).replace(tzinfo=None)
+        return value.replace(tzinfo=timezone.utc).astimezone(tz).replace(tzinfo=None)
     return value

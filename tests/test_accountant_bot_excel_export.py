@@ -1,5 +1,7 @@
 import unittest
+from datetime import datetime
 from io import BytesIO
+from zoneinfo import ZoneInfo
 
 from openpyxl import load_workbook
 
@@ -64,7 +66,7 @@ class AccountantBotExcelExportTests(unittest.TestCase):
             },
         ]
 
-        report = build_transactions_report(transactions)
+        report = build_transactions_report(transactions, ZoneInfo("Asia/Tokyo"))
 
         wb = load_workbook(BytesIO(report))
         self.assertEqual(wb.sheetnames, ["Чеки", "Позиции", "Сводка"])
@@ -72,6 +74,8 @@ class AccountantBotExcelExportTests(unittest.TestCase):
         ws_receipts = wb["Чеки"]
         self.assertEqual(ws_receipts["A2"].value, 2)  # sorted by created_at DESC
         self.assertEqual(ws_receipts["I2"].value, "REFUND")
+        self.assertEqual(ws_receipts["B2"].value, datetime(2026, 1, 1, 20, 0))
+        self.assertEqual(ws_receipts["B3"].value, datetime(2026, 1, 1, 19, 0))
         self.assertEqual(ws_receipts.freeze_panes, "A2")
 
         ws_items = wb["Позиции"]
@@ -82,14 +86,16 @@ class AccountantBotExcelExportTests(unittest.TestCase):
         self.assertEqual(ws_items["J3"].value, "шт")
 
         ws_summary = wb["Сводка"]
+        self.assertEqual(ws_summary["B1"].value, "Timezone: Asia/Tokyo")
+        self.assertTrue(str(ws_summary["C1"].value).startswith("Generated at:"))
         self.assertEqual(ws_summary["A4"].value, "Валюта")
         self.assertEqual(ws_summary["A5"].value, "RUB")
         self.assertEqual(ws_summary["D5"].value, 207)
         self.assertEqual(ws_summary["A6"].value, "UAH")
         self.assertEqual(ws_summary["D6"].value, -40)
-        self.assertEqual(ws_summary["A8"].value, "Доход по дням")
-        self.assertEqual(ws_summary["A12"].value, "Доход по категориям")
-        self.assertEqual(ws_summary["A19"].value, "Топ товаров")
+        self.assertEqual(ws_summary["A10"].value, "Доход по дням")
+        self.assertEqual(ws_summary["A16"].value, "Топ товаров")
+        self.assertEqual(ws_summary["A24"].value, "Доход по категориям")
         self.assertEqual(ws_summary.freeze_panes, "A4")
         self.assertEqual(len(ws_summary._charts), 2)
 
