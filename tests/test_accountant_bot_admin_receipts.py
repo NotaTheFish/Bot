@@ -37,6 +37,7 @@ from accountant_bot.admin_bot import (
     ProductCatalogFSM,
     CURRENCY_KEYBOARD,
     GAME_KEYBOARD,
+    EXPORT_GAME_KEYBOARD,
     PAY_METHOD_KEYBOARD,
     START_KEYBOARD,
     STATS_KEYBOARD,
@@ -48,6 +49,8 @@ from accountant_bot.admin_bot import (
     add_check_currency_custom,
     add_check_pay_method_callback,
     add_check_confirm,
+    add_check_item_category,
+    add_check_item_qty,
     products_delete_list,
     products_menu,
     products_choose_game,
@@ -225,9 +228,16 @@ def test_stats_keyboard_has_expected_labels_and_callbacks():
 
 
 
+
+
+def test_export_game_keyboard_has_compact_labels():
+    row = EXPORT_GAME_KEYBOARD.inline_keyboard[0]
+    assert [button.text for button in row] == ["🍄 COS", "🐉 DA"]
+    assert [button.callback_data for button in row] == ["export:game:COS", "export:game:DA"]
+
 def test_game_keyboard_has_expected_buttons_and_callbacks():
     rows = GAME_KEYBOARD.inline_keyboard
-    assert [button.text for button in rows[0]] == ["COS", "DA"]
+    assert [button.text for button in rows[0]] == ["🍄 COS", "🐉 DA"]
     assert [button.callback_data for button in rows[0]] == ["add_check:game:COS", "add_check:game:DA"]
 
 
@@ -501,13 +511,13 @@ def test_pay_method_callback_paths_for_skip_and_other(monkeypatch):
 def test_coins_prompts_and_line_calculation():
     from accountant_bot.admin_bot import _item_qty_prompt, _item_unit_price_prompt, _unit_price_prompt, _calc_line
 
-    assert "100k" in _item_qty_prompt("COINS")
+    assert _item_qty_prompt("COINS") == "🔢 Введите количество коинов"
     assert _item_unit_price_prompt("COINS") == "💰 Цена за 100000 коинов (число)"
     assert _unit_price_prompt("COINS") == "Цена за 100000 коинов"
 
-    unit_basis, line_total = _calc_line("COINS", Decimal("2.5"), Decimal("120"))
+    unit_basis, line_total = _calc_line("COINS", Decimal("500000"), Decimal("10"))
     assert unit_basis == "per_100000"
-    assert line_total == Decimal("300.0")
+    assert line_total == Decimal("50")
 
 
 def test_parse_coins_qty_supports_suffixes():
@@ -517,3 +527,57 @@ def test_parse_coins_qty_supports_suffixes():
     assert _parse_coins_qty("2.5m") == Decimal("25")
     assert _parse_coins_qty("3") == Decimal("0.00003")
     assert _parse_coins_qty("bad") is None
+
+def test_special_item_names_and_mushroom_prompt():
+    from accountant_bot.admin_bot import _special_item_name, _item_qty_prompt
+
+    assert _special_item_name("COS", "MUSHROOMS") == "Mushrooms"
+    assert _special_item_name("DA", "COINS") == "Coins"
+    assert _special_item_name("COS", "VID") is None
+    assert _item_qty_prompt("MUSHROOMS") == "🔢 Количество грибов"
+
+
+def test_item_category_skips_name_for_mushrooms(monkeypatch):
+    safe_send_message = AsyncMock()
+    prompt_item_name = AsyncMock()
+    monkeypatch.setattr("accountant_bot.admin_bot.safe_send_message", safe_send_message)
+    monkeypatch.setattr("accountant_bot.admin_bot._prompt_item_name", prompt_item_name)
+
+    state = _DummyState(data={"game_code": "COS", "item_draft": {}})
+    message = _DummyMessage("🍄 Грибы")
+
+    asyncio.run(add_check_item_category(message, state, pool=AsyncMock()))
+
+    assert state.current_state.state.endswith(":item_qty")
+    assert state._data["item_draft"]["item_name"] == "Mushrooms"
+    prompt_item_name.assert_not_awaited()
+    assert safe_send_message.await_args.args[2] == "🔢 Количество грибов"
+
+
+def test_item_category_skips_name_for_coins(monkeypatch):
+    safe_send_message = AsyncMock()
+    prompt_item_name = AsyncMock()
+    monkeypatch.setattr("accountant_bot.admin_bot.safe_send_message", safe_send_message)
+    monkeypatch.setattr("accountant_bot.admin_bot._prompt_item_name", prompt_item_name)
+
+    state = _DummyState(data={"game_code": "DA", "item_draft": {}})
+    message = _DummyMessage("🪙 Коины")
+
+    asyncio.run(add_check_item_category(message, state, pool=AsyncMock()))
+
+    assert state.current_state.state.endswith(":item_qty")
+    assert state._data["item_draft"]["item_name"] == "Coins"
+    prompt_item_name.assert_not_awaited()
+    assert safe_send_message.await_args.args[2] == "🔢 Введите количество коинов"
+
+
+def test_item_qty_rejects_non_positive_values(monkeypatch):
+    safe_send_message = AsyncMock()
+    monkeypatch.setattr("accountant_bot.admin_bot.safe_send_message", safe_send_message)
+
+    state = _DummyState(data={"game_code": "DA", "item_draft": {"category": "COINS", "item_name": "Coins"}})
+    message = _DummyMessage("0")
+
+    asyncio.run(add_check_item_qty(message, state, pool=AsyncMock()))
+
+    assert "больше 0" in safe_send_message.await_args.args[2]
