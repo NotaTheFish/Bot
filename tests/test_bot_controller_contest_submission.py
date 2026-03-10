@@ -111,6 +111,31 @@ class ContestSubmissionTests(unittest.IsolatedAsyncioTestCase):
             ],
         )
 
+
+    async def test_contest_admin_keyboard_has_home_button(self):
+        with patch.object(main_core, "get_contest_settings", AsyncMock(return_value={"visibility_mode": "admin"})):
+            keyboard = await main_core.contest_admin_menu_keyboard()
+        rows = [[button.text for button in row] for row in keyboard.keyboard]
+        self.assertEqual(rows[2], ["🖼 Заявки конкурса", "🏠 Главное меню"])
+
+    async def test_vote_button_uses_webapp_when_configured(self):
+        message = SimpleNamespace(answer=AsyncMock())
+        with patch.object(main_core, "CONTEST_WEBAPP_URL", "https://example.com/contest"):
+            await main_core.contest_vote_placeholder(message)
+        message.answer.assert_awaited_once()
+        self.assertEqual(message.answer.await_args.args[0], "Откройте приложение для голосования.")
+        reply_markup = message.answer.await_args.kwargs["reply_markup"]
+        button = reply_markup.inline_keyboard[0][0]
+        self.assertEqual(button.text, "🗳 Открыть голосование")
+        self.assertEqual(button.web_app.url, "https://example.com/contest")
+
+    async def test_vote_button_shows_fallback_without_webapp_url(self):
+        message = SimpleNamespace(answer=AsyncMock())
+        with patch.object(main_core, "CONTEST_WEBAPP_URL", ""):
+            await main_core.contest_vote_placeholder(message)
+        message.answer.assert_awaited_once()
+        self.assertEqual(message.answer.await_args.args[0], "Mini App ещё не настроен.")
+
     async def test_submit_start_without_pending_entry_sets_waiting_media_state(self):
         message = SimpleNamespace(
             chat=SimpleNamespace(type="private"),

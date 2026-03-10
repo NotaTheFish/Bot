@@ -31,6 +31,7 @@ from aiogram.types import (
     Message,
     MessageEntity,
     ReplyKeyboardMarkup,
+    WebAppInfo,
 )
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
@@ -98,14 +99,16 @@ CONTEST_SUBMIT_BUTTON_TEXT = "🎨 Предложить рисунок"
 CONTEST_VOTE_BUTTON_TEXT = "🗳 Голосовать за рисунок"
 CONTEST_RULES_BUTTON_TEXT = "📜 Правила"
 CONTEST_BACK_BUTTON_TEXT = "⬅️ Назад"
+CONTEST_ADMIN_MAIN_MENU_BUTTON_TEXT = "🏠 Главное меню"
 CONTEST_REPLACE_BUTTON_TEXT = "🔁 Заменить рисунок"
 CONTEST_CANCEL_BUTTON_TEXT = "❌ Отмена"
+CONTEST_WEBAPP_URL = _get_env_str("CONTEST_WEBAPP_URL")
 CONTEST_ADMIN_BUTTON_TEXTS = {
     "📣 Текст объявления",
     "🚀 Запустить конкурс",
     "🖼 Заявки конкурса",
     "📊 Статус конкурса",
-    "⬅️ Назад",
+    CONTEST_ADMIN_MAIN_MENU_BUTTON_TEXT,
 }
 BUYER_CONTACT_COOLDOWN_SECONDS = _get_env_int("BUYER_CONTACT_COOLDOWN_SECONDS", 60)
 CONTACT_CTA_MODE = "off"
@@ -1130,7 +1133,7 @@ async def contest_admin_menu_keyboard() -> ReplyKeyboardMarkup:
         keyboard=[
             [KeyboardButton(text="📣 Текст объявления"), KeyboardButton(text=f"👥 Режим: {mode_label}")],
             [KeyboardButton(text="🚀 Запустить конкурс"), KeyboardButton(text="📊 Статус конкурса")],
-            [KeyboardButton(text="🖼 Заявки конкурса"), KeyboardButton(text="⬅️ Назад")],
+            [KeyboardButton(text="🖼 Заявки конкурса"), KeyboardButton(text=CONTEST_ADMIN_MAIN_MENU_BUTTON_TEXT)],
         ],
         resize_keyboard=True,
     )
@@ -3793,16 +3796,12 @@ async def buyer_contact_start(message: Message, state: FSMContext):
 
 @dp.message(F.chat.type == "private", F.text == BUYER_CONTEST_BUTTON_TEXT)
 async def buyer_contest_open(message: Message, state: FSMContext):
-    if ensure_admin(message):
-        return
     await state.clear()
     await message.answer("🏆 Меню конкурса:", reply_markup=contest_user_keyboard())
 
 
 @dp.message(F.chat.type == "private", F.text == CONTEST_RULES_BUTTON_TEXT)
 async def contest_show_rules(message: Message):
-    if ensure_admin(message):
-        return
     settings = await get_contest_settings()
     rules_text = str(settings.get("rules_text") or "").strip()
     if not rules_text:
@@ -3817,15 +3816,25 @@ async def contest_show_rules(message: Message):
 
 @dp.message(F.chat.type == "private", F.text == CONTEST_VOTE_BUTTON_TEXT)
 async def contest_vote_placeholder(message: Message):
-    if ensure_admin(message):
+    if not CONTEST_WEBAPP_URL:
+        await message.answer("Mini App ещё не настроен.", reply_markup=contest_user_keyboard())
         return
-    await message.answer("Голосование будет доступно в отдельном меню.", reply_markup=contest_user_keyboard())
+
+    vote_keyboard = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="🗳 Открыть голосование",
+                    web_app=WebAppInfo(url=CONTEST_WEBAPP_URL),
+                )
+            ]
+        ]
+    )
+    await message.answer("Откройте приложение для голосования.", reply_markup=vote_keyboard)
 
 
 @dp.message(F.chat.type == "private", F.text == CONTEST_BACK_BUTTON_TEXT)
 async def contest_user_back(message: Message, state: FSMContext):
-    if ensure_admin(message):
-        return
     await state.clear()
     await message.answer("Возвращаю в основное меню.", reply_markup=buyer_contact_keyboard())
 
@@ -4396,13 +4405,35 @@ async def contest_save(callback: CallbackQuery, state: FSMContext):
     await callback.answer("Сохранено")
 
 
-@dp.message(F.text == "⬅️ Назад")
-async def contest_admin_menu_back(message: Message):
+@dp.message(F.text == CONTEST_ADMIN_MAIN_MENU_BUTTON_TEXT)
+async def contest_admin_menu_home(message: Message):
     if int(message.chat.id) == int(STORAGE_CHAT_ID):
         await message.answer("⚠️ Эти кнопки работают только в личке с ботом.")
         return
 
     if not ensure_admin(message):
+        return
+
+    await safe_send_admin_menu(message)
+
+
+@dp.message(F.text == "⬅️ Назад")
+async def contest_admin_menu_back(message: Message, state: FSMContext):
+    if int(message.chat.id) == int(STORAGE_CHAT_ID):
+        await message.answer("⚠️ Эти кнопки работают только в личке с ботом.")
+        return
+
+    if not ensure_admin(message):
+        return
+
+    current_state = await state.get_state()
+    if current_state in {
+        AdminStates.waiting_contest_announcement.state,
+        AdminStates.waiting_contest_rules.state,
+        AdminStates.waiting_contest_reject_reason.state,
+    }:
+        await state.clear()
+        await message.answer("Возвращаю в меню конкурса.", reply_markup=await contest_admin_menu_keyboard())
         return
 
     await safe_send_admin_menu(message)
