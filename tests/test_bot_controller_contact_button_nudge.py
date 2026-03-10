@@ -13,6 +13,12 @@ from bot_controller import main_core
 
 
 class ContactButtonNudgeTests(unittest.IsolatedAsyncioTestCase):
+    async def test_buyer_reply_keyboard_contains_contact_and_contest_buttons(self):
+        keyboard = main_core.buyer_contact_keyboard()
+        flat = [button.text for row in keyboard.keyboard for button in row]
+        self.assertIn("✉️ Связаться с продавцом", flat)
+        self.assertIn("🏆 Конкурс талантов", flat)
+
     async def test_start_in_private_sends_pre_reply_and_sets_awaiting_flag(self):
         message = SimpleNamespace(
             text="/start",
@@ -26,16 +32,20 @@ class ContactButtonNudgeTests(unittest.IsolatedAsyncioTestCase):
         with (
             patch.object(main_core, "send_buyer_pre_reply", AsyncMock()) as send_pre_reply,
             patch.object(main_core, "get_db_pool", AsyncMock(return_value=pool)),
+            patch.object(main_core, "get_contest_settings", AsyncMock(return_value={"enabled": False, "visibility_mode": "public"})),
             patch.object(main_core, "is_admin_user", return_value=False),
         ):
             await main_core.on_start(message, state)
 
         send_pre_reply.assert_awaited_once_with(111)
-        pool.execute.assert_awaited_once()
-        sql = pool.execute.await_args.args[0]
+        self.assertEqual(pool.execute.await_count, 2)
+        sql = pool.execute.await_args_list[0].args[0]
+        self.assertIn("contest_users", sql)
+        self.assertIn("username_last_seen", sql)
+        sql = pool.execute.await_args_list[1].args[0]
         self.assertIn("awaiting_contact_button", sql)
         self.assertIn("TRUE", sql)
-        self.assertEqual(pool.execute.await_args.args[1], 42)
+        self.assertEqual(pool.execute.await_args_list[1].args[1], 42)
 
     async def test_private_message_before_button_sends_nudge_instead_of_pre_reply(self):
         message = SimpleNamespace(

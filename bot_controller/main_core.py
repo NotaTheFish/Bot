@@ -94,6 +94,7 @@ SUPPORT_PAYLOAD = "support"
 CONTACT_PAYLOAD_PREFIX = "contact_"
 CONTACT_CTA_TEXT = "✉️ Написать продавцу"
 BUYER_CONTACT_BUTTON_TEXT = "✉️ Связаться с продавцом"
+BUYER_CONTEST_BUTTON_TEXT = "🏆 Конкурс талантов"
 BUYER_CONTACT_COOLDOWN_SECONDS = _get_env_int("BUYER_CONTACT_COOLDOWN_SECONDS", 60)
 CONTACT_CTA_MODE = "off"
 DEFAULT_BUYER_REPLY_PRE_TEXT = "Здравствуйте!"
@@ -287,7 +288,10 @@ class ContactStates(StatesGroup):
 
 def buyer_contact_keyboard() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
-        keyboard=[[KeyboardButton(text=BUYER_CONTACT_BUTTON_TEXT)]],
+        keyboard=[
+            [KeyboardButton(text=BUYER_CONTACT_BUTTON_TEXT)],
+            [KeyboardButton(text=BUYER_CONTEST_BUTTON_TEXT)],
+        ],
         resize_keyboard=True,
     )
 
@@ -427,8 +431,11 @@ CREATE_TABLES_SQL = [
     CREATE TABLE IF NOT EXISTS contest_users (
         user_id BIGINT PRIMARY KEY,
         username TEXT,
+        username_last_seen TEXT,
         first_name TEXT,
+        first_name_last_seen TEXT,
         last_name TEXT,
+        last_name_last_seen TEXT,
         last_seen_at TIMESTAMPTZ,
         last_seen_chat_id BIGINT,
         last_seen_message_id BIGINT,
@@ -649,6 +656,18 @@ CONTEST_MIGRATIONS_SQL = [
     """
     ALTER TABLE contest_settings
     ADD COLUMN IF NOT EXISTS started_at TIMESTAMPTZ
+    """,
+    """
+    ALTER TABLE contest_users
+    ADD COLUMN IF NOT EXISTS username_last_seen TEXT
+    """,
+    """
+    ALTER TABLE contest_users
+    ADD COLUMN IF NOT EXISTS first_name_last_seen TEXT
+    """,
+    """
+    ALTER TABLE contest_users
+    ADD COLUMN IF NOT EXISTS last_name_last_seen TEXT
     """,
     """
     ALTER TABLE contest_settings
@@ -1483,6 +1502,72 @@ async def _send_contest_preview(chat_id: int, text: str, entities_json: str | No
         chat_id,
         text=text,
         entities=_deserialize_entities(entities_json),
+    )
+
+
+def _contest_visibility_mode(settings: dict[str, object]) -> str:
+    return str(settings.get("visibility_mode") or "public").strip().lower()
+
+
+def _contest_visible_for_user(settings: dict[str, object], *, is_admin: bool) -> bool:
+    if not bool(settings.get("enabled")):
+        return False
+
+    visibility_mode = _contest_visibility_mode(settings)
+    if visibility_mode in {"admin_only", "admin"}:
+        return is_admin
+    if visibility_mode in {"participants", "participant", "users"}:
+        return True
+    return True
+
+
+async def _upsert_contest_user_start(message: Message) -> None:
+    if not message.from_user:
+        return
+
+    pool = await get_db_pool()
+    await pool.execute(
+        """
+        INSERT INTO contest_users (
+            user_id,
+            username,
+            username_last_seen,
+            first_name,
+            first_name_last_seen,
+            last_name,
+            last_name_last_seen,
+            last_seen_at,
+            last_seen_chat_id,
+            last_seen_message_id,
+            is_admin,
+            started_bot,
+            started_at,
+            updated_at
+        )
+        VALUES ($1, $2, $2, $3, $3, $4, $4, NOW(), $5, $6, $7, TRUE, NOW(), NOW())
+        ON CONFLICT (user_id)
+        DO UPDATE SET
+            username = EXCLUDED.username,
+            username_last_seen = EXCLUDED.username_last_seen,
+            first_name = EXCLUDED.first_name,
+            first_name_last_seen = EXCLUDED.first_name_last_seen,
+            last_name = EXCLUDED.last_name,
+            last_name_last_seen = EXCLUDED.last_name_last_seen,
+            last_seen_at = EXCLUDED.last_seen_at,
+            last_seen_chat_id = EXCLUDED.last_seen_chat_id,
+            last_seen_message_id = EXCLUDED.last_seen_message_id,
+            is_admin = EXCLUDED.is_admin,
+            started_bot = TRUE,
+            started_at = COALESCE(contest_users.started_at, NOW()),
+            updated_at = NOW()
+        """,
+        message.from_user.id,
+        getattr(message.from_user, "username", None),
+        getattr(message.from_user, "first_name", None),
+        getattr(message.from_user, "last_name", None),
+        message.chat.id,
+        getattr(message, "message_id", None),
+        is_admin_user(message.from_user.id),
     )
 
 
@@ -3281,8 +3366,12 @@ async def _start_support_flow(message: Message, state: FSMContext, concise: bool
 async def on_start(message: Message, state: FSMContext):
     args = (message.text or "").split(maxsplit=1)
     payload = args[1] if len(args) > 1 else ""
+    is_admin = bool(message.from_user and is_admin_user(message.from_user.id))
 
-    if message.chat.type == "private" and message.from_user and is_admin_user(message.from_user.id):
+    if message.from_user:
+        await _upsert_contest_user_start(message)
+
+    if message.chat.type == "private" and is_admin:
         await state.clear()
         await safe_send_admin_menu(message)
         return
@@ -3300,6 +3389,21 @@ async def on_start(message: Message, state: FSMContext):
 
     if message.chat.type == "private":
         await send_buyer_pre_reply(message.chat.id)
+        settings = await get_contest_settings()
+        visibility_mode = _contest_visibility_mode(settings)
+        can_send_contest_announcement = bool(settings.get("enabled")) and (
+            visibility_mode in {"participants", "participant", "users"} or is_admin
+        )
+
+        if can_send_contest_announcement:
+            announcement_text = str(settings.get("announcement_text") or "").strip()
+            if announcement_text:
+                await bot.send_message(
+                    message.chat.id,
+                    text=announcement_text,
+                    entities=_deserialize_entities(settings.get("announcement_entities_json")),
+                )
+
         if message.from_user:
             pool = await get_db_pool()
             await pool.execute(
@@ -3313,6 +3417,8 @@ async def on_start(message: Message, state: FSMContext):
                 message.from_user.id,
             )
             logger.info("/start -> awaiting_contact_button set true user_id=%s", message.from_user.id)
+            if _contest_visible_for_user(settings, is_admin=is_admin):
+                await message.answer("Выберите действие:", reply_markup=buyer_contact_keyboard())
         logger.info(
             '/start pre-reply sent + inline shown user_id=%s chat_id=%s',
             message.from_user.id if message.from_user else None,
