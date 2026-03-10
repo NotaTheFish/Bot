@@ -272,6 +272,9 @@ class AdminStates(StatesGroup):
     waiting_autoreply_offline_threshold = State()
     waiting_autoreply_cooldown = State()
     waiting_storage_post = State()
+    waiting_contest_announcement = State()
+    waiting_contest_rules = State()
+    waiting_contest_reject_reason = State()
 
 
 class SupportStates(StatesGroup):
@@ -1421,6 +1424,65 @@ async def set_contest_settings(
         bool(submission_open),
         bool(voting_open),
         started_at,
+    )
+
+
+def _serialize_entities(entities: list[MessageEntity] | None) -> str | None:
+    if not entities:
+        return None
+    return json.dumps([entity.model_dump(exclude_none=True) for entity in entities], ensure_ascii=False)
+
+
+def _deserialize_entities(entities_json: str | None) -> list[MessageEntity]:
+    if not entities_json:
+        return []
+    try:
+        raw_items = json.loads(entities_json)
+    except json.JSONDecodeError:
+        logger.warning("Unable to decode entities JSON for contest settings")
+        return []
+    if not isinstance(raw_items, list):
+        return []
+    parsed: list[MessageEntity] = []
+    for item in raw_items:
+        if not isinstance(item, dict):
+            continue
+        with suppress(Exception):
+            parsed.append(MessageEntity.model_validate(item))
+    return parsed
+
+
+def _contest_editor_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="✅ Сохранить", callback_data="contest:save")],
+            [InlineKeyboardButton(text="✏️ Изменить правила", callback_data="contest:edit_rules")],
+            [InlineKeyboardButton(text="👁 Предпросмотр", callback_data="contest:preview")],
+        ]
+    )
+
+
+async def _send_contest_editor_summary(target_message: Message, state: FSMContext) -> None:
+    data = await state.get_data()
+    announcement_text = (data.get("contest_announcement_text") or "").strip()
+    rules_text = (data.get("contest_rules_text") or "").strip()
+    await target_message.answer(
+        "\n".join([
+            "✅ Данные конкурса обновлены в черновике.",
+            f"📣 Объявление: {'готово' if announcement_text else 'не задано'}",
+            f"📜 Правила: {'готово' if rules_text else 'не заданы'}",
+            "",
+            "Выберите действие:",
+        ]),
+        reply_markup=_contest_editor_keyboard(),
+    )
+
+
+async def _send_contest_preview(chat_id: int, text: str, entities_json: str | None) -> None:
+    await bot.send_message(
+        chat_id,
+        text=text,
+        entities=_deserialize_entities(entities_json),
     )
 
 
@@ -3392,6 +3454,125 @@ async def contest_admin_menu_open(message: Message):
         "🏆 Меню конкурса:",
         reply_markup=await contest_admin_menu_keyboard(),
     )
+
+
+@dp.message(F.text == "📣 Текст объявления")
+async def contest_announcement_start(message: Message, state: FSMContext):
+    if int(message.chat.id) == int(STORAGE_CHAT_ID):
+        await message.answer("⚠️ Эти кнопки работают только в личке с ботом.")
+        return
+    if not ensure_admin(message):
+        return
+
+    await state.set_state(AdminStates.waiting_contest_announcement)
+    await message.answer(
+        "Отправьте текст объявления конкурса одним сообщением. "
+        "Можно с форматированием и кастомными эмодзи."
+    )
+
+
+@dp.message(AdminStates.waiting_contest_announcement)
+async def contest_announcement_received(message: Message, state: FSMContext):
+    if int(message.chat.id) == int(STORAGE_CHAT_ID) or not ensure_admin(message):
+        return
+
+    announcement_text = (message.text or message.caption or "").strip()
+    announcement_entities = list(message.entities or message.caption_entities or [])
+    if not announcement_text:
+        await message.answer("Пришлите текст объявления (или подпись к медиа).")
+        return
+
+    await state.update_data(
+        contest_announcement_text=announcement_text,
+        contest_announcement_entities_json=_serialize_entities(announcement_entities),
+    )
+    await _send_contest_editor_summary(message, state)
+
+
+@dp.callback_query(F.data == "contest:edit_rules")
+async def contest_edit_rules(callback: CallbackQuery, state: FSMContext):
+    if not callback.message or not is_admin_user(callback.from_user.id):
+        await callback.answer("Недоступно", show_alert=True)
+        return
+    await state.set_state(AdminStates.waiting_contest_rules)
+    await callback.message.answer("Отправьте обновлённые правила конкурса одним сообщением.")
+    await callback.answer()
+
+
+@dp.message(AdminStates.waiting_contest_rules)
+async def contest_rules_received(message: Message, state: FSMContext):
+    if int(message.chat.id) == int(STORAGE_CHAT_ID) or not ensure_admin(message):
+        return
+
+    rules_text = (message.text or message.caption or "").strip()
+    rules_entities = list(message.entities or message.caption_entities or [])
+    if not rules_text:
+        await message.answer("Пришлите текст правил (или подпись к медиа).")
+        return
+
+    await state.update_data(
+        contest_rules_text=rules_text,
+        contest_rules_entities_json=_serialize_entities(rules_entities),
+    )
+    await _send_contest_editor_summary(message, state)
+
+
+@dp.callback_query(F.data == "contest:preview")
+async def contest_preview(callback: CallbackQuery, state: FSMContext):
+    if not callback.message or not is_admin_user(callback.from_user.id):
+        await callback.answer("Недоступно", show_alert=True)
+        return
+
+    data = await state.get_data()
+    preview_text = str(data.get("contest_announcement_text") or "").strip()
+    preview_entities_json = data.get("contest_announcement_entities_json")
+    if not preview_text:
+        settings = await get_contest_settings()
+        preview_text = str(settings.get("announcement_text") or "").strip()
+        preview_entities_json = settings.get("announcement_entities_json")
+    if not preview_text:
+        await callback.answer("Нет текста объявления для предпросмотра", show_alert=True)
+        return
+
+    await _send_contest_preview(callback.message.chat.id, preview_text, preview_entities_json)
+    await callback.answer("Предпросмотр отправлен")
+
+
+@dp.callback_query(F.data == "contest:save")
+async def contest_save(callback: CallbackQuery, state: FSMContext):
+    if not callback.message or not is_admin_user(callback.from_user.id):
+        await callback.answer("Недоступно", show_alert=True)
+        return
+
+    settings = await get_contest_settings()
+    data = await state.get_data()
+    announcement_text = data.get("contest_announcement_text")
+    announcement_entities_json = data.get("contest_announcement_entities_json")
+    rules_text = data.get("contest_rules_text")
+    rules_entities_json = data.get("contest_rules_entities_json")
+
+    await set_contest_settings(
+        enabled=bool(settings["enabled"]),
+        visibility_mode=str(settings["visibility_mode"]),
+        announcement_text=str(announcement_text) if announcement_text else settings.get("announcement_text"),
+        announcement_entities_json=(
+            str(announcement_entities_json)
+            if announcement_entities_json is not None
+            else settings.get("announcement_entities_json")
+        ),
+        rules_text=str(rules_text) if rules_text else settings.get("rules_text"),
+        rules_entities_json=(
+            str(rules_entities_json)
+            if rules_entities_json is not None
+            else settings.get("rules_entities_json")
+        ),
+        submission_open=bool(settings["submission_open"]),
+        voting_open=bool(settings["voting_open"]),
+        started_at=settings["started_at"],
+    )
+    await state.clear()
+    await callback.message.answer("Настройки конкурса сохранены ✅", reply_markup=await contest_admin_menu_keyboard())
+    await callback.answer("Сохранено")
 
 
 @dp.message(F.text == "⬅️ Назад")
