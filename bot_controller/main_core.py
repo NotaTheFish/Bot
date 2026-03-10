@@ -4079,6 +4079,88 @@ async def contest_toggle_mode(message: Message):
     )
 
 
+@dp.message(F.text == "🚀 Запустить конкурс")
+async def contest_launch_start(message: Message, state: FSMContext):
+    if message.chat.type != "private":
+        await message.answer("⚠️ Эту команду можно использовать только в личке с ботом.")
+        return
+    if not ensure_admin(message):
+        return
+
+    active_state = await state.get_state()
+    blocked_states = {
+        AdminStates.waiting_contest_announcement.state,
+        AdminStates.waiting_contest_rules.state,
+    }
+    if active_state in blocked_states:
+        await message.answer("Сначала завершите редактирование объявления или правил конкурса.")
+        return
+
+    settings = await get_contest_settings()
+    announcement_text = str(settings.get("announcement_text") or "").strip()
+    if not announcement_text:
+        await message.answer("Нельзя запустить конкурс: не задан текст объявления")
+        return
+
+    rules_text = str(settings.get("rules_text") or "").strip()
+    if not rules_text:
+        await message.answer("Нельзя запустить конкурс: не заданы правила")
+        return
+
+    await set_contest_settings(
+        enabled=True,
+        visibility_mode=str(settings.get("visibility_mode") or "public"),
+        announcement_text=settings.get("announcement_text"),
+        announcement_entities_json=settings.get("announcement_entities_json"),
+        rules_text=settings.get("rules_text"),
+        rules_entities_json=settings.get("rules_entities_json"),
+        submission_open=True,
+        voting_open=False,
+        started_at=datetime.now(timezone.utc),
+    )
+
+    visibility_mode = _contest_visibility_mode(settings)
+    mode_label = "только админ" if visibility_mode in {"admin_only", "admin"} else "участники"
+
+    if visibility_mode in {"participants", "participant", "users"}:
+        pool = await get_db_pool()
+        participants = await pool.fetch(
+            """
+            SELECT user_id
+            FROM contest_users
+            WHERE started_bot = TRUE
+              AND COALESCE(last_seen_chat_id, user_id) = user_id
+              AND COALESCE(is_admin, FALSE) = FALSE
+            """
+        )
+        for row in participants:
+            participant_id = int(row["user_id"])
+            try:
+                await bot.send_message(
+                    participant_id,
+                    text=announcement_text,
+                    entities=_deserialize_entities(settings.get("announcement_entities_json")),
+                )
+            except (TelegramForbiddenError, TelegramBadRequest) as exc:
+                logger.warning("Unable to send contest announcement to user %s: %s", participant_id, exc)
+            except TelegramRetryAfter as exc:
+                logger.warning("RetryAfter while sending contest announcement to user %s: %s", participant_id, exc)
+    else:
+        await message.answer("Конкурс включён в тестовом режиме")
+
+    await message.answer(
+        "\n".join(
+            [
+                "✅ Конкурс запущен",
+                f"Режим: {mode_label}",
+                "Приём заявок: открыт",
+                "Голосование: закрыто",
+            ]
+        ),
+        reply_markup=await contest_admin_menu_keyboard(),
+    )
+
+
 @dp.message(F.text == "🖼 Заявки конкурса")
 async def contest_admin_entries_overview(message: Message):
     if int(message.chat.id) == int(STORAGE_CHAT_ID):
