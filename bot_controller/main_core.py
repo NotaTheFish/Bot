@@ -4189,38 +4189,55 @@ async def contest_admin_entries_overview(message: Message):
         return
 
     pool = await get_db_pool()
-    pending_total = await pool.fetchval("SELECT COUNT(*) FROM contest_entries WHERE status = 'pending'")
+    counts_rows = await pool.fetch(
+        """
+        SELECT status, COUNT(*) AS total
+        FROM contest_entries
+        WHERE status IN ('pending', 'approved', 'rejected')
+        GROUP BY status
+        """
+    )
+    counts = {"pending": 0, "approved": 0, "rejected": 0}
+    for row in counts_rows:
+        counts[str(row["status"])] = int(row["total"] or 0)
 
     summary_lines: list[str] = ["🖼 Заявки конкурса"]
-    if int(pending_total or 0) == 0:
-        summary_lines.append("Новых заявок нет")
-    else:
-        summary_lines.append(f"Новых заявок: {int(pending_total)}")
+    summary_lines.append(f"⏳ На модерации: {counts['pending']}")
+    summary_lines.append(f"✅ Одобрено: {counts['approved']}")
+    summary_lines.append(f"❌ Отклонено: {counts['rejected']}")
+    if counts["pending"] == 0:
+        summary_lines.append("Новых заявок нет.")
 
     for status, label in (
-        ("pending", "pending"),
-        ("approved", "approved"),
-        ("rejected", "rejected"),
+        ("pending", "⏳ Последние заявки на модерации:"),
+        ("approved", "✅ Последние одобренные:"),
+        ("rejected", "❌ Последние отклонённые:"),
     ):
         rows = await pool.fetch(
             """
-            SELECT id, user_id, submitted_at, reviewed_at
-            FROM contest_entries
-            WHERE status = $1
-            ORDER BY COALESCE(reviewed_at, submitted_at, created_at) DESC, id DESC
+            SELECT e.id, e.user_id, e.submitted_at, e.reviewed_at, u.username
+            FROM contest_entries e
+            LEFT JOIN contest_users u ON u.user_id = e.user_id
+            WHERE e.status = $1
+            ORDER BY COALESCE(e.reviewed_at, e.submitted_at, e.created_at) DESC, e.id DESC
             LIMIT 5
             """,
             status,
         )
         summary_lines.append("")
-        summary_lines.append(f"{label} (последние {len(rows)}):")
+        summary_lines.append(label)
         if not rows:
             summary_lines.append("• —")
             continue
         for row in rows:
             ts = row["reviewed_at"] or row["submitted_at"]
+            username = (row["username"] or "").strip()
+            if username:
+                user_ref = f"@{username.lstrip('@')}"
+            else:
+                user_ref = f"user_id {int(row['user_id'])}"
             summary_lines.append(
-                f"• #{int(row['id'])} · user_id={int(row['user_id'])} · {format_admin_datetime(ts)}"
+                f"• #{int(row['id'])} — {user_ref} · {format_admin_datetime(ts)}"
             )
 
     await message.answer("\n".join(summary_lines), reply_markup=await contest_admin_menu_keyboard())
