@@ -328,6 +328,16 @@ def contest_replace_keyboard() -> ReplyKeyboardMarkup:
     )
 
 
+def contest_admin_entry_keyboard(entry_id: int, user_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="✅ Принять рисунок", callback_data=f"contest:approve:{entry_id}")],
+            [InlineKeyboardButton(text="❌ Отклонить", callback_data=f"contest:reject:{entry_id}")],
+            [InlineKeyboardButton(text="💬 Связаться с участником", url=f"tg://user?id={user_id}")],
+        ]
+    )
+
+
 def buyer_contact_inline_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
@@ -488,6 +498,8 @@ CREATE_TABLES_SQL = [
         storage_message_ids BIGINT[] NOT NULL DEFAULT '{}',
         reviewer_user_id BIGINT,
         reviewer_comment TEXT,
+        reviewed_by_admin_id BIGINT,
+        reject_reason TEXT,
         reviewed_at TIMESTAMPTZ,
         version INTEGER NOT NULL DEFAULT 1,
         is_replacement BOOLEAN NOT NULL DEFAULT FALSE,
@@ -733,6 +745,14 @@ CONTEST_MIGRATIONS_SQL = [
     """
     ALTER TABLE contest_entries
     ADD COLUMN IF NOT EXISTS is_replacement BOOLEAN NOT NULL DEFAULT FALSE
+    """,
+    """
+    ALTER TABLE contest_entries
+    ADD COLUMN IF NOT EXISTS reviewed_by_admin_id BIGINT
+    """,
+    """
+    ALTER TABLE contest_entries
+    ADD COLUMN IF NOT EXISTS reject_reason TEXT
     """,
     """
     DO $$
@@ -1719,6 +1739,119 @@ async def _replace_pending_contest_entry(entry_id: int, storage_chat_id: int, st
         storage_message_id,
     )
 
+
+
+
+async def _notify_admins_about_contest_entry(entry_id: int) -> None:
+    pool = await get_db_pool()
+    row = await pool.fetchrow(
+        """
+        SELECT
+            e.id,
+            e.user_id,
+            e.storage_chat_id,
+            e.storage_message_id,
+            e.status,
+            u.username,
+            u.first_name,
+            u.last_name
+        FROM contest_entries e
+        LEFT JOIN contest_users u ON u.user_id = e.user_id
+        WHERE e.id = $1
+        """,
+        entry_id,
+    )
+    if not row:
+        return
+
+    target_chat_id = int(row["storage_chat_id"] or STORAGE_CHAT_ID)
+    target_message_id = row["storage_message_id"]
+    if not target_message_id:
+        return
+
+    username = (row["username"] or "").strip()
+    first_name = (row["first_name"] or "").strip()
+    last_name = (row["last_name"] or "").strip()
+    display_name = " ".join(part for part in [first_name, last_name] if part).strip()
+    if not display_name:
+        display_name = "(не указано)"
+
+    caption_lines = [
+        "🆕 Новая заявка на конкурс",
+        f"Entry ID: <code>{int(row['id'])}</code>",
+        f"user_id: <code>{int(row['user_id'])}</code>",
+        f"username: @{html.escape(username)}" if username else "username: (не указан)",
+        f"display name: {html.escape(display_name)}",
+        "Статус: <b>Новая заявка</b>",
+    ]
+    caption = "\n".join(caption_lines)
+
+    for admin_id in ADMIN_IDS_LIST:
+        try:
+            await bot.copy_message(
+                chat_id=admin_id,
+                from_chat_id=target_chat_id,
+                message_id=int(target_message_id),
+                caption=caption,
+                parse_mode="HTML",
+                reply_markup=contest_admin_entry_keyboard(int(row["id"]), int(row["user_id"])),
+            )
+            await bot.send_message(
+                admin_id,
+                f"Если ссылка не открывается, user_id участника: <code>{int(row['user_id'])}</code>",
+                parse_mode="HTML",
+            )
+        except TelegramForbiddenError:
+            logger.warning("Admin %s is unreachable for contest entry notification", admin_id)
+        except TelegramBadRequest as exc:
+            logger.warning("Unable to send contest entry notification to admin %s: %s", admin_id, exc)
+
+
+async def _set_contest_entry_approved(entry_id: int, admin_id: int) -> int | None:
+    pool = await get_db_pool()
+    row = await pool.fetchrow(
+        """
+        UPDATE contest_entries
+        SET status = 'approved',
+            reviewer_user_id = $2,
+            reviewer_comment = NULL,
+            reviewed_by_admin_id = $2,
+            reject_reason = NULL,
+            reviewed_at = NOW(),
+            updated_at = NOW()
+        WHERE id = $1
+        RETURNING user_id
+        """,
+        entry_id,
+        admin_id,
+    )
+    if not row:
+        return None
+    return int(row["user_id"])
+
+
+async def _set_contest_entry_rejected(entry_id: int, admin_id: int, reason: str) -> int | None:
+    pool = await get_db_pool()
+    row = await pool.fetchrow(
+        """
+        UPDATE contest_entries
+        SET status = 'rejected',
+            reviewer_user_id = $2,
+            reviewer_comment = $3,
+            reviewed_by_admin_id = $2,
+            reject_reason = $3,
+            reviewed_at = NOW(),
+            updated_at = NOW()
+        WHERE id = $1
+        RETURNING user_id
+        """,
+        entry_id,
+        admin_id,
+        reason,
+    )
+    if not row:
+        return None
+    return int(row["user_id"])
 
 async def set_storage_chat_id(storage_chat_id: int) -> None:
     await set_meta(STORAGE_CHAT_META_KEY, str(storage_chat_id))
@@ -3738,6 +3871,8 @@ async def contest_submission_media(message: Message, state: FSMContext):
         await message.answer("Не удалось определить пользователя.")
         return
 
+    await _upsert_contest_user_start(message)
+
     is_valid_media, error_text = _extract_contest_submission_file(message)
     if not is_valid_media:
         await message.answer(error_text or "Нужны фото или документ-изображение одним сообщением.")
@@ -3749,14 +3884,100 @@ async def contest_submission_media(message: Message, state: FSMContext):
 
     if pending_entry_id:
         await _replace_pending_contest_entry(int(pending_entry_id), storage_chat_id, storage_message_id)
+        await _notify_admins_about_contest_entry(int(pending_entry_id))
         await state.clear()
         await message.answer("✅ Рисунок заменён. Заявка обновлена.", reply_markup=contest_user_keyboard())
         return
 
     await _create_pending_contest_entry(message.from_user.id, storage_chat_id, storage_message_id)
+    created_entry = await _get_pending_contest_entry(message.from_user.id)
+    if created_entry:
+        await _notify_admins_about_contest_entry(int(created_entry["id"]))
     await state.clear()
     await message.answer("✅ Заявка принята и отправлена на модерацию.", reply_markup=contest_user_keyboard())
 
+
+
+
+@dp.callback_query(F.data.startswith("contest:approve:"))
+async def contest_entry_approve(callback: CallbackQuery):
+    if not callback.message or not is_admin_user(callback.from_user.id):
+        await callback.answer()
+        return
+
+    raw_entry_id = (callback.data or "").split(":")[-1]
+    try:
+        entry_id = int(raw_entry_id)
+    except ValueError:
+        await callback.answer("Некорректная заявка", show_alert=True)
+        return
+
+    participant_id = await _set_contest_entry_approved(entry_id, callback.from_user.id)
+    if participant_id is None:
+        await callback.answer("Заявка не найдена", show_alert=True)
+        return
+
+    with suppress(TelegramBadRequest):
+        await callback.message.edit_reply_markup(reply_markup=None)
+
+    with suppress(TelegramForbiddenError, TelegramBadRequest):
+        await bot.send_message(participant_id, "Ваш рисунок принят ✅")
+
+    await callback.answer("Заявка принята")
+    await callback.message.answer(f"Заявка #{entry_id} одобрена ✅")
+
+
+@dp.callback_query(F.data.startswith("contest:reject:"))
+async def contest_entry_reject_start(callback: CallbackQuery, state: FSMContext):
+    if not callback.message or not is_admin_user(callback.from_user.id):
+        await callback.answer()
+        return
+
+    raw_entry_id = (callback.data or "").split(":")[-1]
+    try:
+        entry_id = int(raw_entry_id)
+    except ValueError:
+        await callback.answer("Некорректная заявка", show_alert=True)
+        return
+
+    await state.set_state(AdminStates.waiting_contest_reject_reason)
+    await state.update_data(contest_reject_entry_id=entry_id)
+    await callback.answer()
+    await callback.message.answer("Введите причину отклонения для участника.")
+
+
+@dp.message(AdminStates.waiting_contest_reject_reason, F.chat.type == "private")
+async def contest_entry_reject_reason(message: Message, state: FSMContext):
+    if not ensure_admin(message):
+        await state.clear()
+        return
+    if not message.from_user:
+        await state.clear()
+        return
+
+    reason = (message.text or "").strip()
+    if not reason:
+        await message.answer("Причина не должна быть пустой. Введите текст причины.")
+        return
+
+    data = await state.get_data()
+    raw_entry_id = data.get("contest_reject_entry_id")
+    if not raw_entry_id:
+        await state.clear()
+        await message.answer("Не удалось определить заявку для отклонения.")
+        return
+
+    participant_id = await _set_contest_entry_rejected(int(raw_entry_id), message.from_user.id, reason)
+    await state.clear()
+
+    if participant_id is None:
+        await message.answer("Заявка не найдена.")
+        return
+
+    with suppress(TelegramForbiddenError, TelegramBadRequest):
+        await bot.send_message(participant_id, f"Ваш рисунок отклонён ❌\nПричина: {reason}")
+
+    await message.answer(f"Заявка #{int(raw_entry_id)} отклонена ❌")
 
 @dp.callback_query(F.data == "contact:open")
 async def buyer_contact_start_inline(callback: CallbackQuery, state: FSMContext):

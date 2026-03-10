@@ -71,7 +71,10 @@ class ContestSubmissionTests(unittest.IsolatedAsyncioTestCase):
         )
         state = AsyncMock()
 
-        with patch.object(main_core, "ensure_admin", return_value=False):
+        with (
+            patch.object(main_core, "ensure_admin", return_value=False),
+            patch.object(main_core, "_upsert_contest_user_start", AsyncMock()),
+        ):
             await main_core.contest_submission_media(message, state)
 
         message.answer.assert_awaited_once()
@@ -93,11 +96,15 @@ class ContestSubmissionTests(unittest.IsolatedAsyncioTestCase):
         with (
             patch.object(main_core, "ensure_admin", return_value=False),
             patch.object(main_core, "_create_pending_contest_entry", AsyncMock()) as create_entry,
+            patch.object(main_core, "_get_pending_contest_entry", AsyncMock(return_value={"id": 33})),
+            patch.object(main_core, "_notify_admins_about_contest_entry", AsyncMock()) as notify_admins,
+            patch.object(main_core, "_upsert_contest_user_start", AsyncMock()),
             patch.object(main_core.bot, "copy_message", AsyncMock(return_value=SimpleNamespace(message_id=701))),
         ):
             await main_core.contest_submission_media(message, state)
 
         create_entry.assert_awaited_once_with(88, -100123, 701)
+        notify_admins.assert_awaited_once_with(33)
         state.clear.assert_awaited_once()
 
     async def test_submission_media_replaces_pending_entry(self):
@@ -117,12 +124,25 @@ class ContestSubmissionTests(unittest.IsolatedAsyncioTestCase):
         with (
             patch.object(main_core, "ensure_admin", return_value=False),
             patch.object(main_core, "_replace_pending_contest_entry", AsyncMock()) as replace_entry,
+            patch.object(main_core, "_notify_admins_about_contest_entry", AsyncMock()) as notify_admins,
+            patch.object(main_core, "_upsert_contest_user_start", AsyncMock()),
             patch.object(main_core.bot, "copy_message", AsyncMock(return_value=SimpleNamespace(message_id=702))),
         ):
             await main_core.contest_submission_media(message, state)
 
         replace_entry.assert_awaited_once_with(22, -100123, 702)
+        notify_admins.assert_awaited_once_with(22)
         state.clear.assert_awaited_once()
+
+    async def test_contest_admin_entry_keyboard_contains_required_actions(self):
+        keyboard = main_core.contest_admin_entry_keyboard(11, 77)
+        rows = keyboard.inline_keyboard
+        self.assertEqual(rows[0][0].text, "✅ Принять рисунок")
+        self.assertEqual(rows[0][0].callback_data, "contest:approve:11")
+        self.assertEqual(rows[1][0].text, "❌ Отклонить")
+        self.assertEqual(rows[1][0].callback_data, "contest:reject:11")
+        self.assertEqual(rows[2][0].text, "💬 Связаться с участником")
+        self.assertEqual(rows[2][0].url, "tg://user?id=77")
 
 
 if __name__ == "__main__":
