@@ -4235,15 +4235,29 @@ async def contest_admin_status(message: Message):
         return
 
     settings = await get_contest_settings()
+    enabled_labels = {True: "включён", False: "выключен"}
+    visibility_labels = {
+        "admin_only": "только админ",
+        "admin": "только админ",
+        "participants": "участники",
+        "participant": "участники",
+        "users": "участники",
+        "public": "участники",
+    }
+    submission_labels = {True: "открыт", False: "закрыт"}
+    voting_labels = {True: "открыто", False: "закрыто"}
+
+    visibility_mode = _contest_visibility_mode(settings)
+    started_at = settings.get("started_at")
     status_lines = [
         "📊 Статус конкурса",
-        f"enabled: {settings['enabled']}",
-        f"visibility_mode: {settings['visibility_mode']}",
-        f"submission_open: {settings['submission_open']}",
-        f"voting_open: {settings['voting_open']}",
-        f"started_at: {format_admin_datetime(settings['started_at'])}",
-        "announcement_text: задан" if settings.get("announcement_text") else "announcement_text: не задан",
-        "rules_text: заданы" if settings.get("rules_text") else "rules_text: не заданы",
+        f"Состояние: {enabled_labels[bool(settings.get('enabled'))]}",
+        f"Режим видимости: {visibility_labels.get(visibility_mode, 'участники')}",
+        f"Приём заявок: {submission_labels[bool(settings.get('submission_open'))]}",
+        f"Голосование: {voting_labels[bool(settings.get('voting_open'))]}",
+        f"Дата запуска: {format_admin_datetime(started_at) if started_at else 'не запускался'}",
+        "Объявление: задано" if settings.get("announcement_text") else "Объявление: не задано",
+        "Правила: заданы" if settings.get("rules_text") else "Правила: не заданы",
     ]
     await message.answer("\n".join(status_lines), reply_markup=await contest_admin_menu_keyboard())
 
