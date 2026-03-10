@@ -1125,7 +1125,7 @@ def admin_menu_keyboard() -> ReplyKeyboardMarkup:
 async def contest_admin_menu_keyboard() -> ReplyKeyboardMarkup:
     settings = await get_contest_settings()
     visibility_mode = _contest_visibility_mode(settings)
-    mode_label = "Участники" if visibility_mode in {"participants", "participant", "users"} else "Админ"
+    mode_label = "Участники" if visibility_mode == "participants" else "Админ"
     return ReplyKeyboardMarkup(
         keyboard=[
             [KeyboardButton(text="📣 Текст объявления"), KeyboardButton(text=f"👥 Режим: {mode_label}")],
@@ -1480,13 +1480,22 @@ CONTEST_SETTINGS_UPSERT_SQL = """
 """
 
 
+def _normalize_contest_visibility_mode(value: object) -> str:
+    raw = str(value or "").strip().lower()
+    if raw in {"admin", "admin_only"}:
+        return "admin_only"
+    if raw in {"participants", "participant", "users", "public"}:
+        return "participants"
+    return "participants"
+
+
 async def get_contest_settings() -> dict[str, object]:
     pool = await get_db_pool()
     row = await pool.fetchrow(CONTEST_SETTINGS_SELECT_SQL)
     if not row:
         return {
             "enabled": False,
-            "visibility_mode": "public",
+            "visibility_mode": "participants",
             "announcement_text": None,
             "announcement_entities_json": None,
             "rules_text": None,
@@ -1498,7 +1507,7 @@ async def get_contest_settings() -> dict[str, object]:
         }
     return {
         "enabled": bool(row["enabled"]),
-        "visibility_mode": str(row["visibility_mode"] or "public"),
+        "visibility_mode": _normalize_contest_visibility_mode(row["visibility_mode"]),
         "announcement_text": row["announcement_text"],
         "announcement_entities_json": row["announcement_entities_json"],
         "rules_text": row["rules_text"],
@@ -1526,7 +1535,7 @@ async def set_contest_settings(
     await pool.execute(
         CONTEST_SETTINGS_UPSERT_SQL,
         bool(enabled),
-        str(visibility_mode or "public"),
+        _normalize_contest_visibility_mode(visibility_mode),
         announcement_text,
         announcement_entities_json,
         rules_text,
@@ -1597,7 +1606,7 @@ async def _send_contest_preview(chat_id: int, text: str, entities_json: str | No
 
 
 def _contest_visibility_mode(settings: dict[str, object]) -> str:
-    return str(settings.get("visibility_mode") or "public").strip().lower()
+    return _normalize_contest_visibility_mode(settings.get("visibility_mode"))
 
 
 def _contest_visible_for_user(settings: dict[str, object], *, is_admin: bool) -> bool:
@@ -1605,9 +1614,9 @@ def _contest_visible_for_user(settings: dict[str, object], *, is_admin: bool) ->
         return False
 
     visibility_mode = _contest_visibility_mode(settings)
-    if visibility_mode in {"admin_only", "admin"}:
+    if visibility_mode == "admin_only":
         return is_admin
-    if visibility_mode in {"participants", "participant", "users"}:
+    if visibility_mode == "participants":
         return True
     return True
 
@@ -3679,10 +3688,7 @@ async def on_start(message: Message, state: FSMContext):
     if message.chat.type == "private":
         await send_buyer_pre_reply(message.chat.id)
         settings = await get_contest_settings()
-        visibility_mode = _contest_visibility_mode(settings)
-        can_send_contest_announcement = bool(settings.get("enabled")) and (
-            visibility_mode in {"participants", "participant", "users"} or is_admin
-        )
+        can_send_contest_announcement = _contest_visible_for_user(settings, is_admin=is_admin)
 
         if can_send_contest_announcement:
             announcement_text = str(settings.get("announcement_text") or "").strip()
@@ -3706,7 +3712,7 @@ async def on_start(message: Message, state: FSMContext):
                 message.from_user.id,
             )
             logger.info("/start -> awaiting_contact_button set true user_id=%s", message.from_user.id)
-            if _contest_visible_for_user(settings, is_admin=is_admin):
+            if can_send_contest_announcement:
                 await message.answer("Выберите действие:", reply_markup=buyer_contact_keyboard())
         logger.info(
             '/start pre-reply sent + inline shown user_id=%s chat_id=%s',
@@ -4078,7 +4084,7 @@ async def contest_toggle_mode(message: Message):
 
     settings = await get_contest_settings()
     current_mode = _contest_visibility_mode(settings)
-    next_mode = "participants" if current_mode in {"admin_only", "admin"} else "admin_only"
+    next_mode = "participants" if current_mode == "admin_only" else "admin_only"
     await set_contest_settings(
         enabled=bool(settings.get("enabled")),
         visibility_mode=next_mode,
@@ -4128,7 +4134,7 @@ async def contest_launch_start(message: Message, state: FSMContext):
 
     await set_contest_settings(
         enabled=True,
-        visibility_mode=str(settings.get("visibility_mode") or "public"),
+        visibility_mode=_contest_visibility_mode(settings),
         announcement_text=settings.get("announcement_text"),
         announcement_entities_json=settings.get("announcement_entities_json"),
         rules_text=settings.get("rules_text"),
@@ -4139,9 +4145,9 @@ async def contest_launch_start(message: Message, state: FSMContext):
     )
 
     visibility_mode = _contest_visibility_mode(settings)
-    mode_label = "только админ" if visibility_mode in {"admin_only", "admin"} else "участники"
+    mode_label = "только админ" if visibility_mode == "admin_only" else "участники"
 
-    if visibility_mode in {"participants", "participant", "users"}:
+    if visibility_mode == "participants":
         pool = await get_db_pool()
         participants = await pool.fetch(
             """
@@ -4255,11 +4261,7 @@ async def contest_admin_status(message: Message):
     enabled_labels = {True: "включён", False: "выключен"}
     visibility_labels = {
         "admin_only": "только админ",
-        "admin": "только админ",
         "participants": "участники",
-        "participant": "участники",
-        "users": "участники",
-        "public": "участники",
     }
     submission_labels = {True: "открыт", False: "закрыт"}
     voting_labels = {True: "открыто", False: "закрыто"}
@@ -4372,7 +4374,7 @@ async def contest_save(callback: CallbackQuery, state: FSMContext):
 
     await set_contest_settings(
         enabled=bool(settings["enabled"]),
-        visibility_mode=str(settings["visibility_mode"]),
+        visibility_mode=_contest_visibility_mode(settings),
         announcement_text=str(announcement_text) if announcement_text else settings.get("announcement_text"),
         announcement_entities_json=(
             str(announcement_entities_json)
