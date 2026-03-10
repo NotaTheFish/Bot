@@ -101,6 +101,13 @@ CONTEST_RULES_BUTTON_TEXT = "📜 Правила"
 CONTEST_BACK_BUTTON_TEXT = "⬅️ Назад"
 CONTEST_REPLACE_BUTTON_TEXT = "🔁 Заменить рисунок"
 CONTEST_CANCEL_BUTTON_TEXT = "❌ Отмена"
+CONTEST_ADMIN_BUTTON_TEXTS = {
+    "📣 Текст объявления",
+    "🚀 Запустить конкурс",
+    "🖼 Заявки конкурса",
+    "📊 Статус конкурса",
+    "⬅️ Назад",
+}
 BUYER_CONTACT_COOLDOWN_SECONDS = _get_env_int("BUYER_CONTACT_COOLDOWN_SECONDS", 60)
 CONTACT_CTA_MODE = "off"
 DEFAULT_BUYER_REPLY_PRE_TEXT = "Здравствуйте!"
@@ -1161,6 +1168,10 @@ def is_storage_chat(chat_id: int) -> bool:
 
 
 ALLOWED_STORAGE_KEYBOARD_IDS = {"storage_idle", "storage_create", "storage_post_actions"}
+
+
+def is_contest_mode_button(text: str) -> bool:
+    return isinstance(text, str) and text.startswith("👥 Режим:")
 
 
 async def send_with_storage_guard(
@@ -4056,11 +4067,12 @@ async def contest_announcement_start(message: Message, state: FSMContext):
     await state.set_state(AdminStates.waiting_contest_announcement)
     await message.answer(
         "Отправьте текст объявления конкурса одним сообщением. "
-        "Можно с форматированием и кастомными эмодзи."
+        "Можно с форматированием и кастомными эмодзи. "
+        "Завершение редактирования — через inline-кнопки Сохранить/Назад."
     )
 
 
-@dp.message(F.text.func(lambda text: isinstance(text, str) and text.startswith("👥 Режим: ")))
+@dp.message(F.text.func(is_contest_mode_button))
 async def contest_toggle_mode(message: Message):
     if int(message.chat.id) == int(STORAGE_CHAT_ID):
         await message.answer("⚠️ Эти кнопки работают только в личке с ботом.")
@@ -4235,6 +4247,10 @@ async def contest_announcement_received(message: Message, state: FSMContext):
         return
 
     announcement_text = (message.text or message.caption or "").strip()
+    if announcement_text in CONTEST_ADMIN_BUTTON_TEXTS or is_contest_mode_button(announcement_text):
+        await message.answer("Сначала завершите редактирование или нажмите Сохранить/Назад")
+        return
+
     announcement_entities = list(message.entities or message.caption_entities or [])
     if not announcement_text:
         await message.answer("Пришлите текст объявления (или подпись к медиа).")
@@ -4253,7 +4269,10 @@ async def contest_edit_rules(callback: CallbackQuery, state: FSMContext):
         await callback.answer("Недоступно", show_alert=True)
         return
     await state.set_state(AdminStates.waiting_contest_rules)
-    await callback.message.answer("Отправьте обновлённые правила конкурса одним сообщением.")
+    await callback.message.answer(
+        "Отправьте обновлённые правила конкурса одним сообщением. "
+        "Завершение редактирования — через inline-кнопки Сохранить/Назад."
+    )
     await callback.answer()
 
 
@@ -4263,6 +4282,10 @@ async def contest_rules_received(message: Message, state: FSMContext):
         return
 
     rules_text = (message.text or message.caption or "").strip()
+    if rules_text in CONTEST_ADMIN_BUTTON_TEXTS or is_contest_mode_button(rules_text):
+        await message.answer("Сначала завершите редактирование или нажмите Сохранить/Назад")
+        return
+
     rules_entities = list(message.entities or message.caption_entities or [])
     if not rules_text:
         await message.answer("Пришлите текст правил (или подпись к медиа).")
