@@ -399,6 +399,88 @@ CREATE_TABLES_SQL = [
     ON CONFLICT (id) DO NOTHING
     """,
     """
+    CREATE TABLE IF NOT EXISTS contest_settings (
+        id INTEGER PRIMARY KEY,
+        enabled BOOLEAN NOT NULL DEFAULT FALSE,
+        visibility_mode TEXT NOT NULL DEFAULT 'public',
+        announcement_text TEXT,
+        announcement_entities_json TEXT,
+        rules_text TEXT,
+        rules_entities_json TEXT,
+        submission_open BOOLEAN NOT NULL DEFAULT FALSE,
+        voting_open BOOLEAN NOT NULL DEFAULT FALSE,
+        started_at TIMESTAMPTZ,
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        CONSTRAINT contest_settings_single_row CHECK (id = 1)
+    )
+    """,
+    """
+    INSERT INTO contest_settings (id)
+    VALUES (1)
+    ON CONFLICT (id)
+    DO UPDATE SET updated_at = contest_settings.updated_at
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS contest_users (
+        user_id BIGINT PRIMARY KEY,
+        username TEXT,
+        first_name TEXT,
+        last_name TEXT,
+        last_seen_at TIMESTAMPTZ,
+        last_seen_chat_id BIGINT,
+        last_seen_message_id BIGINT,
+        is_admin BOOLEAN NOT NULL DEFAULT FALSE,
+        started_bot BOOLEAN NOT NULL DEFAULT FALSE,
+        started_at TIMESTAMPTZ,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS contest_entries (
+        id BIGSERIAL PRIMARY KEY,
+        user_id BIGINT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'draft',
+        storage_chat_id BIGINT,
+        storage_message_id BIGINT,
+        storage_message_ids BIGINT[] NOT NULL DEFAULT '{}',
+        reviewer_user_id BIGINT,
+        reviewer_comment TEXT,
+        reviewed_at TIMESTAMPTZ,
+        version INTEGER NOT NULL DEFAULT 1,
+        submitted_at TIMESTAMPTZ,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        CONSTRAINT contest_entries_status_check CHECK (
+            status IN ('draft', 'submitted', 'approved', 'rejected', 'published', 'archived')
+        )
+    )
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_contest_entries_status_submitted_at
+    ON contest_entries(status, submitted_at)
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS contest_votes (
+        id BIGSERIAL PRIMARY KEY,
+        voter_user_id BIGINT NOT NULL,
+        entry_id BIGINT NOT NULL REFERENCES contest_entries(id) ON DELETE CASCADE,
+        voter_fingerprint TEXT,
+        voter_hash TEXT,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        UNIQUE(voter_user_id, entry_id)
+    )
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_contest_votes_voter_user_id
+    ON contest_votes(voter_user_id)
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_contest_votes_entry_id
+    ON contest_votes(entry_id)
+    """,
+    """
     UPDATE bot_settings
     SET buyer_reply_pre_text = 'Здравствуйте!'
     WHERE buyer_reply_pre_text IS NULL OR btrim(buyer_reply_pre_text) = ''
@@ -525,6 +607,79 @@ CREATE_TABLES_SQL = [
     INSERT INTO worker_state (id, last_outgoing_at)
     VALUES (1, NULL)
     ON CONFLICT (id) DO NOTHING
+    """,
+]
+
+CONTEST_MIGRATIONS_SQL = [
+    """
+    ALTER TABLE contest_settings
+    ADD COLUMN IF NOT EXISTS enabled BOOLEAN NOT NULL DEFAULT FALSE
+    """,
+    """
+    ALTER TABLE contest_settings
+    ADD COLUMN IF NOT EXISTS visibility_mode TEXT NOT NULL DEFAULT 'public'
+    """,
+    """
+    ALTER TABLE contest_settings
+    ADD COLUMN IF NOT EXISTS announcement_text TEXT
+    """,
+    """
+    ALTER TABLE contest_settings
+    ADD COLUMN IF NOT EXISTS announcement_entities_json TEXT
+    """,
+    """
+    ALTER TABLE contest_settings
+    ADD COLUMN IF NOT EXISTS rules_text TEXT
+    """,
+    """
+    ALTER TABLE contest_settings
+    ADD COLUMN IF NOT EXISTS rules_entities_json TEXT
+    """,
+    """
+    ALTER TABLE contest_settings
+    ADD COLUMN IF NOT EXISTS submission_open BOOLEAN NOT NULL DEFAULT FALSE
+    """,
+    """
+    ALTER TABLE contest_settings
+    ADD COLUMN IF NOT EXISTS voting_open BOOLEAN NOT NULL DEFAULT FALSE
+    """,
+    """
+    ALTER TABLE contest_settings
+    ADD COLUMN IF NOT EXISTS started_at TIMESTAMPTZ
+    """,
+    """
+    ALTER TABLE contest_settings
+    ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    """,
+    """
+    INSERT INTO contest_settings (id)
+    VALUES (1)
+    ON CONFLICT (id)
+    DO UPDATE SET updated_at = contest_settings.updated_at
+    """,
+    """
+    ALTER TABLE contest_entries
+    ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'draft'
+    """,
+    """
+    ALTER TABLE contest_entries
+    ADD COLUMN IF NOT EXISTS submitted_at TIMESTAMPTZ
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_contest_entries_status_submitted_at
+    ON contest_entries(status, submitted_at)
+    """,
+    """
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_contest_votes_unique_voter_entry
+    ON contest_votes(voter_user_id, entry_id)
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_contest_votes_voter_user_id
+    ON contest_votes(voter_user_id)
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_contest_votes_entry_id
+    ON contest_votes(entry_id)
     """,
 ]
 
@@ -796,6 +951,8 @@ async def init_db() -> None:
             for query in POST_MIGRATIONS_SQL:
                 await conn.execute(query)
             for query in BUYER_STATE_MIGRATIONS_SQL:
+                await conn.execute(query)
+            for query in CONTEST_MIGRATIONS_SQL:
                 await conn.execute(query)
 
 
@@ -1159,6 +1316,112 @@ async def set_meta(key: str, value: str) -> None:
 async def get_meta(key: str) -> Optional[str]:
     pool = await get_db_pool()
     return await pool.fetchval("SELECT value FROM meta WHERE key = $1", key)
+
+
+CONTEST_SETTINGS_FIELDS_SQL = """
+    enabled,
+    visibility_mode,
+    announcement_text,
+    announcement_entities_json,
+    rules_text,
+    rules_entities_json,
+    submission_open,
+    voting_open,
+    started_at,
+    updated_at
+"""
+
+CONTEST_SETTINGS_SELECT_SQL = f"""
+    SELECT {CONTEST_SETTINGS_FIELDS_SQL}
+    FROM contest_settings
+    WHERE id = 1
+"""
+
+CONTEST_SETTINGS_UPSERT_SQL = """
+    INSERT INTO contest_settings (
+        id,
+        enabled,
+        visibility_mode,
+        announcement_text,
+        announcement_entities_json,
+        rules_text,
+        rules_entities_json,
+        submission_open,
+        voting_open,
+        started_at,
+        updated_at
+    )
+    VALUES (1, $1, $2, $3, $4, $5, $6, $7, $8, $9, NOW())
+    ON CONFLICT (id)
+    DO UPDATE SET
+        enabled = EXCLUDED.enabled,
+        visibility_mode = EXCLUDED.visibility_mode,
+        announcement_text = EXCLUDED.announcement_text,
+        announcement_entities_json = EXCLUDED.announcement_entities_json,
+        rules_text = EXCLUDED.rules_text,
+        rules_entities_json = EXCLUDED.rules_entities_json,
+        submission_open = EXCLUDED.submission_open,
+        voting_open = EXCLUDED.voting_open,
+        started_at = EXCLUDED.started_at,
+        updated_at = NOW()
+"""
+
+
+async def get_contest_settings() -> dict[str, object]:
+    pool = await get_db_pool()
+    row = await pool.fetchrow(CONTEST_SETTINGS_SELECT_SQL)
+    if not row:
+        return {
+            "enabled": False,
+            "visibility_mode": "public",
+            "announcement_text": None,
+            "announcement_entities_json": None,
+            "rules_text": None,
+            "rules_entities_json": None,
+            "submission_open": False,
+            "voting_open": False,
+            "started_at": None,
+            "updated_at": None,
+        }
+    return {
+        "enabled": bool(row["enabled"]),
+        "visibility_mode": str(row["visibility_mode"] or "public"),
+        "announcement_text": row["announcement_text"],
+        "announcement_entities_json": row["announcement_entities_json"],
+        "rules_text": row["rules_text"],
+        "rules_entities_json": row["rules_entities_json"],
+        "submission_open": bool(row["submission_open"]),
+        "voting_open": bool(row["voting_open"]),
+        "started_at": row["started_at"],
+        "updated_at": row["updated_at"],
+    }
+
+
+async def set_contest_settings(
+    *,
+    enabled: bool,
+    visibility_mode: str,
+    announcement_text: str | None,
+    announcement_entities_json: str | None,
+    rules_text: str | None,
+    rules_entities_json: str | None,
+    submission_open: bool,
+    voting_open: bool,
+    started_at: datetime | None,
+) -> None:
+    pool = await get_db_pool()
+    await pool.execute(
+        CONTEST_SETTINGS_UPSERT_SQL,
+        bool(enabled),
+        str(visibility_mode or "public"),
+        announcement_text,
+        announcement_entities_json,
+        rules_text,
+        rules_entities_json,
+        bool(submission_open),
+        bool(voting_open),
+        started_at,
+    )
 
 
 async def set_storage_chat_id(storage_chat_id: int) -> None:
