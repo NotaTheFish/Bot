@@ -77,6 +77,7 @@ LAST_STORAGE_ADMIN_MESSAGE_IDS_META_KEY = "last_storage_admin_message_ids"
 LAST_STORAGE_ADMIN_CHAT_ID_META_KEY = "last_storage_admin_chat_id"
 STORAGE_PANEL_MESSAGE_ID_META_KEY = "storage_panel_message_id"
 STORAGE_PANEL_CHAT_ID_META_KEY = "storage_panel_chat_id"
+CONTEST_ADMIN_MODE_META_KEY = "contest_admin_mode"
 MEDIA_GROUP_BUFFER_TIMEOUT_SECONDS = max(0.5, float(_get_env_str("MEDIA_GROUP_BUFFER_TIMEOUT_SECONDS", "1.5")))
 STORAGE_KEEP_LAST_POSTS = max(1, _get_env_int("STORAGE_KEEP_LAST_POSTS", 1))
 STORAGE_CLEANUP_EVERY_SECONDS = max(60, _get_env_int("STORAGE_CLEANUP_EVERY_SECONDS", 600))
@@ -846,6 +847,24 @@ def admin_menu_keyboard() -> ReplyKeyboardMarkup:
                 KeyboardButton(text="✅ Запустить рассылку"),
                 KeyboardButton(text="⛔ Остановить рассылку"),
             ],
+            [KeyboardButton(text="🏆 Конкурс")],
+        ],
+        resize_keyboard=True,
+    )
+
+
+async def contest_admin_menu_keyboard() -> ReplyKeyboardMarkup:
+    raw_mode = (await get_meta(CONTEST_ADMIN_MODE_META_KEY) or "admin").strip().lower()
+    is_participants_mode = raw_mode in {"participants", "participant", "users"}
+    mode_label = "Участники" if is_participants_mode else "Админ"
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text="📣 Текст объявления")],
+            [KeyboardButton(text=f"👥 Режим: {mode_label}")],
+            [KeyboardButton(text="🚀 Запустить конкурс")],
+            [KeyboardButton(text="🖼 Заявки конкурса")],
+            [KeyboardButton(text="📊 Статус конкурса")],
+            [KeyboardButton(text="⬅️ Назад")],
         ],
         resize_keyboard=True,
     )
@@ -3096,7 +3115,32 @@ async def buyer_contact_start_inline(callback: CallbackQuery, state: FSMContext)
     await callback.answer()
 
 
+@dp.message(F.text == "🏆 Конкурс")
+async def contest_admin_menu_open(message: Message):
+    if int(message.chat.id) == int(STORAGE_CHAT_ID):
+        await message.answer("⚠️ Эти кнопки работают только в личке с ботом.")
+        return
 
+    if not ensure_admin(message):
+        return
+
+    await send_with_storage_guard(
+        message,
+        "🏆 Меню конкурса:",
+        reply_markup=await contest_admin_menu_keyboard(),
+    )
+
+
+@dp.message(F.text == "⬅️ Назад")
+async def contest_admin_menu_back(message: Message):
+    if int(message.chat.id) == int(STORAGE_CHAT_ID):
+        await message.answer("⚠️ Эти кнопки работают только в личке с ботом.")
+        return
+
+    if not ensure_admin(message):
+        return
+
+    await safe_send_admin_menu(message)
 
 @dp.message(F.text == "⛔ Остановить рассылку")
 async def stop_userbot_broadcast(message: Message) -> None:
