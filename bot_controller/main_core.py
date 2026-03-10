@@ -95,6 +95,12 @@ CONTACT_PAYLOAD_PREFIX = "contact_"
 CONTACT_CTA_TEXT = "✉️ Написать продавцу"
 BUYER_CONTACT_BUTTON_TEXT = "✉️ Связаться с продавцом"
 BUYER_CONTEST_BUTTON_TEXT = "🏆 Конкурс талантов"
+CONTEST_SUBMIT_BUTTON_TEXT = "🎨 Предложить рисунок"
+CONTEST_VOTE_BUTTON_TEXT = "🗳 Голосовать за рисунок"
+CONTEST_RULES_BUTTON_TEXT = "📜 Правила"
+CONTEST_BACK_BUTTON_TEXT = "⬅️ Назад"
+CONTEST_REPLACE_BUTTON_TEXT = "🔁 Заменить рисунок"
+CONTEST_CANCEL_BUTTON_TEXT = "❌ Отмена"
 BUYER_CONTACT_COOLDOWN_SECONDS = _get_env_int("BUYER_CONTACT_COOLDOWN_SECONDS", 60)
 CONTACT_CTA_MODE = "off"
 DEFAULT_BUYER_REPLY_PRE_TEXT = "Здравствуйте!"
@@ -286,11 +292,37 @@ class ContactStates(StatesGroup):
     waiting_message = State()
 
 
+class ContestStates(StatesGroup):
+    waiting_submission_media = State()
+    waiting_replace_confirmation = State()
+
+
 def buyer_contact_keyboard() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[
             [KeyboardButton(text=BUYER_CONTACT_BUTTON_TEXT)],
             [KeyboardButton(text=BUYER_CONTEST_BUTTON_TEXT)],
+        ],
+        resize_keyboard=True,
+    )
+
+
+def contest_user_keyboard() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text=CONTEST_SUBMIT_BUTTON_TEXT)],
+            [KeyboardButton(text=CONTEST_VOTE_BUTTON_TEXT)],
+            [KeyboardButton(text=CONTEST_RULES_BUTTON_TEXT)],
+            [KeyboardButton(text=CONTEST_BACK_BUTTON_TEXT)],
+        ],
+        resize_keyboard=True,
+    )
+
+
+def contest_replace_keyboard() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text=CONTEST_REPLACE_BUTTON_TEXT), KeyboardButton(text=CONTEST_CANCEL_BUTTON_TEXT)],
         ],
         resize_keyboard=True,
     )
@@ -450,7 +482,7 @@ CREATE_TABLES_SQL = [
     CREATE TABLE IF NOT EXISTS contest_entries (
         id BIGSERIAL PRIMARY KEY,
         user_id BIGINT NOT NULL,
-        status TEXT NOT NULL DEFAULT 'draft',
+        status TEXT NOT NULL DEFAULT 'pending',
         storage_chat_id BIGINT,
         storage_message_id BIGINT,
         storage_message_ids BIGINT[] NOT NULL DEFAULT '{}',
@@ -458,17 +490,23 @@ CREATE_TABLES_SQL = [
         reviewer_comment TEXT,
         reviewed_at TIMESTAMPTZ,
         version INTEGER NOT NULL DEFAULT 1,
+        is_replacement BOOLEAN NOT NULL DEFAULT FALSE,
         submitted_at TIMESTAMPTZ,
         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
         updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
         CONSTRAINT contest_entries_status_check CHECK (
-            status IN ('draft', 'submitted', 'approved', 'rejected', 'published', 'archived')
+            status IN ('draft', 'pending', 'submitted', 'approved', 'rejected', 'published', 'archived')
         )
     )
     """,
     """
     CREATE INDEX IF NOT EXISTS idx_contest_entries_status_submitted_at
     ON contest_entries(status, submitted_at)
+    """,
+    """
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_contest_entries_user_pending_unique
+    ON contest_entries(user_id)
+    WHERE status = 'pending'
     """,
     """
     CREATE TABLE IF NOT EXISTS contest_votes (
@@ -684,12 +722,38 @@ CONTEST_MIGRATIONS_SQL = [
     ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'draft'
     """,
     """
+    UPDATE contest_entries
+    SET status = 'pending'
+    WHERE status = 'draft'
+    """,
+    """
     ALTER TABLE contest_entries
     ADD COLUMN IF NOT EXISTS submitted_at TIMESTAMPTZ
     """,
     """
+    ALTER TABLE contest_entries
+    ADD COLUMN IF NOT EXISTS is_replacement BOOLEAN NOT NULL DEFAULT FALSE
+    """,
+    """
+    DO $$
+    BEGIN
+        ALTER TABLE contest_entries
+        DROP CONSTRAINT IF EXISTS contest_entries_status_check;
+        ALTER TABLE contest_entries
+        ADD CONSTRAINT contest_entries_status_check CHECK (
+            status IN ('draft', 'pending', 'submitted', 'approved', 'rejected', 'published', 'archived')
+        );
+    END
+    $$
+    """,
+    """
     CREATE INDEX IF NOT EXISTS idx_contest_entries_status_submitted_at
     ON contest_entries(status, submitted_at)
+    """,
+    """
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_contest_entries_user_pending_unique
+    ON contest_entries(user_id)
+    WHERE status = 'pending'
     """,
     """
     CREATE UNIQUE INDEX IF NOT EXISTS idx_contest_votes_unique_voter_entry
@@ -1568,6 +1632,91 @@ async def _upsert_contest_user_start(message: Message) -> None:
         message.chat.id,
         getattr(message, "message_id", None),
         is_admin_user(message.from_user.id),
+    )
+
+
+async def _get_pending_contest_entry(user_id: int) -> dict[str, object] | None:
+    pool = await get_db_pool()
+    row = await pool.fetchrow(
+        """
+        SELECT id, user_id, status, version, storage_chat_id, storage_message_id
+        FROM contest_entries
+        WHERE user_id = $1 AND status = 'pending'
+        ORDER BY updated_at DESC, id DESC
+        LIMIT 1
+        """,
+        user_id,
+    )
+    if not row:
+        return None
+    return {
+        "id": int(row["id"]),
+        "user_id": int(row["user_id"]),
+        "status": str(row["status"]),
+        "version": int(row["version"] or 1),
+        "storage_chat_id": int(row["storage_chat_id"]) if row["storage_chat_id"] is not None else None,
+        "storage_message_id": int(row["storage_message_id"]) if row["storage_message_id"] is not None else None,
+    }
+
+
+def _extract_contest_submission_file(message: Message) -> tuple[bool, str | None]:
+    if message.media_group_id:
+        return False, "Пришлите один рисунок одним сообщением (не альбомом)."
+    if message.photo:
+        return True, None
+    if message.document and str(message.document.mime_type or "").startswith("image/"):
+        return True, None
+    return False, "Нужны фото или документ-изображение одним сообщением."
+
+
+async def _copy_contest_media_to_storage(message: Message) -> tuple[int, int]:
+    copied = await bot.copy_message(
+        chat_id=int(STORAGE_CHAT_ID),
+        from_chat_id=message.chat.id,
+        message_id=message.message_id,
+    )
+    return int(STORAGE_CHAT_ID), int(copied.message_id)
+
+
+async def _create_pending_contest_entry(user_id: int, storage_chat_id: int, storage_message_id: int) -> None:
+    pool = await get_db_pool()
+    await pool.execute(
+        """
+        INSERT INTO contest_entries (
+            user_id,
+            status,
+            storage_chat_id,
+            storage_message_id,
+            storage_message_ids,
+            version,
+            is_replacement,
+            submitted_at,
+            updated_at
+        )
+        VALUES ($1, 'pending', $2, $3, ARRAY[$3]::BIGINT[], 1, FALSE, NOW(), NOW())
+        """,
+        user_id,
+        storage_chat_id,
+        storage_message_id,
+    )
+
+
+async def _replace_pending_contest_entry(entry_id: int, storage_chat_id: int, storage_message_id: int) -> None:
+    pool = await get_db_pool()
+    await pool.execute(
+        """
+        UPDATE contest_entries
+        SET storage_chat_id = $2,
+            storage_message_id = $3,
+            storage_message_ids = ARRAY[$3]::BIGINT[],
+            version = COALESCE(version, 1) + 1,
+            is_replacement = TRUE,
+            updated_at = NOW()
+        WHERE id = $1
+        """,
+        entry_id,
+        storage_chat_id,
+        storage_message_id,
     )
 
 
@@ -3494,6 +3643,119 @@ async def buyer_contact_start(message: Message, state: FSMContext):
         "Напишите ваш вопрос одним сообщением.",
         reply_markup=buyer_contact_keyboard(),
     )
+
+
+@dp.message(F.chat.type == "private", F.text == BUYER_CONTEST_BUTTON_TEXT)
+async def buyer_contest_open(message: Message, state: FSMContext):
+    if ensure_admin(message):
+        return
+    await state.clear()
+    await message.answer("🏆 Меню конкурса:", reply_markup=contest_user_keyboard())
+
+
+@dp.message(F.chat.type == "private", F.text == CONTEST_RULES_BUTTON_TEXT)
+async def contest_show_rules(message: Message):
+    if ensure_admin(message):
+        return
+    settings = await get_contest_settings()
+    rules_text = str(settings.get("rules_text") or "").strip()
+    if not rules_text:
+        await message.answer("Правила конкурса пока не опубликованы.", reply_markup=contest_user_keyboard())
+        return
+    await message.answer(
+        rules_text,
+        entities=_deserialize_entities(settings.get("rules_entities_json")),
+        reply_markup=contest_user_keyboard(),
+    )
+
+
+@dp.message(F.chat.type == "private", F.text == CONTEST_VOTE_BUTTON_TEXT)
+async def contest_vote_placeholder(message: Message):
+    if ensure_admin(message):
+        return
+    await message.answer("Голосование будет доступно в отдельном меню.", reply_markup=contest_user_keyboard())
+
+
+@dp.message(F.chat.type == "private", F.text == CONTEST_BACK_BUTTON_TEXT)
+async def contest_user_back(message: Message, state: FSMContext):
+    if ensure_admin(message):
+        return
+    await state.clear()
+    await message.answer("Возвращаю в основное меню.", reply_markup=buyer_contact_keyboard())
+
+
+@dp.message(F.chat.type == "private", F.text == CONTEST_SUBMIT_BUTTON_TEXT)
+async def contest_submit_start(message: Message, state: FSMContext):
+    if ensure_admin(message):
+        return
+    if not message.from_user:
+        await message.answer("Не удалось определить пользователя.")
+        return
+
+    pending_entry = await _get_pending_contest_entry(message.from_user.id)
+    if pending_entry:
+        await state.set_state(ContestStates.waiting_replace_confirmation)
+        await state.update_data(contest_pending_entry_id=int(pending_entry["id"]))
+        await message.answer(
+            "У вас уже есть активная заявка. Заменить рисунок?",
+            reply_markup=contest_replace_keyboard(),
+        )
+        return
+
+    await state.set_state(ContestStates.waiting_submission_media)
+    await state.update_data(contest_pending_entry_id=None)
+    await message.answer(
+        "Отправьте рисунок одним сообщением: фото или документ-изображение.",
+        reply_markup=contest_user_keyboard(),
+    )
+
+
+@dp.message(ContestStates.waiting_replace_confirmation, F.chat.type == "private")
+async def contest_replace_confirmation(message: Message, state: FSMContext):
+    if ensure_admin(message):
+        await state.clear()
+        return
+
+    if message.text == CONTEST_CANCEL_BUTTON_TEXT:
+        await state.clear()
+        await message.answer("Ок, оставил текущую заявку без изменений.", reply_markup=contest_user_keyboard())
+        return
+
+    if message.text == CONTEST_REPLACE_BUTTON_TEXT:
+        await state.set_state(ContestStates.waiting_submission_media)
+        await message.answer("Пришлите новый рисунок одним сообщением.", reply_markup=contest_user_keyboard())
+        return
+
+    await message.answer("Выберите действие: заменить или отмена.", reply_markup=contest_replace_keyboard())
+
+
+@dp.message(ContestStates.waiting_submission_media, F.chat.type == "private")
+async def contest_submission_media(message: Message, state: FSMContext):
+    if ensure_admin(message):
+        await state.clear()
+        return
+    if not message.from_user:
+        await message.answer("Не удалось определить пользователя.")
+        return
+
+    is_valid_media, error_text = _extract_contest_submission_file(message)
+    if not is_valid_media:
+        await message.answer(error_text or "Нужны фото или документ-изображение одним сообщением.")
+        return
+
+    storage_chat_id, storage_message_id = await _copy_contest_media_to_storage(message)
+    data = await state.get_data()
+    pending_entry_id = data.get("contest_pending_entry_id")
+
+    if pending_entry_id:
+        await _replace_pending_contest_entry(int(pending_entry_id), storage_chat_id, storage_message_id)
+        await state.clear()
+        await message.answer("✅ Рисунок заменён. Заявка обновлена.", reply_markup=contest_user_keyboard())
+        return
+
+    await _create_pending_contest_entry(message.from_user.id, storage_chat_id, storage_message_id)
+    await state.clear()
+    await message.answer("✅ Заявка принята и отправлена на модерацию.", reply_markup=contest_user_keyboard())
 
 
 @dp.callback_query(F.data == "contact:open")
