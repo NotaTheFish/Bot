@@ -77,7 +77,6 @@ LAST_STORAGE_ADMIN_MESSAGE_IDS_META_KEY = "last_storage_admin_message_ids"
 LAST_STORAGE_ADMIN_CHAT_ID_META_KEY = "last_storage_admin_chat_id"
 STORAGE_PANEL_MESSAGE_ID_META_KEY = "storage_panel_message_id"
 STORAGE_PANEL_CHAT_ID_META_KEY = "storage_panel_chat_id"
-CONTEST_ADMIN_MODE_META_KEY = "contest_admin_mode"
 MEDIA_GROUP_BUFFER_TIMEOUT_SECONDS = max(0.5, float(_get_env_str("MEDIA_GROUP_BUFFER_TIMEOUT_SECONDS", "1.5")))
 STORAGE_KEEP_LAST_POSTS = max(1, _get_env_int("STORAGE_KEEP_LAST_POSTS", 1))
 STORAGE_CLEANUP_EVERY_SECONDS = max(60, _get_env_int("STORAGE_CLEANUP_EVERY_SECONDS", 600))
@@ -1124,17 +1123,14 @@ def admin_menu_keyboard() -> ReplyKeyboardMarkup:
 
 
 async def contest_admin_menu_keyboard() -> ReplyKeyboardMarkup:
-    raw_mode = (await get_meta(CONTEST_ADMIN_MODE_META_KEY) or "admin").strip().lower()
-    is_participants_mode = raw_mode in {"participants", "participant", "users"}
-    mode_label = "Участники" if is_participants_mode else "Админ"
+    settings = await get_contest_settings()
+    visibility_mode = _contest_visibility_mode(settings)
+    mode_label = "Участники" if visibility_mode in {"participants", "participant", "users"} else "Админ"
     return ReplyKeyboardMarkup(
         keyboard=[
-            [KeyboardButton(text="📣 Текст объявления")],
-            [KeyboardButton(text=f"👥 Режим: {mode_label}")],
-            [KeyboardButton(text="🚀 Запустить конкурс")],
-            [KeyboardButton(text="🖼 Заявки конкурса")],
-            [KeyboardButton(text="📊 Статус конкурса")],
-            [KeyboardButton(text="⬅️ Назад")],
+            [KeyboardButton(text="📣 Текст объявления"), KeyboardButton(text=f"👥 Режим: {mode_label}")],
+            [KeyboardButton(text="🚀 Запустить конкурс"), KeyboardButton(text="📊 Статус конкурса")],
+            [KeyboardButton(text="🖼 Заявки конкурса"), KeyboardButton(text="⬅️ Назад")],
         ],
         resize_keyboard=True,
     )
@@ -4080,9 +4076,20 @@ async def contest_toggle_mode(message: Message):
     if not ensure_admin(message):
         return
 
-    current_mode = (await get_meta(CONTEST_ADMIN_MODE_META_KEY) or "admin").strip().lower()
-    next_mode = "participants" if current_mode == "admin" else "admin"
-    await set_meta(CONTEST_ADMIN_MODE_META_KEY, next_mode)
+    settings = await get_contest_settings()
+    current_mode = _contest_visibility_mode(settings)
+    next_mode = "participants" if current_mode in {"admin_only", "admin"} else "admin_only"
+    await set_contest_settings(
+        enabled=bool(settings.get("enabled")),
+        visibility_mode=next_mode,
+        announcement_text=settings.get("announcement_text"),
+        announcement_entities_json=settings.get("announcement_entities_json"),
+        rules_text=settings.get("rules_text"),
+        rules_entities_json=settings.get("rules_entities_json"),
+        submission_open=bool(settings.get("submission_open")),
+        voting_open=bool(settings.get("voting_open")),
+        started_at=settings.get("started_at"),
+    )
 
     mode_label = "Участники" if next_mode == "participants" else "Админ"
     await message.answer(
