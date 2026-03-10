@@ -4060,6 +4060,93 @@ async def contest_announcement_start(message: Message, state: FSMContext):
     )
 
 
+@dp.message(F.text.func(lambda text: isinstance(text, str) and text.startswith("👥 Режим: ")))
+async def contest_toggle_mode(message: Message):
+    if int(message.chat.id) == int(STORAGE_CHAT_ID):
+        await message.answer("⚠️ Эти кнопки работают только в личке с ботом.")
+        return
+    if not ensure_admin(message):
+        return
+
+    current_mode = (await get_meta(CONTEST_ADMIN_MODE_META_KEY) or "admin").strip().lower()
+    next_mode = "participants" if current_mode == "admin" else "admin"
+    await set_meta(CONTEST_ADMIN_MODE_META_KEY, next_mode)
+
+    mode_label = "Участники" if next_mode == "participants" else "Админ"
+    await message.answer(
+        f"Режим переключён: {mode_label}",
+        reply_markup=await contest_admin_menu_keyboard(),
+    )
+
+
+@dp.message(F.text == "🖼 Заявки конкурса")
+async def contest_admin_entries_overview(message: Message):
+    if int(message.chat.id) == int(STORAGE_CHAT_ID):
+        await message.answer("⚠️ Эти кнопки работают только в личке с ботом.")
+        return
+    if not ensure_admin(message):
+        return
+
+    pool = await get_db_pool()
+    pending_total = await pool.fetchval("SELECT COUNT(*) FROM contest_entries WHERE status = 'pending'")
+
+    summary_lines: list[str] = ["🖼 Заявки конкурса"]
+    if int(pending_total or 0) == 0:
+        summary_lines.append("Новых заявок нет")
+    else:
+        summary_lines.append(f"Новых заявок: {int(pending_total)}")
+
+    for status, label in (
+        ("pending", "pending"),
+        ("approved", "approved"),
+        ("rejected", "rejected"),
+    ):
+        rows = await pool.fetch(
+            """
+            SELECT id, user_id, submitted_at, reviewed_at
+            FROM contest_entries
+            WHERE status = $1
+            ORDER BY COALESCE(reviewed_at, submitted_at, created_at) DESC, id DESC
+            LIMIT 5
+            """,
+            status,
+        )
+        summary_lines.append("")
+        summary_lines.append(f"{label} (последние {len(rows)}):")
+        if not rows:
+            summary_lines.append("• —")
+            continue
+        for row in rows:
+            ts = row["reviewed_at"] or row["submitted_at"]
+            summary_lines.append(
+                f"• #{int(row['id'])} · user_id={int(row['user_id'])} · {format_admin_datetime(ts)}"
+            )
+
+    await message.answer("\n".join(summary_lines), reply_markup=await contest_admin_menu_keyboard())
+
+
+@dp.message(F.text == "📊 Статус конкурса")
+async def contest_admin_status(message: Message):
+    if int(message.chat.id) == int(STORAGE_CHAT_ID):
+        await message.answer("⚠️ Эти кнопки работают только в личке с ботом.")
+        return
+    if not ensure_admin(message):
+        return
+
+    settings = await get_contest_settings()
+    status_lines = [
+        "📊 Статус конкурса",
+        f"enabled: {settings['enabled']}",
+        f"visibility_mode: {settings['visibility_mode']}",
+        f"submission_open: {settings['submission_open']}",
+        f"voting_open: {settings['voting_open']}",
+        f"started_at: {format_admin_datetime(settings['started_at'])}",
+        "announcement_text: задан" if settings.get("announcement_text") else "announcement_text: не задан",
+        "rules_text: заданы" if settings.get("rules_text") else "rules_text: не заданы",
+    ]
+    await message.answer("\n".join(status_lines), reply_markup=await contest_admin_menu_keyboard())
+
+
 @dp.message(AdminStates.waiting_contest_announcement)
 async def contest_announcement_received(message: Message, state: FSMContext):
     if int(message.chat.id) == int(STORAGE_CHAT_ID) or not ensure_admin(message):
