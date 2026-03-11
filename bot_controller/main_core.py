@@ -1660,6 +1660,16 @@ def _contest_visible_for_user(settings: dict[str, object], *, is_admin: bool) ->
     return True
 
 
+def _contest_is_test_mode(settings: dict[str, object]) -> bool:
+    return bool(settings.get("enabled")) and _contest_visibility_mode(settings) == "admin_only"
+
+
+def _contest_admin_acting_as_participant(settings: dict[str, object], user_id: int | None) -> bool:
+    if user_id is None:
+        return False
+    return bool(is_admin_user(user_id) and _contest_is_test_mode(settings))
+
+
 async def _ensure_contest_channel_subscription(user_id: int) -> tuple[bool, str | None]:
     if not CONTEST_CHANNEL_ID:
         return True, None
@@ -1677,8 +1687,8 @@ async def _ensure_contest_channel_subscription(user_id: int) -> tuple[bool, str 
     return True, None
 
 
-async def _get_contest_submission_block_reason(user_id: int) -> str | None:
-    settings = await get_contest_settings()
+async def _get_contest_submission_block_reason(user_id: int, *, settings: dict[str, object] | None = None) -> str | None:
+    settings = settings or await get_contest_settings()
 
     if not bool(settings.get("enabled")):
         return "Конкурс сейчас отключён. Подача заявок недоступна."
@@ -3880,6 +3890,11 @@ async def buyer_contact_start(message: Message, state: FSMContext):
 
 @dp.message(F.chat.type == "private", F.text == BUYER_CONTEST_BUTTON_TEXT)
 async def buyer_contest_open(message: Message, state: FSMContext):
+    settings = await get_contest_settings()
+    is_test_admin = _contest_admin_acting_as_participant(settings, message.from_user.id if message.from_user else None)
+    if ensure_admin(message) and not is_test_admin:
+        return
+
     await state.clear()
     await message.answer("🏆 Меню конкурса:", reply_markup=contest_user_keyboard())
 
@@ -3887,6 +3902,10 @@ async def buyer_contest_open(message: Message, state: FSMContext):
 @dp.message(F.chat.type == "private", F.text == CONTEST_RULES_BUTTON_TEXT)
 async def contest_show_rules(message: Message):
     settings = await get_contest_settings()
+    is_test_admin = _contest_admin_acting_as_participant(settings, message.from_user.id if message.from_user else None)
+    if ensure_admin(message) and not is_test_admin:
+        return
+
     rules_text = str(settings.get("rules_text") or "").strip()
     if not rules_text:
         await message.answer("Правила конкурса пока не опубликованы.", reply_markup=contest_user_keyboard())
@@ -3900,6 +3919,11 @@ async def contest_show_rules(message: Message):
 
 @dp.message(F.chat.type == "private", F.text == CONTEST_VOTE_BUTTON_TEXT)
 async def contest_vote_placeholder(message: Message):
+    settings = await get_contest_settings()
+    is_test_admin = _contest_admin_acting_as_participant(settings, message.from_user.id if message.from_user else None)
+    if ensure_admin(message) and not is_test_admin:
+        return
+
     if not CONTEST_WEBAPP_URL:
         await message.answer("Mini App ещё не настроен.", reply_markup=contest_user_keyboard())
         return
@@ -3925,13 +3949,15 @@ async def contest_user_back(message: Message, state: FSMContext):
 
 @dp.message(F.chat.type == "private", F.text == CONTEST_SUBMIT_BUTTON_TEXT)
 async def contest_submit_start(message: Message, state: FSMContext):
-    if ensure_admin(message):
+    settings = await get_contest_settings()
+    is_test_admin = _contest_admin_acting_as_participant(settings, message.from_user.id if message.from_user else None)
+    if ensure_admin(message) and not is_test_admin:
         return
     if not message.from_user:
         await message.answer("Не удалось определить пользователя.")
         return
 
-    block_reason = await _get_contest_submission_block_reason(message.from_user.id)
+    block_reason = await _get_contest_submission_block_reason(message.from_user.id, settings=settings)
     if block_reason:
         await state.clear()
         await message.answer(block_reason, reply_markup=contest_user_keyboard())
@@ -3957,7 +3983,9 @@ async def contest_submit_start(message: Message, state: FSMContext):
 
 @dp.message(ContestStates.waiting_replace_confirmation, F.chat.type == "private")
 async def contest_replace_confirmation(message: Message, state: FSMContext):
-    if ensure_admin(message):
+    settings = await get_contest_settings()
+    is_test_admin = _contest_admin_acting_as_participant(settings, message.from_user.id if message.from_user else None)
+    if ensure_admin(message) and not is_test_admin:
         await state.clear()
         return
 
@@ -3976,14 +4004,16 @@ async def contest_replace_confirmation(message: Message, state: FSMContext):
 
 @dp.message(ContestStates.waiting_submission_media, F.chat.type == "private")
 async def contest_submission_media(message: Message, state: FSMContext):
-    if ensure_admin(message):
+    settings = await get_contest_settings()
+    is_test_admin = _contest_admin_acting_as_participant(settings, message.from_user.id if message.from_user else None)
+    if ensure_admin(message) and not is_test_admin:
         await state.clear()
         return
     if not message.from_user:
         await message.answer("Не удалось определить пользователя.")
         return
 
-    block_reason = await _get_contest_submission_block_reason(message.from_user.id)
+    block_reason = await _get_contest_submission_block_reason(message.from_user.id, settings=settings)
     if block_reason:
         await state.clear()
         await message.answer(block_reason, reply_markup=contest_user_keyboard())

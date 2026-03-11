@@ -119,8 +119,12 @@ class ContestSubmissionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(rows[2], ["🖼 Заявки конкурса", "🏠 Главное меню"])
 
     async def test_vote_button_uses_webapp_when_configured(self):
-        message = SimpleNamespace(answer=AsyncMock())
-        with patch.object(main_core, "CONTEST_WEBAPP_URL", "https://example.com/contest"):
+        message = SimpleNamespace(answer=AsyncMock(), from_user=SimpleNamespace(id=77))
+        with (
+            patch.object(main_core, "CONTEST_WEBAPP_URL", "https://example.com/contest"),
+            patch.object(main_core, "get_contest_settings", AsyncMock(return_value={"enabled": True, "visibility_mode": "participants"})),
+            patch.object(main_core, "ensure_admin", return_value=False),
+        ):
             await main_core.contest_vote_placeholder(message)
         message.answer.assert_awaited_once()
         self.assertEqual(message.answer.await_args.args[0], "Откройте приложение для голосования.")
@@ -130,8 +134,12 @@ class ContestSubmissionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(button.web_app.url, "https://example.com/contest")
 
     async def test_vote_button_shows_fallback_without_webapp_url(self):
-        message = SimpleNamespace(answer=AsyncMock())
-        with patch.object(main_core, "CONTEST_WEBAPP_URL", ""):
+        message = SimpleNamespace(answer=AsyncMock(), from_user=SimpleNamespace(id=77))
+        with (
+            patch.object(main_core, "CONTEST_WEBAPP_URL", ""),
+            patch.object(main_core, "get_contest_settings", AsyncMock(return_value={"enabled": True, "visibility_mode": "participants"})),
+            patch.object(main_core, "ensure_admin", return_value=False),
+        ):
             await main_core.contest_vote_placeholder(message)
         message.answer.assert_awaited_once()
         self.assertEqual(message.answer.await_args.args[0], "Mini App ещё не настроен.")
@@ -146,6 +154,7 @@ class ContestSubmissionTests(unittest.IsolatedAsyncioTestCase):
 
         with (
             patch.object(main_core, "ensure_admin", return_value=False),
+            patch.object(main_core, "get_contest_settings", AsyncMock(return_value={"enabled": True, "submission_open": True, "visibility_mode": "participants"})),
             patch.object(main_core, "_get_contest_submission_block_reason", AsyncMock(return_value=None)),
             patch.object(main_core, "_get_pending_contest_entry", AsyncMock(return_value=None)),
         ):
@@ -164,6 +173,7 @@ class ContestSubmissionTests(unittest.IsolatedAsyncioTestCase):
 
         with (
             patch.object(main_core, "ensure_admin", return_value=False),
+            patch.object(main_core, "get_contest_settings", AsyncMock(return_value={"enabled": True, "submission_open": True, "visibility_mode": "participants"})),
             patch.object(main_core, "_get_contest_submission_block_reason", AsyncMock(return_value=None)),
             patch.object(main_core, "_get_pending_contest_entry", AsyncMock(return_value={"id": 15})),
         ):
@@ -182,6 +192,7 @@ class ContestSubmissionTests(unittest.IsolatedAsyncioTestCase):
 
         with (
             patch.object(main_core, "ensure_admin", return_value=False),
+            patch.object(main_core, "get_contest_settings", AsyncMock(return_value={"enabled": True, "submission_open": True, "visibility_mode": "participants"})),
             patch.object(main_core, "_get_contest_submission_block_reason", AsyncMock(return_value=None)),
             patch.object(main_core, "_get_pending_contest_entry", AsyncMock(return_value={"id": 15})),
         ):
@@ -204,6 +215,7 @@ class ContestSubmissionTests(unittest.IsolatedAsyncioTestCase):
 
         with (
             patch.object(main_core, "ensure_admin", return_value=False),
+            patch.object(main_core, "get_contest_settings", AsyncMock(return_value={"enabled": True, "submission_open": True, "visibility_mode": "participants"})),
             patch.object(main_core, "_get_contest_submission_block_reason", AsyncMock(return_value=None)),
             patch.object(main_core, "_upsert_contest_user_start", AsyncMock()),
         ):
@@ -227,6 +239,7 @@ class ContestSubmissionTests(unittest.IsolatedAsyncioTestCase):
 
         with (
             patch.object(main_core, "ensure_admin", return_value=False),
+            patch.object(main_core, "get_contest_settings", AsyncMock(return_value={"enabled": True, "submission_open": True, "visibility_mode": "participants"})),
             patch.object(main_core, "_get_contest_submission_block_reason", AsyncMock(return_value=None)),
             patch.object(main_core, "_create_pending_contest_entry", AsyncMock()) as create_entry,
             patch.object(main_core, "_get_pending_contest_entry", AsyncMock(return_value={"id": 33})),
@@ -256,6 +269,7 @@ class ContestSubmissionTests(unittest.IsolatedAsyncioTestCase):
 
         with (
             patch.object(main_core, "ensure_admin", return_value=False),
+            patch.object(main_core, "get_contest_settings", AsyncMock(return_value={"enabled": True, "submission_open": True, "visibility_mode": "participants"})),
             patch.object(main_core, "_get_contest_submission_block_reason", AsyncMock(return_value=None)),
             patch.object(main_core, "_replace_pending_contest_entry", AsyncMock()) as replace_entry,
             patch.object(main_core, "_notify_admins_about_contest_entry", AsyncMock()) as notify_admins,
@@ -284,6 +298,7 @@ class ContestSubmissionTests(unittest.IsolatedAsyncioTestCase):
 
         with (
             patch.object(main_core, "ensure_admin", return_value=False),
+            patch.object(main_core, "get_contest_settings", AsyncMock(return_value={"enabled": True, "submission_open": True, "visibility_mode": "participants"})),
             patch.object(main_core, "_get_contest_submission_block_reason", AsyncMock(return_value=None)),
             patch.object(main_core, "_create_pending_contest_entry", AsyncMock()) as create_entry,
             patch.object(main_core, "_replace_pending_contest_entry", AsyncMock()) as replace_entry,
@@ -335,6 +350,81 @@ class ContestSubmissionTests(unittest.IsolatedAsyncioTestCase):
 
         state.clear.assert_awaited_once()
         self.assertEqual(message.answer.await_args.args[0], "Подача заявок недоступна для вашего режима конкурса.")
+
+    async def test_admin_can_open_user_contest_menu_in_test_mode(self):
+        message = SimpleNamespace(from_user=SimpleNamespace(id=1), answer=AsyncMock())
+        state = AsyncMock()
+
+        with (
+            patch.object(main_core, "get_contest_settings", AsyncMock(return_value={"enabled": True, "visibility_mode": "admin_only"})),
+            patch.object(main_core, "ensure_admin", return_value=True),
+        ):
+            await main_core.buyer_contest_open(message, state)
+
+        state.clear.assert_awaited_once()
+        message.answer.assert_awaited_once()
+        self.assertEqual(message.answer.await_args.args[0], "🏆 Меню конкурса:")
+
+    async def test_admin_vote_button_available_in_test_mode(self):
+        message = SimpleNamespace(from_user=SimpleNamespace(id=1), answer=AsyncMock())
+
+        with (
+            patch.object(main_core, "CONTEST_WEBAPP_URL", "https://example.com/contest"),
+            patch.object(main_core, "get_contest_settings", AsyncMock(return_value={"enabled": True, "visibility_mode": "admin_only"})),
+            patch.object(main_core, "ensure_admin", return_value=True),
+        ):
+            await main_core.contest_vote_placeholder(message)
+
+        message.answer.assert_awaited_once()
+        self.assertEqual(message.answer.await_args.args[0], "Откройте приложение для голосования.")
+
+    async def test_admin_submit_start_allowed_in_test_mode(self):
+        message = SimpleNamespace(
+            chat=SimpleNamespace(type="private"),
+            from_user=SimpleNamespace(id=1),
+            answer=AsyncMock(),
+        )
+        state = AsyncMock()
+
+        with (
+            patch.object(main_core, "ensure_admin", return_value=True),
+            patch.object(main_core, "get_contest_settings", AsyncMock(return_value={"enabled": True, "submission_open": True, "visibility_mode": "admin_only"})),
+            patch.object(main_core, "_ensure_contest_channel_subscription", AsyncMock(return_value=(True, None))),
+            patch.object(main_core, "_get_pending_contest_entry", AsyncMock(return_value=None)),
+        ):
+            await main_core.contest_submit_start(message, state)
+
+        state.set_state.assert_awaited_once_with(main_core.ContestStates.waiting_submission_media)
+        state.update_data.assert_awaited_once_with(contest_pending_entry_id=None)
+
+    async def test_admin_submission_media_allowed_in_test_mode(self):
+        message = SimpleNamespace(
+            chat=SimpleNamespace(type="private", id=999),
+            from_user=SimpleNamespace(id=1),
+            text=None,
+            media_group_id=None,
+            photo=[SimpleNamespace(file_id="a")],
+            document=None,
+            message_id=501,
+            answer=AsyncMock(),
+        )
+        state = AsyncMock()
+        state.get_data = AsyncMock(return_value={"contest_pending_entry_id": None})
+
+        with (
+            patch.object(main_core, "ensure_admin", return_value=True),
+            patch.object(main_core, "get_contest_settings", AsyncMock(return_value={"enabled": True, "submission_open": True, "visibility_mode": "admin_only"})),
+            patch.object(main_core, "_ensure_contest_channel_subscription", AsyncMock(return_value=(True, None))),
+            patch.object(main_core, "_create_pending_contest_entry", AsyncMock()) as create_entry,
+            patch.object(main_core, "_get_pending_contest_entry", AsyncMock(return_value={"id": 33})),
+            patch.object(main_core, "_notify_admins_about_contest_entry", AsyncMock()),
+            patch.object(main_core, "_upsert_contest_user_start", AsyncMock()),
+            patch.object(main_core.bot, "copy_message", AsyncMock(return_value=SimpleNamespace(message_id=701))),
+        ):
+            await main_core.contest_submission_media(message, state)
+
+        create_entry.assert_awaited_once_with(1, -100123, 701)
+        state.clear.assert_awaited_once()
 
     async def test_submit_start_blocks_with_missing_channel_subscription(self):
         message = SimpleNamespace(chat=SimpleNamespace(type="private"), from_user=SimpleNamespace(id=77), answer=AsyncMock())
