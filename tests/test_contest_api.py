@@ -153,6 +153,32 @@ class ContestApiVotingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.status, 409)
         self.assertEqual(payload["error_code"], "duplicate_vote")
 
+    async def test_cast_vote_rejects_deleted_entry(self):
+        api = self._build_api()
+        conn = SimpleNamespace(
+            fetchrow=AsyncMock(return_value={"id": 10, "owner_user_id": 77, "status": "approved", "is_deleted": True}),
+            fetchval=AsyncMock(),
+            execute=AsyncMock(),
+            transaction=lambda: _DummyTx(),
+        )
+        api._pool = SimpleNamespace(acquire=lambda: _AcquireCtx(conn))
+        request = SimpleNamespace(
+            json=AsyncMock(return_value={"entry_id": 10}),
+            remote="127.0.0.1",
+            headers={"User-Agent": "UA"},
+        )
+
+        with (
+            patch.object(api, "_extract_auth", return_value={"user_id": 42}),
+            patch.object(api, "_ensure_channel_subscription", AsyncMock()),
+            patch.object(api, "_get_contest_settings", AsyncMock(return_value={"enabled": True, "voting_open": True})),
+        ):
+            response = await api.cast_vote(request)
+
+        payload = json.loads(response.text)
+        self.assertEqual(response.status, 404)
+        self.assertEqual(payload["error_code"], "entry_not_available")
+
     async def test_cast_vote_forbids_self_vote(self):
         api = self._build_api()
         conn = SimpleNamespace(
@@ -256,6 +282,20 @@ class ContestApiVotingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(payload["voted_entry_ids"], [10, 11])
         self.assertTrue(payload["voting_open"])
         self.assertTrue(payload["is_channel_member"])
+
+    async def test_approved_entries_filters_deleted_entries_in_sql(self):
+        api = self._build_api()
+        api._pool = SimpleNamespace(fetch=AsyncMock(return_value=[]))
+        request = SimpleNamespace()
+
+        with patch.object(api, "_extract_auth", return_value={"user_id": 42}):
+            response = await api.approved_entries(request)
+
+        payload = json.loads(response.text)
+        self.assertEqual(response.status, 200)
+        self.assertTrue(payload["ok"])
+        query = api._pool.fetch.await_args.args[0]
+        self.assertIn("COALESCE(e.is_deleted, FALSE) = FALSE", query)
 
     async def test_approved_entries_returns_current_user_and_owner_fields(self):
         api = self._build_api()

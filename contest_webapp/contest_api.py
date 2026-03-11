@@ -221,6 +221,7 @@ async def approved_entries(x_telegram_init_data: str = Header(default="")) -> JS
                 GROUP BY entry_id
             ) v ON v.entry_id = e.id
             WHERE e.status = 'approved'
+              AND COALESCE(e.is_deleted, FALSE) = FALSE
             ORDER BY e.submitted_at DESC NULLS LAST, e.id DESC
             """
         )
@@ -283,11 +284,11 @@ async def cast_vote(request: Request, x_telegram_init_data: str = Header(default
                     raise VoteError("Голосование сейчас закрыто.", "voting_closed", 403)
 
                 entry = await conn.fetchrow(
-                    "SELECT id, owner_user_id, status FROM contest_entries WHERE id = $1 FOR UPDATE",
+                    "SELECT id, owner_user_id, status, COALESCE(is_deleted, FALSE) AS is_deleted FROM contest_entries WHERE id = $1 FOR UPDATE",
                     entry_id,
                 )
-                if entry is None or entry["status"] != "approved":
-                    raise VoteError("Работа недоступна для голосования.", "entry_unavailable", 404)
+                if entry is None or entry["status"] != "approved" or bool(entry["is_deleted"]):
+                    raise VoteError("Работа недоступна для голосования.", "entry_not_available", 404)
                 if int(entry["owner_user_id"]) == int(auth["user_id"]):
                     raise VoteError("Нельзя голосовать за свою работу.", "self_vote_forbidden", 400)
 
