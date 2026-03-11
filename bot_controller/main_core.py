@@ -751,25 +751,58 @@ CONTEST_MIGRATIONS_SQL = [
     ADD COLUMN IF NOT EXISTS caption TEXT
     """,
     """
-    UPDATE contest_entries
-    SET owner_user_id = COALESCE(owner_user_id, user_id)
-    WHERE owner_user_id IS NULL
+    DO $$
+    BEGIN
+        IF EXISTS (
+            SELECT 1
+            FROM information_schema.columns
+            WHERE table_name = 'contest_entries' AND column_name = 'user_id'
+        ) THEN
+            UPDATE contest_entries
+            SET owner_user_id = COALESCE(owner_user_id, user_id)
+            WHERE owner_user_id IS NULL;
+        END IF;
+    END
+    $$
     """,
     """
-    UPDATE contest_entries e
-    SET owner_username_last_seen = COALESCE(e.owner_username_last_seen, u.username_last_seen, u.username),
-        owner_first_name_last_seen = COALESCE(e.owner_first_name_last_seen, u.first_name_last_seen, u.first_name),
-        owner_last_name_last_seen = COALESCE(e.owner_last_name_last_seen, u.last_name_last_seen, u.last_name)
-    FROM contest_users u
-    WHERE u.user_id = COALESCE(e.owner_user_id, e.user_id)
+    DO $$
+    BEGIN
+        IF EXISTS (
+            SELECT 1
+            FROM information_schema.columns
+            WHERE table_name = 'contest_entries' AND column_name = 'user_id'
+        ) THEN
+            UPDATE contest_entries e
+            SET owner_username_last_seen = COALESCE(e.owner_username_last_seen, u.username_last_seen, u.username),
+                owner_first_name_last_seen = COALESCE(e.owner_first_name_last_seen, u.first_name_last_seen, u.first_name),
+                owner_last_name_last_seen = COALESCE(e.owner_last_name_last_seen, u.last_name_last_seen, u.last_name)
+            FROM contest_users u
+            WHERE u.user_id = COALESCE(e.owner_user_id, e.user_id);
+        ELSE
+            UPDATE contest_entries e
+            SET owner_username_last_seen = COALESCE(e.owner_username_last_seen, u.username_last_seen, u.username),
+                owner_first_name_last_seen = COALESCE(e.owner_first_name_last_seen, u.first_name_last_seen, u.first_name),
+                owner_last_name_last_seen = COALESCE(e.owner_last_name_last_seen, u.last_name_last_seen, u.last_name)
+            FROM contest_users u
+            WHERE u.user_id = e.owner_user_id;
+        END IF;
+    END
+    $$
     """,
     """
-    ALTER TABLE contest_entries
-    ALTER COLUMN owner_user_id SET NOT NULL
-    """,
-    """
-    ALTER TABLE contest_entries
-    DROP COLUMN IF EXISTS user_id
+    DO $$
+    BEGIN
+        IF NOT EXISTS (
+            SELECT 1
+            FROM contest_entries
+            WHERE owner_user_id IS NULL
+        ) THEN
+            ALTER TABLE contest_entries
+            ALTER COLUMN owner_user_id SET NOT NULL;
+        END IF;
+    END
+    $$
     """,
     """
     ALTER TABLE contest_entries
