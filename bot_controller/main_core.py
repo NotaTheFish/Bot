@@ -1620,33 +1620,18 @@ async def set_contest_settings(
     voting_open: bool,
     started_at: datetime | None,
 ) -> None:
-    def _normalize_entities_payload(value: object) -> list[object] | dict[str, object] | None:
-        if value is None:
-            return None
-        if isinstance(value, str):
-            raw = value.strip()
-            if not raw:
-                return None
-            try:
-                parsed = json.loads(raw)
-            except json.JSONDecodeError:
-                return None
-            return parsed if isinstance(parsed, (list, dict)) and parsed else None
-        if isinstance(value, (list, dict)):
-            return value if value else None
-        return None
+    announcement_entities_json = _normalize_entities_for_db(announcement_entities_json)
+    rules_entities_json = _normalize_entities_for_db(rules_entities_json)
 
     pool = await get_db_pool()
-    parsed_announcement_entities = _normalize_entities_payload(announcement_entities_json)
-    parsed_rules_entities = _normalize_entities_payload(rules_entities_json)
     await pool.execute(
         CONTEST_SETTINGS_UPSERT_SQL,
         bool(enabled),
         _normalize_contest_visibility_mode(visibility_mode),
         announcement_text,
-        parsed_announcement_entities,
+        announcement_entities_json,
         rules_text,
-        parsed_rules_entities,
+        rules_entities_json,
         bool(submission_open),
         bool(voting_open),
         started_at,
@@ -1659,20 +1644,17 @@ def _serialize_entities(entities: list[MessageEntity] | None) -> str | None:
     return json.dumps([entity.model_dump(exclude_none=True) for entity in entities], ensure_ascii=False)
 
 
-def _normalize_entities_for_storage(value: object) -> str | None:
+def _normalize_entities_for_db(value: object) -> str | None:
     if value is None:
         return None
-    if isinstance(value, str):
-        normalized = value.strip()
-        return normalized or None
-    if isinstance(value, (list, dict)):
-        if not value:
-            return None
-        return json.dumps(value, ensure_ascii=False)
-    try:
-        return json.dumps(value, ensure_ascii=False)
-    except (TypeError, ValueError):
+    if value == "":
         return None
+    if isinstance(value, str):
+        return value
+    if isinstance(value, (list, dict)):
+        return json.dumps(value, ensure_ascii=False)
+    return None
+
 
 
 def _normalize_text_for_storage(value: object) -> str | None:
@@ -4716,11 +4698,11 @@ async def contest_save(callback: CallbackQuery, state: FSMContext):
         enabled=bool(settings["enabled"]),
         visibility_mode=_contest_visibility_mode(settings),
         announcement_text=normalized_announcement_text if normalized_announcement_text else settings.get("announcement_text"),
-        announcement_entities_json=_normalize_entities_for_storage(announcement_entities_json)
+        announcement_entities_json=announcement_entities_json
         if announcement_entities_json is not None
         else settings.get("announcement_entities_json"),
         rules_text=normalized_rules_text if normalized_rules_text else settings.get("rules_text"),
-        rules_entities_json=_normalize_entities_for_storage(rules_entities_json)
+        rules_entities_json=rules_entities_json
         if rules_entities_json is not None
         else settings.get("rules_entities_json"),
         submission_open=bool(settings["submission_open"]),
