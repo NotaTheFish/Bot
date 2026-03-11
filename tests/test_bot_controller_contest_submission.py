@@ -3,6 +3,7 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
+from aiogram.exceptions import TelegramForbiddenError
 from aiogram.types import MessageEntity
 
 os.environ.setdefault("BOT_TOKEN", "123:abc")
@@ -175,7 +176,7 @@ class ContestSubmissionTests(unittest.IsolatedAsyncioTestCase):
         ):
             await main_core.contest_vote_placeholder(message)
         message.answer.assert_awaited_once()
-        self.assertEqual(message.answer.await_args.args[0], "Откройте приложение для голосования.")
+        self.assertEqual(message.answer.await_args.args[0], "Откройте приложение для голосования:")
         reply_markup = message.answer.await_args.kwargs["reply_markup"]
         button = reply_markup.inline_keyboard[0][0]
         self.assertEqual(button.text, "🗳 Открыть голосование")
@@ -190,7 +191,7 @@ class ContestSubmissionTests(unittest.IsolatedAsyncioTestCase):
         ):
             await main_core.contest_vote_placeholder(message)
         message.answer.assert_awaited_once()
-        self.assertEqual(message.answer.await_args.args[0], "Mini App ещё не настроен.")
+        self.assertEqual(message.answer.await_args.args[0], "Mini App ещё не настроен. Обратитесь к администратору.")
 
     async def test_submit_start_without_pending_entry_sets_waiting_media_state(self):
         message = SimpleNamespace(
@@ -428,6 +429,38 @@ class ContestSubmissionTests(unittest.IsolatedAsyncioTestCase):
         message.answer.assert_awaited_once()
         self.assertEqual(message.answer.await_args.args[0], "🏆 Меню конкурса:")
 
+    async def test_non_admin_tester_gets_user_contest_flow_in_admin_only_mode(self):
+        message = SimpleNamespace(from_user=SimpleNamespace(id=555), answer=AsyncMock())
+        state = AsyncMock()
+
+        with (
+            patch.object(main_core, "get_contest_settings", AsyncMock(return_value={"enabled": True, "visibility_mode": "admin_only"})),
+            patch.object(main_core, "ensure_admin", return_value=False),
+            patch.object(main_core, "is_admin_user", return_value=False),
+            patch.object(main_core, "CONTEST_TESTER_IDS_LIST", [555]),
+        ):
+            await main_core.buyer_contest_open(message, state)
+
+        message.answer.assert_awaited_once_with("🏆 Меню конкурса:", reply_markup=main_core.contest_user_keyboard())
+
+    async def test_non_admin_non_tester_denied_in_admin_only_mode(self):
+        message = SimpleNamespace(from_user=SimpleNamespace(id=777), answer=AsyncMock())
+        state = AsyncMock()
+
+        with (
+            patch.object(main_core, "get_contest_settings", AsyncMock(return_value={"enabled": True, "visibility_mode": "admin_only"})),
+            patch.object(main_core, "ensure_admin", return_value=False),
+            patch.object(main_core, "is_admin_user", return_value=False),
+            patch.object(main_core, "CONTEST_TESTER_IDS_LIST", [555]),
+        ):
+            await main_core.buyer_contest_open(message, state)
+
+        state.clear.assert_not_awaited()
+        message.answer.assert_awaited_once_with(
+            "Конкурс сейчас недоступен для вашего профиля.",
+            reply_markup=main_core.buyer_contact_keyboard(),
+        )
+
     async def test_tester_submit_start_allowed_in_admin_only_mode(self):
         message = SimpleNamespace(
             chat=SimpleNamespace(type="private"),
@@ -488,7 +521,7 @@ class ContestSubmissionTests(unittest.IsolatedAsyncioTestCase):
             await main_core.contest_vote_placeholder(message)
 
         message.answer.assert_awaited_once()
-        self.assertEqual(message.answer.await_args.args[0], "Откройте приложение для голосования.")
+        self.assertEqual(message.answer.await_args.args[0], "Откройте приложение для голосования:")
 
     async def test_admin_submit_start_allowed_in_test_mode(self):
         message = SimpleNamespace(
@@ -645,6 +678,39 @@ class ContestSubmissionTests(unittest.IsolatedAsyncioTestCase):
 
         delete_entry.assert_awaited_once_with(15, 1)
         send_message.assert_awaited_once_with(88, "Ваш рисунок был удалён организатором.")
+        callback.answer.assert_awaited_once_with("Рисунок удалён")
+        callback.message.answer.assert_awaited_once_with("Рисунок в заявке #15 удалён 🗑")
+
+    async def test_mark_contest_entry_deleted_uses_soft_delete_sql_fields(self):
+        pool = AsyncMock()
+        pool.fetchrow = AsyncMock(return_value={"owner_user_id": 88})
+
+        with patch.object(main_core, "get_db_pool", AsyncMock(return_value=pool)):
+            participant_id = await main_core._mark_contest_entry_deleted(15, 1)
+
+        self.assertEqual(participant_id, 88)
+        query = pool.fetchrow.await_args.args[0]
+        self.assertIn("SET is_deleted = TRUE", query)
+        self.assertIn("deleted_at = NOW()", query)
+        self.assertIn("deleted_by_admin_id = $2", query)
+
+    async def test_delete_handler_does_not_crash_when_participant_unreachable(self):
+        callback = SimpleNamespace(
+            data="contest:delete:15",
+            from_user=SimpleNamespace(id=1),
+            answer=AsyncMock(),
+            message=SimpleNamespace(answer=AsyncMock(), edit_reply_markup=AsyncMock()),
+        )
+
+        with (
+            patch.object(main_core, "is_admin_user", return_value=True),
+            patch.object(main_core, "_mark_contest_entry_deleted", AsyncMock(return_value=88)),
+            patch.object(main_core.bot, "send_message", AsyncMock(side_effect=TelegramForbiddenError(method="sendMessage", message="blocked"))),
+        ):
+            await main_core.contest_entry_delete(callback)
+
+        callback.answer.assert_awaited_once_with("Рисунок удалён")
+        callback.message.answer.assert_awaited_once_with("Рисунок в заявке #15 удалён 🗑")
 
 
     async def test_reject_reason_ignores_contest_system_buttons(self):
@@ -686,6 +752,8 @@ class ContestSubmissionTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("owner_user_id", migration_sql)
         self.assertIn("COALESCE(owner_user_id, user_id)", migration_sql)
         self.assertIn("idx_contest_entries_owner_pending_unique", migration_sql)
+        self.assertIn("is_deleted BOOLEAN NOT NULL DEFAULT FALSE", migration_sql)
+        self.assertIn("deleted_at TIMESTAMPTZ", migration_sql)
         self.assertIn("deleted_by_admin_id", migration_sql)
 
     async def test_contest_entries_table_contains_soft_delete_fields(self):
