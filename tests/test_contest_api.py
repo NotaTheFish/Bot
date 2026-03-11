@@ -88,12 +88,15 @@ class ContestApiVotingTests(unittest.IsolatedAsyncioTestCase):
             patch.object(api, "_extract_auth", return_value={"user_id": 42}),
             patch.object(api, "_ensure_channel_subscription", AsyncMock()),
             patch.object(api, "_is_suspicious", AsyncMock(return_value=False)),
+            patch.object(api, "_get_contest_settings", AsyncMock(return_value={"enabled": True, "voting_open": True})),
         ):
             response = await api.cast_vote(request)
 
         payload = json.loads(response.text)
         self.assertEqual(response.status, 200)
         self.assertTrue(payload["ok"])
+        self.assertEqual(payload["votes_used"], 1)
+        self.assertEqual(payload["votes_remaining"], 2)
         conn.execute.assert_awaited_once()
         insert_sql = conn.execute.await_args.args[0]
         self.assertIn("suspicion_reason", insert_sql)
@@ -116,6 +119,7 @@ class ContestApiVotingTests(unittest.IsolatedAsyncioTestCase):
         with (
             patch.object(api, "_extract_auth", return_value={"user_id": 42}),
             patch.object(api, "_ensure_channel_subscription", AsyncMock()),
+            patch.object(api, "_get_contest_settings", AsyncMock(return_value={"enabled": True, "voting_open": True})),
         ):
             response = await api.cast_vote(request)
 
@@ -141,6 +145,7 @@ class ContestApiVotingTests(unittest.IsolatedAsyncioTestCase):
         with (
             patch.object(api, "_extract_auth", return_value={"user_id": 42}),
             patch.object(api, "_ensure_channel_subscription", AsyncMock()),
+            patch.object(api, "_get_contest_settings", AsyncMock(return_value={"enabled": True, "voting_open": True})),
         ):
             response = await api.cast_vote(request)
 
@@ -166,6 +171,7 @@ class ContestApiVotingTests(unittest.IsolatedAsyncioTestCase):
         with (
             patch.object(api, "_extract_auth", return_value={"user_id": 42}),
             patch.object(api, "_ensure_channel_subscription", AsyncMock()),
+            patch.object(api, "_get_contest_settings", AsyncMock(return_value={"enabled": True, "voting_open": True})),
         ):
             response = await api.cast_vote(request)
 
@@ -201,6 +207,86 @@ class ContestApiVotingTests(unittest.IsolatedAsyncioTestCase):
         payload = json.loads(response.text)
         self.assertEqual(response.status, 403)
         self.assertEqual(payload["error_code"], "subscription_required")
+
+    async def test_cast_vote_blocks_when_voting_closed(self):
+        api = self._build_api()
+        conn = SimpleNamespace(
+            fetchrow=AsyncMock(),
+            fetchval=AsyncMock(),
+            execute=AsyncMock(),
+            transaction=lambda: _DummyTx(),
+        )
+        api._pool = SimpleNamespace(acquire=lambda: _AcquireCtx(conn))
+        request = SimpleNamespace(
+            json=AsyncMock(return_value={"entry_id": 10}),
+            remote="127.0.0.1",
+            headers={"User-Agent": "UA"},
+        )
+
+        with (
+            patch.object(api, "_extract_auth", return_value={"user_id": 42}),
+            patch.object(api, "_ensure_channel_subscription", AsyncMock()),
+            patch.object(api, "_get_contest_settings", AsyncMock(return_value={"enabled": True, "voting_open": False})),
+        ):
+            response = await api.cast_vote(request)
+
+        payload = json.loads(response.text)
+        self.assertEqual(response.status, 403)
+        self.assertEqual(payload["error_code"], "voting_closed")
+
+    async def test_votes_state_returns_new_contract(self):
+        api = self._build_api()
+        api._pool = SimpleNamespace(
+            fetchval=AsyncMock(return_value=1),
+            fetch=AsyncMock(return_value=[{"entry_id": 10}, {"entry_id": 11}]),
+        )
+        request = SimpleNamespace()
+
+        with (
+            patch.object(api, "_extract_auth", return_value={"user_id": 42}),
+            patch.object(api, "_get_contest_settings", AsyncMock(return_value={"enabled": True, "voting_open": True})),
+            patch.object(api, "_check_channel_subscription", AsyncMock(return_value=True)),
+        ):
+            response = await api.votes_state(request)
+
+        payload = json.loads(response.text)
+        self.assertEqual(response.status, 200)
+        self.assertEqual(payload["votes_used"], 1)
+        self.assertEqual(payload["votes_remaining"], 2)
+        self.assertEqual(payload["voted_entry_ids"], [10, 11])
+        self.assertTrue(payload["voting_open"])
+        self.assertTrue(payload["is_channel_member"])
+
+    async def test_approved_entries_returns_current_user_and_owner_fields(self):
+        api = self._build_api()
+        api._pool = SimpleNamespace(
+            fetch=AsyncMock(
+                return_value=[
+                    {
+                        "id": 5,
+                        "owner_user_id": 42,
+                        "owner_username_last_seen": "me",
+                        "owner_first_name_last_seen": "Test",
+                        "owner_last_name_last_seen": "User",
+                        "storage_chat_id": 1,
+                        "storage_message_id": 2,
+                        "storage_message_ids": [2],
+                        "submitted_at": None,
+                        "created_at": None,
+                        "votes_count": 3,
+                    }
+                ]
+            )
+        )
+        request = SimpleNamespace()
+
+        with patch.object(api, "_extract_auth", return_value={"user_id": 42}):
+            response = await api.approved_entries(request)
+
+        payload = json.loads(response.text)
+        self.assertEqual(response.status, 200)
+        self.assertEqual(payload["current_user"], {"user_id": 42})
+        self.assertTrue(payload["items"][0]["is_owned_by_current_user"])
 
     async def test_ensure_schema_adds_suspicion_reason_column(self):
         api = self._build_api()

@@ -166,36 +166,55 @@ class ContestAPI:
     async def health(self, _: web.Request) -> web.Response:
         return web.json_response({"ok": True})
 
-    async def approved_entries(self, _: web.Request) -> web.Response:
-        rows = await self.pool.fetch(
-            """
-            SELECT
-                e.id,
-                e.owner_user_id,
-                e.storage_chat_id,
-                e.storage_message_id,
-                e.storage_message_ids,
-                e.submitted_at,
-                e.created_at,
-                COALESCE(v.votes_count, 0) AS votes_count
-            FROM contest_entries e
-            LEFT JOIN (
-                SELECT entry_id, COUNT(*)::INT AS votes_count
-                FROM contest_votes
-                GROUP BY entry_id
-            ) v ON v.entry_id = e.id
-            WHERE e.status = 'approved'
-            ORDER BY e.submitted_at DESC NULLS LAST, e.id DESC
-            """
-        )
-        items = [dict(row) for row in rows]
-        return web.json_response({"ok": True, "items": items})
+    async def approved_entries(self, request: web.Request) -> web.Response:
+        try:
+            auth = self._extract_auth(request)
+            rows = await self.pool.fetch(
+                """
+                SELECT
+                    e.id,
+                    e.owner_user_id,
+                    e.owner_username_last_seen,
+                    e.owner_first_name_last_seen,
+                    e.owner_last_name_last_seen,
+                    e.storage_chat_id,
+                    e.storage_message_id,
+                    e.storage_message_ids,
+                    e.submitted_at,
+                    e.created_at,
+                    COALESCE(v.votes_count, 0) AS votes_count
+                FROM contest_entries e
+                LEFT JOIN (
+                    SELECT entry_id, COUNT(*)::INT AS votes_count
+                    FROM contest_votes
+                    GROUP BY entry_id
+                ) v ON v.entry_id = e.id
+                WHERE e.status = 'approved'
+                ORDER BY e.submitted_at DESC NULLS LAST, e.id DESC
+                """
+            )
+            current_user_id = int(auth["user_id"])
+            items = []
+            for row in rows:
+                item = dict(row)
+                item["is_owned_by_current_user"] = int(item["owner_user_id"]) == current_user_id
+                items.append(item)
+
+            return web.json_response({"ok": True, "current_user": {"user_id": current_user_id}, "items": items})
+        except VoteError as exc:
+            return web.json_response({"ok": False, "error_code": exc.code, "message": exc.message}, status=exc.status)
 
     async def votes_state(self, request: web.Request) -> web.Response:
         try:
             auth = self._extract_auth(request)
+            settings = await self._get_contest_settings()
+            is_channel_member = await self._check_channel_subscription(auth["user_id"])
             used = await self.pool.fetchval(
                 "SELECT COUNT(*)::INT FROM contest_votes WHERE voter_user_id = $1",
+                auth["user_id"],
+            )
+            voted_entry_rows = await self.pool.fetch(
+                "SELECT entry_id FROM contest_votes WHERE voter_user_id = $1 ORDER BY created_at ASC",
                 auth["user_id"],
             )
             used = int(used or 0)
@@ -204,8 +223,11 @@ class ContestAPI:
                     "ok": True,
                     "user_id": auth["user_id"],
                     "max_votes": MAX_VOTES_PER_USER,
-                    "used_votes": used,
-                    "remaining_votes": max(0, MAX_VOTES_PER_USER - used),
+                    "votes_used": used,
+                    "votes_remaining": max(0, MAX_VOTES_PER_USER - used),
+                    "voted_entry_ids": [int(row["entry_id"]) for row in voted_entry_rows],
+                    "voting_open": bool(settings["enabled"]) and bool(settings["voting_open"]),
+                    "is_channel_member": is_channel_member,
                 }
             )
         except VoteError as exc:
@@ -223,6 +245,10 @@ class ContestAPI:
 
             async with self.pool.acquire() as conn:
                 async with conn.transaction():
+                    settings = await self._get_contest_settings(conn)
+                    if not bool(settings["enabled"]) or not bool(settings["voting_open"]):
+                        raise VoteError("Голосование сейчас закрыто.", "voting_closed", 403)
+
                     entry = await conn.fetchrow(
                         """
                         SELECT id, owner_user_id, status
@@ -288,8 +314,8 @@ class ContestAPI:
                 {
                     "ok": True,
                     "entry_id": entry_id,
-                    "used_votes": new_used,
-                    "remaining_votes": max(0, MAX_VOTES_PER_USER - new_used),
+                    "votes_used": new_used,
+                    "votes_remaining": max(0, MAX_VOTES_PER_USER - new_used),
                     "is_suspicious": suspicious,
                 }
             )
@@ -342,6 +368,11 @@ class ContestAPI:
         return int(repeated_same_ua or 0) >= 2
 
     async def _ensure_channel_subscription(self, user_id: int) -> None:
+        is_member = await self._check_channel_subscription(user_id)
+        if not is_member:
+            raise VoteError("Чтобы голосовать, нужно подписаться на канал.", "subscription_required", 403)
+
+    async def _check_channel_subscription(self, user_id: int) -> bool:
         method_url = f"https://api.telegram.org/bot{BOT_TOKEN}/getChatMember"
         async with self.http.get(method_url, params={"chat_id": CONTEST_CHANNEL_ID, "user_id": user_id}) as resp:
             data = await resp.json(content_type=None)
@@ -351,8 +382,14 @@ class ContestAPI:
             raise VoteError("Не удалось проверить подписку на канал, попробуйте позже.", "subscription_check_failed", 503)
 
         status = str(((data.get("result") or {}).get("status") or "")).lower()
-        if status in {"left", "kicked"}:
-            raise VoteError("Чтобы голосовать, нужно подписаться на канал.", "subscription_required", 403)
+        return status not in {"left", "kicked"}
+
+    async def _get_contest_settings(self, conn: asyncpg.Connection | None = None) -> dict[str, bool]:
+        db = conn or self.pool
+        row = await db.fetchrow("SELECT enabled, voting_open FROM contest_settings WHERE id = 1")
+        if row is None:
+            return {"enabled": False, "voting_open": False}
+        return {"enabled": bool(row["enabled"]), "voting_open": bool(row["voting_open"])}
 
     def _extract_auth(self, request: web.Request) -> dict[str, Any]:
         init_data = request.headers.get("X-Telegram-Init-Data", "") or request.query.get("initData", "")
