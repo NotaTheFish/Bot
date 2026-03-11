@@ -236,6 +236,18 @@ async def approved_entries(x_telegram_init_data: str = Header(default="")) -> JS
         return JSONResponse({"ok": False, "error_code": exc.code, "message": exc.message}, status_code=exc.status)
 
 
+@router.get("/rules")
+async def contest_rules(x_telegram_init_data: str = Header(default="")) -> JSONResponse:
+    try:
+        _extract_auth(x_telegram_init_data)
+        row = await get_pool().fetchrow("SELECT rules_text, rules_entities_json FROM contest_settings WHERE id = 1")
+        rules_text = str(row["rules_text"] if row else "" or "").strip()
+        rules_entities_json = row["rules_entities_json"] if row else None
+        return JSONResponse({"ok": True, "rules_text": rules_text, "rules_entities_json": rules_entities_json})
+    except VoteError as exc:
+        return JSONResponse({"ok": False, "error_code": exc.code, "message": exc.message}, status_code=exc.status)
+
+
 @router.get("/votes/state")
 async def votes_state(x_telegram_init_data: str = Header(default="")) -> JSONResponse:
     try:

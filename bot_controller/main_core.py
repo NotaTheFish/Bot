@@ -361,6 +361,44 @@ def contest_admin_entry_keyboard(entry_id: int, user_id: int) -> InlineKeyboardM
     )
 
 
+def contest_admin_overview_keyboard(*, status: str, page: int, pages: int, entry_id: int | None, owner_user_id: int | None) -> InlineKeyboardMarkup:
+    safe_page = max(1, page)
+    safe_pages = max(1, pages)
+    prev_page = safe_pages if safe_page <= 1 else safe_page - 1
+    next_page = 1 if safe_page >= safe_pages else safe_page + 1
+
+    rows: list[list[InlineKeyboardButton]] = [
+        [
+            InlineKeyboardButton(text="⏳ На модерации", callback_data="contest:ov:pending:1"),
+            InlineKeyboardButton(text="✅ Одобренные", callback_data="contest:ov:approved:1"),
+            InlineKeyboardButton(text="❌ Отклонённые", callback_data="contest:ov:rejected:1"),
+        ],
+        [
+            InlineKeyboardButton(text="◀️", callback_data=f"contest:ov:{status}:{prev_page}"),
+            InlineKeyboardButton(text=f"{safe_page} / {safe_pages}", callback_data="contest:ov:noop"),
+            InlineKeyboardButton(text="▶️", callback_data=f"contest:ov:{status}:{next_page}"),
+        ],
+    ]
+
+    if entry_id is not None and owner_user_id is not None:
+        if status == "pending":
+            rows.append(
+                [
+                    InlineKeyboardButton(text="✅ Принять", callback_data=f"contest:approve:{entry_id}"),
+                    InlineKeyboardButton(text="❌ Отклонить", callback_data=f"contest:reject:{entry_id}"),
+                ]
+            )
+        rows.append(
+            [
+                InlineKeyboardButton(text="💬 Связаться", url=f"tg://user?id={owner_user_id}"),
+                InlineKeyboardButton(text="🗑 Удалить", callback_data=f"contest:delete:{entry_id}"),
+            ]
+        )
+
+    rows.append([InlineKeyboardButton(text="🏠 Назад в конкурс", callback_data="contest:ov:back")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
 def buyer_contact_inline_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
@@ -1851,7 +1889,7 @@ async def _get_pending_contest_entry(user_id: int) -> dict[str, object] | None:
         """
         SELECT id, owner_user_id, status, version, storage_chat_id, storage_message_id
         FROM contest_entries
-        WHERE owner_user_id = $1 AND status = 'pending'
+        WHERE owner_user_id = $1 AND status = 'pending' AND COALESCE(is_deleted, FALSE) = FALSE
         ORDER BY updated_at DESC, id DESC
         LIMIT 1
         """,
@@ -1861,7 +1899,7 @@ async def _get_pending_contest_entry(user_id: int) -> dict[str, object] | None:
         return None
     return {
         "id": int(row["id"]),
-        "user_id": int(row["owner_user_id"]),
+        "owner_user_id": int(row["owner_user_id"]),
         "status": str(row["status"]),
         "version": int(row["version"] or 1),
         "storage_chat_id": int(row["storage_chat_id"]) if row["storage_chat_id"] is not None else None,
@@ -1888,9 +1926,49 @@ async def _copy_contest_media_to_storage(message: Message) -> tuple[int, int]:
     return int(STORAGE_CHAT_ID), int(copied.message_id)
 
 
-async def _create_pending_contest_entry(user_id: int, storage_chat_id: int, storage_message_id: int) -> None:
+def _contest_user_mention(username: str | None) -> str:
+    normalized = str(username or "").strip().lstrip("@")
+    return f"@{normalized}" if normalized else "(без username)"
+
+
+async def _log_contest_entry_event(entry_id: int, *, title: str, extra_lines: list[str]) -> None:
     pool = await get_db_pool()
-    await pool.execute(
+    row = await pool.fetchrow(
+        """
+        SELECT id, owner_user_id, owner_username_last_seen, storage_chat_id, storage_message_id
+        FROM contest_entries
+        WHERE id = $1
+        """,
+        entry_id,
+    )
+    if not row or row["storage_message_id"] is None:
+        return
+
+    caption = "\n".join(
+        [
+            title,
+            f"Участник: {_contest_user_mention(row['owner_username_last_seen'])}",
+            f"User ID: {int(row['owner_user_id'])}",
+            *extra_lines,
+        ]
+    )
+    with suppress(TelegramBadRequest, TelegramForbiddenError):
+        await bot.copy_message(
+            chat_id=int(STORAGE_CHAT_ID),
+            from_chat_id=int(row["storage_chat_id"] or STORAGE_CHAT_ID),
+            message_id=int(row["storage_message_id"]),
+            caption=caption,
+            reply_markup=InlineKeyboardMarkup(
+                inline_keyboard=[
+                    [InlineKeyboardButton(text="💬 Связаться с участником", url=f"tg://user?id={int(row['owner_user_id'])}")]
+                ]
+            ),
+        )
+
+
+async def _create_pending_contest_entry(user_id: int, storage_chat_id: int, storage_message_id: int) -> int:
+    pool = await get_db_pool()
+    row = await pool.fetchrow(
         """
         INSERT INTO contest_entries (
             owner_user_id,
@@ -1920,16 +1998,18 @@ async def _create_pending_contest_entry(user_id: int, storage_chat_id: int, stor
             NOW(),
             NOW()
         )
+        RETURNING id
         """,
         user_id,
         storage_chat_id,
         storage_message_id,
     )
+    return int(row["id"])
 
 
-async def _replace_pending_contest_entry(entry_id: int, storage_chat_id: int, storage_message_id: int) -> None:
+async def _replace_pending_contest_entry(entry_id: int, storage_chat_id: int, storage_message_id: int) -> bool:
     pool = await get_db_pool()
-    await pool.execute(
+    result = await pool.execute(
         """
         UPDATE contest_entries
         SET storage_chat_id = $2,
@@ -1939,11 +2019,14 @@ async def _replace_pending_contest_entry(entry_id: int, storage_chat_id: int, st
             is_replacement = TRUE,
             updated_at = NOW()
         WHERE id = $1
+          AND status = 'pending'
+          AND COALESCE(is_deleted, FALSE) = FALSE
         """,
         entry_id,
         storage_chat_id,
         storage_message_id,
     )
+    return str(result).upper().startswith("UPDATE ") and not str(result).endswith(" 0")
 
 
 
@@ -2024,6 +2107,7 @@ async def _set_contest_entry_approved(entry_id: int, admin_id: int) -> int | Non
             reviewed_at = NOW(),
             updated_at = NOW()
         WHERE id = $1
+          AND COALESCE(is_deleted, FALSE) = FALSE
         RETURNING owner_user_id
         """,
         entry_id,
@@ -2045,6 +2129,7 @@ async def _set_contest_entry_rejected(entry_id: int, admin_id: int, reason: str)
             reviewed_at = NOW(),
             updated_at = NOW()
         WHERE id = $1
+          AND COALESCE(is_deleted, FALSE) = FALSE
         RETURNING owner_user_id
         """,
         entry_id,
@@ -2066,6 +2151,7 @@ async def _mark_contest_entry_deleted(entry_id: int, admin_id: int) -> int | Non
             deleted_by_admin_id = $2,
             updated_at = NOW()
         WHERE id = $1
+          AND COALESCE(is_deleted, FALSE) = FALSE
         RETURNING owner_user_id
         """,
         entry_id,
@@ -4149,16 +4235,25 @@ async def contest_submission_media(message: Message, state: FSMContext):
     pending_entry_id = data.get("contest_pending_entry_id")
 
     if pending_entry_id:
-        await _replace_pending_contest_entry(int(pending_entry_id), storage_chat_id, storage_message_id)
-        await _notify_admins_about_contest_entry(int(pending_entry_id))
-        await state.clear()
-        await message.answer("✅ Рисунок заменён. Заявка обновлена.", reply_markup=contest_user_keyboard())
-        return
+        replaced = await _replace_pending_contest_entry(int(pending_entry_id), storage_chat_id, storage_message_id)
+        if replaced:
+            await _notify_admins_about_contest_entry(int(pending_entry_id))
+            await _log_contest_entry_event(
+                int(pending_entry_id),
+                title=f"🆕 Рисунок #{int(pending_entry_id)} отправлен на модерацию",
+                extra_lines=[f"Подано: {format_admin_datetime(datetime.now(timezone.utc))}"],
+            )
+            await state.clear()
+            await message.answer("✅ Рисунок заменён. Заявка обновлена.", reply_markup=contest_user_keyboard())
+            return
 
-    await _create_pending_contest_entry(message.from_user.id, storage_chat_id, storage_message_id)
-    created_entry = await _get_pending_contest_entry(message.from_user.id)
-    if created_entry:
-        await _notify_admins_about_contest_entry(int(created_entry["id"]))
+    created_entry_id = await _create_pending_contest_entry(message.from_user.id, storage_chat_id, storage_message_id)
+    await _notify_admins_about_contest_entry(int(created_entry_id))
+    await _log_contest_entry_event(
+        int(created_entry_id),
+        title=f"🆕 Рисунок #{int(created_entry_id)} отправлен на модерацию",
+        extra_lines=[f"Подано: {format_admin_datetime(datetime.now(timezone.utc))}"],
+    )
     await state.clear()
     await message.answer("✅ Заявка принята и отправлена на модерацию.", reply_markup=contest_user_keyboard())
 
@@ -4185,6 +4280,15 @@ async def contest_entry_approve(callback: CallbackQuery):
 
     with suppress(TelegramBadRequest):
         await callback.message.edit_reply_markup(reply_markup=None)
+
+    await _log_contest_entry_event(
+        entry_id,
+        title=f"✅ Рисунок #{entry_id} принят",
+        extra_lines=[
+            f"Принял: админ {callback.from_user.id}",
+            f"Дата: {format_admin_datetime(datetime.now(timezone.utc))}",
+        ],
+    )
 
     with suppress(TelegramForbiddenError, TelegramBadRequest):
         await bot.send_message(participant_id, "Ваш рисунок принят ✅")
@@ -4236,8 +4340,17 @@ async def contest_entry_delete(callback: CallbackQuery):
     await callback.answer("Рисунок удалён")
     await callback.message.answer(f"Рисунок в заявке #{entry_id} удалён 🗑")
 
+    await _log_contest_entry_event(
+        entry_id,
+        title=f"🗑 Рисунок #{entry_id} удалён",
+        extra_lines=[
+            f"Удалил: админ {callback.from_user.id}",
+            f"Дата: {format_admin_datetime(datetime.now(timezone.utc))}",
+        ],
+    )
+
     with suppress(TelegramForbiddenError, TelegramBadRequest):
-        await bot.send_message(participant_id, "Ваш рисунок был удалён организатором.")
+        await bot.send_message(participant_id, "Ваш рисунок был удалён организатором. Вы можете отправить новый рисунок.")
 
 
 @dp.message(AdminStates.waiting_contest_reject_reason, F.chat.type == "private")
@@ -4270,6 +4383,16 @@ async def contest_entry_reject_reason(message: Message, state: FSMContext):
     if participant_id is None:
         await message.answer("Заявка не найдена.")
         return
+
+    await _log_contest_entry_event(
+        int(raw_entry_id),
+        title=f"❌ Рисунок #{int(raw_entry_id)} отклонён",
+        extra_lines=[
+            f"Причина: {reason}",
+            f"Отклонил: админ {message.from_user.id}",
+            f"Дата: {format_admin_datetime(datetime.now(timezone.utc))}",
+        ],
+    )
 
     with suppress(TelegramForbiddenError, TelegramBadRequest):
         await bot.send_message(participant_id, f"Ваш рисунок отклонён ❌\nПричина: {reason}")
@@ -4495,6 +4618,94 @@ async def contest_launch_start(message: Message, state: FSMContext):
     )
 
 
+async def _contest_admin_overview_payload(status: str, page: int) -> tuple[str, int, int, dict[str, object] | None]:
+    safe_status = status if status in {"pending", "approved", "rejected"} else "pending"
+    safe_page = max(1, page)
+    pool = await get_db_pool()
+
+    total = int(
+        await pool.fetchval(
+            """
+            SELECT COUNT(*)::INT
+            FROM contest_entries
+            WHERE status = $1
+            """,
+            safe_status,
+        )
+        or 0
+    )
+    pages = max(1, total)
+    if safe_page > pages:
+        safe_page = pages
+    offset = safe_page - 1
+
+    row = await pool.fetchrow(
+        """
+        SELECT
+            e.id,
+            e.owner_user_id,
+            e.status,
+            e.submitted_at,
+            e.reviewed_at,
+            e.reviewed_by_admin_id,
+            e.deleted_at,
+            e.deleted_by_admin_id,
+            e.reject_reason,
+            COALESCE(e.is_deleted, FALSE) AS is_deleted,
+            e.storage_chat_id,
+            e.storage_message_id,
+            u.username
+        FROM contest_entries e
+        LEFT JOIN contest_users u ON u.user_id = e.owner_user_id
+        WHERE e.status = $1
+        ORDER BY COALESCE(e.reviewed_at, e.submitted_at, e.created_at) DESC, e.id DESC
+        LIMIT 1 OFFSET $2
+        """,
+        safe_status,
+        offset,
+    )
+    return safe_status, safe_page, pages, dict(row) if row else None
+
+
+async def _render_contest_admin_overview_message(target: Message, *, status: str, page: int) -> None:
+    safe_status, safe_page, pages, row = await _contest_admin_overview_payload(status, page)
+    if not row:
+        await target.answer(
+            "🖼 Заявки конкурса\n\nВ выбранной категории пока нет заявок.",
+            reply_markup=contest_admin_overview_keyboard(status=safe_status, page=safe_page, pages=pages, entry_id=None, owner_user_id=None),
+        )
+        return
+
+    card_lines = [
+        f"🖼 Заявка #{int(row['id'])}",
+        f"Статус: {row['status']}",
+        f"User ID: {int(row['owner_user_id'])}",
+        f"Username: {_contest_user_mention(row.get('username'))}",
+        f"Подано: {format_admin_datetime(row.get('submitted_at'))}",
+        f"Кто принял/отклонил: {row.get('reviewed_by_admin_id') or '-'}",
+        f"Кто удалил: {row.get('deleted_by_admin_id') or '-'}",
+        f"Причина отклонения: {row.get('reject_reason') or '-'}",
+        f"Удалена: {'да' if bool(row.get('is_deleted')) else 'нет'}",
+    ]
+    keyboard = contest_admin_overview_keyboard(
+        status=safe_status,
+        page=safe_page,
+        pages=pages,
+        entry_id=int(row['id']),
+        owner_user_id=int(row['owner_user_id']),
+    )
+    try:
+        await bot.copy_message(
+            chat_id=target.chat.id,
+            from_chat_id=int(row.get('storage_chat_id') or STORAGE_CHAT_ID),
+            message_id=int(row.get('storage_message_id')),
+            caption="\n".join(card_lines),
+            reply_markup=keyboard,
+        )
+    except (TelegramBadRequest, TypeError, ValueError):
+        await target.answer("\n".join(card_lines + ["Изображение недоступно"]), reply_markup=keyboard)
+
+
 @dp.message(F.text == "🖼 Заявки конкурса")
 async def contest_admin_entries_overview(message: Message):
     if int(message.chat.id) == int(STORAGE_CHAT_ID):
@@ -4502,60 +4713,39 @@ async def contest_admin_entries_overview(message: Message):
         return
     if not ensure_admin(message):
         return
+    await _render_contest_admin_overview_message(message, status="pending", page=1)
 
-    pool = await get_db_pool()
-    counts_rows = await pool.fetch(
-        """
-        SELECT status, COUNT(*) AS total
-        FROM contest_entries
-        WHERE status IN ('pending', 'approved', 'rejected')
-        GROUP BY status
-        """
-    )
-    counts = {"pending": 0, "approved": 0, "rejected": 0}
-    for row in counts_rows:
-        counts[str(row["status"])] = int(row["total"] or 0)
 
-    summary_lines: list[str] = ["🖼 Заявки конкурса"]
-    summary_lines.append(f"⏳ На модерации: {counts['pending']}")
-    summary_lines.append(f"✅ Одобрено: {counts['approved']}")
-    summary_lines.append(f"❌ Отклонено: {counts['rejected']}")
-    if counts["pending"] == 0:
-        summary_lines.append("Новых заявок нет.")
+@dp.callback_query(F.data == "contest:ov:noop")
+async def contest_admin_overview_noop(callback: CallbackQuery):
+    await callback.answer()
 
-    for status, label in (
-        ("pending", "⏳ Последние заявки на модерации:"),
-        ("approved", "✅ Последние одобренные:"),
-        ("rejected", "❌ Последние отклонённые:"),
-    ):
-        rows = await pool.fetch(
-            """
-            SELECT e.id, e.owner_user_id, e.submitted_at, e.reviewed_at, u.username
-            FROM contest_entries e
-            LEFT JOIN contest_users u ON u.user_id = e.owner_user_id
-            WHERE e.status = $1
-            ORDER BY COALESCE(e.reviewed_at, e.submitted_at, e.created_at) DESC, e.id DESC
-            LIMIT 5
-            """,
-            status,
-        )
-        summary_lines.append("")
-        summary_lines.append(label)
-        if not rows:
-            summary_lines.append("• —")
-            continue
-        for row in rows:
-            ts = row["reviewed_at"] or row["submitted_at"]
-            username = (row["username"] or "").strip()
-            if username:
-                user_ref = f"@{username.lstrip('@')}"
-            else:
-                user_ref = f"user_id {int(row['owner_user_id'])}"
-            summary_lines.append(
-                f"• #{int(row['id'])} — {user_ref} · {format_admin_datetime(ts)}"
-            )
 
-    await message.answer("\n".join(summary_lines), reply_markup=await contest_admin_menu_keyboard())
+@dp.callback_query(F.data == "contest:ov:back")
+async def contest_admin_overview_back(callback: CallbackQuery):
+    if not callback.message or not is_admin_user(callback.from_user.id):
+        await callback.answer()
+        return
+    await callback.answer()
+    await callback.message.answer("Возвращаю в меню конкурса.", reply_markup=await contest_admin_menu_keyboard())
+
+
+@dp.callback_query(F.data.startswith("contest:ov:"))
+async def contest_admin_overview_switch(callback: CallbackQuery):
+    if not callback.message or not is_admin_user(callback.from_user.id):
+        await callback.answer()
+        return
+    parts = (callback.data or "").split(":")
+    if len(parts) != 4:
+        await callback.answer("Некорректные данные", show_alert=True)
+        return
+    status = parts[2]
+    try:
+        page = int(parts[3])
+    except ValueError:
+        page = 1
+    await callback.answer()
+    await _render_contest_admin_overview_message(callback.message, status=status, page=page)
 
 
 @dp.message(F.text == "📊 Статус конкурса")

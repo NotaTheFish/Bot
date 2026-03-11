@@ -12,12 +12,22 @@
       <header class="app__header">
         <h1>Голосование конкурса</h1>
         <p id="votesCounter" class="votes-counter">Осталось голосов: —</p>
-        <a id="rulesLink" class="rules-link" href="#" target="_blank" rel="noopener noreferrer">Правила конкурса</a>
+        <button id="rulesLink" class="rules-link" type="button">Правила конкурса</button>
       </header>
 
       <section id="entriesGrid" class="entries-grid" aria-live="polite"></section>
       <p id="statusMessage" class="status-message"></p>
     </main>
+
+    <section id="rulesModal" hidden>
+      <article class="entry-card">
+        <div class="entry-card__body">
+          <h2 class="entry-card__title">Правила конкурса</h2>
+          <p id="rulesContent" class="status-message"></p>
+          <button id="rulesClose" class="vote-button" type="button">Закрыть</button>
+        </div>
+      </article>
+    </section>
 
     <template id="entryCardTemplate">
       <article class="entry-card">

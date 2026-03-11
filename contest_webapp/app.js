@@ -1,11 +1,13 @@
 const API_BASE_URL = window.CONTEST_API_BASE_URL || "";
-const RULES_URL = window.CONTEST_RULES_URL || "https://t.me";
 const MEDIA_BASE_URL = window.CONTEST_MEDIA_BASE_URL || "";
 
 const votesCounterEl = document.getElementById("votesCounter");
 const entriesGridEl = document.getElementById("entriesGrid");
 const statusMessageEl = document.getElementById("statusMessage");
 const rulesLinkEl = document.getElementById("rulesLink");
+const rulesModalEl = document.getElementById("rulesModal");
+const rulesContentEl = document.getElementById("rulesContent");
+const rulesCloseEl = document.getElementById("rulesClose");
 const cardTemplate = document.getElementById("entryCardTemplate");
 
 const tg = window.Telegram?.WebApp;
@@ -13,8 +15,6 @@ if (tg) {
   tg.ready();
   tg.expand();
 }
-
-rulesLinkEl.href = RULES_URL;
 
 const initData = tg?.initData || "";
 const authHeaders = initData ? { "X-Telegram-Init-Data": initData } : {};
@@ -39,7 +39,7 @@ function buildEntryImageUrl(entry) {
   if (MEDIA_BASE_URL && entry.storage_message_id) {
     return `${MEDIA_BASE_URL.replace(/\/$/, "")}/${entry.storage_message_id}`;
   }
-  return "https://placehold.co/640x640?text=Contest+Entry";
+  return "";
 }
 
 function getVoteDisableReason(entry) {
@@ -66,7 +66,16 @@ function renderEntries() {
     const votes = fragment.querySelector(".entry-card__votes");
     const button = fragment.querySelector(".vote-button");
 
-    image.src = buildEntryImageUrl(entry);
+    const imageUrl = buildEntryImageUrl(entry);
+    if (imageUrl) {
+      image.src = imageUrl;
+      image.onerror = () => {
+        image.replaceWith(Object.assign(document.createElement("p"), { className: "status-message", textContent: "Изображение недоступно" }));
+      };
+    } else {
+      image.replaceWith(Object.assign(document.createElement("p"), { className: "status-message", textContent: "Изображение недоступно" }));
+    }
+
     title.textContent = `Работа #${entry.id}`;
     votes.textContent = `Голосов: ${entry.votes_count ?? 0}`;
 
@@ -92,7 +101,7 @@ async function fetchJson(path, options = {}) {
     headers: {
       "Content-Type": "application/json",
       ...authHeaders,
-     ...(options.headers || {}),
+      ...(options.headers || {}),
     },
   });
   const payload = await response.json();
@@ -100,6 +109,17 @@ async function fetchJson(path, options = {}) {
     throw new Error(payload.message || "Ошибка API");
   }
   return payload;
+}
+
+async function openRules() {
+  try {
+    rulesContentEl.textContent = "Загрузка правил...";
+    rulesModalEl.hidden = false;
+    const payload = await fetchJson("/api/contest/rules");
+    rulesContentEl.textContent = payload.rules_text || "Правила пока не опубликованы.";
+  } catch (error) {
+    rulesContentEl.textContent = error.message || "Не удалось загрузить правила.";
+  }
 }
 
 async function loadData() {
@@ -112,7 +132,7 @@ async function loadData() {
     ]);
 
     state.votesRemaining = votesPayload.votes_remaining;
-   state.votedEntryIds = new Set(votesPayload.voted_entry_ids || []);
+    state.votedEntryIds = new Set(votesPayload.voted_entry_ids || []);
     state.votingOpen = Boolean(votesPayload.voting_open);
     state.entries = entriesPayload.items || [];
 
@@ -156,5 +176,10 @@ async function castVote(entryId) {
     renderEntries();
   }
 }
+
+rulesLinkEl?.addEventListener("click", openRules);
+rulesCloseEl?.addEventListener("click", () => {
+  if (rulesModalEl) rulesModalEl.hidden = true;
+});
 
 loadData();
