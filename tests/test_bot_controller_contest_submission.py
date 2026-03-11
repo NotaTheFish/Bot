@@ -116,7 +116,40 @@ class ContestSubmissionTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(main_core, "get_contest_settings", AsyncMock(return_value={"visibility_mode": "admin"})):
             keyboard = await main_core.contest_admin_menu_keyboard()
         rows = [[button.text for button in row] for row in keyboard.keyboard]
-        self.assertEqual(rows[2], ["🖼 Заявки конкурса", "🏠 Главное меню"])
+        self.assertEqual(rows[2], ["🖼 Заявки конкурса", "🧪 Тест Mini App"])
+        self.assertEqual(rows[3], ["🏠 Главное меню"])
+
+
+    async def test_admin_test_mini_app_without_url(self):
+        message = SimpleNamespace(
+            chat=SimpleNamespace(type="private"),
+            answer=AsyncMock(),
+        )
+        with (
+            patch.object(main_core, "ensure_admin", return_value=True),
+            patch.object(main_core, "CONTEST_WEBAPP_URL", ""),
+        ):
+            await main_core.contest_admin_test_mini_app(message)
+
+        message.answer.assert_awaited_once_with("Mini App ещё не настроен")
+
+    async def test_admin_test_mini_app_sends_webapp_button(self):
+        message = SimpleNamespace(
+            chat=SimpleNamespace(type="private"),
+            answer=AsyncMock(),
+        )
+        with (
+            patch.object(main_core, "ensure_admin", return_value=True),
+            patch.object(main_core, "CONTEST_WEBAPP_URL", "https://example.com/contest"),
+        ):
+            await main_core.contest_admin_test_mini_app(message)
+
+        message.answer.assert_awaited_once()
+        self.assertEqual(message.answer.await_args.args[0], "Откройте приложение для теста голосования:")
+        reply_markup = message.answer.await_args.kwargs["reply_markup"]
+        button = reply_markup.inline_keyboard[0][0]
+        self.assertEqual(button.text, "🗳 Открыть голосование")
+        self.assertEqual(button.web_app.url, "https://example.com/contest")
 
     async def test_vote_button_uses_webapp_when_configured(self):
         message = SimpleNamespace(answer=AsyncMock(), from_user=SimpleNamespace(id=77))

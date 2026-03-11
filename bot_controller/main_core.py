@@ -100,6 +100,7 @@ CONTEST_VOTE_BUTTON_TEXT = "🗳 Голосовать за рисунок"
 CONTEST_RULES_BUTTON_TEXT = "📜 Правила"
 CONTEST_BACK_BUTTON_TEXT = "⬅️ Назад"
 CONTEST_ADMIN_MAIN_MENU_BUTTON_TEXT = "🏠 Главное меню"
+CONTEST_ADMIN_TEST_WEBAPP_BUTTON_TEXT = "🧪 Тест Mini App"
 CONTEST_REPLACE_BUTTON_TEXT = "🔁 Заменить рисунок"
 CONTEST_CANCEL_BUTTON_TEXT = "❌ Отмена"
 CONTEST_WEBAPP_URL = os.getenv("CONTEST_WEBAPP_URL", "").strip()
@@ -108,6 +109,7 @@ CONTEST_ADMIN_BUTTON_TEXTS = {
     "📣 Текст объявления",
     "🚀 Запустить конкурс",
     "🖼 Заявки конкурса",
+    CONTEST_ADMIN_TEST_WEBAPP_BUTTON_TEXT,
     "📊 Статус конкурса",
     CONTEST_ADMIN_MAIN_MENU_BUTTON_TEXT,
 }
@@ -1187,7 +1189,8 @@ async def contest_admin_menu_keyboard() -> ReplyKeyboardMarkup:
         keyboard=[
             [KeyboardButton(text="📣 Текст объявления"), KeyboardButton(text=f"👥 Режим: {mode_label}")],
             [KeyboardButton(text="🚀 Запустить конкурс"), KeyboardButton(text="📊 Статус конкурса")],
-            [KeyboardButton(text="🖼 Заявки конкурса"), KeyboardButton(text=CONTEST_ADMIN_MAIN_MENU_BUTTON_TEXT)],
+            [KeyboardButton(text="🖼 Заявки конкурса"), KeyboardButton(text=CONTEST_ADMIN_TEST_WEBAPP_BUTTON_TEXT)],
+            [KeyboardButton(text=CONTEST_ADMIN_MAIN_MENU_BUTTON_TEXT)],
         ],
         resize_keyboard=True,
     )
@@ -4276,6 +4279,31 @@ async def contest_toggle_mode(message: Message):
         f"Режим переключён: {mode_label}",
         reply_markup=await contest_admin_menu_keyboard(),
     )
+
+
+@dp.message(F.text == CONTEST_ADMIN_TEST_WEBAPP_BUTTON_TEXT)
+async def contest_admin_test_mini_app(message: Message):
+    if message.chat.type != "private":
+        await message.answer("⚠️ Эту команду можно использовать только в личке с ботом.")
+        return
+    if not ensure_admin(message):
+        return
+
+    if not CONTEST_WEBAPP_URL:
+        await message.answer("Mini App ещё не настроен")
+        return
+
+    vote_keyboard = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="🗳 Открыть голосование",
+                    web_app=WebAppInfo(url=CONTEST_WEBAPP_URL),
+                )
+            ]
+        ]
+    )
+    await message.answer("Откройте приложение для теста голосования:", reply_markup=vote_keyboard)
 
 
 @dp.message(F.text == "🚀 Запустить конкурс")
