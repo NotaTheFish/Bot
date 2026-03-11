@@ -102,7 +102,7 @@ CONTEST_BACK_BUTTON_TEXT = "⬅️ Назад"
 CONTEST_ADMIN_MAIN_MENU_BUTTON_TEXT = "🏠 Главное меню"
 CONTEST_REPLACE_BUTTON_TEXT = "🔁 Заменить рисунок"
 CONTEST_CANCEL_BUTTON_TEXT = "❌ Отмена"
-CONTEST_WEBAPP_URL = _get_env_str("CONTEST_WEBAPP_URL")
+CONTEST_WEBAPP_URL = os.getenv("CONTEST_WEBAPP_URL", "").strip()
 CONTEST_CHANNEL_ID = _get_env_str("CONTEST_CHANNEL_ID") or _get_env_str("CONTEST_VOTING_CHAT_ID")
 CONTEST_ADMIN_BUTTON_TEXTS = {
     "📣 Текст объявления",
@@ -3958,7 +3958,10 @@ async def contest_vote_placeholder(message: Message):
         return
 
     if not CONTEST_WEBAPP_URL:
-        await message.answer("Mini App ещё не настроен.", reply_markup=contest_user_keyboard())
+        await message.answer(
+            "Mini App ещё не настроен. Обратитесь к администратору.",
+            reply_markup=contest_user_keyboard(),
+        )
         return
 
     vote_keyboard = InlineKeyboardMarkup(
@@ -3971,7 +3974,7 @@ async def contest_vote_placeholder(message: Message):
             ]
         ]
     )
-    await message.answer("Откройте приложение для голосования.", reply_markup=vote_keyboard)
+    await message.answer("Откройте приложение для голосования:", reply_markup=vote_keyboard)
 
 
 @dp.message(F.chat.type == "private", F.text == CONTEST_BACK_BUTTON_TEXT)
