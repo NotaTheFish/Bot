@@ -1613,16 +1613,32 @@ async def set_contest_settings(
     enabled: bool,
     visibility_mode: str,
     announcement_text: str | None,
-    announcement_entities_json: str | None,
+    announcement_entities_json: object,
     rules_text: str | None,
-    rules_entities_json: str | None,
+    rules_entities_json: object,
     submission_open: bool,
     voting_open: bool,
     started_at: datetime | None,
 ) -> None:
+    def _normalize_entities_payload(value: object) -> list[object] | dict[str, object] | None:
+        if value is None:
+            return None
+        if isinstance(value, str):
+            raw = value.strip()
+            if not raw:
+                return None
+            try:
+                parsed = json.loads(raw)
+            except json.JSONDecodeError:
+                return None
+            return parsed if isinstance(parsed, (list, dict)) and parsed else None
+        if isinstance(value, (list, dict)):
+            return value if value else None
+        return None
+
     pool = await get_db_pool()
-    parsed_announcement_entities = json.loads(announcement_entities_json) if announcement_entities_json else None
-    parsed_rules_entities = json.loads(rules_entities_json) if rules_entities_json else None
+    parsed_announcement_entities = _normalize_entities_payload(announcement_entities_json)
+    parsed_rules_entities = _normalize_entities_payload(rules_entities_json)
     await pool.execute(
         CONTEST_SETTINGS_UPSERT_SQL,
         bool(enabled),
@@ -1641,6 +1657,29 @@ def _serialize_entities(entities: list[MessageEntity] | None) -> str | None:
     if not entities:
         return None
     return json.dumps([entity.model_dump(exclude_none=True) for entity in entities], ensure_ascii=False)
+
+
+def _normalize_entities_for_storage(value: object) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        normalized = value.strip()
+        return normalized or None
+    if isinstance(value, (list, dict)):
+        if not value:
+            return None
+        return json.dumps(value, ensure_ascii=False)
+    try:
+        return json.dumps(value, ensure_ascii=False)
+    except (TypeError, ValueError):
+        return None
+
+
+def _normalize_text_for_storage(value: object) -> str | None:
+    if not isinstance(value, str):
+        return None
+    normalized = value.strip()
+    return normalized or None
 
 
 def _decode_entities_payload(entities_json: object) -> list[object]:
@@ -4658,22 +4697,20 @@ async def contest_save(callback: CallbackQuery, state: FSMContext):
     announcement_entities_json = data.get("contest_announcement_entities_json")
     rules_text = data.get("contest_rules_text")
     rules_entities_json = data.get("contest_rules_entities_json")
+    normalized_announcement_text = _normalize_text_for_storage(announcement_text)
+    normalized_rules_text = _normalize_text_for_storage(rules_text)
 
     await set_contest_settings(
         enabled=bool(settings["enabled"]),
         visibility_mode=_contest_visibility_mode(settings),
-        announcement_text=str(announcement_text) if announcement_text else settings.get("announcement_text"),
-        announcement_entities_json=(
-            str(announcement_entities_json)
-            if announcement_entities_json is not None
-            else settings.get("announcement_entities_json")
-        ),
-        rules_text=str(rules_text) if rules_text else settings.get("rules_text"),
-        rules_entities_json=(
-            str(rules_entities_json)
-            if rules_entities_json is not None
-            else settings.get("rules_entities_json")
-        ),
+        announcement_text=normalized_announcement_text if normalized_announcement_text else settings.get("announcement_text"),
+        announcement_entities_json=_normalize_entities_for_storage(announcement_entities_json)
+        if announcement_entities_json is not None
+        else settings.get("announcement_entities_json"),
+        rules_text=normalized_rules_text if normalized_rules_text else settings.get("rules_text"),
+        rules_entities_json=_normalize_entities_for_storage(rules_entities_json)
+        if rules_entities_json is not None
+        else settings.get("rules_entities_json"),
         submission_open=bool(settings["submission_open"]),
         voting_open=bool(settings["voting_open"]),
         started_at=settings["started_at"],
