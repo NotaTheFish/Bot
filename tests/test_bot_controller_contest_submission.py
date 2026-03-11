@@ -628,6 +628,24 @@ class ContestSubmissionTests(unittest.IsolatedAsyncioTestCase):
         reject_entry.assert_awaited_once_with(12, 1, "Есть проблема с оформлением")
         send_message.assert_awaited_once_with(88, "Ваш рисунок отклонён ❌\nПричина: Есть проблема с оформлением")
 
+    async def test_delete_marks_entry_deleted_and_notifies_participant(self):
+        callback = SimpleNamespace(
+            data="contest:delete:15",
+            from_user=SimpleNamespace(id=1),
+            answer=AsyncMock(),
+            message=SimpleNamespace(answer=AsyncMock(), edit_reply_markup=AsyncMock()),
+        )
+
+        with (
+            patch.object(main_core, "is_admin_user", return_value=True),
+            patch.object(main_core, "_mark_contest_entry_deleted", AsyncMock(return_value=88)) as delete_entry,
+            patch.object(main_core.bot, "send_message", AsyncMock()) as send_message,
+        ):
+            await main_core.contest_entry_delete(callback)
+
+        delete_entry.assert_awaited_once_with(15, 1)
+        send_message.assert_awaited_once_with(88, "Ваш рисунок был удалён организатором.")
+
 
     async def test_reject_reason_ignores_contest_system_buttons(self):
         reject_message = SimpleNamespace(
@@ -658,14 +676,23 @@ class ContestSubmissionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(rows[0][0].callback_data, "contest:approve:11")
         self.assertEqual(rows[1][0].text, "❌ Отклонить")
         self.assertEqual(rows[1][0].callback_data, "contest:reject:11")
-        self.assertEqual(rows[2][0].text, "💬 Связаться с участником")
-        self.assertEqual(rows[2][0].url, "tg://user?id=77")
+        self.assertEqual(rows[2][0].text, "🗑 Удалить рисунок")
+        self.assertEqual(rows[2][0].callback_data, "contest:delete:11")
+        self.assertEqual(rows[3][0].text, "💬 Связаться с участником")
+        self.assertEqual(rows[3][0].url, "tg://user?id=77")
 
     async def test_contest_schema_migration_contains_owner_fields_and_coalesce(self):
         migration_sql = "\n".join(main_core.CONTEST_MIGRATIONS_SQL)
         self.assertIn("owner_user_id", migration_sql)
         self.assertIn("COALESCE(owner_user_id, user_id)", migration_sql)
         self.assertIn("idx_contest_entries_owner_pending_unique", migration_sql)
+        self.assertIn("deleted_by_admin_id", migration_sql)
+
+    async def test_contest_entries_table_contains_soft_delete_fields(self):
+        tables_sql = "\n".join(main_core.CONTEST_TABLES_SQL)
+        self.assertIn("is_deleted BOOLEAN NOT NULL DEFAULT FALSE", tables_sql)
+        self.assertIn("deleted_at TIMESTAMPTZ", tables_sql)
+        self.assertIn("deleted_by_admin_id BIGINT", tables_sql)
 
     async def test_contest_settings_table_uses_jsonb_entities(self):
         tables_sql = "\n".join(main_core.CONTEST_TABLES_SQL)

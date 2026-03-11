@@ -355,6 +355,7 @@ def contest_admin_entry_keyboard(entry_id: int, user_id: int) -> InlineKeyboardM
         inline_keyboard=[
             [InlineKeyboardButton(text="✅ Принять рисунок", callback_data=f"contest:approve:{entry_id}")],
             [InlineKeyboardButton(text="❌ Отклонить", callback_data=f"contest:reject:{entry_id}")],
+            [InlineKeyboardButton(text="🗑 Удалить рисунок", callback_data=f"contest:delete:{entry_id}")],
             [InlineKeyboardButton(text="💬 Связаться с участником", url=f"tg://user?id={user_id}")],
         ]
     )
@@ -656,6 +657,9 @@ CONTEST_TABLES_SQL = [
         storage_message_id BIGINT,
         storage_message_ids BIGINT[] NOT NULL DEFAULT '{}',
         reviewed_by_admin_id BIGINT,
+        is_deleted BOOLEAN NOT NULL DEFAULT FALSE,
+        deleted_at TIMESTAMPTZ,
+        deleted_by_admin_id BIGINT,
         reject_reason TEXT,
         reviewed_at TIMESTAMPTZ,
         version INTEGER NOT NULL DEFAULT 1,
@@ -827,6 +831,18 @@ CONTEST_MIGRATIONS_SQL = [
     CREATE UNIQUE INDEX IF NOT EXISTS idx_contest_entries_owner_pending_unique
     ON contest_entries(owner_user_id)
     WHERE status = 'pending'
+    """,
+    """
+    ALTER TABLE contest_entries
+    ADD COLUMN IF NOT EXISTS is_deleted BOOLEAN NOT NULL DEFAULT FALSE
+    """,
+    """
+    ALTER TABLE contest_entries
+    ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ
+    """,
+    """
+    ALTER TABLE contest_entries
+    ADD COLUMN IF NOT EXISTS deleted_by_admin_id BIGINT
     """,
     """
     DROP INDEX IF EXISTS idx_contest_entries_user_pending_unique
@@ -2012,6 +2028,26 @@ async def _set_contest_entry_rejected(entry_id: int, admin_id: int, reason: str)
         entry_id,
         admin_id,
         reason,
+    )
+    if not row:
+        return None
+    return int(row["owner_user_id"])
+
+
+async def _mark_contest_entry_deleted(entry_id: int, admin_id: int) -> int | None:
+    pool = await get_db_pool()
+    row = await pool.fetchrow(
+        """
+        UPDATE contest_entries
+        SET is_deleted = TRUE,
+            deleted_at = NOW(),
+            deleted_by_admin_id = $2,
+            updated_at = NOW()
+        WHERE id = $1
+        RETURNING owner_user_id
+        """,
+        entry_id,
+        admin_id,
     )
     if not row:
         return None
@@ -4152,6 +4188,34 @@ async def contest_entry_reject_start(callback: CallbackQuery, state: FSMContext)
     await state.update_data(contest_reject_entry_id=entry_id)
     await callback.answer()
     await callback.message.answer("Введите причину отклонения для участника.")
+
+
+@dp.callback_query(F.data.startswith("contest:delete:"))
+async def contest_entry_delete(callback: CallbackQuery):
+    if not callback.message or not is_admin_user(callback.from_user.id):
+        await callback.answer()
+        return
+
+    raw_entry_id = (callback.data or "").split(":")[-1]
+    try:
+        entry_id = int(raw_entry_id)
+    except ValueError:
+        await callback.answer("Некорректная заявка", show_alert=True)
+        return
+
+    participant_id = await _mark_contest_entry_deleted(entry_id, callback.from_user.id)
+    if participant_id is None:
+        await callback.answer("Заявка не найдена", show_alert=True)
+        return
+
+    with suppress(TelegramBadRequest):
+        await callback.message.edit_reply_markup(reply_markup=None)
+
+    await callback.answer("Рисунок удалён")
+    await callback.message.answer(f"Рисунок в заявке #{entry_id} удалён 🗑")
+
+    with suppress(TelegramForbiddenError, TelegramBadRequest):
+        await bot.send_message(participant_id, "Ваш рисунок был удалён организатором.")
 
 
 @dp.message(AdminStates.waiting_contest_reject_reason, F.chat.type == "private")
