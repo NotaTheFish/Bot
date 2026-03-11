@@ -426,6 +426,29 @@ class ContestSubmissionTests(unittest.IsolatedAsyncioTestCase):
         reject_entry.assert_awaited_once_with(12, 1, "Есть проблема с оформлением")
         send_message.assert_awaited_once_with(88, "Ваш рисунок отклонён ❌\nПричина: Есть проблема с оформлением")
 
+
+    async def test_reject_reason_ignores_contest_system_buttons(self):
+        reject_message = SimpleNamespace(
+            text="⬅️ Назад",
+            from_user=SimpleNamespace(id=1),
+            chat=SimpleNamespace(type="private"),
+            answer=AsyncMock(),
+        )
+        reject_state = AsyncMock()
+        reject_state.get_data = AsyncMock(return_value={"contest_reject_entry_id": 12})
+
+        with (
+            patch.object(main_core, "ensure_admin", return_value=True),
+            patch.object(main_core, "_set_contest_entry_rejected", AsyncMock()) as reject_entry,
+        ):
+            await main_core.contest_entry_reject_reason(reject_message, reject_state)
+
+        reject_entry.assert_not_awaited()
+        reject_state.clear.assert_not_awaited()
+        reject_message.answer.assert_awaited_once_with(
+            "Сначала завершите отклонение или нажмите Сохранить/Главное меню"
+        )
+
     async def test_contest_admin_entry_keyboard_contains_required_actions(self):
         keyboard = main_core.contest_admin_entry_keyboard(11, 77)
         rows = keyboard.inline_keyboard

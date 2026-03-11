@@ -111,6 +111,7 @@ CONTEST_ADMIN_BUTTON_TEXTS = {
     "📊 Статус конкурса",
     CONTEST_ADMIN_MAIN_MENU_BUTTON_TEXT,
 }
+CONTEST_SYSTEM_BUTTON_TEXTS = frozenset({*CONTEST_ADMIN_BUTTON_TEXTS, CONTEST_BACK_BUTTON_TEXT})
 BUYER_CONTACT_COOLDOWN_SECONDS = _get_env_int("BUYER_CONTACT_COOLDOWN_SECONDS", 60)
 CONTACT_CTA_MODE = "off"
 DEFAULT_BUYER_REPLY_PRE_TEXT = "Здравствуйте!"
@@ -1191,6 +1192,10 @@ ALLOWED_STORAGE_KEYBOARD_IDS = {"storage_idle", "storage_create", "storage_post_
 
 def is_contest_mode_button(text: str) -> bool:
     return isinstance(text, str) and text.startswith("👥 Режим:")
+
+
+def is_contest_system_button_text(text: str) -> bool:
+    return text in CONTEST_SYSTEM_BUTTON_TEXTS or is_contest_mode_button(text)
 
 
 async def send_with_storage_guard(
@@ -4069,6 +4074,9 @@ async def contest_entry_reject_reason(message: Message, state: FSMContext):
         return
 
     reason = (message.text or "").strip()
+    if is_contest_system_button_text(reason):
+        await message.answer("Сначала завершите отклонение или нажмите Сохранить/Главное меню")
+        return
     if not reason:
         await message.answer("Причина не должна быть пустой. Введите текст причины.")
         return
@@ -4387,7 +4395,7 @@ async def contest_announcement_received(message: Message, state: FSMContext):
         return
 
     announcement_text = (message.text or message.caption or "").strip()
-    if announcement_text in CONTEST_ADMIN_BUTTON_TEXTS or is_contest_mode_button(announcement_text):
+    if is_contest_system_button_text(announcement_text):
         await message.answer("Сначала завершите редактирование или нажмите Сохранить/Назад")
         return
 
@@ -4422,7 +4430,7 @@ async def contest_rules_received(message: Message, state: FSMContext):
         return
 
     rules_text = (message.text or message.caption or "").strip()
-    if rules_text in CONTEST_ADMIN_BUTTON_TEXTS or is_contest_mode_button(rules_text):
+    if is_contest_system_button_text(rules_text):
         await message.answer("Сначала завершите редактирование или нажмите Сохранить/Назад")
         return
 
