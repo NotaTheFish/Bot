@@ -81,6 +81,48 @@ class ContestSubmissionTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(send_summary.await_count, 2)
 
+    async def test_contest_announcement_ignores_system_buttons_without_overwriting_state(self):
+        state = AsyncMock()
+        message = SimpleNamespace(
+            chat=SimpleNamespace(id=10),
+            text="👥 Режим: Участники",
+            caption=None,
+            entities=[MessageEntity(type="bold", offset=0, length=5)],
+            caption_entities=None,
+            answer=AsyncMock(),
+        )
+
+        with (
+            patch.object(main_core, "ensure_admin", return_value=True),
+            patch.object(main_core, "_send_contest_editor_summary", AsyncMock()) as send_summary,
+        ):
+            await main_core.contest_announcement_received(message, state)
+
+        state.update_data.assert_not_awaited()
+        send_summary.assert_not_awaited()
+        message.answer.assert_awaited_once_with("Сначала завершите редактирование или нажмите Сохранить/Отмена")
+
+    async def test_contest_rules_ignores_system_buttons_without_overwriting_state(self):
+        state = AsyncMock()
+        message = SimpleNamespace(
+            chat=SimpleNamespace(id=10),
+            text="👥 Режим: Участники",
+            caption=None,
+            entities=[MessageEntity(type="italic", offset=0, length=5)],
+            caption_entities=None,
+            answer=AsyncMock(),
+        )
+
+        with (
+            patch.object(main_core, "ensure_admin", return_value=True),
+            patch.object(main_core, "_send_contest_editor_summary", AsyncMock()) as send_summary,
+        ):
+            await main_core.contest_rules_received(message, state)
+
+        state.update_data.assert_not_awaited()
+        send_summary.assert_not_awaited()
+        message.answer.assert_awaited_once_with("Сначала завершите редактирование или нажмите Сохранить/Отмена")
+
     async def test_on_start_sends_pre_reply_before_contest_announcement(self):
         order: list[str] = []
 
