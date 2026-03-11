@@ -13,6 +13,21 @@ os.environ.setdefault("STORAGE_CHAT_ID", "-100123")
 from bot_controller import main_core
 
 
+class ParseUserIdsCsvTests(unittest.TestCase):
+    def test_parse_user_ids_csv_empty_string_returns_empty_list(self):
+        self.assertEqual(main_core.parse_user_ids_csv(""), [])
+
+    def test_parse_user_ids_csv_zero_string_returns_empty_list(self):
+        self.assertEqual(main_core.parse_user_ids_csv("0"), [])
+
+    def test_parse_user_ids_csv_valid_csv_returns_int_list(self):
+        self.assertEqual(main_core.parse_user_ids_csv("123,456"), [123, 456])
+
+    def test_parse_user_ids_csv_ignores_invalid_and_non_positive_tokens(self):
+        self.assertEqual(main_core.parse_user_ids_csv("123,abc,, -5, 0"), [123])
+
+
+
 class ContestSubmissionTests(unittest.IsolatedAsyncioTestCase):
     async def test_admin_menu_contains_contest_button(self):
         keyboard = main_core.admin_menu_keyboard()

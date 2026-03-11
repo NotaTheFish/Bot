@@ -121,20 +121,26 @@ DEFAULT_BUYER_REPLY_POST_TEXT = "Спасибо! Ваше сообщение о�
 WORKER_CONTACT_LINK_TEXT = "Написать продавцу"
 DEFAULT_WORKER_CONTACT_BOT_USERNAME = "CoS_Spam_bot"
 
-def _parse_int_list_csv(raw: str) -> list[int]:
+def parse_user_ids_csv(raw: str) -> list[int]:
     raw = (raw or "").strip()
-    if not raw:
+    if not raw or raw == "0":
         return []
     result: list[int] = []
     for part in raw.split(","):
         part = part.strip()
         if not part:
             continue
-        result.append(int(part))
+        try:
+            user_id = int(part)
+        except ValueError:
+            continue
+        if user_id <= 0:
+            continue
+        result.append(user_id)
     return result
 
 
-_admin_ids = _parse_int_list_csv(os.getenv("ADMIN_IDS", ""))
+_admin_ids = parse_user_ids_csv(os.getenv("ADMIN_IDS", ""))
 
 if not _admin_ids:
     legacy_admin_id = int(os.getenv("ADMIN_ID", "0") or "0")
@@ -144,6 +150,9 @@ if not _admin_ids:
 ADMIN_IDS_LIST = _admin_ids
 ADMIN_IDS = ADMIN_IDS_LIST
 ADMIN_ID = ADMIN_IDS_LIST[0] if ADMIN_IDS_LIST else 0
+
+CONTEST_TESTER_IDS_RAW = _get_env_str("CONTEST_TESTER_IDS", "")
+CONTEST_TESTER_IDS_LIST = parse_user_ids_csv(CONTEST_TESTER_IDS_RAW)
 
 
 if not BOT_TOKEN or ":" not in BOT_TOKEN:
