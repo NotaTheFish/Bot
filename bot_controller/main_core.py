@@ -103,6 +103,7 @@ CONTEST_ADMIN_MAIN_MENU_BUTTON_TEXT = "🏠 Главное меню"
 CONTEST_REPLACE_BUTTON_TEXT = "🔁 Заменить рисунок"
 CONTEST_CANCEL_BUTTON_TEXT = "❌ Отмена"
 CONTEST_WEBAPP_URL = _get_env_str("CONTEST_WEBAPP_URL")
+CONTEST_CHANNEL_ID = _get_env_str("CONTEST_CHANNEL_ID") or _get_env_str("CONTEST_VOTING_CHAT_ID")
 CONTEST_ADMIN_BUTTON_TEXTS = {
     "📣 Текст объявления",
     "🚀 Запустить конкурс",
@@ -1652,6 +1653,42 @@ def _contest_visible_for_user(settings: dict[str, object], *, is_admin: bool) ->
     if visibility_mode == "participants":
         return True
     return True
+
+
+async def _ensure_contest_channel_subscription(user_id: int) -> tuple[bool, str | None]:
+    if not CONTEST_CHANNEL_ID:
+        return True, None
+
+    try:
+        chat_member = await bot.get_chat_member(chat_id=CONTEST_CHANNEL_ID, user_id=user_id)
+    except (TelegramBadRequest, TelegramForbiddenError) as exc:
+        logger.warning("contest getChatMember failed user_id=%s error=%s", user_id, exc)
+        return False, "Не удалось проверить подписку на канал конкурса. Попробуйте позже."
+
+    status = str(getattr(chat_member, "status", "") or "").lower()
+    if status in {"left", "kicked"}:
+        return False, "Чтобы подать рисунок, подпишитесь на канал конкурса и попробуйте снова."
+
+    return True, None
+
+
+async def _get_contest_submission_block_reason(user_id: int) -> str | None:
+    settings = await get_contest_settings()
+
+    if not bool(settings.get("enabled")):
+        return "Конкурс сейчас отключён. Подача заявок недоступна."
+
+    if not bool(settings.get("submission_open")):
+        return "Приём заявок сейчас закрыт."
+
+    if not _contest_visible_for_user(settings, is_admin=is_admin_user(user_id)):
+        return "Подача заявок недоступна для вашего режима конкурса."
+
+    subscribed, subscription_error = await _ensure_contest_channel_subscription(user_id)
+    if not subscribed:
+        return subscription_error
+
+    return None
 
 
 async def _upsert_contest_user_start(message: Message) -> None:
@@ -3889,6 +3926,12 @@ async def contest_submit_start(message: Message, state: FSMContext):
         await message.answer("Не удалось определить пользователя.")
         return
 
+    block_reason = await _get_contest_submission_block_reason(message.from_user.id)
+    if block_reason:
+        await state.clear()
+        await message.answer(block_reason, reply_markup=contest_user_keyboard())
+        return
+
     pending_entry = await _get_pending_contest_entry(message.from_user.id)
     if pending_entry:
         await state.set_state(ContestStates.waiting_replace_confirmation)
@@ -3933,6 +3976,12 @@ async def contest_submission_media(message: Message, state: FSMContext):
         return
     if not message.from_user:
         await message.answer("Не удалось определить пользователя.")
+        return
+
+    block_reason = await _get_contest_submission_block_reason(message.from_user.id)
+    if block_reason:
+        await state.clear()
+        await message.answer(block_reason, reply_markup=contest_user_keyboard())
         return
 
     await _upsert_contest_user_start(message)
