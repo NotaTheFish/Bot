@@ -72,7 +72,7 @@ class ContestApiVotingTests(unittest.IsolatedAsyncioTestCase):
     async def test_cast_vote_first_vote_creates_record(self):
         api = self._build_api()
         conn = SimpleNamespace(
-            fetchrow=AsyncMock(return_value={"id": 10, "user_id": 77, "status": "approved"}),
+            fetchrow=AsyncMock(return_value={"id": 10, "owner_user_id": 77, "status": "approved"}),
             fetchval=AsyncMock(side_effect=[0, None]),
             execute=AsyncMock(),
             transaction=lambda: _DummyTx(),
@@ -95,11 +95,13 @@ class ContestApiVotingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.status, 200)
         self.assertTrue(payload["ok"])
         conn.execute.assert_awaited_once()
+        insert_sql = conn.execute.await_args.args[0]
+        self.assertIn("suspicion_reason", insert_sql)
 
     async def test_cast_vote_enforces_max_votes_limit(self):
         api = self._build_api()
         conn = SimpleNamespace(
-            fetchrow=AsyncMock(return_value={"id": 10, "user_id": 77, "status": "approved"}),
+            fetchrow=AsyncMock(return_value={"id": 10, "owner_user_id": 77, "status": "approved"}),
             fetchval=AsyncMock(return_value=3),
             execute=AsyncMock(),
             transaction=lambda: _DummyTx(),
@@ -124,7 +126,7 @@ class ContestApiVotingTests(unittest.IsolatedAsyncioTestCase):
     async def test_cast_vote_rejects_duplicate_vote_for_entry(self):
         api = self._build_api()
         conn = SimpleNamespace(
-            fetchrow=AsyncMock(return_value={"id": 10, "user_id": 77, "status": "approved"}),
+            fetchrow=AsyncMock(return_value={"id": 10, "owner_user_id": 77, "status": "approved"}),
             fetchval=AsyncMock(side_effect=[1, 1]),
             execute=AsyncMock(),
             transaction=lambda: _DummyTx(),
@@ -149,7 +151,7 @@ class ContestApiVotingTests(unittest.IsolatedAsyncioTestCase):
     async def test_cast_vote_forbids_self_vote(self):
         api = self._build_api()
         conn = SimpleNamespace(
-            fetchrow=AsyncMock(return_value={"id": 10, "user_id": 42, "status": "approved"}),
+            fetchrow=AsyncMock(return_value={"id": 10, "owner_user_id": 42, "status": "approved"}),
             fetchval=AsyncMock(),
             execute=AsyncMock(),
             transaction=lambda: _DummyTx(),
@@ -199,6 +201,16 @@ class ContestApiVotingTests(unittest.IsolatedAsyncioTestCase):
         payload = json.loads(response.text)
         self.assertEqual(response.status, 403)
         self.assertEqual(payload["error_code"], "subscription_required")
+
+    async def test_ensure_schema_adds_suspicion_reason_column(self):
+        api = self._build_api()
+        conn = SimpleNamespace(execute=AsyncMock())
+        api._pool = SimpleNamespace(acquire=lambda: _AcquireCtx(conn))
+
+        await api.ensure_schema()
+
+        queries = "\n".join(call.args[0] for call in conn.execute.await_args_list)
+        self.assertIn("ADD COLUMN IF NOT EXISTS suspicion_reason", queries)
 
 
 if __name__ == "__main__":

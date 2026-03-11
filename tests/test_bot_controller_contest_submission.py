@@ -351,6 +351,18 @@ class ContestSubmissionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(rows[2][0].text, "💬 Связаться с участником")
         self.assertEqual(rows[2][0].url, "tg://user?id=77")
 
+    async def test_contest_schema_migration_contains_owner_fields_and_coalesce(self):
+        migration_sql = "\n".join(main_core.CONTEST_MIGRATIONS_SQL)
+        self.assertIn("owner_user_id", migration_sql)
+        self.assertIn("COALESCE(owner_user_id, user_id)", migration_sql)
+        self.assertIn("idx_contest_entries_owner_pending_unique", migration_sql)
+
+    async def test_contest_settings_table_uses_jsonb_entities(self):
+        tables_sql = "\n".join(main_core.CONTEST_TABLES_SQL)
+        self.assertIn("announcement_entities_json JSONB", tables_sql)
+        self.assertIn("rules_entities_json JSONB", tables_sql)
+        self.assertIn("visibility_mode IN ('admin_only', 'participants')", tables_sql)
+
 
 if __name__ == "__main__":
     unittest.main()

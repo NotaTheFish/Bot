@@ -148,6 +148,12 @@ class ContestAPI:
                 ADD COLUMN IF NOT EXISTS is_suspicious BOOLEAN NOT NULL DEFAULT FALSE
                 """
             )
+            await conn.execute(
+                """
+                ALTER TABLE contest_votes
+                ADD COLUMN IF NOT EXISTS suspicion_reason TEXT
+                """
+            )
 
     def routes(self) -> list[web.RouteDef]:
         return [
@@ -165,7 +171,7 @@ class ContestAPI:
             """
             SELECT
                 e.id,
-                e.user_id,
+                e.owner_user_id,
                 e.storage_chat_id,
                 e.storage_message_id,
                 e.storage_message_ids,
@@ -219,7 +225,7 @@ class ContestAPI:
                 async with conn.transaction():
                     entry = await conn.fetchrow(
                         """
-                        SELECT id, user_id, status
+                        SELECT id, owner_user_id, status
                         FROM contest_entries
                         WHERE id = $1
                         FOR UPDATE
@@ -228,7 +234,7 @@ class ContestAPI:
                     )
                     if entry is None or entry["status"] != "approved":
                         raise VoteError("Работа недоступна для голосования.", "entry_unavailable", 404)
-                    if int(entry["user_id"]) == int(auth["user_id"]):
+                    if int(entry["owner_user_id"]) == int(auth["user_id"]):
                         raise VoteError("Нельзя голосовать за свою работу.", "self_vote_forbidden", 400)
 
                     used_votes = await conn.fetchval(
@@ -262,16 +268,18 @@ class ContestAPI:
                             ip_hash,
                             user_agent_hash,
                             is_suspicious,
+                            suspicion_reason,
                             created_at,
                             updated_at
                         )
-                        VALUES ($1, $2, $3, $4, $5, NOW(), NOW())
+                        VALUES ($1, $2, $3, $4, $5, $6, NOW(), NOW())
                         """,
                         auth["user_id"],
                         entry_id,
                         ip_hash,
                         ua_hash,
                         suspicious,
+                        None,
                     )
 
                     new_used = int(used_votes or 0) + 1

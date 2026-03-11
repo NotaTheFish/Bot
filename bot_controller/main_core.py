@@ -457,99 +457,6 @@ CREATE_TABLES_SQL = [
     ON CONFLICT (id) DO NOTHING
     """,
     """
-    CREATE TABLE IF NOT EXISTS contest_settings (
-        id INTEGER PRIMARY KEY,
-        enabled BOOLEAN NOT NULL DEFAULT FALSE,
-        visibility_mode TEXT NOT NULL DEFAULT 'public',
-        announcement_text TEXT,
-        announcement_entities_json TEXT,
-        rules_text TEXT,
-        rules_entities_json TEXT,
-        submission_open BOOLEAN NOT NULL DEFAULT FALSE,
-        voting_open BOOLEAN NOT NULL DEFAULT FALSE,
-        started_at TIMESTAMPTZ,
-        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-        CONSTRAINT contest_settings_single_row CHECK (id = 1)
-    )
-    """,
-    """
-    INSERT INTO contest_settings (id)
-    VALUES (1)
-    ON CONFLICT (id)
-    DO UPDATE SET updated_at = contest_settings.updated_at
-    """,
-    """
-    CREATE TABLE IF NOT EXISTS contest_users (
-        user_id BIGINT PRIMARY KEY,
-        username TEXT,
-        username_last_seen TEXT,
-        first_name TEXT,
-        first_name_last_seen TEXT,
-        last_name TEXT,
-        last_name_last_seen TEXT,
-        last_seen_at TIMESTAMPTZ,
-        last_seen_chat_id BIGINT,
-        last_seen_message_id BIGINT,
-        is_admin BOOLEAN NOT NULL DEFAULT FALSE,
-        started_bot BOOLEAN NOT NULL DEFAULT FALSE,
-        started_at TIMESTAMPTZ,
-        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-    )
-    """,
-    """
-    CREATE TABLE IF NOT EXISTS contest_entries (
-        id BIGSERIAL PRIMARY KEY,
-        user_id BIGINT NOT NULL,
-        status TEXT NOT NULL DEFAULT 'pending',
-        storage_chat_id BIGINT,
-        storage_message_id BIGINT,
-        storage_message_ids BIGINT[] NOT NULL DEFAULT '{}',
-        reviewer_user_id BIGINT,
-        reviewer_comment TEXT,
-        reviewed_by_admin_id BIGINT,
-        reject_reason TEXT,
-        reviewed_at TIMESTAMPTZ,
-        version INTEGER NOT NULL DEFAULT 1,
-        is_replacement BOOLEAN NOT NULL DEFAULT FALSE,
-        submitted_at TIMESTAMPTZ,
-        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-        CONSTRAINT contest_entries_status_check CHECK (
-            status IN ('draft', 'pending', 'submitted', 'approved', 'rejected', 'published', 'archived')
-        )
-    )
-    """,
-    """
-    CREATE INDEX IF NOT EXISTS idx_contest_entries_status_submitted_at
-    ON contest_entries(status, submitted_at)
-    """,
-    """
-    CREATE UNIQUE INDEX IF NOT EXISTS idx_contest_entries_user_pending_unique
-    ON contest_entries(user_id)
-    WHERE status = 'pending'
-    """,
-    """
-    CREATE TABLE IF NOT EXISTS contest_votes (
-        id BIGSERIAL PRIMARY KEY,
-        voter_user_id BIGINT NOT NULL,
-        entry_id BIGINT NOT NULL REFERENCES contest_entries(id) ON DELETE CASCADE,
-        voter_fingerprint TEXT,
-        voter_hash TEXT,
-        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-        UNIQUE(voter_user_id, entry_id)
-    )
-    """,
-    """
-    CREATE INDEX IF NOT EXISTS idx_contest_votes_voter_user_id
-    ON contest_votes(voter_user_id)
-    """,
-    """
-    CREATE INDEX IF NOT EXISTS idx_contest_votes_entry_id
-    ON contest_votes(entry_id)
-    """,
-    """
     UPDATE bot_settings
     SET buyer_reply_pre_text = 'Здравствуйте!'
     WHERE buyer_reply_pre_text IS NULL OR btrim(buyer_reply_pre_text) = ''
@@ -679,58 +586,23 @@ CREATE_TABLES_SQL = [
     """,
 ]
 
-CONTEST_MIGRATIONS_SQL = [
+CONTEST_TABLES_SQL = [
     """
-    ALTER TABLE contest_settings
-    ADD COLUMN IF NOT EXISTS enabled BOOLEAN NOT NULL DEFAULT FALSE
-    """,
-    """
-    ALTER TABLE contest_settings
-    ADD COLUMN IF NOT EXISTS visibility_mode TEXT NOT NULL DEFAULT 'public'
-    """,
-    """
-    ALTER TABLE contest_settings
-    ADD COLUMN IF NOT EXISTS announcement_text TEXT
-    """,
-    """
-    ALTER TABLE contest_settings
-    ADD COLUMN IF NOT EXISTS announcement_entities_json TEXT
-    """,
-    """
-    ALTER TABLE contest_settings
-    ADD COLUMN IF NOT EXISTS rules_text TEXT
-    """,
-    """
-    ALTER TABLE contest_settings
-    ADD COLUMN IF NOT EXISTS rules_entities_json TEXT
-    """,
-    """
-    ALTER TABLE contest_settings
-    ADD COLUMN IF NOT EXISTS submission_open BOOLEAN NOT NULL DEFAULT FALSE
-    """,
-    """
-    ALTER TABLE contest_settings
-    ADD COLUMN IF NOT EXISTS voting_open BOOLEAN NOT NULL DEFAULT FALSE
-    """,
-    """
-    ALTER TABLE contest_settings
-    ADD COLUMN IF NOT EXISTS started_at TIMESTAMPTZ
-    """,
-    """
-    ALTER TABLE contest_users
-    ADD COLUMN IF NOT EXISTS username_last_seen TEXT
-    """,
-    """
-    ALTER TABLE contest_users
-    ADD COLUMN IF NOT EXISTS first_name_last_seen TEXT
-    """,
-    """
-    ALTER TABLE contest_users
-    ADD COLUMN IF NOT EXISTS last_name_last_seen TEXT
-    """,
-    """
-    ALTER TABLE contest_settings
-    ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    CREATE TABLE IF NOT EXISTS contest_settings (
+        id SMALLINT PRIMARY KEY DEFAULT 1,
+        enabled BOOLEAN NOT NULL DEFAULT FALSE,
+        visibility_mode TEXT NOT NULL DEFAULT 'participants',
+        announcement_text TEXT,
+        announcement_entities_json JSONB,
+        rules_text TEXT,
+        rules_entities_json JSONB,
+        submission_open BOOLEAN NOT NULL DEFAULT FALSE,
+        voting_open BOOLEAN NOT NULL DEFAULT FALSE,
+        started_at TIMESTAMPTZ,
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        CONSTRAINT contest_settings_single_row CHECK (id = 1),
+        CONSTRAINT contest_settings_visibility_mode_check CHECK (visibility_mode IN ('admin_only', 'participants'))
+    )
     """,
     """
     INSERT INTO contest_settings (id)
@@ -739,54 +611,72 @@ CONTEST_MIGRATIONS_SQL = [
     DO UPDATE SET updated_at = contest_settings.updated_at
     """,
     """
-    ALTER TABLE contest_entries
-    ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'draft'
+    CREATE TABLE IF NOT EXISTS contest_users (
+        user_id BIGINT PRIMARY KEY,
+        username TEXT,
+        username_last_seen TEXT,
+        first_name TEXT,
+        first_name_last_seen TEXT,
+        last_name TEXT,
+        last_name_last_seen TEXT,
+        last_seen_at TIMESTAMPTZ,
+        last_seen_chat_id BIGINT,
+        last_seen_message_id BIGINT,
+        started_bot BOOLEAN NOT NULL DEFAULT FALSE,
+        is_admin BOOLEAN NOT NULL DEFAULT FALSE,
+        started_at TIMESTAMPTZ,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
     """,
     """
-    UPDATE contest_entries
-    SET status = 'pending'
-    WHERE status = 'draft'
-    """,
-    """
-    ALTER TABLE contest_entries
-    ADD COLUMN IF NOT EXISTS submitted_at TIMESTAMPTZ
-    """,
-    """
-    ALTER TABLE contest_entries
-    ADD COLUMN IF NOT EXISTS is_replacement BOOLEAN NOT NULL DEFAULT FALSE
-    """,
-    """
-    ALTER TABLE contest_entries
-    ADD COLUMN IF NOT EXISTS reviewed_by_admin_id BIGINT
-    """,
-    """
-    ALTER TABLE contest_entries
-    ADD COLUMN IF NOT EXISTS reject_reason TEXT
-    """,
-    """
-    DO $$
-    BEGIN
-        ALTER TABLE contest_entries
-        DROP CONSTRAINT IF EXISTS contest_entries_status_check;
-        ALTER TABLE contest_entries
-        ADD CONSTRAINT contest_entries_status_check CHECK (
+    CREATE TABLE IF NOT EXISTS contest_entries (
+        id BIGSERIAL PRIMARY KEY,
+        owner_user_id BIGINT NOT NULL,
+        owner_username_last_seen TEXT,
+        owner_first_name_last_seen TEXT,
+        owner_last_name_last_seen TEXT,
+        telegram_file_id TEXT,
+        caption TEXT,
+        status TEXT NOT NULL DEFAULT 'pending',
+        storage_chat_id BIGINT,
+        storage_message_id BIGINT,
+        storage_message_ids BIGINT[] NOT NULL DEFAULT '{}',
+        reviewed_by_admin_id BIGINT,
+        reject_reason TEXT,
+        reviewed_at TIMESTAMPTZ,
+        version INTEGER NOT NULL DEFAULT 1,
+        is_replacement BOOLEAN NOT NULL DEFAULT FALSE,
+        submitted_at TIMESTAMPTZ,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        CONSTRAINT contest_entries_status_check CHECK (
             status IN ('draft', 'pending', 'submitted', 'approved', 'rejected', 'published', 'archived')
-        );
-    END
-    $$
+        )
+    )
     """,
     """
     CREATE INDEX IF NOT EXISTS idx_contest_entries_status_submitted_at
     ON contest_entries(status, submitted_at)
     """,
     """
-    CREATE UNIQUE INDEX IF NOT EXISTS idx_contest_entries_user_pending_unique
-    ON contest_entries(user_id)
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_contest_entries_owner_pending_unique
+    ON contest_entries(owner_user_id)
     WHERE status = 'pending'
     """,
     """
-    CREATE UNIQUE INDEX IF NOT EXISTS idx_contest_votes_unique_voter_entry
-    ON contest_votes(voter_user_id, entry_id)
+    CREATE TABLE IF NOT EXISTS contest_votes (
+        id BIGSERIAL PRIMARY KEY,
+        voter_user_id BIGINT NOT NULL,
+        entry_id BIGINT NOT NULL REFERENCES contest_entries(id) ON DELETE CASCADE,
+        ip_hash TEXT,
+        user_agent_hash TEXT,
+        is_suspicious BOOLEAN NOT NULL DEFAULT FALSE,
+        suspicion_reason TEXT,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        UNIQUE(voter_user_id, entry_id)
+    )
     """,
     """
     CREATE INDEX IF NOT EXISTS idx_contest_votes_voter_user_id
@@ -795,6 +685,133 @@ CONTEST_MIGRATIONS_SQL = [
     """
     CREATE INDEX IF NOT EXISTS idx_contest_votes_entry_id
     ON contest_votes(entry_id)
+    """,
+]
+
+CONTEST_MIGRATIONS_SQL = [
+    """
+    ALTER TABLE contest_settings
+    ALTER COLUMN id TYPE SMALLINT
+    """,
+    """
+    ALTER TABLE contest_settings
+    ALTER COLUMN id SET DEFAULT 1
+    """,
+    """
+    ALTER TABLE contest_settings
+    ALTER COLUMN visibility_mode SET DEFAULT 'participants'
+    """,
+    """
+    UPDATE contest_settings
+    SET visibility_mode = CASE
+        WHEN LOWER(COALESCE(visibility_mode, '')) IN ('admin', 'admin_only') THEN 'admin_only'
+        ELSE 'participants'
+    END
+    """,
+    """
+    ALTER TABLE contest_settings
+    DROP CONSTRAINT IF EXISTS contest_settings_visibility_mode_check
+    """,
+    """
+    ALTER TABLE contest_settings
+    ADD CONSTRAINT contest_settings_visibility_mode_check CHECK (visibility_mode IN ('admin_only', 'participants'))
+    """,
+    """
+    ALTER TABLE contest_settings
+    ALTER COLUMN announcement_entities_json TYPE JSONB USING COALESCE(NULLIF(announcement_entities_json::TEXT, ''), 'null')::JSONB
+    """,
+    """
+    ALTER TABLE contest_settings
+    ALTER COLUMN rules_entities_json TYPE JSONB USING COALESCE(NULLIF(rules_entities_json::TEXT, ''), 'null')::JSONB
+    """,
+    """
+    ALTER TABLE contest_entries
+    ADD COLUMN IF NOT EXISTS owner_user_id BIGINT
+    """,
+    """
+    ALTER TABLE contest_entries
+    ADD COLUMN IF NOT EXISTS owner_username_last_seen TEXT
+    """,
+    """
+    ALTER TABLE contest_entries
+    ADD COLUMN IF NOT EXISTS owner_first_name_last_seen TEXT
+    """,
+    """
+    ALTER TABLE contest_entries
+    ADD COLUMN IF NOT EXISTS owner_last_name_last_seen TEXT
+    """,
+    """
+    ALTER TABLE contest_entries
+    ADD COLUMN IF NOT EXISTS telegram_file_id TEXT
+    """,
+    """
+    ALTER TABLE contest_entries
+    ADD COLUMN IF NOT EXISTS caption TEXT
+    """,
+    """
+    UPDATE contest_entries
+    SET owner_user_id = COALESCE(owner_user_id, user_id)
+    WHERE owner_user_id IS NULL
+    """,
+    """
+    UPDATE contest_entries e
+    SET owner_username_last_seen = COALESCE(e.owner_username_last_seen, u.username_last_seen, u.username),
+        owner_first_name_last_seen = COALESCE(e.owner_first_name_last_seen, u.first_name_last_seen, u.first_name),
+        owner_last_name_last_seen = COALESCE(e.owner_last_name_last_seen, u.last_name_last_seen, u.last_name)
+    FROM contest_users u
+    WHERE u.user_id = COALESCE(e.owner_user_id, e.user_id)
+    """,
+    """
+    ALTER TABLE contest_entries
+    ALTER COLUMN owner_user_id SET NOT NULL
+    """,
+    """
+    ALTER TABLE contest_entries
+    DROP COLUMN IF EXISTS user_id
+    """,
+    """
+    ALTER TABLE contest_entries
+    DROP COLUMN IF EXISTS reviewer_user_id
+    """,
+    """
+    ALTER TABLE contest_entries
+    DROP COLUMN IF EXISTS reviewer_comment
+    """,
+    """
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_contest_entries_owner_pending_unique
+    ON contest_entries(owner_user_id)
+    WHERE status = 'pending'
+    """,
+    """
+    DROP INDEX IF EXISTS idx_contest_entries_user_pending_unique
+    """,
+    """
+    ALTER TABLE contest_votes
+    ADD COLUMN IF NOT EXISTS ip_hash TEXT
+    """,
+    """
+    ALTER TABLE contest_votes
+    ADD COLUMN IF NOT EXISTS user_agent_hash TEXT
+    """,
+    """
+    ALTER TABLE contest_votes
+    ADD COLUMN IF NOT EXISTS is_suspicious BOOLEAN NOT NULL DEFAULT FALSE
+    """,
+    """
+    ALTER TABLE contest_votes
+    ADD COLUMN IF NOT EXISTS suspicion_reason TEXT
+    """,
+    """
+    ALTER TABLE contest_votes
+    DROP COLUMN IF EXISTS voter_fingerprint
+    """,
+    """
+    ALTER TABLE contest_votes
+    DROP COLUMN IF EXISTS voter_hash
+    """,
+    """
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_contest_votes_unique_voter_entry
+    ON contest_votes(voter_user_id, entry_id)
     """,
 ]
 
@@ -1066,6 +1083,8 @@ async def init_db() -> None:
             for query in POST_MIGRATIONS_SQL:
                 await conn.execute(query)
             for query in BUYER_STATE_MIGRATIONS_SQL:
+                await conn.execute(query)
+            for query in CONTEST_TABLES_SQL:
                 await conn.execute(query)
             for query in CONTEST_MIGRATIONS_SQL:
                 await conn.execute(query)
@@ -1467,7 +1486,7 @@ CONTEST_SETTINGS_UPSERT_SQL = """
         started_at,
         updated_at
     )
-    VALUES (1, $1, $2, $3, $4, $5, $6, $7, $8, $9, NOW())
+    VALUES (1, $1, $2, $3, $4::JSONB, $5, $6::JSONB, $7, $8, $9, NOW())
     ON CONFLICT (id)
     DO UPDATE SET
         enabled = EXCLUDED.enabled,
@@ -1535,14 +1554,16 @@ async def set_contest_settings(
     started_at: datetime | None,
 ) -> None:
     pool = await get_db_pool()
+    parsed_announcement_entities = json.loads(announcement_entities_json) if announcement_entities_json else None
+    parsed_rules_entities = json.loads(rules_entities_json) if rules_entities_json else None
     await pool.execute(
         CONTEST_SETTINGS_UPSERT_SQL,
         bool(enabled),
         _normalize_contest_visibility_mode(visibility_mode),
         announcement_text,
-        announcement_entities_json,
+        parsed_announcement_entities,
         rules_text,
-        rules_entities_json,
+        parsed_rules_entities,
         bool(submission_open),
         bool(voting_open),
         started_at,
@@ -1555,16 +1576,25 @@ def _serialize_entities(entities: list[MessageEntity] | None) -> str | None:
     return json.dumps([entity.model_dump(exclude_none=True) for entity in entities], ensure_ascii=False)
 
 
-def _deserialize_entities(entities_json: str | None) -> list[MessageEntity]:
-    if not entities_json:
+def _decode_entities_payload(entities_json: object) -> list[object]:
+    if entities_json is None:
         return []
-    try:
-        raw_items = json.loads(entities_json)
-    except json.JSONDecodeError:
-        logger.warning("Unable to decode entities JSON for contest settings")
-        return []
-    if not isinstance(raw_items, list):
-        return []
+    if isinstance(entities_json, list):
+        return entities_json
+    if isinstance(entities_json, str):
+        if not entities_json.strip():
+            return []
+        try:
+            decoded = json.loads(entities_json)
+        except json.JSONDecodeError:
+            logger.warning("Unable to decode entities JSON for contest settings")
+            return []
+        return decoded if isinstance(decoded, list) else []
+    return []
+
+
+def _deserialize_entities(entities_json: object) -> list[MessageEntity]:
+    raw_items = _decode_entities_payload(entities_json)
     parsed: list[MessageEntity] = []
     for item in raw_items:
         if not isinstance(item, dict):
@@ -1600,7 +1630,7 @@ async def _send_contest_editor_summary(target_message: Message, state: FSMContex
     )
 
 
-async def _send_contest_preview(chat_id: int, text: str, entities_json: str | None) -> None:
+async def _send_contest_preview(chat_id: int, text: str, entities_json: object) -> None:
     await bot.send_message(
         chat_id,
         text=text,
@@ -1659,8 +1689,8 @@ async def _upsert_contest_user_start(message: Message) -> None:
             last_seen_at = EXCLUDED.last_seen_at,
             last_seen_chat_id = EXCLUDED.last_seen_chat_id,
             last_seen_message_id = EXCLUDED.last_seen_message_id,
-            is_admin = EXCLUDED.is_admin,
-            started_bot = TRUE,
+            is_admin = COALESCE(EXCLUDED.is_admin, contest_users.is_admin, FALSE),
+            started_bot = COALESCE(contest_users.started_bot, FALSE) OR TRUE,
             started_at = COALESCE(contest_users.started_at, NOW()),
             updated_at = NOW()
         """,
@@ -1678,9 +1708,9 @@ async def _get_pending_contest_entry(user_id: int) -> dict[str, object] | None:
     pool = await get_db_pool()
     row = await pool.fetchrow(
         """
-        SELECT id, user_id, status, version, storage_chat_id, storage_message_id
+        SELECT id, owner_user_id, status, version, storage_chat_id, storage_message_id
         FROM contest_entries
-        WHERE user_id = $1 AND status = 'pending'
+        WHERE owner_user_id = $1 AND status = 'pending'
         ORDER BY updated_at DESC, id DESC
         LIMIT 1
         """,
@@ -1690,7 +1720,7 @@ async def _get_pending_contest_entry(user_id: int) -> dict[str, object] | None:
         return None
     return {
         "id": int(row["id"]),
-        "user_id": int(row["user_id"]),
+        "user_id": int(row["owner_user_id"]),
         "status": str(row["status"]),
         "version": int(row["version"] or 1),
         "storage_chat_id": int(row["storage_chat_id"]) if row["storage_chat_id"] is not None else None,
@@ -1722,7 +1752,10 @@ async def _create_pending_contest_entry(user_id: int, storage_chat_id: int, stor
     await pool.execute(
         """
         INSERT INTO contest_entries (
-            user_id,
+            owner_user_id,
+            owner_username_last_seen,
+            owner_first_name_last_seen,
+            owner_last_name_last_seen,
             status,
             storage_chat_id,
             storage_message_id,
@@ -1732,7 +1765,20 @@ async def _create_pending_contest_entry(user_id: int, storage_chat_id: int, stor
             submitted_at,
             updated_at
         )
-        VALUES ($1, 'pending', $2, $3, ARRAY[$3]::BIGINT[], 1, FALSE, NOW(), NOW())
+        VALUES (
+            $1,
+            (SELECT username_last_seen FROM contest_users WHERE user_id = $1),
+            (SELECT first_name_last_seen FROM contest_users WHERE user_id = $1),
+            (SELECT last_name_last_seen FROM contest_users WHERE user_id = $1),
+            'pending',
+            $2,
+            $3,
+            ARRAY[$3]::BIGINT[],
+            1,
+            FALSE,
+            NOW(),
+            NOW()
+        )
         """,
         user_id,
         storage_chat_id,
@@ -1767,7 +1813,7 @@ async def _notify_admins_about_contest_entry(entry_id: int) -> None:
         """
         SELECT
             e.id,
-            e.user_id,
+            e.owner_user_id,
             e.storage_chat_id,
             e.storage_message_id,
             e.status,
@@ -1775,7 +1821,7 @@ async def _notify_admins_about_contest_entry(entry_id: int) -> None:
             u.first_name,
             u.last_name
         FROM contest_entries e
-        LEFT JOIN contest_users u ON u.user_id = e.user_id
+        LEFT JOIN contest_users u ON u.user_id = e.owner_user_id
         WHERE e.id = $1
         """,
         entry_id,
@@ -1798,7 +1844,7 @@ async def _notify_admins_about_contest_entry(entry_id: int) -> None:
     caption_lines = [
         "🆕 Новая заявка на конкурс",
         f"Entry ID: <code>{int(row['id'])}</code>",
-        f"user_id: <code>{int(row['user_id'])}</code>",
+        f"user_id: <code>{int(row['owner_user_id'])}</code>",
         f"username: @{html.escape(username)}" if username else "username: (не указан)",
         f"display name: {html.escape(display_name)}",
         "Статус: <b>Новая заявка</b>",
@@ -1813,11 +1859,11 @@ async def _notify_admins_about_contest_entry(entry_id: int) -> None:
                 message_id=int(target_message_id),
                 caption=caption,
                 parse_mode="HTML",
-                reply_markup=contest_admin_entry_keyboard(int(row["id"]), int(row["user_id"])),
+                reply_markup=contest_admin_entry_keyboard(int(row["id"]), int(row["owner_user_id"])),
             )
             await bot.send_message(
                 admin_id,
-                f"Если ссылка не открывается, user_id участника: <code>{int(row['user_id'])}</code>",
+                f"Если ссылка не открывается, user_id участника: <code>{int(row['owner_user_id'])}</code>",
                 parse_mode="HTML",
             )
         except TelegramForbiddenError:
@@ -1832,21 +1878,19 @@ async def _set_contest_entry_approved(entry_id: int, admin_id: int) -> int | Non
         """
         UPDATE contest_entries
         SET status = 'approved',
-            reviewer_user_id = $2,
-            reviewer_comment = NULL,
             reviewed_by_admin_id = $2,
             reject_reason = NULL,
             reviewed_at = NOW(),
             updated_at = NOW()
         WHERE id = $1
-        RETURNING user_id
+        RETURNING owner_user_id
         """,
         entry_id,
         admin_id,
     )
     if not row:
         return None
-    return int(row["user_id"])
+    return int(row["owner_user_id"])
 
 
 async def _set_contest_entry_rejected(entry_id: int, admin_id: int, reason: str) -> int | None:
@@ -1855,14 +1899,12 @@ async def _set_contest_entry_rejected(entry_id: int, admin_id: int, reason: str)
         """
         UPDATE contest_entries
         SET status = 'rejected',
-            reviewer_user_id = $2,
-            reviewer_comment = $3,
             reviewed_by_admin_id = $2,
             reject_reason = $3,
             reviewed_at = NOW(),
             updated_at = NOW()
         WHERE id = $1
-        RETURNING user_id
+        RETURNING owner_user_id
         """,
         entry_id,
         admin_id,
@@ -1870,7 +1912,7 @@ async def _set_contest_entry_rejected(entry_id: int, admin_id: int, reason: str)
     )
     if not row:
         return None
-    return int(row["user_id"])
+    return int(row["owner_user_id"])
 
 async def set_storage_chat_id(storage_chat_id: int) -> None:
     await set_meta(STORAGE_CHAT_META_KEY, str(storage_chat_id))
@@ -4230,9 +4272,9 @@ async def contest_admin_entries_overview(message: Message):
     ):
         rows = await pool.fetch(
             """
-            SELECT e.id, e.user_id, e.submitted_at, e.reviewed_at, u.username
+            SELECT e.id, e.owner_user_id, e.submitted_at, e.reviewed_at, u.username
             FROM contest_entries e
-            LEFT JOIN contest_users u ON u.user_id = e.user_id
+            LEFT JOIN contest_users u ON u.user_id = e.owner_user_id
             WHERE e.status = $1
             ORDER BY COALESCE(e.reviewed_at, e.submitted_at, e.created_at) DESC, e.id DESC
             LIMIT 5
@@ -4250,7 +4292,7 @@ async def contest_admin_entries_overview(message: Message):
             if username:
                 user_ref = f"@{username.lstrip('@')}"
             else:
-                user_ref = f"user_id {int(row['user_id'])}"
+                user_ref = f"user_id {int(row['owner_user_id'])}"
             summary_lines.append(
                 f"• #{int(row['id'])} — {user_ref} · {format_admin_datetime(ts)}"
             )
