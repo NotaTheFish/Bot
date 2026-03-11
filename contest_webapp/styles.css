@@ -1,0 +1,97 @@
+:root {
+  color-scheme: light;
+  font-family: Inter, system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+}
+
+body {
+  margin: 0;
+  background: #f4f6fa;
+  color: #1d2530;
+}
+
+.app {
+  max-width: 960px;
+  margin: 0 auto;
+  padding: 16px;
+}
+
+.app__header {
+  margin-bottom: 20px;
+}
+
+.votes-counter {
+  font-weight: 600;
+  margin: 8px 0;
+}
+
+.rules-link {
+  color: #1b65d8;
+  text-decoration: none;
+}
+
+.rules-link:hover {
+  text-decoration: underline;
+}
+
+.entries-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
+  gap: 16px;
+}
+
+.entry-card {
+  background: #fff;
+  border-radius: 12px;
+  overflow: hidden;
+  border: 1px solid #e2e7f2;
+  display: flex;
+  flex-direction: column;
+}
+
+.entry-card__image {
+  width: 100%;
+  aspect-ratio: 1;
+  object-fit: cover;
+  background: #e8edf8;
+}
+
+.entry-card__body {
+  padding: 12px;
+}
+
+.entry-card__title {
+  margin: 0 0 8px;
+  font-size: 15px;
+}
+
+.entry-card__votes {
+  margin: 0 0 10px;
+  font-size: 14px;
+  color: #5d6878;
+}
+
+.vote-button {
+  width: 100%;
+  border: none;
+  border-radius: 8px;
+  padding: 10px 12px;
+  background: #2e7dff;
+  color: #fff;
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.vote-button[disabled],
+.entry-card--disabled .vote-button {
+  background: #c0c8d6;
+  cursor: not-allowed;
+}
+
+.entry-card--disabled {
+  opacity: 0.72;
+}
+
+.status-message {
+  margin-top: 16px;
+  color: #5d6878;
+}
