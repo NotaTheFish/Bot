@@ -1716,6 +1716,7 @@ def _contest_editor_keyboard() -> InlineKeyboardMarkup:
             [InlineKeyboardButton(text="✅ Сохранить", callback_data="contest:save")],
             [InlineKeyboardButton(text="✏️ Изменить правила", callback_data="contest:edit_rules")],
             [InlineKeyboardButton(text="👁 Предпросмотр", callback_data="contest:preview")],
+            [InlineKeyboardButton(text="❌ Отмена", callback_data="contest:cancel_edit")],
         ]
     )
 
@@ -4371,7 +4372,7 @@ async def contest_announcement_start(message: Message, state: FSMContext):
     await message.answer(
         "Отправьте текст объявления конкурса одним сообщением. "
         "Можно с форматированием и кастомными эмодзи. "
-        "Завершение редактирования — через inline-кнопки Сохранить/Назад."
+        "Завершение редактирования — через inline-кнопки Сохранить/Отмена."
     )
 
 
@@ -4614,7 +4615,7 @@ async def contest_announcement_received(message: Message, state: FSMContext):
 
     announcement_text = (message.text or message.caption or "").strip()
     if is_contest_system_button_text(announcement_text):
-        await message.answer("Сначала завершите редактирование или нажмите Сохранить/Назад")
+        await message.answer("Сначала завершите редактирование или нажмите Сохранить/Отмена")
         return
 
     announcement_entities = list(message.entities or message.caption_entities or [])
@@ -4637,8 +4638,19 @@ async def contest_edit_rules(callback: CallbackQuery, state: FSMContext):
     await state.set_state(AdminStates.waiting_contest_rules)
     await callback.message.answer(
         "Отправьте обновлённые правила конкурса одним сообщением. "
-        "Завершение редактирования — через inline-кнопки Сохранить/Назад."
+        "Завершение редактирования — через inline-кнопки Сохранить/Отмена."
     )
+    await callback.answer()
+
+
+@dp.callback_query(F.data == "contest:cancel_edit")
+async def contest_cancel_edit(callback: CallbackQuery, state: FSMContext):
+    if not callback.message or not is_admin_user(callback.from_user.id):
+        await callback.answer("Недоступно", show_alert=True)
+        return
+
+    await state.clear()
+    await callback.message.answer("Редактирование отменено", reply_markup=await contest_admin_menu_keyboard())
     await callback.answer()
 
 
@@ -4649,7 +4661,7 @@ async def contest_rules_received(message: Message, state: FSMContext):
 
     rules_text = (message.text or message.caption or "").strip()
     if is_contest_system_button_text(rules_text):
-        await message.answer("Сначала завершите редактирование или нажмите Сохранить/Назад")
+        await message.answer("Сначала завершите редактирование или нажмите Сохранить/Отмена")
         return
 
     rules_entities = list(message.entities or message.caption_entities or [])
