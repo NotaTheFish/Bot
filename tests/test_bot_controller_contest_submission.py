@@ -385,6 +385,70 @@ class ContestSubmissionTests(unittest.IsolatedAsyncioTestCase):
         state.clear.assert_awaited_once()
         self.assertEqual(message.answer.await_args.args[0], "Приём заявок сейчас закрыт.")
 
+
+    async def test_tester_receives_announcement_on_start_in_admin_only_mode(self):
+        message = SimpleNamespace(
+            text="/start",
+            chat=SimpleNamespace(type="private", id=999),
+            from_user=SimpleNamespace(id=555),
+            answer=AsyncMock(),
+        )
+        state = AsyncMock()
+        pool = AsyncMock()
+        pool.execute = AsyncMock()
+
+        with (
+            patch.object(main_core, "_upsert_contest_user_start", AsyncMock()),
+            patch.object(main_core, "send_buyer_pre_reply", AsyncMock()),
+            patch.object(main_core, "get_contest_settings", AsyncMock(return_value={"enabled": True, "visibility_mode": "admin_only", "announcement_text": "Анонс", "announcement_entities_json": None})),
+            patch.object(main_core, "get_db_pool", AsyncMock(return_value=pool)),
+            patch.object(main_core, "is_admin_user", return_value=False),
+            patch.object(main_core, "CONTEST_TESTER_IDS_LIST", [555]),
+            patch.object(main_core.bot, "send_message", AsyncMock()) as send_message,
+        ):
+            await main_core.on_start(message, state)
+
+        send_message.assert_awaited_once()
+        self.assertEqual(send_message.await_args.args[0], 999)
+        self.assertEqual(send_message.await_args.kwargs["text"], "Анонс")
+
+    async def test_tester_can_open_contest_menu_in_admin_only_mode(self):
+        message = SimpleNamespace(from_user=SimpleNamespace(id=555), answer=AsyncMock())
+        state = AsyncMock()
+
+        with (
+            patch.object(main_core, "get_contest_settings", AsyncMock(return_value={"enabled": True, "visibility_mode": "admin_only"})),
+            patch.object(main_core, "ensure_admin", return_value=False),
+            patch.object(main_core, "is_admin_user", return_value=False),
+            patch.object(main_core, "CONTEST_TESTER_IDS_LIST", [555]),
+        ):
+            await main_core.buyer_contest_open(message, state)
+
+        state.clear.assert_awaited_once()
+        message.answer.assert_awaited_once()
+        self.assertEqual(message.answer.await_args.args[0], "🏆 Меню конкурса:")
+
+    async def test_tester_submit_start_allowed_in_admin_only_mode(self):
+        message = SimpleNamespace(
+            chat=SimpleNamespace(type="private"),
+            from_user=SimpleNamespace(id=555),
+            answer=AsyncMock(),
+        )
+        state = AsyncMock()
+
+        with (
+            patch.object(main_core, "ensure_admin", return_value=False),
+            patch.object(main_core, "get_contest_settings", AsyncMock(return_value={"enabled": True, "submission_open": True, "visibility_mode": "admin_only"})),
+            patch.object(main_core, "is_admin_user", return_value=False),
+            patch.object(main_core, "CONTEST_TESTER_IDS_LIST", [555]),
+            patch.object(main_core, "_ensure_contest_channel_subscription", AsyncMock(return_value=(True, None))),
+            patch.object(main_core, "_get_pending_contest_entry", AsyncMock(return_value=None)),
+        ):
+            await main_core.contest_submit_start(message, state)
+
+        state.set_state.assert_awaited_once_with(main_core.ContestStates.waiting_submission_media)
+        state.update_data.assert_awaited_once_with(contest_pending_entry_id=None)
+
     async def test_submit_start_blocks_with_restricted_visibility_mode(self):
         message = SimpleNamespace(chat=SimpleNamespace(type="private"), from_user=SimpleNamespace(id=77), answer=AsyncMock())
         state = AsyncMock()

@@ -1693,13 +1693,19 @@ def _contest_visibility_mode(settings: dict[str, object]) -> str:
     return _normalize_contest_visibility_mode(settings.get("visibility_mode"))
 
 
-def _contest_visible_for_user(settings: dict[str, object], *, is_admin: bool) -> bool:
+def _is_contest_tester_user(user_id: int | None) -> bool:
+    return bool(user_id and user_id in CONTEST_TESTER_IDS_LIST)
+
+
+def _contest_visible_for_user(settings: dict[str, object], user_id: int | None) -> bool:
     if not bool(settings.get("enabled")):
         return False
 
+    is_admin_or_tester = is_admin_user(user_id) or _is_contest_tester_user(user_id)
+
     visibility_mode = _contest_visibility_mode(settings)
     if visibility_mode == "admin_only":
-        return is_admin
+        return is_admin_or_tester
     if visibility_mode == "participants":
         return True
     return True
@@ -1741,7 +1747,7 @@ async def _get_contest_submission_block_reason(user_id: int, *, settings: dict[s
     if not bool(settings.get("submission_open")):
         return "Приём заявок сейчас закрыт."
 
-    if not _contest_visible_for_user(settings, is_admin=is_admin_user(user_id)):
+    if not _contest_visible_for_user(settings, user_id):
         return "Подача заявок недоступна для вашего режима конкурса."
 
     subscribed, subscription_error = await _ensure_contest_channel_subscription(user_id)
@@ -3830,7 +3836,10 @@ async def on_start(message: Message, state: FSMContext):
     if message.chat.type == "private":
         await send_buyer_pre_reply(message.chat.id)
         settings = await get_contest_settings()
-        can_send_contest_announcement = _contest_visible_for_user(settings, is_admin=is_admin)
+        can_send_contest_announcement = _contest_visible_for_user(
+            settings,
+            message.from_user.id if message.from_user else None,
+        )
 
         if can_send_contest_announcement:
             announcement_text = str(settings.get("announcement_text") or "").strip()
@@ -3938,6 +3947,9 @@ async def buyer_contest_open(message: Message, state: FSMContext):
     settings = await get_contest_settings()
     is_test_admin = _contest_admin_acting_as_participant(settings, message.from_user.id if message.from_user else None)
     if ensure_admin(message) and not is_test_admin:
+        return
+    if not _contest_visible_for_user(settings, message.from_user.id if message.from_user else None):
+        await message.answer("Конкурс сейчас недоступен для вашего профиля.", reply_markup=buyer_contact_keyboard())
         return
 
     await state.clear()
