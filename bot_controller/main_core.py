@@ -4314,9 +4314,6 @@ async def contest_entry_approve(callback: CallbackQuery):
         await callback.answer("Заявка не найдена", show_alert=True)
         return
 
-    with suppress(TelegramBadRequest):
-        await callback.message.edit_reply_markup(reply_markup=None)
-
     await _log_contest_entry_event(
         entry_id,
         title=f"✅ Рисунок #{entry_id} принят",
@@ -4369,9 +4366,6 @@ async def contest_entry_delete(callback: CallbackQuery):
     if participant_id is None:
         await callback.answer("Заявка не найдена", show_alert=True)
         return
-
-    with suppress(TelegramBadRequest):
-        await callback.message.edit_reply_markup(reply_markup=None)
 
     await callback.answer("Рисунок удалён")
     await callback.message.answer(f"Рисунок в заявке #{entry_id} удалён 🗑")
