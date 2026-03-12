@@ -1968,6 +1968,17 @@ def _is_message_not_modified_error(exc: TelegramBadRequest) -> bool:
     return "message is not modified" in str(exc).lower()
 
 
+def _is_message_edit_not_applicable_error(exc: TelegramBadRequest) -> bool:
+    message = str(exc).lower()
+    not_applicable_markers = (
+        "message to edit not found",
+        "message can't be edited",
+        "there is no text in the message to edit",
+        "message identifier is not specified",
+    )
+    return any(marker in message for marker in not_applicable_markers)
+
+
 async def _update_contest_storage_log(
     entry_id: int,
     *,
@@ -1999,6 +2010,8 @@ async def _update_contest_storage_log(
                         reply_markup=reply_markup,
                     )
             return True
+        if not _is_message_edit_not_applicable_error(exc):
+            return False
     except TelegramForbiddenError:
         pass
 

@@ -663,14 +663,15 @@ class ContestSubmissionTests(unittest.IsolatedAsyncioTestCase):
         with (
             patch.object(main_core, "is_admin_user", return_value=True),
             patch.object(main_core, "_set_contest_entry_approved", AsyncMock(return_value=88)) as approve_entry,
-            patch.object(main_core, "_log_contest_entry_event", AsyncMock()) as log_event,
+            patch.object(main_core, "_build_contest_entry_log_payload", AsyncMock(return_value=("caption", None))),
+            patch.object(main_core, "_update_contest_storage_log", AsyncMock()) as update_log,
             patch.object(main_core.bot, "send_message", AsyncMock()) as send_message,
         ):
             await main_core.contest_entry_approve(callback)
 
         approve_entry.assert_awaited_once_with(11, 1)
         callback.message.edit_reply_markup.assert_not_awaited()
-        log_event.assert_awaited_once()
+        update_log.assert_awaited_once_with(11, caption="caption", reply_markup=None)
         send_message.assert_awaited_once_with(88, "Ваш рисунок принят ✅")
 
     async def test_reject_requests_reason_and_persists_it(self):
@@ -700,13 +701,14 @@ class ContestSubmissionTests(unittest.IsolatedAsyncioTestCase):
         with (
             patch.object(main_core, "ensure_admin", return_value=True),
             patch.object(main_core, "_set_contest_entry_rejected", AsyncMock(return_value=88)) as reject_entry,
-            patch.object(main_core, "_log_contest_entry_event", AsyncMock()) as log_event,
+            patch.object(main_core, "_build_contest_entry_log_payload", AsyncMock(return_value=("caption", None))),
+            patch.object(main_core, "_update_contest_storage_log", AsyncMock()) as update_log,
             patch.object(main_core.bot, "send_message", AsyncMock()) as send_message,
         ):
             await main_core.contest_entry_reject_reason(reject_message, reject_state)
 
         reject_entry.assert_awaited_once_with(12, 1, "Есть проблема с оформлением")
-        log_event.assert_awaited_once()
+        update_log.assert_awaited_once_with(12, caption="caption", reply_markup=None)
         send_message.assert_awaited_once_with(88, "Ваш рисунок отклонён ❌\nПричина: Есть проблема с оформлением")
 
     async def test_delete_marks_entry_deleted_and_notifies_participant(self):
@@ -720,14 +722,15 @@ class ContestSubmissionTests(unittest.IsolatedAsyncioTestCase):
         with (
             patch.object(main_core, "is_admin_user", return_value=True),
             patch.object(main_core, "_mark_contest_entry_deleted", AsyncMock(return_value=88)) as delete_entry,
-            patch.object(main_core, "_log_contest_entry_event", AsyncMock()) as log_event,
+            patch.object(main_core, "_build_contest_entry_log_payload", AsyncMock(return_value=("caption", None))),
+            patch.object(main_core, "_update_contest_storage_log", AsyncMock()) as update_log,
             patch.object(main_core.bot, "send_message", AsyncMock()) as send_message,
         ):
             await main_core.contest_entry_delete(callback)
 
         delete_entry.assert_awaited_once_with(15, 1)
         callback.message.edit_reply_markup.assert_not_awaited()
-        log_event.assert_awaited_once()
+        update_log.assert_awaited_once_with(15, caption="caption", reply_markup=None)
         send_message.assert_awaited_once_with(88, "Ваш рисунок был удалён организатором. Вы можете отправить новый рисунок.")
         callback.answer.assert_awaited_once_with("Рисунок удалён")
         callback.message.answer.assert_awaited_once_with("Рисунок в заявке #15 удалён 🗑")
@@ -756,7 +759,8 @@ class ContestSubmissionTests(unittest.IsolatedAsyncioTestCase):
         with (
             patch.object(main_core, "is_admin_user", return_value=True),
             patch.object(main_core, "_mark_contest_entry_deleted", AsyncMock(return_value=88)),
-            patch.object(main_core, "_log_contest_entry_event", AsyncMock()),
+            patch.object(main_core, "_build_contest_entry_log_payload", AsyncMock(return_value=("caption", None))),
+            patch.object(main_core, "_update_contest_storage_log", AsyncMock()),
             patch.object(main_core.bot, "send_message", AsyncMock(side_effect=TelegramForbiddenError(method="sendMessage", message="blocked"))),
         ):
             await main_core.contest_entry_delete(callback)
@@ -779,39 +783,35 @@ class ContestSubmissionTests(unittest.IsolatedAsyncioTestCase):
         with (
             patch.object(main_core, "ensure_admin", return_value=True),
             patch.object(main_core, "_set_contest_entry_rejected", AsyncMock(return_value=88)),
-            patch.object(main_core, "_log_contest_entry_event", AsyncMock()),
+            patch.object(main_core, "_build_contest_entry_log_payload", AsyncMock(return_value=("caption", None))),
+            patch.object(main_core, "_update_contest_storage_log", AsyncMock()),
             patch.object(main_core.bot, "send_message", AsyncMock()),
         ):
             await main_core.contest_entry_reject_reason(reject_message, reject_state)
 
         reject_message.answer.assert_awaited_once_with("Заявка #12 отклонена ❌")
 
-    async def test_log_contest_entry_event_adds_contact_button(self):
+    async def test_build_contest_entry_log_payload_adds_contact_button(self):
         pool = AsyncMock()
         pool.fetchrow = AsyncMock(
             return_value={
-                "id": 11,
                 "owner_user_id": 77,
                 "owner_username_last_seen": "artist77",
-                "storage_chat_id": -100500,
-                "storage_message_id": 901,
             }
         )
 
-        with (
-            patch.object(main_core, "get_db_pool", AsyncMock(return_value=pool)),
-            patch.object(main_core.bot, "edit_message_caption", AsyncMock()) as edit_caption,
-        ):
-            await main_core._log_contest_entry_event(
+        with patch.object(main_core, "get_db_pool", AsyncMock(return_value=pool)):
+            payload = await main_core._build_contest_entry_log_payload(
                 11,
                 title="✅ Рисунок #11 принят",
                 extra_lines=["Принял: админ 1"],
             )
 
-        edit_caption.assert_awaited_once()
-        kwargs = edit_caption.await_args.kwargs
-        self.assertEqual(kwargs["reply_markup"].inline_keyboard[0][0].text, "💬 Связаться с участником")
-        self.assertEqual(kwargs["reply_markup"].inline_keyboard[0][0].url, "tg://user?id=77")
+        assert payload is not None
+        caption, reply_markup = payload
+        self.assertIn("✅ Рисунок #11 принят", caption)
+        self.assertEqual(reply_markup.inline_keyboard[0][0].text, "💬 Связаться с участником")
+        self.assertEqual(reply_markup.inline_keyboard[0][0].url, "tg://user?id=77")
 
     async def test_approve_and_delete_handlers_log_final_events(self):
         approve_callback = SimpleNamespace(
@@ -831,15 +831,77 @@ class ContestSubmissionTests(unittest.IsolatedAsyncioTestCase):
             patch.object(main_core, "is_admin_user", return_value=True),
             patch.object(main_core, "_set_contest_entry_approved", AsyncMock(return_value=88)),
             patch.object(main_core, "_mark_contest_entry_deleted", AsyncMock(return_value=88)),
-            patch.object(main_core, "_log_contest_entry_event", AsyncMock()) as log_event,
+            patch.object(main_core, "_build_contest_entry_log_payload", AsyncMock(return_value=("caption", None))),
+            patch.object(main_core, "_update_contest_storage_log", AsyncMock()) as update_log,
             patch.object(main_core.bot, "send_message", AsyncMock()),
         ):
             await main_core.contest_entry_approve(approve_callback)
             await main_core.contest_entry_delete(delete_callback)
 
-        self.assertEqual(log_event.await_count, 2)
-        logged_entry_ids = [call.args[0] for call in log_event.await_args_list]
+        self.assertEqual(update_log.await_count, 2)
+        logged_entry_ids = [call.args[0] for call in update_log.await_args_list]
         self.assertEqual(logged_entry_ids, [11, 15])
+
+    async def test_update_storage_log_prefers_edit_for_replaced_pending_post(self):
+        pool = AsyncMock()
+        pool.fetchrow = AsyncMock(return_value={"storage_chat_id": -100123, "storage_message_id": 1703})
+
+        with (
+            patch.object(main_core, "get_db_pool", AsyncMock(return_value=pool)),
+            patch.object(main_core.bot, "edit_message_caption", AsyncMock()) as edit_caption,
+            patch.object(main_core.bot, "copy_message", AsyncMock()) as copy_message,
+        ):
+            updated = await main_core._update_contest_storage_log(22, caption="new", reply_markup=None)
+
+        self.assertTrue(updated)
+        edit_caption.assert_awaited_once_with(chat_id=-100123, message_id=1703, caption="new", reply_markup=None)
+        copy_message.assert_not_awaited()
+
+    async def test_update_storage_log_fallback_creates_new_post_only_when_edit_fails(self):
+        pool = AsyncMock()
+        pool.fetchrow = AsyncMock(return_value={"storage_chat_id": -100123, "storage_message_id": 1703})
+
+        with (
+            patch.object(main_core, "get_db_pool", AsyncMock(return_value=pool)),
+            patch.object(
+                main_core.bot,
+                "edit_message_caption",
+                AsyncMock(side_effect=main_core.TelegramBadRequest(method="editMessageCaption", message="message to edit not found")),
+            ),
+            patch.object(main_core.bot, "copy_message", AsyncMock(return_value=SimpleNamespace(message_id=1801))) as copy_message,
+        ):
+            updated = await main_core._update_contest_storage_log(22, caption="new", reply_markup=None)
+
+        self.assertTrue(updated)
+        copy_message.assert_awaited_once_with(
+            chat_id=-100123,
+            from_chat_id=-100123,
+            message_id=1703,
+            caption="new",
+            reply_markup=None,
+        )
+        pool.execute.assert_awaited_once()
+
+    async def test_update_storage_log_fallback_updates_db_to_new_message_id(self):
+        pool = AsyncMock()
+        pool.fetchrow = AsyncMock(return_value={"storage_chat_id": -100123, "storage_message_id": 1703})
+
+        with (
+            patch.object(main_core, "get_db_pool", AsyncMock(return_value=pool)),
+            patch.object(
+                main_core.bot,
+                "edit_message_caption",
+                AsyncMock(side_effect=main_core.TelegramBadRequest(method="editMessageCaption", message="message can't be edited")),
+            ),
+            patch.object(main_core.bot, "copy_message", AsyncMock(return_value=SimpleNamespace(message_id=1802))),
+        ):
+            updated = await main_core._update_contest_storage_log(22, caption="new", reply_markup=None)
+
+        self.assertTrue(updated)
+        execute_args = pool.execute.await_args.args
+        self.assertEqual(execute_args[1], 22)
+        self.assertEqual(execute_args[2], -100123)
+        self.assertEqual(execute_args[3], 1802)
     async def test_reject_reason_ignores_contest_system_buttons(self):
         reject_message = SimpleNamespace(
             text="⬅️ Назад",
