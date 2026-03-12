@@ -1965,7 +1965,8 @@ def _contest_user_mention(username: str | None) -> str:
 
 
 async def update_contest_storage_log(entry: dict[str, object], *, status_text: str, extra_lines: list[str]) -> None:
-    storage_message_id = entry.get("storage_message_id")
+    entry_id = int(entry.get("id") or 0)
+    storage_chat_id, storage_message_id = await _get_contest_entry_storage_target(entry_id)
     if storage_message_id is None:
         return
 
@@ -1978,13 +1979,13 @@ async def update_contest_storage_log(entry: dict[str, object], *, status_text: s
             *extra_lines,
         ]
     )
-    storage_chat_id = int(entry.get("storage_chat_id") or STORAGE_CHAT_ID)
+    target_chat_id = int(storage_chat_id) if storage_chat_id is not None else int(STORAGE_CHAT_ID)
     storage_message_id_int = int(storage_message_id)
     reply_markup = _contest_participant_contact_markup(owner_user_id)
 
     try:
         await bot.edit_message_caption(
-            chat_id=storage_chat_id,
+            chat_id=target_chat_id,
             message_id=storage_message_id_int,
             caption=caption,
             reply_markup=reply_markup,
@@ -1996,7 +1997,7 @@ async def update_contest_storage_log(entry: dict[str, object], *, status_text: s
     with suppress(TelegramBadRequest, TelegramForbiddenError):
         await bot.copy_message(
             chat_id=int(STORAGE_CHAT_ID),
-            from_chat_id=storage_chat_id,
+            from_chat_id=target_chat_id,
             message_id=storage_message_id_int,
             caption=caption,
             reply_markup=reply_markup,
@@ -2007,7 +2008,7 @@ async def _log_contest_entry_event(entry_id: int, *, title: str, extra_lines: li
     pool = await get_db_pool()
     row = await pool.fetchrow(
         """
-        SELECT id, owner_user_id, owner_username_last_seen, storage_chat_id, storage_message_id
+       SELECT id, owner_user_id, owner_username_last_seen
         FROM contest_entries
         WHERE id = $1
         """,
@@ -2016,6 +2017,26 @@ async def _log_contest_entry_event(entry_id: int, *, title: str, extra_lines: li
     if not row:
         return
     await update_contest_storage_log(dict(row), status_text=title, extra_lines=extra_lines)
+
+
+async def _get_contest_entry_storage_target(entry_id: int) -> tuple[int | None, int | None]:
+    pool = await get_db_pool()
+    row = await pool.fetchrow(
+        """
+        SELECT storage_chat_id, storage_message_id
+        FROM contest_entries
+        WHERE id = $1
+        """,
+        entry_id,
+    )
+    if not row:
+        return None, None
+
+    storage_chat_id = int(row["storage_chat_id"]) if row["storage_chat_id"] is not None else None
+    storage_message_id = int(row["storage_message_id"]) if row["storage_message_id"] is not None else None
+    if storage_message_id is None:
+        return None, None
+    return storage_chat_id, storage_message_id
 
 
 async def _reserve_contest_entry_id() -> int:
