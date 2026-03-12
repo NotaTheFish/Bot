@@ -247,7 +247,7 @@ class ContestSubmissionTests(unittest.IsolatedAsyncioTestCase):
             patch.object(main_core, "ensure_admin", return_value=False),
             patch.object(main_core, "get_contest_settings", AsyncMock(return_value={"enabled": True, "submission_open": True, "visibility_mode": "participants"})),
             patch.object(main_core, "_get_contest_submission_block_reason", AsyncMock(return_value=None)),
-            patch.object(main_core, "_get_pending_contest_entry", AsyncMock(return_value=None)),
+            patch.object(main_core, "get_active_pending_entry", AsyncMock(return_value=None)),
         ):
             await main_core.contest_submit_start(message, state)
 
@@ -266,7 +266,7 @@ class ContestSubmissionTests(unittest.IsolatedAsyncioTestCase):
             patch.object(main_core, "ensure_admin", return_value=False),
             patch.object(main_core, "get_contest_settings", AsyncMock(return_value={"enabled": True, "submission_open": True, "visibility_mode": "participants"})),
             patch.object(main_core, "_get_contest_submission_block_reason", AsyncMock(return_value=None)),
-            patch.object(main_core, "_get_pending_contest_entry", AsyncMock(return_value={"id": 15})),
+            patch.object(main_core, "get_active_pending_entry", AsyncMock(return_value={"id": 15})),
         ):
             await main_core.contest_submit_start(message, state)
 
@@ -285,7 +285,7 @@ class ContestSubmissionTests(unittest.IsolatedAsyncioTestCase):
             patch.object(main_core, "ensure_admin", return_value=False),
             patch.object(main_core, "get_contest_settings", AsyncMock(return_value={"enabled": True, "submission_open": True, "visibility_mode": "participants"})),
             patch.object(main_core, "_get_contest_submission_block_reason", AsyncMock(return_value=None)),
-            patch.object(main_core, "_get_pending_contest_entry", AsyncMock(return_value={"id": 15})),
+            patch.object(main_core, "get_active_pending_entry", AsyncMock(return_value={"id": 15})),
         ):
             await main_core.contest_submit_start(message, state)
 
@@ -332,15 +332,15 @@ class ContestSubmissionTests(unittest.IsolatedAsyncioTestCase):
             patch.object(main_core, "ensure_admin", return_value=False),
             patch.object(main_core, "get_contest_settings", AsyncMock(return_value={"enabled": True, "submission_open": True, "visibility_mode": "participants"})),
             patch.object(main_core, "_get_contest_submission_block_reason", AsyncMock(return_value=None)),
-            patch.object(main_core, "_create_pending_contest_entry", AsyncMock()) as create_entry,
-            patch.object(main_core, "_get_pending_contest_entry", AsyncMock(return_value={"id": 33})),
+            patch.object(main_core, "_reserve_contest_entry_id", AsyncMock(return_value=33)),
+            patch.object(main_core, "_create_pending_contest_entry", AsyncMock(return_value=33)) as create_entry,
             patch.object(main_core, "_notify_admins_about_contest_entry", AsyncMock()) as notify_admins,
             patch.object(main_core, "_upsert_contest_user_start", AsyncMock()),
             patch.object(main_core.bot, "copy_message", AsyncMock(return_value=SimpleNamespace(message_id=701))),
         ):
             await main_core.contest_submission_media(message, state)
 
-        create_entry.assert_awaited_once_with(88, -100123, 701)
+        create_entry.assert_awaited_once_with(33, 88, -100123, 701)
         notify_admins.assert_awaited_once_with(33)
         state.clear.assert_awaited_once()
 
@@ -391,7 +391,8 @@ class ContestSubmissionTests(unittest.IsolatedAsyncioTestCase):
             patch.object(main_core, "ensure_admin", return_value=False),
             patch.object(main_core, "get_contest_settings", AsyncMock(return_value={"enabled": True, "submission_open": True, "visibility_mode": "participants"})),
             patch.object(main_core, "_get_contest_submission_block_reason", AsyncMock(return_value=None)),
-            patch.object(main_core, "_create_pending_contest_entry", AsyncMock()) as create_entry,
+            patch.object(main_core, "_reserve_contest_entry_id", AsyncMock(return_value=33)),
+            patch.object(main_core, "_create_pending_contest_entry", AsyncMock(return_value=33)) as create_entry,
             patch.object(main_core, "_replace_pending_contest_entry", AsyncMock()) as replace_entry,
             patch.object(main_core, "_notify_admins_about_contest_entry", AsyncMock()),
             patch.object(main_core, "_upsert_contest_user_start", AsyncMock()),
@@ -517,7 +518,7 @@ class ContestSubmissionTests(unittest.IsolatedAsyncioTestCase):
             patch.object(main_core, "is_admin_user", return_value=False),
             patch.object(main_core, "CONTEST_TESTER_IDS_LIST", [555]),
             patch.object(main_core, "_ensure_contest_channel_subscription", AsyncMock(return_value=(True, None))),
-            patch.object(main_core, "_get_pending_contest_entry", AsyncMock(return_value=None)),
+            patch.object(main_core, "get_active_pending_entry", AsyncMock(return_value=None)),
         ):
             await main_core.contest_submit_start(message, state)
 
@@ -577,7 +578,7 @@ class ContestSubmissionTests(unittest.IsolatedAsyncioTestCase):
             patch.object(main_core, "ensure_admin", return_value=True),
             patch.object(main_core, "get_contest_settings", AsyncMock(return_value={"enabled": True, "submission_open": True, "visibility_mode": "admin_only"})),
             patch.object(main_core, "_ensure_contest_channel_subscription", AsyncMock(return_value=(True, None))),
-            patch.object(main_core, "_get_pending_contest_entry", AsyncMock(return_value=None)),
+            patch.object(main_core, "get_active_pending_entry", AsyncMock(return_value=None)),
         ):
             await main_core.contest_submit_start(message, state)
 
@@ -602,15 +603,15 @@ class ContestSubmissionTests(unittest.IsolatedAsyncioTestCase):
             patch.object(main_core, "ensure_admin", return_value=True),
             patch.object(main_core, "get_contest_settings", AsyncMock(return_value={"enabled": True, "submission_open": True, "visibility_mode": "admin_only"})),
             patch.object(main_core, "_ensure_contest_channel_subscription", AsyncMock(return_value=(True, None))),
-            patch.object(main_core, "_create_pending_contest_entry", AsyncMock()) as create_entry,
-            patch.object(main_core, "_get_pending_contest_entry", AsyncMock(return_value={"id": 33})),
+            patch.object(main_core, "_reserve_contest_entry_id", AsyncMock(return_value=33)),
+            patch.object(main_core, "_create_pending_contest_entry", AsyncMock(return_value=33)) as create_entry,
             patch.object(main_core, "_notify_admins_about_contest_entry", AsyncMock()),
             patch.object(main_core, "_upsert_contest_user_start", AsyncMock()),
             patch.object(main_core.bot, "copy_message", AsyncMock(return_value=SimpleNamespace(message_id=701))),
         ):
             await main_core.contest_submission_media(message, state)
 
-        create_entry.assert_awaited_once_with(1, -100123, 701)
+        create_entry.assert_awaited_once_with(33, 1, -100123, 701)
         state.clear.assert_awaited_once()
 
     async def test_submit_start_blocks_with_missing_channel_subscription(self):
@@ -799,7 +800,7 @@ class ContestSubmissionTests(unittest.IsolatedAsyncioTestCase):
 
         with (
             patch.object(main_core, "get_db_pool", AsyncMock(return_value=pool)),
-            patch.object(main_core.bot, "copy_message", AsyncMock()) as copy_message,
+            patch.object(main_core.bot, "edit_message_caption", AsyncMock()) as edit_caption,
         ):
             await main_core._log_contest_entry_event(
                 11,
@@ -807,8 +808,8 @@ class ContestSubmissionTests(unittest.IsolatedAsyncioTestCase):
                 extra_lines=["Принял: админ 1"],
             )
 
-        copy_message.assert_awaited_once()
-        kwargs = copy_message.await_args.kwargs
+        edit_caption.assert_awaited_once()
+        kwargs = edit_caption.await_args.kwargs
         self.assertEqual(kwargs["reply_markup"].inline_keyboard[0][0].text, "💬 Связаться с участником")
         self.assertEqual(kwargs["reply_markup"].inline_keyboard[0][0].url, "tg://user?id=77")
 

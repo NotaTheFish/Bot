@@ -717,7 +717,7 @@ CONTEST_TABLES_SQL = [
     """
     CREATE UNIQUE INDEX IF NOT EXISTS idx_contest_entries_owner_pending_unique
     ON contest_entries(owner_user_id)
-    WHERE status = 'pending'
+    WHERE status = 'pending' AND COALESCE(is_deleted, FALSE) = FALSE
     """,
     """
     CREATE TABLE IF NOT EXISTS contest_votes (
@@ -866,9 +866,12 @@ CONTEST_MIGRATIONS_SQL = [
     DROP COLUMN IF EXISTS reviewer_comment
     """,
     """
+    DROP INDEX IF EXISTS idx_contest_entries_owner_pending_unique
+    """,
+    """
     CREATE UNIQUE INDEX IF NOT EXISTS idx_contest_entries_owner_pending_unique
     ON contest_entries(owner_user_id)
-    WHERE status = 'pending'
+    WHERE status = 'pending' AND COALESCE(is_deleted, FALSE) = FALSE
     """,
     """
     ALTER TABLE contest_entries
@@ -1883,7 +1886,7 @@ async def _upsert_contest_user_start(message: Message) -> None:
     )
 
 
-async def _get_pending_contest_entry(user_id: int) -> dict[str, object] | None:
+async def get_active_pending_entry(user_id: int) -> dict[str, object] | None:
     pool = await get_db_pool()
     row = await pool.fetchrow(
         """
@@ -1905,6 +1908,10 @@ async def _get_pending_contest_entry(user_id: int) -> dict[str, object] | None:
         "storage_chat_id": int(row["storage_chat_id"]) if row["storage_chat_id"] is not None else None,
         "storage_message_id": int(row["storage_message_id"]) if row["storage_message_id"] is not None else None,
     }
+
+
+async def _get_pending_contest_entry(user_id: int) -> dict[str, object] | None:
+    return await get_active_pending_entry(user_id)
 
 
 def _extract_contest_submission_file(message: Message) -> tuple[bool, str | None]:
@@ -1944,7 +1951,7 @@ async def _copy_contest_media_to_storage(message: Message, *, entry_id: int, sub
         caption=_contest_submission_storage_caption(
             entry_id=entry_id,
             owner_user_id=message.from_user.id if message.from_user else 0,
-            owner_username=message.from_user.username if message.from_user else None,
+            owner_username=getattr(message.from_user, "username", None) if message.from_user else None,
             submitted_at=submitted_at,
         ),
         reply_markup=_contest_participant_contact_markup(message.from_user.id if message.from_user else 0),
@@ -1957,6 +1964,45 @@ def _contest_user_mention(username: str | None) -> str:
     return f"@{normalized}" if normalized else "(без username)"
 
 
+async def update_contest_storage_log(entry: dict[str, object], *, status_text: str, extra_lines: list[str]) -> None:
+    storage_message_id = entry.get("storage_message_id")
+    if storage_message_id is None:
+        return
+
+    owner_user_id = int(entry.get("owner_user_id") or 0)
+    caption = "\n".join(
+        [
+            status_text,
+            f"Участник: {_contest_user_mention(entry.get('owner_username_last_seen'))}",
+            f"User ID: {owner_user_id}",
+            *extra_lines,
+        ]
+    )
+    storage_chat_id = int(entry.get("storage_chat_id") or STORAGE_CHAT_ID)
+    storage_message_id_int = int(storage_message_id)
+    reply_markup = _contest_participant_contact_markup(owner_user_id)
+
+    try:
+        await bot.edit_message_caption(
+            chat_id=storage_chat_id,
+            message_id=storage_message_id_int,
+            caption=caption,
+            reply_markup=reply_markup,
+        )
+        return
+    except (TelegramBadRequest, TelegramForbiddenError):
+        pass
+
+    with suppress(TelegramBadRequest, TelegramForbiddenError):
+        await bot.copy_message(
+            chat_id=int(STORAGE_CHAT_ID),
+            from_chat_id=storage_chat_id,
+            message_id=storage_message_id_int,
+            caption=caption,
+            reply_markup=reply_markup,
+        )
+
+
 async def _log_contest_entry_event(entry_id: int, *, title: str, extra_lines: list[str]) -> None:
     pool = await get_db_pool()
     row = await pool.fetchrow(
@@ -1967,25 +2013,9 @@ async def _log_contest_entry_event(entry_id: int, *, title: str, extra_lines: li
         """,
         entry_id,
     )
-    if not row or row["storage_message_id"] is None:
+    if not row:
         return
-
-    caption = "\n".join(
-        [
-            title,
-            f"Участник: {_contest_user_mention(row['owner_username_last_seen'])}",
-            f"User ID: {int(row['owner_user_id'])}",
-            *extra_lines,
-        ]
-    )
-    with suppress(TelegramBadRequest, TelegramForbiddenError):
-        await bot.copy_message(
-            chat_id=int(STORAGE_CHAT_ID),
-            from_chat_id=int(row["storage_chat_id"] or STORAGE_CHAT_ID),
-            message_id=int(row["storage_message_id"]),
-            caption=caption,
-            reply_markup=_contest_participant_contact_markup(int(row["owner_user_id"])),
-        )
+    await update_contest_storage_log(dict(row), status_text=title, extra_lines=extra_lines)
 
 
 async def _reserve_contest_entry_id() -> int:
@@ -4193,7 +4223,7 @@ async def contest_submit_start(message: Message, state: FSMContext):
         await message.answer(block_reason, reply_markup=contest_user_keyboard())
         return
 
-    pending_entry = await _get_pending_contest_entry(message.from_user.id)
+    pending_entry = await get_active_pending_entry(message.from_user.id)
     if pending_entry:
         await state.set_state(ContestStates.waiting_replace_confirmation)
         await state.update_data(contest_pending_entry_id=int(pending_entry["id"]))
