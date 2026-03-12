@@ -1917,11 +1917,37 @@ def _extract_contest_submission_file(message: Message) -> tuple[bool, str | None
     return False, "Нужны фото или документ-изображение одним сообщением."
 
 
-async def _copy_contest_media_to_storage(message: Message) -> tuple[int, int]:
+def _contest_submission_storage_caption(entry_id: int, owner_user_id: int, owner_username: str | None, submitted_at: datetime) -> str:
+    return "\n".join(
+        [
+            f"🆕 Рисунок #{int(entry_id)} отправлен на модерацию",
+            f"Участник: {_contest_user_mention(owner_username)}",
+            f"User ID: {int(owner_user_id)}",
+            f"Подано: {format_admin_datetime(submitted_at)}",
+        ]
+    )
+
+
+def _contest_participant_contact_markup(user_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="💬 Связаться с участником", url=f"tg://user?id={int(user_id)}")]
+        ]
+    )
+
+
+async def _copy_contest_media_to_storage(message: Message, *, entry_id: int, submitted_at: datetime) -> tuple[int, int]:
     copied = await bot.copy_message(
         chat_id=int(STORAGE_CHAT_ID),
         from_chat_id=message.chat.id,
         message_id=message.message_id,
+        caption=_contest_submission_storage_caption(
+            entry_id=entry_id,
+            owner_user_id=message.from_user.id if message.from_user else 0,
+            owner_username=message.from_user.username if message.from_user else None,
+            submitted_at=submitted_at,
+        ),
+        reply_markup=_contest_participant_contact_markup(message.from_user.id if message.from_user else 0),
     )
     return int(STORAGE_CHAT_ID), int(copied.message_id)
 
@@ -1958,19 +1984,22 @@ async def _log_contest_entry_event(entry_id: int, *, title: str, extra_lines: li
             from_chat_id=int(row["storage_chat_id"] or STORAGE_CHAT_ID),
             message_id=int(row["storage_message_id"]),
             caption=caption,
-            reply_markup=InlineKeyboardMarkup(
-                inline_keyboard=[
-                    [InlineKeyboardButton(text="💬 Связаться с участником", url=f"tg://user?id={int(row['owner_user_id'])}")]
-                ]
-            ),
+            reply_markup=_contest_participant_contact_markup(int(row["owner_user_id"])),
         )
 
 
-async def _create_pending_contest_entry(user_id: int, storage_chat_id: int, storage_message_id: int) -> int:
+async def _reserve_contest_entry_id() -> int:
+    pool = await get_db_pool()
+    row = await pool.fetchrow("SELECT nextval(pg_get_serial_sequence('contest_entries', 'id')) AS id")
+    return int(row["id"])
+
+
+async def _create_pending_contest_entry(entry_id: int, user_id: int, storage_chat_id: int, storage_message_id: int) -> int:
     pool = await get_db_pool()
     row = await pool.fetchrow(
         """
         INSERT INTO contest_entries (
+            id,
             owner_user_id,
             owner_username_last_seen,
             owner_first_name_last_seen,
@@ -1986,13 +2015,14 @@ async def _create_pending_contest_entry(user_id: int, storage_chat_id: int, stor
         )
         VALUES (
             $1,
-            (SELECT username_last_seen FROM contest_users WHERE user_id = $1),
-            (SELECT first_name_last_seen FROM contest_users WHERE user_id = $1),
-            (SELECT last_name_last_seen FROM contest_users WHERE user_id = $1),
-            'pending',
             $2,
+            (SELECT username_last_seen FROM contest_users WHERE user_id = $2),
+            (SELECT first_name_last_seen FROM contest_users WHERE user_id = $2),
+            (SELECT last_name_last_seen FROM contest_users WHERE user_id = $2),
+            'pending',
             $3,
-            ARRAY[$3]::BIGINT[],
+            $4,
+            ARRAY[$4]::BIGINT[],
             1,
             FALSE,
             NOW(),
@@ -2000,6 +2030,7 @@ async def _create_pending_contest_entry(user_id: int, storage_chat_id: int, stor
         )
         RETURNING id
         """,
+        entry_id,
         user_id,
         storage_chat_id,
         storage_message_id,
@@ -4230,30 +4261,40 @@ async def contest_submission_media(message: Message, state: FSMContext):
         await message.answer(error_text or "Нужны фото или документ-изображение одним сообщением.")
         return
 
-    storage_chat_id, storage_message_id = await _copy_contest_media_to_storage(message)
+    submitted_at = datetime.now(timezone.utc)
     data = await state.get_data()
     pending_entry_id = data.get("contest_pending_entry_id")
 
     if pending_entry_id:
-        replaced = await _replace_pending_contest_entry(int(pending_entry_id), storage_chat_id, storage_message_id)
+        entry_id = int(pending_entry_id)
+        storage_chat_id, storage_message_id = await _copy_contest_media_to_storage(
+            message,
+            entry_id=entry_id,
+            submitted_at=submitted_at,
+        )
+        replaced = await _replace_pending_contest_entry(entry_id, storage_chat_id, storage_message_id)
         if replaced:
-            await _notify_admins_about_contest_entry(int(pending_entry_id))
-            await _log_contest_entry_event(
-                int(pending_entry_id),
-                title=f"🆕 Рисунок #{int(pending_entry_id)} отправлен на модерацию",
-                extra_lines=[f"Подано: {format_admin_datetime(datetime.now(timezone.utc))}"],
-            )
+            await _notify_admins_about_contest_entry(entry_id)
             await state.clear()
             await message.answer("✅ Рисунок заменён. Заявка обновлена.", reply_markup=contest_user_keyboard())
             return
+        await state.clear()
+        await message.answer("Не удалось обновить заявку. Попробуйте отправить рисунок ещё раз.", reply_markup=contest_user_keyboard())
+        return
 
-    created_entry_id = await _create_pending_contest_entry(message.from_user.id, storage_chat_id, storage_message_id)
-    await _notify_admins_about_contest_entry(int(created_entry_id))
-    await _log_contest_entry_event(
-        int(created_entry_id),
-        title=f"🆕 Рисунок #{int(created_entry_id)} отправлен на модерацию",
-        extra_lines=[f"Подано: {format_admin_datetime(datetime.now(timezone.utc))}"],
+    created_entry_id = await _reserve_contest_entry_id()
+    storage_chat_id, storage_message_id = await _copy_contest_media_to_storage(
+        message,
+        entry_id=created_entry_id,
+        submitted_at=submitted_at,
     )
+    created_entry_id = await _create_pending_contest_entry(
+        created_entry_id,
+        message.from_user.id,
+        storage_chat_id,
+        storage_message_id,
+    )
+    await _notify_admins_about_contest_entry(int(created_entry_id))
     await state.clear()
     await message.answer("✅ Заявка принята и отправлена на модерацию.", reply_markup=contest_user_keyboard())
 
