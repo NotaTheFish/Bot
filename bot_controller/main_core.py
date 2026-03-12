@@ -2116,11 +2116,6 @@ async def _notify_admins_about_contest_entry(entry_id: int) -> None:
                 parse_mode="HTML",
                 reply_markup=contest_admin_entry_keyboard(int(row["id"]), int(row["owner_user_id"])),
             )
-            await bot.send_message(
-                admin_id,
-                f"Если ссылка не открывается, user_id участника: <code>{int(row['owner_user_id'])}</code>",
-                parse_mode="HTML",
-            )
         except TelegramForbiddenError:
             logger.warning("Admin %s is unreachable for contest entry notification", admin_id)
         except TelegramBadRequest as exc:

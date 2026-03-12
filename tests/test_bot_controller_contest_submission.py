@@ -777,6 +777,60 @@ class ContestSubmissionTests(unittest.IsolatedAsyncioTestCase):
             "Сначала завершите отклонение или нажмите Сохранить/Главное меню"
         )
 
+
+    async def test_notify_admins_about_contest_entry_sends_only_card_without_second_message(self):
+        pool = AsyncMock()
+        pool.fetchrow = AsyncMock(
+            return_value={
+                "id": 42,
+                "owner_user_id": 77,
+                "storage_chat_id": -100500,
+                "storage_message_id": 901,
+                "status": "pending",
+                "username": "artist77",
+                "first_name": "Иван",
+                "last_name": "Петров",
+            }
+        )
+
+        with (
+            patch.object(main_core, "get_db_pool", AsyncMock(return_value=pool)),
+            patch.object(main_core, "ADMIN_IDS_LIST", [1001, 1002]),
+            patch.object(main_core.bot, "copy_message", AsyncMock()) as copy_message,
+            patch.object(main_core.bot, "send_message", AsyncMock()) as send_message,
+        ):
+            await main_core._notify_admins_about_contest_entry(42)
+
+        self.assertEqual(copy_message.await_count, 2)
+        send_message.assert_not_awaited()
+
+    async def test_notify_admins_about_contest_entry_caption_contains_user_id_and_contact_link_uses_owner_id(self):
+        pool = AsyncMock()
+        pool.fetchrow = AsyncMock(
+            return_value={
+                "id": 42,
+                "owner_user_id": 77,
+                "storage_chat_id": -100500,
+                "storage_message_id": 901,
+                "status": "pending",
+                "username": "nickname",
+                "first_name": "Иван",
+                "last_name": "Петров",
+            }
+        )
+
+        with (
+            patch.object(main_core, "get_db_pool", AsyncMock(return_value=pool)),
+            patch.object(main_core, "ADMIN_IDS_LIST", [1001]),
+            patch.object(main_core.bot, "copy_message", AsyncMock()) as copy_message,
+        ):
+            await main_core._notify_admins_about_contest_entry(42)
+
+        copy_message.assert_awaited_once()
+        kwargs = copy_message.await_args.kwargs
+        self.assertIn("user_id: <code>77</code>", kwargs["caption"])
+        self.assertEqual(kwargs["reply_markup"].inline_keyboard[3][0].url, "tg://user?id=77")
+
     async def test_contest_admin_entry_keyboard_contains_required_actions(self):
         keyboard = main_core.contest_admin_entry_keyboard(11, 77)
         rows = keyboard.inline_keyboard
