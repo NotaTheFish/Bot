@@ -1964,59 +1964,101 @@ def _contest_user_mention(username: str | None) -> str:
     return f"@{normalized}" if normalized else "(без username)"
 
 
-async def update_contest_storage_log(entry: dict[str, object], *, status_text: str, extra_lines: list[str]) -> None:
-    entry_id = int(entry.get("id") or 0)
+def _is_message_not_modified_error(exc: TelegramBadRequest) -> bool:
+    return "message is not modified" in str(exc).lower()
+
+
+async def _update_contest_storage_log(
+    entry_id: int,
+    *,
+    caption: str,
+    reply_markup: InlineKeyboardMarkup | None,
+) -> bool:
     storage_chat_id, storage_message_id = await _get_contest_entry_storage_target(entry_id)
     if storage_message_id is None:
-        return
+        return False
 
-    owner_user_id = int(entry.get("owner_user_id") or 0)
-    caption = "\n".join(
-        [
-            status_text,
-            f"Участник: {_contest_user_mention(entry.get('owner_username_last_seen'))}",
-            f"User ID: {owner_user_id}",
-            *extra_lines,
-        ]
-    )
     target_chat_id = int(storage_chat_id) if storage_chat_id is not None else int(STORAGE_CHAT_ID)
-    storage_message_id_int = int(storage_message_id)
-    reply_markup = _contest_participant_contact_markup(owner_user_id)
+    target_message_id = int(storage_message_id)
 
     try:
         await bot.edit_message_caption(
             chat_id=target_chat_id,
-            message_id=storage_message_id_int,
+            message_id=target_message_id,
             caption=caption,
             reply_markup=reply_markup,
         )
-        return
-    except (TelegramBadRequest, TelegramForbiddenError):
+        return True
+    except TelegramBadRequest as exc:
+        if _is_message_not_modified_error(exc):
+            if reply_markup is not None:
+                with suppress(TelegramBadRequest, TelegramForbiddenError):
+                    await bot.edit_message_reply_markup(
+                        chat_id=target_chat_id,
+                        message_id=target_message_id,
+                        reply_markup=reply_markup,
+                    )
+            return True
+    except TelegramForbiddenError:
         pass
 
-    with suppress(TelegramBadRequest, TelegramForbiddenError):
-        await bot.copy_message(
+    try:
+        copied = await bot.copy_message(
             chat_id=int(STORAGE_CHAT_ID),
             from_chat_id=target_chat_id,
-            message_id=storage_message_id_int,
+            message_id=target_message_id,
             caption=caption,
             reply_markup=reply_markup,
         )
+    except (TelegramBadRequest, TelegramForbiddenError):
+        return False
+
+    pool = await get_db_pool()
+    await pool.execute(
+        """
+        UPDATE contest_entries
+        SET
+            storage_chat_id = $2,
+            storage_message_id = $3,
+            storage_message_ids = ARRAY[$3::BIGINT],
+            updated_at = NOW()
+        WHERE id = $1
+        """,
+        int(entry_id),
+        int(STORAGE_CHAT_ID),
+        int(copied.message_id),
+    )
+    return True
 
 
-async def _log_contest_entry_event(entry_id: int, *, title: str, extra_lines: list[str]) -> None:
+async def _build_contest_entry_log_payload(
+    entry_id: int,
+    *,
+    title: str,
+    extra_lines: list[str],
+) -> tuple[str, InlineKeyboardMarkup] | None:
     pool = await get_db_pool()
     row = await pool.fetchrow(
         """
-       SELECT id, owner_user_id, owner_username_last_seen
+        SELECT owner_user_id, owner_username_last_seen
         FROM contest_entries
         WHERE id = $1
         """,
         entry_id,
     )
     if not row:
-        return
-    await update_contest_storage_log(dict(row), status_text=title, extra_lines=extra_lines)
+        return None
+
+    owner_user_id = int(row["owner_user_id"] or 0)
+    caption = "\n".join(
+        [
+            title,
+            f"Участник: {_contest_user_mention(row['owner_username_last_seen'])}",
+            f"User ID: {owner_user_id}",
+            *extra_lines,
+        ]
+    )
+    return caption, _contest_participant_contact_markup(owner_user_id)
 
 
 async def _get_contest_entry_storage_target(entry_id: int) -> tuple[int | None, int | None]:
@@ -4365,7 +4407,7 @@ async def contest_entry_approve(callback: CallbackQuery):
         await callback.answer("Заявка не найдена", show_alert=True)
         return
 
-    await _log_contest_entry_event(
+    payload = await _build_contest_entry_log_payload(
         entry_id,
         title=f"✅ Рисунок #{entry_id} принят",
         extra_lines=[
@@ -4373,6 +4415,9 @@ async def contest_entry_approve(callback: CallbackQuery):
             f"Дата: {format_admin_datetime(datetime.now(timezone.utc))}",
         ],
     )
+    if payload:
+        caption, reply_markup = payload
+        await _update_contest_storage_log(entry_id, caption=caption, reply_markup=reply_markup)
 
     with suppress(TelegramForbiddenError, TelegramBadRequest):
         await bot.send_message(participant_id, "Ваш рисунок принят ✅")
@@ -4421,7 +4466,7 @@ async def contest_entry_delete(callback: CallbackQuery):
     await callback.answer("Рисунок удалён")
     await callback.message.answer(f"Рисунок в заявке #{entry_id} удалён 🗑")
 
-    await _log_contest_entry_event(
+    payload = await _build_contest_entry_log_payload(
         entry_id,
         title=f"🗑 Рисунок #{entry_id} удалён",
         extra_lines=[
@@ -4429,6 +4474,9 @@ async def contest_entry_delete(callback: CallbackQuery):
             f"Дата: {format_admin_datetime(datetime.now(timezone.utc))}",
         ],
     )
+    if payload:
+        caption, reply_markup = payload
+        await _update_contest_storage_log(entry_id, caption=caption, reply_markup=reply_markup)
 
     with suppress(TelegramForbiddenError, TelegramBadRequest):
         await bot.send_message(participant_id, "Ваш рисунок был удалён организатором. Вы можете отправить новый рисунок.")
@@ -4465,20 +4513,24 @@ async def contest_entry_reject_reason(message: Message, state: FSMContext):
         await message.answer("Заявка не найдена.")
         return
 
-    await _log_contest_entry_event(
-        int(raw_entry_id),
-        title=f"❌ Рисунок #{int(raw_entry_id)} отклонён",
+    rejected_entry_id = int(raw_entry_id)
+    payload = await _build_contest_entry_log_payload(
+        rejected_entry_id,
+        title=f"❌ Рисунок #{rejected_entry_id} отклонён",
         extra_lines=[
             f"Причина: {reason}",
             f"Отклонил: админ {message.from_user.id}",
             f"Дата: {format_admin_datetime(datetime.now(timezone.utc))}",
         ],
     )
+    if payload:
+        caption, reply_markup = payload
+        await _update_contest_storage_log(rejected_entry_id, caption=caption, reply_markup=reply_markup)
 
     with suppress(TelegramForbiddenError, TelegramBadRequest):
         await bot.send_message(participant_id, f"Ваш рисунок отклонён ❌\nПричина: {reason}")
 
-    await message.answer(f"Заявка #{int(raw_entry_id)} отклонена ❌")
+    await message.answer(f"Заявка #{rejected_entry_id} отклонена ❌")
 
 @dp.callback_query(F.data == "contact:open")
 async def buyer_contact_start_inline(callback: CallbackQuery, state: FSMContext):
