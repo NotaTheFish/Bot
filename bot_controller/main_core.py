@@ -350,13 +350,13 @@ def contest_replace_keyboard() -> ReplyKeyboardMarkup:
     )
 
 
-def contest_admin_entry_keyboard(entry_id: int, user_id: int) -> InlineKeyboardMarkup:
+def contest_admin_entry_keyboard(entry_id: int, owner_user_id: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(text="✅ Принять рисунок", callback_data=f"contest:approve:{entry_id}")],
             [InlineKeyboardButton(text="❌ Отклонить", callback_data=f"contest:reject:{entry_id}")],
             [InlineKeyboardButton(text="🗑 Удалить рисунок", callback_data=f"contest:delete:{entry_id}")],
-            [InlineKeyboardButton(text="💬 Связаться с участником", url=f"tg://user?id={user_id}")],
+            [InlineKeyboardButton(text="💬 Связаться с участником", url=f"tg://user?id={owner_user_id}")],
         ]
     )
 
@@ -1929,7 +1929,7 @@ def _contest_submission_storage_caption(entry_id: int, owner_user_id: int, owner
         [
             f"🆕 Рисунок #{int(entry_id)} отправлен на модерацию",
             f"Участник: {_contest_user_mention(owner_username)}",
-            f"User ID: {int(owner_user_id)}",
+            f"owner_user_id: {int(owner_user_id)}",
             f"Подано: {format_admin_datetime(submitted_at)}",
         ]
     )
@@ -2067,7 +2067,7 @@ async def _build_contest_entry_log_payload(
         [
             title,
             f"Участник: {_contest_user_mention(row['owner_username_last_seen'])}",
-            f"User ID: {owner_user_id}",
+            f"owner_user_id: {owner_user_id}",
             *extra_lines,
         ]
     )
@@ -2205,7 +2205,7 @@ async def _notify_admins_about_contest_entry(entry_id: int) -> None:
     caption_lines = [
         "🆕 Новая заявка на конкурс",
         f"Entry ID: <code>{int(row['id'])}</code>",
-        f"user_id: <code>{int(row['owner_user_id'])}</code>",
+        f"owner_user_id: <code>{int(row['owner_user_id'])}</code>",
         f"username: @{html.escape(username)}" if username else "username: (не указан)",
         f"display name: {html.escape(display_name)}",
         "Статус: <b>Новая заявка</b>",
@@ -4825,7 +4825,7 @@ async def _render_contest_admin_overview_message(target: Message, *, status: str
     card_lines = [
         f"🖼 Заявка #{int(row['id'])}",
         f"Статус: {row['status']}",
-        f"User ID: {int(row['owner_user_id'])}",
+        f"owner_user_id: {int(row['owner_user_id'])}",
         f"Username: {_contest_user_mention(row.get('username'))}",
         f"Подано: {format_admin_datetime(row.get('submitted_at'))}",
         f"Кто принял/отклонил: {row.get('reviewed_by_admin_id') or '-'}",

@@ -951,7 +951,7 @@ class ContestSubmissionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(copy_message.await_count, 2)
         send_message.assert_not_awaited()
 
-    async def test_notify_admins_about_contest_entry_caption_contains_user_id_and_contact_link_uses_owner_id(self):
+    async def test_notify_admins_about_contest_entry_caption_contains_owner_user_id_and_contact_link_uses_owner_id(self):
         pool = AsyncMock()
         pool.fetchrow = AsyncMock(
             return_value={
@@ -975,7 +975,7 @@ class ContestSubmissionTests(unittest.IsolatedAsyncioTestCase):
 
         copy_message.assert_awaited_once()
         kwargs = copy_message.await_args.kwargs
-        self.assertIn("user_id: <code>77</code>", kwargs["caption"])
+        self.assertIn("owner_user_id: <code>77</code>", kwargs["caption"])
         self.assertEqual(kwargs["reply_markup"].inline_keyboard[3][0].url, "tg://user?id=77")
 
     async def test_contest_admin_entry_keyboard_contains_required_actions(self):
