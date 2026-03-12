@@ -1914,6 +1914,42 @@ async def _get_pending_contest_entry(user_id: int) -> dict[str, object] | None:
     return await get_active_pending_entry(user_id)
 
 
+async def _get_current_active_contest_entry(user_id: int) -> dict[str, object] | None:
+    pool = await get_db_pool()
+    row = await pool.fetchrow(
+        """
+        SELECT
+            id,
+            owner_user_id,
+            status,
+            version,
+            storage_chat_id,
+            storage_message_id,
+            COALESCE(is_replacement, FALSE) AS is_replacement,
+            submitted_at
+        FROM contest_entries
+        WHERE owner_user_id = $1
+          AND COALESCE(is_deleted, FALSE) = FALSE
+          AND status IN ('pending', 'approved')
+        ORDER BY updated_at DESC, id DESC
+        LIMIT 1
+        """,
+        user_id,
+    )
+    if not row:
+        return None
+    return {
+        "id": int(row["id"]),
+        "owner_user_id": int(row["owner_user_id"]),
+        "status": str(row["status"]),
+        "version": int(row["version"] or 1),
+        "storage_chat_id": int(row["storage_chat_id"]) if row["storage_chat_id"] is not None else None,
+        "storage_message_id": int(row["storage_message_id"]) if row["storage_message_id"] is not None else None,
+        "is_replacement": bool(row["is_replacement"]),
+        "submitted_at": row["submitted_at"],
+    }
+
+
 def _extract_contest_submission_file(message: Message) -> tuple[bool, str | None]:
     if message.media_group_id:
         return False, "Пришлите один рисунок одним сообщением (не альбомом)."
@@ -1924,10 +1960,18 @@ def _extract_contest_submission_file(message: Message) -> tuple[bool, str | None
     return False, "Нужны фото или документ-изображение одним сообщением."
 
 
-def _contest_submission_storage_caption(entry_id: int, owner_user_id: int, owner_username: str | None, submitted_at: datetime) -> str:
+def _contest_submission_storage_caption(
+    entry_id: int,
+    owner_user_id: int,
+    owner_username: str | None,
+    submitted_at: datetime,
+    *,
+    is_replacement: bool,
+) -> str:
+    first_line = "🔁 Рисунок #{} отправлен на модерацию (замена)".format(int(entry_id)) if is_replacement else f"🆕 Рисунок #{int(entry_id)} отправлен на модерацию"
     return "\n".join(
         [
-            f"🆕 Рисунок #{int(entry_id)} отправлен на модерацию",
+            first_line,
             f"Участник: {_contest_user_mention(owner_username)}",
             f"owner_user_id: {int(owner_user_id)}",
             f"Подано: {format_admin_datetime(submitted_at)}",
@@ -1943,7 +1987,13 @@ def _contest_participant_contact_markup(user_id: int) -> InlineKeyboardMarkup:
     )
 
 
-async def _copy_contest_media_to_storage(message: Message, *, entry_id: int, submitted_at: datetime) -> tuple[int, int]:
+async def _copy_contest_media_to_storage(
+    message: Message,
+    *,
+    entry_id: int,
+    submitted_at: datetime,
+    is_replacement: bool,
+) -> tuple[int, int]:
     copied = await bot.copy_message(
         chat_id=int(STORAGE_CHAT_ID),
         from_chat_id=message.chat.id,
@@ -1953,6 +2003,7 @@ async def _copy_contest_media_to_storage(message: Message, *, entry_id: int, sub
             owner_user_id=message.from_user.id if message.from_user else 0,
             owner_username=getattr(message.from_user, "username", None) if message.from_user else None,
             submitted_at=submitted_at,
+            is_replacement=is_replacement,
         ),
         reply_markup=_contest_participant_contact_markup(message.from_user.id if message.from_user else 0),
     )
@@ -2144,7 +2195,7 @@ async def _create_pending_contest_entry(entry_id: int, user_id: int, storage_cha
     return int(row["id"])
 
 
-async def _replace_pending_contest_entry(entry_id: int, storage_chat_id: int, storage_message_id: int) -> bool:
+async def _replace_active_contest_entry(entry_id: int, storage_chat_id: int, storage_message_id: int) -> bool:
     pool = await get_db_pool()
     result = await pool.execute(
         """
@@ -2154,9 +2205,16 @@ async def _replace_pending_contest_entry(entry_id: int, storage_chat_id: int, st
             storage_message_ids = ARRAY[$3]::BIGINT[],
             version = COALESCE(version, 1) + 1,
             is_replacement = TRUE,
+            status = 'pending',
+            reviewed_by_admin_id = NULL,
+            reject_reason = NULL,
+            reviewed_at = NULL,
+            is_deleted = FALSE,
+            deleted_at = NULL,
+            deleted_by_admin_id = NULL,
             updated_at = NOW()
         WHERE id = $1
-          AND status = 'pending'
+          AND status IN ('pending', 'approved')
           AND COALESCE(is_deleted, FALSE) = FALSE
         """,
         entry_id,
@@ -2178,6 +2236,7 @@ async def _notify_admins_about_contest_entry(entry_id: int) -> None:
             e.storage_chat_id,
             e.storage_message_id,
             e.status,
+            COALESCE(e.is_replacement, FALSE) AS is_replacement,
             u.username,
             u.first_name,
             u.last_name
@@ -2202,13 +2261,14 @@ async def _notify_admins_about_contest_entry(entry_id: int) -> None:
     if not display_name:
         display_name = "(не указано)"
 
+    is_replacement = bool(row["is_replacement"])
     caption_lines = [
-        "🆕 Новая заявка на конкурс",
+        "🔁 Заявка на замену рисунка" if is_replacement else "🆕 Новая заявка на конкурс",
         f"Entry ID: <code>{int(row['id'])}</code>",
         f"owner_user_id: <code>{int(row['owner_user_id'])}</code>",
         f"username: @{html.escape(username)}" if username else "username: (не указан)",
         f"display name: {html.escape(display_name)}",
-        "Статус: <b>Новая заявка</b>",
+        "Статус: <b>Замена рисунка</b>" if is_replacement else "Статус: <b>Новая заявка</b>",
     ]
     caption = "\n".join(caption_lines)
 
@@ -4299,10 +4359,10 @@ async def contest_submit_start(message: Message, state: FSMContext):
         await message.answer(block_reason, reply_markup=contest_user_keyboard())
         return
 
-    pending_entry = await get_active_pending_entry(message.from_user.id)
-    if pending_entry:
+    active_entry = await _get_current_active_contest_entry(message.from_user.id)
+    if active_entry:
         await state.set_state(ContestStates.waiting_replace_confirmation)
-        await state.update_data(contest_pending_entry_id=int(pending_entry["id"]))
+        await state.update_data(contest_submission_mode="replace", contest_pending_entry_id=int(active_entry["id"]))
         await message.answer(
             "У вас уже есть активная заявка. Заменить рисунок?",
             reply_markup=contest_replace_keyboard(),
@@ -4310,7 +4370,7 @@ async def contest_submit_start(message: Message, state: FSMContext):
         return
 
     await state.set_state(ContestStates.waiting_submission_media)
-    await state.update_data(contest_pending_entry_id=None)
+    await state.update_data(contest_submission_mode="new", contest_pending_entry_id=None)
     await message.answer(
         "Отправьте рисунок одним сообщением: фото или документ-изображение.",
         reply_markup=contest_user_keyboard(),
@@ -4332,6 +4392,7 @@ async def contest_replace_confirmation(message: Message, state: FSMContext):
 
     if message.text == CONTEST_REPLACE_BUTTON_TEXT:
         await state.set_state(ContestStates.waiting_submission_media)
+        await state.update_data(contest_submission_mode="replace")
         await message.answer("Пришлите новый рисунок одним сообщением.", reply_markup=contest_user_keyboard())
         return
 
@@ -4364,16 +4425,37 @@ async def contest_submission_media(message: Message, state: FSMContext):
 
     submitted_at = datetime.now(timezone.utc)
     data = await state.get_data()
+    submission_mode = str(data.get("contest_submission_mode") or "").strip().lower()
     pending_entry_id = data.get("contest_pending_entry_id")
 
-    if pending_entry_id:
+    current_active_entry = await _get_current_active_contest_entry(message.from_user.id)
+    if submission_mode == "new" and current_active_entry:
+        await state.clear()
+        await message.answer("У вас уже есть активная заявка. Используйте замену рисунка.", reply_markup=contest_user_keyboard())
+        return
+    if submission_mode == "replace":
+        if not current_active_entry:
+            await state.clear()
+            await message.answer("Не нашёл активную заявку для замены. Отправьте новую заявку заново.", reply_markup=contest_user_keyboard())
+            return
+        if pending_entry_id is None or int(pending_entry_id) != int(current_active_entry["id"]):
+            await state.clear()
+            await message.answer("Сессия замены устарела. Начните замену рисунка ещё раз.", reply_markup=contest_user_keyboard())
+            return
+    if submission_mode not in {"new", "replace"}:
+        await state.clear()
+        await message.answer("Сессия отправки устарела. Откройте подачу рисунка заново.", reply_markup=contest_user_keyboard())
+        return
+
+    if submission_mode == "replace":
         entry_id = int(pending_entry_id)
         storage_chat_id, storage_message_id = await _copy_contest_media_to_storage(
             message,
             entry_id=entry_id,
             submitted_at=submitted_at,
+            is_replacement=True,
         )
-        replaced = await _replace_pending_contest_entry(entry_id, storage_chat_id, storage_message_id)
+        replaced = await _replace_active_contest_entry(entry_id, storage_chat_id, storage_message_id)
         if replaced:
             await _notify_admins_about_contest_entry(entry_id)
             await state.clear()
@@ -4388,6 +4470,7 @@ async def contest_submission_media(message: Message, state: FSMContext):
         message,
         entry_id=created_entry_id,
         submitted_at=submitted_at,
+        is_replacement=False,
     )
     created_entry_id = await _create_pending_contest_entry(
         created_entry_id,
@@ -4775,6 +4858,7 @@ async def _contest_admin_overview_payload(status: str, page: int) -> tuple[str, 
             SELECT COUNT(*)::INT
             FROM contest_entries
             WHERE status = $1
+              AND COALESCE(is_deleted, FALSE) = FALSE
             """,
             safe_status,
         )
@@ -4804,6 +4888,7 @@ async def _contest_admin_overview_payload(status: str, page: int) -> tuple[str, 
         FROM contest_entries e
         LEFT JOIN contest_users u ON u.user_id = e.owner_user_id
         WHERE e.status = $1
+          AND COALESCE(e.is_deleted, FALSE) = FALSE
         ORDER BY COALESCE(e.reviewed_at, e.submitted_at, e.created_at) DESC, e.id DESC
         LIMIT 1 OFFSET $2
         """,

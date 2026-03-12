@@ -235,7 +235,7 @@ class ContestSubmissionTests(unittest.IsolatedAsyncioTestCase):
         message.answer.assert_awaited_once()
         self.assertEqual(message.answer.await_args.args[0], "Mini App ещё не настроен. Обратитесь к администратору.")
 
-    async def test_submit_start_without_pending_entry_sets_waiting_media_state(self):
+    async def test_submit_start_without_active_entry_sets_waiting_media_state(self):
         message = SimpleNamespace(
             chat=SimpleNamespace(type="private"),
             from_user=SimpleNamespace(id=77),
@@ -247,14 +247,14 @@ class ContestSubmissionTests(unittest.IsolatedAsyncioTestCase):
             patch.object(main_core, "ensure_admin", return_value=False),
             patch.object(main_core, "get_contest_settings", AsyncMock(return_value={"enabled": True, "submission_open": True, "visibility_mode": "participants"})),
             patch.object(main_core, "_get_contest_submission_block_reason", AsyncMock(return_value=None)),
-            patch.object(main_core, "get_active_pending_entry", AsyncMock(return_value=None)),
+            patch.object(main_core, "_get_current_active_contest_entry", AsyncMock(return_value=None)),
         ):
             await main_core.contest_submit_start(message, state)
 
         state.set_state.assert_awaited_once_with(main_core.ContestStates.waiting_submission_media)
-        state.update_data.assert_awaited_once_with(contest_pending_entry_id=None)
+        state.update_data.assert_awaited_once_with(contest_submission_mode="new", contest_pending_entry_id=None)
 
-    async def test_submit_start_with_pending_entry_sets_replace_state(self):
+    async def test_submit_start_with_active_entry_sets_replace_state(self):
         message = SimpleNamespace(
             chat=SimpleNamespace(type="private"),
             from_user=SimpleNamespace(id=77),
@@ -266,12 +266,12 @@ class ContestSubmissionTests(unittest.IsolatedAsyncioTestCase):
             patch.object(main_core, "ensure_admin", return_value=False),
             patch.object(main_core, "get_contest_settings", AsyncMock(return_value={"enabled": True, "submission_open": True, "visibility_mode": "participants"})),
             patch.object(main_core, "_get_contest_submission_block_reason", AsyncMock(return_value=None)),
-            patch.object(main_core, "get_active_pending_entry", AsyncMock(return_value={"id": 15})),
+            patch.object(main_core, "_get_current_active_contest_entry", AsyncMock(return_value={"id": 15})),
         ):
             await main_core.contest_submit_start(message, state)
 
         state.set_state.assert_awaited_once_with(main_core.ContestStates.waiting_replace_confirmation)
-        state.update_data.assert_awaited_once_with(contest_pending_entry_id=15)
+        state.update_data.assert_awaited_once_with(contest_submission_mode="replace", contest_pending_entry_id=15)
 
     async def test_second_submission_requires_replace_or_cancel_choice(self):
         message = SimpleNamespace(
@@ -285,7 +285,7 @@ class ContestSubmissionTests(unittest.IsolatedAsyncioTestCase):
             patch.object(main_core, "ensure_admin", return_value=False),
             patch.object(main_core, "get_contest_settings", AsyncMock(return_value={"enabled": True, "submission_open": True, "visibility_mode": "participants"})),
             patch.object(main_core, "_get_contest_submission_block_reason", AsyncMock(return_value=None)),
-            patch.object(main_core, "get_active_pending_entry", AsyncMock(return_value={"id": 15})),
+            patch.object(main_core, "_get_current_active_contest_entry", AsyncMock(return_value={"id": 15})),
         ):
             await main_core.contest_submit_start(message, state)
 
@@ -326,12 +326,13 @@ class ContestSubmissionTests(unittest.IsolatedAsyncioTestCase):
             answer=AsyncMock(),
         )
         state = AsyncMock()
-        state.get_data = AsyncMock(return_value={"contest_pending_entry_id": None})
+        state.get_data = AsyncMock(return_value={"contest_submission_mode": "new", "contest_pending_entry_id": None})
 
         with (
             patch.object(main_core, "ensure_admin", return_value=False),
             patch.object(main_core, "get_contest_settings", AsyncMock(return_value={"enabled": True, "submission_open": True, "visibility_mode": "participants"})),
             patch.object(main_core, "_get_contest_submission_block_reason", AsyncMock(return_value=None)),
+            patch.object(main_core, "_get_current_active_contest_entry", AsyncMock(return_value=None)),
             patch.object(main_core, "_reserve_contest_entry_id", AsyncMock(return_value=33)),
             patch.object(main_core, "_create_pending_contest_entry", AsyncMock(return_value=33)) as create_entry,
             patch.object(main_core, "_notify_admins_about_contest_entry", AsyncMock()) as notify_admins,
@@ -356,13 +357,14 @@ class ContestSubmissionTests(unittest.IsolatedAsyncioTestCase):
             answer=AsyncMock(),
         )
         state = AsyncMock()
-        state.get_data = AsyncMock(return_value={"contest_pending_entry_id": 22})
+        state.get_data = AsyncMock(return_value={"contest_submission_mode": "replace", "contest_pending_entry_id": 22})
 
         with (
             patch.object(main_core, "ensure_admin", return_value=False),
             patch.object(main_core, "get_contest_settings", AsyncMock(return_value={"enabled": True, "submission_open": True, "visibility_mode": "participants"})),
             patch.object(main_core, "_get_contest_submission_block_reason", AsyncMock(return_value=None)),
-            patch.object(main_core, "_replace_pending_contest_entry", AsyncMock()) as replace_entry,
+            patch.object(main_core, "_get_current_active_contest_entry", AsyncMock(return_value={"id": 22})),
+            patch.object(main_core, "_replace_active_contest_entry", AsyncMock()) as replace_entry,
             patch.object(main_core, "_notify_admins_about_contest_entry", AsyncMock()) as notify_admins,
             patch.object(main_core, "_upsert_contest_user_start", AsyncMock()),
             patch.object(main_core.bot, "copy_message", AsyncMock(return_value=SimpleNamespace(message_id=702))),
@@ -385,15 +387,16 @@ class ContestSubmissionTests(unittest.IsolatedAsyncioTestCase):
             answer=AsyncMock(),
         )
         state = AsyncMock()
-        state.get_data = AsyncMock(return_value={"contest_pending_entry_id": 22})
+        state.get_data = AsyncMock(return_value={"contest_submission_mode": "replace", "contest_pending_entry_id": 22})
 
         with (
             patch.object(main_core, "ensure_admin", return_value=False),
             patch.object(main_core, "get_contest_settings", AsyncMock(return_value={"enabled": True, "submission_open": True, "visibility_mode": "participants"})),
             patch.object(main_core, "_get_contest_submission_block_reason", AsyncMock(return_value=None)),
+            patch.object(main_core, "_get_current_active_contest_entry", AsyncMock(return_value={"id": 22})),
             patch.object(main_core, "_reserve_contest_entry_id", AsyncMock(return_value=33)),
             patch.object(main_core, "_create_pending_contest_entry", AsyncMock(return_value=33)) as create_entry,
-            patch.object(main_core, "_replace_pending_contest_entry", AsyncMock()) as replace_entry,
+            patch.object(main_core, "_replace_active_contest_entry", AsyncMock()) as replace_entry,
             patch.object(main_core, "_notify_admins_about_contest_entry", AsyncMock()),
             patch.object(main_core, "_upsert_contest_user_start", AsyncMock()),
             patch.object(main_core.bot, "copy_message", AsyncMock(return_value=SimpleNamespace(message_id=703))),
@@ -518,12 +521,12 @@ class ContestSubmissionTests(unittest.IsolatedAsyncioTestCase):
             patch.object(main_core, "is_admin_user", return_value=False),
             patch.object(main_core, "CONTEST_TESTER_IDS_LIST", [555]),
             patch.object(main_core, "_ensure_contest_channel_subscription", AsyncMock(return_value=(True, None))),
-            patch.object(main_core, "get_active_pending_entry", AsyncMock(return_value=None)),
+            patch.object(main_core, "_get_current_active_contest_entry", AsyncMock(return_value=None)),
         ):
             await main_core.contest_submit_start(message, state)
 
         state.set_state.assert_awaited_once_with(main_core.ContestStates.waiting_submission_media)
-        state.update_data.assert_awaited_once_with(contest_pending_entry_id=None)
+        state.update_data.assert_awaited_once_with(contest_submission_mode="new", contest_pending_entry_id=None)
 
     async def test_submit_start_blocks_with_restricted_visibility_mode(self):
         message = SimpleNamespace(chat=SimpleNamespace(type="private"), from_user=SimpleNamespace(id=77), answer=AsyncMock())
@@ -578,12 +581,12 @@ class ContestSubmissionTests(unittest.IsolatedAsyncioTestCase):
             patch.object(main_core, "ensure_admin", return_value=True),
             patch.object(main_core, "get_contest_settings", AsyncMock(return_value={"enabled": True, "submission_open": True, "visibility_mode": "admin_only"})),
             patch.object(main_core, "_ensure_contest_channel_subscription", AsyncMock(return_value=(True, None))),
-            patch.object(main_core, "get_active_pending_entry", AsyncMock(return_value=None)),
+            patch.object(main_core, "_get_current_active_contest_entry", AsyncMock(return_value=None)),
         ):
             await main_core.contest_submit_start(message, state)
 
         state.set_state.assert_awaited_once_with(main_core.ContestStates.waiting_submission_media)
-        state.update_data.assert_awaited_once_with(contest_pending_entry_id=None)
+        state.update_data.assert_awaited_once_with(contest_submission_mode="new", contest_pending_entry_id=None)
 
     async def test_admin_submission_media_allowed_in_test_mode(self):
         message = SimpleNamespace(
@@ -597,12 +600,13 @@ class ContestSubmissionTests(unittest.IsolatedAsyncioTestCase):
             answer=AsyncMock(),
         )
         state = AsyncMock()
-        state.get_data = AsyncMock(return_value={"contest_pending_entry_id": None})
+        state.get_data = AsyncMock(return_value={"contest_submission_mode": "new", "contest_pending_entry_id": None})
 
         with (
             patch.object(main_core, "ensure_admin", return_value=True),
             patch.object(main_core, "get_contest_settings", AsyncMock(return_value={"enabled": True, "submission_open": True, "visibility_mode": "admin_only"})),
             patch.object(main_core, "_ensure_contest_channel_subscription", AsyncMock(return_value=(True, None))),
+            patch.object(main_core, "_get_current_active_contest_entry", AsyncMock(return_value=None)),
             patch.object(main_core, "_reserve_contest_entry_id", AsyncMock(return_value=33)),
             patch.object(main_core, "_create_pending_contest_entry", AsyncMock(return_value=33)) as create_entry,
             patch.object(main_core, "_notify_admins_about_contest_entry", AsyncMock()),
@@ -934,6 +938,7 @@ class ContestSubmissionTests(unittest.IsolatedAsyncioTestCase):
                 "storage_chat_id": -100500,
                 "storage_message_id": 901,
                 "status": "pending",
+                "is_replacement": False,
                 "username": "artist77",
                 "first_name": "Иван",
                 "last_name": "Петров",
@@ -960,6 +965,7 @@ class ContestSubmissionTests(unittest.IsolatedAsyncioTestCase):
                 "storage_chat_id": -100500,
                 "storage_message_id": 901,
                 "status": "pending",
+                "is_replacement": False,
                 "username": "nickname",
                 "first_name": "Иван",
                 "last_name": "Петров",
@@ -977,6 +983,43 @@ class ContestSubmissionTests(unittest.IsolatedAsyncioTestCase):
         kwargs = copy_message.await_args.kwargs
         self.assertIn("owner_user_id: <code>77</code>", kwargs["caption"])
         self.assertEqual(kwargs["reply_markup"].inline_keyboard[3][0].url, "tg://user?id=77")
+
+    async def test_notify_admins_about_contest_entry_marks_replacement_as_replace_status(self):
+        pool = AsyncMock()
+        pool.fetchrow = AsyncMock(
+            return_value={
+                "id": 42,
+                "owner_user_id": 77,
+                "storage_chat_id": -100500,
+                "storage_message_id": 901,
+                "status": "pending",
+                "is_replacement": True,
+                "username": "nickname",
+                "first_name": "Иван",
+                "last_name": "Петров",
+            }
+        )
+
+        with (
+            patch.object(main_core, "get_db_pool", AsyncMock(return_value=pool)),
+            patch.object(main_core, "ADMIN_IDS_LIST", [1001]),
+            patch.object(main_core.bot, "copy_message", AsyncMock()) as copy_message,
+        ):
+            await main_core._notify_admins_about_contest_entry(42)
+
+        caption = copy_message.await_args.kwargs["caption"]
+        self.assertIn("🔁 Заявка на замену рисунка", caption)
+        self.assertIn("Статус: <b>Замена рисунка</b>", caption)
+
+    async def test_storage_caption_marks_replacement_submission(self):
+        caption = main_core._contest_submission_storage_caption(
+            entry_id=5,
+            owner_user_id=77,
+            owner_username="artist",
+            submitted_at=main_core.datetime.now(main_core.timezone.utc),
+            is_replacement=True,
+        )
+        self.assertIn("🔁 Рисунок #5 отправлен на модерацию (замена)", caption)
 
     async def test_contest_admin_entry_keyboard_contains_required_actions(self):
         keyboard = main_core.contest_admin_entry_keyboard(11, 77)
