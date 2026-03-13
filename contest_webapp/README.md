@@ -50,3 +50,9 @@
 ## Миграция
 
 Примените SQL из `contest_webapp/migrations/20260312_vote_draft_confirmation.sql` перед выкладкой.
+
+## Выдача изображений
+
+Сервис `contest_webapp` **не** поднимает собственный маршрут для выдачи файлов работ (в `main_webapp.py` есть только `/` и `/static/*`).
+
+`CONTEST_MEDIA_BASE_URL` должен указывать на внешний media/proxy endpoint (например, отдельный сервис), который отдает файл по `/{storage_message_id}`.

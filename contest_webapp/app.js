@@ -50,10 +50,38 @@ function updateHeader() {
   contestStageEl.textContent = `Статус: ${state.votingOpen ? "идет голосование" : "голосование закрыто"}`;
 }
 
-function buildEntryImageUrl(entry) {
-  if (MEDIA_BASE_URL && entry.storage_message_id) {
-    return `${MEDIA_BASE_URL.replace(/\/$/, "")}/${entry.storage_message_id}`;
+function safeString(value) {
+  return typeof value === "string" ? value.trim() : "";
+}
+
+function toAbsoluteUrl(rawUrl) {
+  const value = safeString(rawUrl);
+  if (!value) return "";
+
+  try {
+    return new URL(value).toString();
+  } catch {
+    const apiBase = API_BASE_URL ? new URL(API_BASE_URL, window.location.origin).toString() : "";
+    const base = apiBase || window.location.origin;
+    try {
+      return new URL(value, base).toString();
+    } catch {
+      return "";
+    }
   }
+}
+
+function buildEntryImageUrl(entry) {
+  const directUrl = toAbsoluteUrl(entry?.image_url) || toAbsoluteUrl(entry?.file_url) || toAbsoluteUrl(entry?.storage_url);
+  if (directUrl) {
+    return directUrl;
+  }
+
+  const storageMessageId = entry?.storage_message_id || (Array.isArray(entry?.storage_message_ids) ? entry.storage_message_ids[0] : null);
+  if (MEDIA_BASE_URL && storageMessageId) {
+    return `${MEDIA_BASE_URL.replace(/\/$/, "")}/${storageMessageId}`;
+  }
+
   return "";
 }
 
@@ -73,6 +101,11 @@ function renderEntries() {
     const fragment = cardTemplate.content.cloneNode(true);
     const card = fragment.querySelector(".entry-card");
     const image = fragment.querySelector(".entry-card__image");
+    const imageFallback = document.createElement("div");
+    imageFallback.className = "entry-card__image-fallback";
+    imageFallback.textContent = "Изображение недоступно";
+    imageFallback.hidden = true;
+    image.insertAdjacentElement("afterend", imageFallback);
     const title = fragment.querySelector(".entry-card__title");
     const meta = fragment.querySelector(".entry-card__meta");
 
@@ -92,7 +125,20 @@ function renderEntries() {
     else meta.textContent = "Нажмите карточку для выбора";
 
     const imageUrl = buildEntryImageUrl(entry);
-    if (imageUrl) image.src = imageUrl;
+    const showFallback = () => {
+      image.hidden = true;
+      imageFallback.hidden = false;
+    };
+
+    if (imageUrl) {
+      image.hidden = false;
+      imageFallback.hidden = true;
+      image.onerror = showFallback;
+      image.src = imageUrl;
+    } else {
+      image.removeAttribute("src");
+      showFallback();
+    }
 
     card.addEventListener("click", () => {
       state.activeEntryId = entry.id;

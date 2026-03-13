@@ -55,6 +55,7 @@ CONTEST_CHANNEL_ID = _env("CONTEST_CHANNEL_ID") or _env("CONTEST_VOTING_CHAT_ID"
 MAX_VOTES_PER_USER = max(1, _env_int("CONTEST_MAX_VOTES_PER_USER", 3))
 VOTE_CONFIRM_REQUIRED = 3
 ADMIN_IDS = _env_admin_ids()
+CONTEST_MEDIA_BASE_URL = _env("CONTEST_MEDIA_BASE_URL")
 
 router = APIRouter(prefix="/contest")
 
@@ -200,6 +201,23 @@ def _extract_auth(init_data: str) -> dict[str, Any]:
 
 def _is_admin(user_id: int) -> bool:
     return int(user_id) in ADMIN_IDS
+
+
+def _build_entry_image_url(entry: dict[str, Any]) -> str | None:
+    for key in ("image_url", "file_url", "storage_url"):
+        value = entry.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+
+    storage_message_id = entry.get("storage_message_id")
+    if not storage_message_id:
+        storage_message_ids = entry.get("storage_message_ids")
+        if isinstance(storage_message_ids, list) and storage_message_ids:
+            storage_message_id = storage_message_ids[0]
+
+    if storage_message_id and CONTEST_MEDIA_BASE_URL:
+        return f"{CONTEST_MEDIA_BASE_URL.rstrip('/')}/{storage_message_id}"
+    return None
 
 
 async def _check_channel_subscription(user_id: int) -> bool:
@@ -367,6 +385,7 @@ async def approved_entries(x_telegram_init_data: str = Header(default="")) -> JS
         for row in rows:
             item = dict(row)
             item["is_owned_by_current_user"] = int(item["owner_user_id"]) == current_user_id
+            item["image_url"] = _build_entry_image_url(item)
             if not _is_admin(current_user_id):
                 item.pop("votes_count", None)
                 item.pop("penalty_votes", None)
