@@ -64,8 +64,14 @@ function safeString(value) {
 }
 
 function toAbsoluteUrl(rawUrl) {
-  const value = safeString(rawUrl);
+  let value = safeString(rawUrl);
   if (!value) return "";
+
+  if (value.startsWith("//")) {
+    value = `https:${value}`;
+  } else if (!/^[a-z][a-z0-9+.-]*:\/\//i.test(value) && !value.startsWith("/")) {
+    value = `https://${value}`;
+  }
 
   try {
     return new URL(value).toString();
@@ -78,30 +84,14 @@ function toAbsoluteUrl(rawUrl) {
     try {
       return new URL(value, base).toString();
     } catch {
+      console.warn("Failed to normalize media URL", rawUrl);
       return "";
     }
   }
 }
 
 function buildEntryImageUrl(entry) {
-  const directUrl =
-    toAbsoluteUrl(entry?.image_url) ||
-    toAbsoluteUrl(entry?.file_url) ||
-    toAbsoluteUrl(entry?.storage_url);
-
-  if (directUrl) {
-    return directUrl;
-  }
-
-  const storageMessageId =
-    entry?.storage_message_id ||
-    (Array.isArray(entry?.storage_message_ids) ? entry.storage_message_ids[0] : null);
-
-  if (MEDIA_BASE_URL && storageMessageId) {
-    return `${MEDIA_BASE_URL.replace(/\/$/, "")}/${storageMessageId}`;
-  }
-
-  return "";
+  return toAbsoluteUrl(entry?.image_url);
 }
 
 function entryDisabled(entry) {

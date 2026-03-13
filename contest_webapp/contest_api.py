@@ -261,21 +261,36 @@ def _absolute_url(raw_url: str | None, request_origin: str | None = None) -> str
     value = (raw_url or "").strip()
     if not value:
         return None
+    if value.startswith("//"):
+        value = f"https:{value}"
+
+    has_scheme = "://" in value
+    if not has_scheme and not value.startswith("/"):
+        value = f"https://{value}"
+
     parsed = urlparse(value)
     if parsed.scheme and parsed.netloc:
-        return value
-    if value.startswith("//"):
-        return f"https:{value}"
+        return parsed.geturl()
+
     if request_origin:
-        return f"{request_origin.rstrip('/')}/{value.lstrip('/')}"
-    return value
+        joined = f"{request_origin.rstrip('/')}/{value.lstrip('/')}"
+        joined_parsed = urlparse(joined)
+        if joined_parsed.scheme and joined_parsed.netloc:
+            return joined_parsed.geturl()
+
+    logger.warning("Failed to normalize media URL: %r", raw_url)
+    return None
 
 
 def _build_entry_image_url(entry: dict[str, Any], request_origin: str | None = None) -> str | None:
     for key in ("image_url", "file_url", "storage_url"):
         value = entry.get(key)
         if isinstance(value, str) and value.strip():
-            return _absolute_url(value, request_origin)
+            normalized = _absolute_url(value, request_origin)
+            if normalized:
+                return normalized
+            logger.warning("Entry %s has invalid %s: %r", entry.get("id"), key, value)
+            return None
 
     storage_message_id = entry.get("storage_message_id")
     if not storage_message_id:
@@ -285,7 +300,10 @@ def _build_entry_image_url(entry: dict[str, Any], request_origin: str | None = N
 
     media_base = CONTEST_MEDIA_BASE_URL or MEDIA_BASE_URL
     if storage_message_id and media_base:
-        return _absolute_url(f"{media_base.rstrip('/')}/{storage_message_id}", request_origin)
+        normalized = _absolute_url(f"{media_base.rstrip('/')}/{storage_message_id}", request_origin)
+        if normalized:
+            return normalized
+        logger.warning("Entry %s has invalid media base URL: %r", entry.get("id"), media_base)
     return None
 
 
@@ -444,9 +462,6 @@ async def approved_entries(request: Request, x_telegram_init_data: str = Header(
                 e.owner_username_last_seen,
                 e.owner_first_name_last_seen,
                 e.owner_last_name_last_seen,
-                e.storage_chat_id,
-                e.storage_message_id,
-                e.storage_message_ids,
                 e.submitted_at,
                 e.created_at,
                 e.penalty_votes,
