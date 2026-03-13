@@ -527,6 +527,9 @@ async def contest_state(x_telegram_init_data: str = Header(default="")) -> JSONR
         )
     except VoteError as exc:
         return JSONResponse({"ok": False, "error_code": exc.code, "message": exc.message}, status_code=exc.status)
+    except Exception:
+        logger.exception("Failed to load contest state")
+        return _internal_error_response("Не удалось загрузить состояние конкурса.")
 
 
 @router.get("/my-draft")
@@ -544,6 +547,9 @@ async def my_draft(x_telegram_init_data: str = Header(default="")) -> JSONRespon
             return JSONResponse({"ok": True, "confirmed": False, "entry_ids": draft_entry_ids})
     except VoteError as exc:
         return JSONResponse({"ok": False, "error_code": exc.code, "message": exc.message}, status_code=exc.status)
+    except Exception:
+        logger.exception("Failed to load vote draft")
+        return _internal_error_response("Не удалось загрузить черновик голосования.")
 
 
 @router.post("/draft/select")
@@ -602,6 +608,9 @@ async def draft_select(request: Request, x_telegram_init_data: str = Header(defa
         return JSONResponse({"ok": False, "error_code": "bad_request", "message": "Некорректный формат запроса."}, status_code=400)
     except VoteError as exc:
         return JSONResponse({"ok": False, "error_code": exc.code, "message": exc.message}, status_code=exc.status)
+    except Exception:
+        logger.exception("Failed to select draft vote")
+        return _internal_error_response("Не удалось обновить выбор для голосования.")
 
 
 @router.post("/draft/unselect")
@@ -633,6 +642,9 @@ async def draft_unselect(request: Request, x_telegram_init_data: str = Header(de
         return JSONResponse({"ok": False, "error_code": "bad_request", "message": "Некорректный формат запроса."}, status_code=400)
     except VoteError as exc:
         return JSONResponse({"ok": False, "error_code": exc.code, "message": exc.message}, status_code=exc.status)
+    except Exception:
+        logger.exception("Failed to unselect draft vote")
+        return _internal_error_response("Не удалось обновить выбор для голосования.")
 
 
 @router.post("/votes/confirm")
@@ -719,6 +731,9 @@ async def confirm_votes(request: Request, x_telegram_init_data: str = Header(def
         return JSONResponse({"ok": True, "confirmed": True, "entry_ids": unique_ids})
     except VoteError as exc:
         return JSONResponse({"ok": False, "error_code": exc.code, "message": exc.message}, status_code=exc.status)
+    except Exception:
+        logger.exception("Failed to confirm votes")
+        return _internal_error_response("Не удалось подтвердить голоса.")
 
 
 @router.get("/votes/state")
@@ -747,6 +762,9 @@ async def votes_state(x_telegram_init_data: str = Header(default="")) -> JSONRes
         )
     except VoteError as exc:
         return JSONResponse({"ok": False, "error_code": exc.code, "message": exc.message}, status_code=exc.status)
+    except Exception:
+        logger.exception("Failed to load votes state")
+        return _internal_error_response("Не удалось загрузить состояние голосования.")
 
 
 @router.post("/votes/cast")
@@ -768,6 +786,9 @@ async def contest_rules(x_telegram_init_data: str = Header(default="")) -> JSONR
         return JSONResponse({"ok": True, "rules_text": rules_text, "rules_entities_json": rules_entities_json})
     except VoteError as exc:
         return JSONResponse({"ok": False, "error_code": exc.code, "message": exc.message}, status_code=exc.status)
+    except Exception:
+        logger.exception("Failed to load contest rules")
+        return _internal_error_response("Не удалось загрузить правила конкурса.")
 
 
 @router.get("/admin/overview")
@@ -864,6 +885,9 @@ async def admin_entry_votes(entry_id: int, x_telegram_init_data: str = Header(de
         return JSONResponse({"ok": True, "entry_id": entry_id, "items": [dict(r) for r in rows]})
     except VoteError as exc:
         return JSONResponse({"ok": False, "error_code": exc.code, "message": exc.message}, status_code=exc.status)
+    except Exception:
+        logger.exception("Failed to load admin entry votes")
+        return _internal_error_response("Не удалось загрузить голоса по работе.")
 
 
 async def _set_stage(*, auth_user_id: int, submission_open: bool | None = None, voting_open: bool | None = None, enabled: bool | None = None) -> JSONResponse:
