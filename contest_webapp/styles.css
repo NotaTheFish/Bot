@@ -54,6 +54,52 @@ body { margin: 0; background: #f4f6fa; color: #1d2530; }
 .modal .entry-card { width: min(460px, 100%); }
 
 .admin-panel { background: #fff; margin-top: 18px; border-radius: 12px; padding: 14px; border: 1px solid #e2e7f2; }
+
+.admin-status-card {
+  margin-bottom: 12px;
+  padding: 10px;
+  border-radius: 10px;
+  border: 1px solid #edf1f8;
+  background: #f8faff;
+}
+
+.admin-status-card__title {
+  margin: 0 0 8px;
+  font-size: 13px;
+  color: #3b4b65;
+}
+
+.admin-status-item {
+  margin: 0;
+  font-size: 13px;
+  color: #445066;
+}
+
+.admin-status-item + .admin-status-item {
+  margin-top: 6px;
+}
+
+.admin-status-indicator {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 74px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.admin-status-indicator--open {
+  background: #dff6e9;
+  color: #0f8b47;
+}
+
+.admin-status-indicator--closed {
+  background: #eceff5;
+  color: #8a3c3c;
+}
+
 .admin-actions { display: grid; gap: 8px; margin-bottom: 12px; }
 .admin-overview { font-size: 12px; color: #445066; }
 .admin-overview-item { border-top: 1px solid #edf1f8; padding: 8px 0; }
