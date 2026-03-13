@@ -158,8 +158,22 @@ class ContestWebappEntryImageTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(download.await_count, 1)
 
     async def test_content_type_for_photo_and_image_document(self):
-        self.assertEqual(contest_api._content_type_for_file("photos/file_1.jpg", "application/octet-stream"), "image/jpeg")
-        self.assertEqual(contest_api._content_type_for_file("docs/file_1.png", None), "image/png")
+        self.assertEqual(
+            contest_api._content_type_for_file("photos/file_1.jpg", "application/octet-stream", b"\xff\xd8\xff\xe0rest"),
+            "image/jpeg",
+        )
+        self.assertEqual(
+            contest_api._content_type_for_file("docs/file_1.png", None, b"\x89PNG\r\n\x1a\nrest"),
+            "image/png",
+        )
+        self.assertEqual(
+            contest_api._content_type_for_file("docs/file_1.bin", "application/octet-stream", b"GIF89a123"),
+            "image/gif",
+        )
+        self.assertEqual(
+            contest_api._content_type_for_file("docs/file_1.bin", "application/octet-stream", b"RIFFxxxxWEBPdata"),
+            "image/webp",
+        )
 
 
 if __name__ == "__main__":

@@ -437,16 +437,47 @@ def _cache_set_file_path(file_id: str, file_path: str) -> None:
     _telegram_file_path_cache[str(file_id)] = (time.time() + TELEGRAM_FILE_PATH_CACHE_TTL_SECONDS, str(file_path))
 
 
-def _content_type_for_file(file_path: str, header_content_type: str | None) -> str:
-    if header_content_type and header_content_type.strip() and header_content_type != "application/octet-stream":
-        return header_content_type.strip()
+def _normalize_content_type(value: str | None) -> str | None:
+    raw = (value or "").strip()
+    if not raw:
+        return None
+    return raw.split(";", 1)[0].strip().lower() or None
+
+
+def _detect_image_content_type(payload: bytes) -> str | None:
+    if not payload:
+        return None
+    if payload.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if payload.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if payload.startswith(b"GIF87a") or payload.startswith(b"GIF89a"):
+        return "image/gif"
+    if len(payload) >= 12 and payload.startswith(b"RIFF") and payload[8:12] == b"WEBP":
+        return "image/webp"
+    return None
+
+
+def _content_type_for_file(file_path: str, header_content_type: str | None, payload: bytes) -> str:
+    normalized_header = _normalize_content_type(header_content_type)
+    detected_image_type = _detect_image_content_type(payload)
     guessed, _ = mimetypes.guess_type(file_path)
-    if guessed:
-        return guessed
+    normalized_guess = _normalize_content_type(guessed)
+
+    if detected_image_type:
+        return detected_image_type
+    if normalized_header and normalized_header.startswith("image/"):
+        return normalized_header
+    if normalized_guess and normalized_guess.startswith("image/"):
+        return normalized_guess
+    if normalized_header and normalized_header != "application/octet-stream":
+        return normalized_header
+    if normalized_guess:
+        return normalized_guess
     return "application/octet-stream"
 
 
-async def _download_image_by_file_id(file_id: str) -> tuple[bytes, str]:
+async def _download_image_by_file_id(file_id: str, *, entry_id: int | None = None) -> tuple[bytes, str]:
     cached_file_path = _cache_get_file_path(file_id)
     file_path = cached_file_path
     if not file_path:
@@ -462,9 +493,17 @@ async def _download_image_by_file_id(file_id: str) -> tuple[bytes, str]:
         if file_resp.status != 200:
             raise RuntimeError(f"Telegram file download failed with status {file_resp.status}")
         payload = await file_resp.read()
-        content_type = _content_type_for_file(file_path, file_resp.headers.get("Content-Type"))
+        source_header = file_resp.headers.get("Content-Type")
+        content_type = _content_type_for_file(file_path, source_header, payload)
     if not payload:
         raise RuntimeError("Downloaded Telegram image is empty")
+    logger.debug(
+        "Contest entry image content type resolved entry_id=%s file_path=%s source_content_type=%s final_content_type=%s",
+        entry_id,
+        file_path,
+        source_header,
+        content_type,
+    )
     return payload, content_type
 
 
@@ -770,7 +809,7 @@ async def entry_image(entry_id: int, t: str = "", x_telegram_init_data: str = He
             storage_message_id=storage_message_id,
             telegram_file_id=file_id,
         )
-        payload, content_type = await _download_image_by_file_id(resolved_file_id)
+        payload, content_type = await _download_image_by_file_id(resolved_file_id, entry_id=entry_id)
         _cache_set_entry_image(entry_id, payload, content_type)
         logger.info("Contest entry image served entry_id=%s storage_message_id=%s content_type=%s bytes=%s", entry_id, storage_message_id, content_type, len(payload))
         return Response(content=payload, media_type=content_type)
