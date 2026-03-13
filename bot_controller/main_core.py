@@ -1960,6 +1960,19 @@ def _extract_contest_submission_file(message: Message) -> tuple[bool, str | None
     return False, "Нужны фото или документ-изображение одним сообщением."
 
 
+def _extract_contest_submission_file_id(message: Message) -> str | None:
+    if message.photo:
+        photo = message.photo[-1]
+        file_id = getattr(photo, "file_id", None)
+        if file_id:
+            return str(file_id)
+    if message.document and str(message.document.mime_type or "").startswith("image/"):
+        file_id = getattr(message.document, "file_id", None)
+        if file_id:
+            return str(file_id)
+    return None
+
+
 def _contest_submission_storage_caption(
     entry_id: int,
     owner_user_id: int,
@@ -2151,7 +2164,13 @@ async def _reserve_contest_entry_id() -> int:
     return int(row["id"])
 
 
-async def _create_pending_contest_entry(entry_id: int, user_id: int, storage_chat_id: int, storage_message_id: int) -> int:
+async def _create_pending_contest_entry(
+    entry_id: int,
+    user_id: int,
+    storage_chat_id: int,
+    storage_message_id: int,
+    telegram_file_id: str | None = None,
+) -> int:
     pool = await get_db_pool()
     row = await pool.fetchrow(
         """
@@ -2162,6 +2181,7 @@ async def _create_pending_contest_entry(entry_id: int, user_id: int, storage_cha
             owner_first_name_last_seen,
             owner_last_name_last_seen,
             status,
+            telegram_file_id,
             storage_chat_id,
             storage_message_id,
             storage_message_ids,
@@ -2179,7 +2199,8 @@ async def _create_pending_contest_entry(entry_id: int, user_id: int, storage_cha
             'pending',
             $3,
             $4,
-            ARRAY[$4]::BIGINT[],
+            $5,
+            ARRAY[$5]::BIGINT[],
             1,
             FALSE,
             NOW(),
@@ -2189,18 +2210,25 @@ async def _create_pending_contest_entry(entry_id: int, user_id: int, storage_cha
         """,
         entry_id,
         user_id,
+        telegram_file_id,
         storage_chat_id,
         storage_message_id,
     )
     return int(row["id"])
 
 
-async def _replace_active_contest_entry(entry_id: int, storage_chat_id: int, storage_message_id: int) -> bool:
+async def _replace_active_contest_entry(
+    entry_id: int,
+    storage_chat_id: int,
+    storage_message_id: int,
+    telegram_file_id: str | None = None,
+) -> bool:
     pool = await get_db_pool()
     result = await pool.execute(
         """
         UPDATE contest_entries
-        SET storage_chat_id = $2,
+        SET telegram_file_id = COALESCE($4, telegram_file_id),
+            storage_chat_id = $2,
             storage_message_id = $3,
             storage_message_ids = ARRAY[$3]::BIGINT[],
             version = COALESCE(version, 1) + 1,
@@ -2220,6 +2248,7 @@ async def _replace_active_contest_entry(entry_id: int, storage_chat_id: int, sto
         entry_id,
         storage_chat_id,
         storage_message_id,
+        telegram_file_id,
     )
     return str(result).upper().startswith("UPDATE ") and not str(result).endswith(" 0")
 
@@ -4424,6 +4453,7 @@ async def contest_submission_media(message: Message, state: FSMContext):
         return
 
     submitted_at = datetime.now(timezone.utc)
+    telegram_file_id = _extract_contest_submission_file_id(message)
     data = await state.get_data()
     submission_mode = str(data.get("contest_submission_mode") or "").strip().lower()
     pending_entry_id = data.get("contest_pending_entry_id")
@@ -4455,7 +4485,12 @@ async def contest_submission_media(message: Message, state: FSMContext):
             submitted_at=submitted_at,
             is_replacement=True,
         )
-        replaced = await _replace_active_contest_entry(entry_id, storage_chat_id, storage_message_id)
+        replaced = await _replace_active_contest_entry(
+            entry_id,
+            storage_chat_id,
+            storage_message_id,
+            telegram_file_id,
+        )
         if replaced:
             await _notify_admins_about_contest_entry(entry_id)
             await state.clear()
@@ -4477,6 +4512,7 @@ async def contest_submission_media(message: Message, state: FSMContext):
         message.from_user.id,
         storage_chat_id,
         storage_message_id,
+        telegram_file_id,
     )
     await _notify_admins_about_contest_entry(int(created_entry_id))
     await state.clear()

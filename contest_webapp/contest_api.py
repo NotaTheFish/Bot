@@ -2,6 +2,7 @@ import hashlib
 import hmac
 import json
 import logging
+import mimetypes
 import os
 import time
 from dataclasses import dataclass
@@ -66,6 +67,10 @@ router = APIRouter(prefix="/contest")
 
 _pool: asyncpg.Pool | None = None
 _http: aiohttp.ClientSession | None = None
+_entry_image_cache: dict[int, tuple[float, bytes, str]] = {}
+_telegram_file_path_cache: dict[str, tuple[float, str]] = {}
+ENTRY_IMAGE_CACHE_TTL_SECONDS = max(1, _env_int("ENTRY_IMAGE_CACHE_TTL_SECONDS", 60))
+TELEGRAM_FILE_PATH_CACHE_TTL_SECONDS = max(1, _env_int("TELEGRAM_FILE_PATH_CACHE_TTL_SECONDS", 300))
 
 
 @dataclass(slots=True)
@@ -145,6 +150,8 @@ async def shutdown() -> None:
         await _http.close()
     if _pool is not None:
         await _pool.close()
+    _entry_image_cache.clear()
+    _telegram_file_path_cache.clear()
 
 
 async def ensure_schema() -> None:
@@ -396,6 +403,80 @@ def _extract_photo_file_id(message: dict[str, Any]) -> str | None:
 
 
 async def _download_entry_image(storage_chat_id: int, storage_message_id: int) -> tuple[bytes, str]:
+    file_id = await _resolve_entry_file_id(storage_chat_id=storage_chat_id, storage_message_id=storage_message_id)
+    return await _download_image_by_file_id(file_id)
+
+
+def _cache_get_entry_image(entry_id: int) -> tuple[bytes, str] | None:
+    cached = _entry_image_cache.get(int(entry_id))
+    if not cached:
+        return None
+    expires_at, payload, content_type = cached
+    if time.time() >= expires_at:
+        _entry_image_cache.pop(int(entry_id), None)
+        return None
+    return payload, content_type
+
+
+def _cache_set_entry_image(entry_id: int, payload: bytes, content_type: str) -> None:
+    _entry_image_cache[int(entry_id)] = (time.time() + ENTRY_IMAGE_CACHE_TTL_SECONDS, payload, content_type)
+
+
+def _cache_get_file_path(file_id: str) -> str | None:
+    cached = _telegram_file_path_cache.get(str(file_id))
+    if not cached:
+        return None
+    expires_at, file_path = cached
+    if time.time() >= expires_at:
+        _telegram_file_path_cache.pop(str(file_id), None)
+        return None
+    return file_path
+
+
+def _cache_set_file_path(file_id: str, file_path: str) -> None:
+    _telegram_file_path_cache[str(file_id)] = (time.time() + TELEGRAM_FILE_PATH_CACHE_TTL_SECONDS, str(file_path))
+
+
+def _content_type_for_file(file_path: str, header_content_type: str | None) -> str:
+    if header_content_type and header_content_type.strip() and header_content_type != "application/octet-stream":
+        return header_content_type.strip()
+    guessed, _ = mimetypes.guess_type(file_path)
+    if guessed:
+        return guessed
+    return "application/octet-stream"
+
+
+async def _download_image_by_file_id(file_id: str) -> tuple[bytes, str]:
+    cached_file_path = _cache_get_file_path(file_id)
+    file_path = cached_file_path
+    if not file_path:
+        get_file = await _telegram_api_call("getFile", {"file_id": file_id})
+        file_result = get_file.get("result") or {}
+        file_path = str(file_result.get("file_path") or "").strip()
+        if not file_path:
+            raise RuntimeError("Telegram getFile returned empty file_path")
+        _cache_set_file_path(file_id, file_path)
+
+    file_url = f"{TELEGRAM_FILE_BASE_URL}/bot{BOT_TOKEN}/{file_path}"
+    async with get_http().get(file_url) as file_resp:
+        if file_resp.status != 200:
+            raise RuntimeError(f"Telegram file download failed with status {file_resp.status}")
+        payload = await file_resp.read()
+        content_type = _content_type_for_file(file_path, file_resp.headers.get("Content-Type"))
+    if not payload:
+        raise RuntimeError("Downloaded Telegram image is empty")
+    return payload, content_type
+
+
+async def _resolve_entry_file_id(
+    *,
+    storage_chat_id: int,
+    storage_message_id: int,
+    telegram_file_id: str | None = None,
+) -> str:
+    if telegram_file_id:
+        return str(telegram_file_id)
+
     forwarded_message_id: int | None = None
     try:
         forwarded = await _telegram_api_call(
@@ -411,23 +492,8 @@ async def _download_entry_image(storage_chat_id: int, storage_message_id: int) -
         forwarded_message_id = int(result.get("message_id") or 0) or None
         file_id = _extract_photo_file_id(result)
         if not file_id:
-            raise RuntimeError("No supported image attachment in forwarded message")
-
-        get_file = await _telegram_api_call("getFile", {"file_id": file_id})
-        file_result = get_file.get("result") or {}
-        file_path = str(file_result.get("file_path") or "").strip()
-        if not file_path:
-            raise RuntimeError("Telegram getFile returned empty file_path")
-
-        file_url = f"{TELEGRAM_FILE_BASE_URL}/bot{BOT_TOKEN}/{file_path}"
-        async with get_http().get(file_url) as file_resp:
-            if file_resp.status != 200:
-                raise RuntimeError(f"Telegram file download failed with status {file_resp.status}")
-            payload = await file_resp.read()
-            content_type = (file_resp.headers.get("Content-Type") or "application/octet-stream").strip()
-        if not payload:
-            raise RuntimeError("Downloaded Telegram image is empty")
-        return payload, content_type
+            raise RuntimeError("No supported image attachment in storage message")
+        return file_id
     finally:
         if forwarded_message_id:
             try:
@@ -645,9 +711,14 @@ async def approved_entries(request: Request, x_telegram_init_data: str = Header(
 @router.get("/entries/{entry_id}/image")
 async def entry_image(entry_id: int, t: str = "", x_telegram_init_data: str = Header(default="")) -> Response:
     try:
+        cached = _cache_get_entry_image(entry_id)
+        if cached:
+            payload, content_type = cached
+            return Response(content=payload, media_type=content_type)
+
         row = await get_pool().fetchrow(
             """
-            SELECT id, status, COALESCE(is_deleted, FALSE) AS is_deleted, storage_chat_id, storage_message_id, storage_message_ids
+            SELECT id, status, COALESCE(is_deleted, FALSE) AS is_deleted, telegram_file_id, storage_chat_id, storage_message_id, storage_message_ids
             FROM contest_entries
             WHERE id = $1
             """,
@@ -690,12 +761,19 @@ async def entry_image(entry_id: int, t: str = "", x_telegram_init_data: str = He
                 status_code=404,
             )
 
-        payload, content_type = await _download_entry_image(int(storage_chat_id_raw), storage_message_id)
+        file_id = str(entry.get("telegram_file_id") or "").strip() or None
+        resolved_file_id = await _resolve_entry_file_id(
+            storage_chat_id=int(storage_chat_id_raw),
+            storage_message_id=storage_message_id,
+            telegram_file_id=file_id,
+        )
+        payload, content_type = await _download_image_by_file_id(resolved_file_id)
+        _cache_set_entry_image(entry_id, payload, content_type)
         return Response(content=payload, media_type=content_type)
     except VoteError as exc:
         return JSONResponse({"ok": False, "error_code": exc.code, "message": exc.message}, status_code=exc.status)
     except RuntimeError as exc:
-        logger.warning("Failed to fetch contest entry image entry_id=%s: %s", entry_id, exc)
+        logger.warning("Contest entry image telegram fetch failed entry_id=%s reason=%s", entry_id, exc)
         return JSONResponse(
             {
                 "ok": False,

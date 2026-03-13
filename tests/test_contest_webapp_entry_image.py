@@ -11,6 +11,10 @@ import contest_api
 
 
 class ContestWebappEntryImageTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        contest_api._entry_image_cache.clear()
+        contest_api._telegram_file_path_cache.clear()
+
     async def test_entry_image_approved_available_without_telegram_header(self):
         pool = SimpleNamespace(
             fetchrow=AsyncMock(
@@ -18,6 +22,7 @@ class ContestWebappEntryImageTests(unittest.IsolatedAsyncioTestCase):
                     "id": 10,
                     "status": "approved",
                     "is_deleted": False,
+                    "telegram_file_id": "photo_file_1",
                     "storage_chat_id": 123,
                     "storage_message_id": 456,
                     "storage_message_ids": [456],
@@ -27,12 +32,13 @@ class ContestWebappEntryImageTests(unittest.IsolatedAsyncioTestCase):
 
         with (
             patch.object(contest_api, "get_pool", return_value=pool),
-            patch.object(contest_api, "_download_entry_image", AsyncMock(return_value=(b"img", "image/jpeg"))),
+            patch.object(contest_api, "_download_image_by_file_id", AsyncMock(return_value=(b"img", "image/jpeg"))),
         ):
             response = await contest_api.entry_image(10)
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.body, b"img")
+        self.assertEqual(response.media_type, "image/jpeg")
 
     async def test_entry_image_non_approved_or_deleted_returns_404(self):
         pool = SimpleNamespace(
@@ -41,6 +47,7 @@ class ContestWebappEntryImageTests(unittest.IsolatedAsyncioTestCase):
                     "id": 10,
                     "status": "pending",
                     "is_deleted": False,
+                    "telegram_file_id": "photo_file_1",
                     "storage_chat_id": 123,
                     "storage_message_id": 456,
                     "storage_message_ids": [456],
@@ -61,6 +68,7 @@ class ContestWebappEntryImageTests(unittest.IsolatedAsyncioTestCase):
                     "id": 10,
                     "status": "approved",
                     "is_deleted": True,
+                    "telegram_file_id": "photo_file_1",
                     "storage_chat_id": 123,
                     "storage_message_id": 456,
                     "storage_message_ids": [456],
@@ -82,6 +90,7 @@ class ContestWebappEntryImageTests(unittest.IsolatedAsyncioTestCase):
                     "id": 10,
                     "status": "approved",
                     "is_deleted": False,
+                    "telegram_file_id": None,
                     "storage_chat_id": None,
                     "storage_message_id": None,
                     "storage_message_ids": [],
@@ -95,6 +104,62 @@ class ContestWebappEntryImageTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.status_code, 404)
         payload = json.loads(response.body)
         self.assertEqual(payload["error_code"], "image_not_found")
+
+    async def test_entry_image_telegram_temporary_error_returns_502(self):
+        pool = SimpleNamespace(
+            fetchrow=AsyncMock(
+                return_value={
+                    "id": 11,
+                    "status": "approved",
+                    "is_deleted": False,
+                    "telegram_file_id": "photo_file_2",
+                    "storage_chat_id": 123,
+                    "storage_message_id": 456,
+                    "storage_message_ids": [456],
+                }
+            )
+        )
+
+        with (
+            patch.object(contest_api, "get_pool", return_value=pool),
+            patch.object(contest_api, "_download_image_by_file_id", AsyncMock(side_effect=RuntimeError("telegram timeout"))),
+        ):
+            response = await contest_api.entry_image(11)
+
+        self.assertEqual(response.status_code, 502)
+        payload = json.loads(response.body)
+        self.assertEqual(payload["error_code"], "image_unavailable")
+
+    async def test_entry_image_repeated_request_uses_cache(self):
+        pool = SimpleNamespace(
+            fetchrow=AsyncMock(
+                return_value={
+                    "id": 12,
+                    "status": "approved",
+                    "is_deleted": False,
+                    "telegram_file_id": "photo_file_cache",
+                    "storage_chat_id": 123,
+                    "storage_message_id": 456,
+                    "storage_message_ids": [456],
+                }
+            )
+        )
+        download = AsyncMock(return_value=(b"cached-bytes", "image/jpeg"))
+
+        with (
+            patch.object(contest_api, "get_pool", return_value=pool),
+            patch.object(contest_api, "_download_image_by_file_id", download),
+        ):
+            first = await contest_api.entry_image(12)
+            second = await contest_api.entry_image(12)
+
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(second.status_code, 200)
+        self.assertEqual(download.await_count, 1)
+
+    async def test_content_type_for_photo_and_image_document(self):
+        self.assertEqual(contest_api._content_type_for_file("photos/file_1.jpg", "application/octet-stream"), "image/jpeg")
+        self.assertEqual(contest_api._content_type_for_file("docs/file_1.png", None), "image/png")
 
 
 if __name__ == "__main__":

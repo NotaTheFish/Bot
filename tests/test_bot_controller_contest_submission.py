@@ -292,6 +292,17 @@ class ContestSubmissionTests(unittest.IsolatedAsyncioTestCase):
         message.answer.assert_awaited_once()
         self.assertIn("У вас уже есть активная заявка", message.answer.await_args.args[0])
 
+
+    async def test_extract_contest_submission_file_id_for_photo_and_document(self):
+        photo_message = SimpleNamespace(photo=[SimpleNamespace(file_id="small"), SimpleNamespace(file_id="large")], document=None)
+        self.assertEqual(main_core._extract_contest_submission_file_id(photo_message), "large")
+
+        document_message = SimpleNamespace(photo=None, document=SimpleNamespace(mime_type="image/png", file_id="doc1"))
+        self.assertEqual(main_core._extract_contest_submission_file_id(document_message), "doc1")
+
+        invalid_document = SimpleNamespace(photo=None, document=SimpleNamespace(mime_type="application/pdf", file_id="pdf"))
+        self.assertIsNone(main_core._extract_contest_submission_file_id(invalid_document))
+
     async def test_submission_media_rejects_non_image_message(self):
         message = SimpleNamespace(
             chat=SimpleNamespace(type="private"),
@@ -341,7 +352,7 @@ class ContestSubmissionTests(unittest.IsolatedAsyncioTestCase):
         ):
             await main_core.contest_submission_media(message, state)
 
-        create_entry.assert_awaited_once_with(33, 88, -100123, 701)
+        create_entry.assert_awaited_once_with(33, 88, -100123, 701, "a")
         notify_admins.assert_awaited_once_with(33)
         state.clear.assert_awaited_once()
 
@@ -371,7 +382,7 @@ class ContestSubmissionTests(unittest.IsolatedAsyncioTestCase):
         ):
             await main_core.contest_submission_media(message, state)
 
-        replace_entry.assert_awaited_once_with(22, -100123, 702)
+        replace_entry.assert_awaited_once_with(22, -100123, 702, None)
         notify_admins.assert_awaited_once_with(22)
         state.clear.assert_awaited_once()
 
@@ -403,7 +414,7 @@ class ContestSubmissionTests(unittest.IsolatedAsyncioTestCase):
         ):
             await main_core.contest_submission_media(message, state)
 
-        replace_entry.assert_awaited_once_with(22, -100123, 703)
+        replace_entry.assert_awaited_once_with(22, -100123, 703, "b")
         create_entry.assert_not_called()
 
     async def test_submit_start_blocks_with_disabled_contest(self):
@@ -615,7 +626,7 @@ class ContestSubmissionTests(unittest.IsolatedAsyncioTestCase):
         ):
             await main_core.contest_submission_media(message, state)
 
-        create_entry.assert_awaited_once_with(33, 1, -100123, 701)
+        create_entry.assert_awaited_once_with(33, 1, -100123, 701, "a")
         state.clear.assert_awaited_once()
 
     async def test_submit_start_blocks_with_missing_channel_subscription(self):
