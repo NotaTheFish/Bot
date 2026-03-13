@@ -10,7 +10,7 @@ from contest_api import router as contest_router
 from contest_api import shutdown, startup
 
 BASE_DIR = Path(__file__).resolve().parent
-APP_ASSET_VERSION = os.getenv("CONTEST_WEBAPP_ASSET_VERSION", "20260313-4")
+APP_ASSET_VERSION = os.getenv("CONTEST_WEBAPP_ASSET_VERSION", "20260313-5")
 
 
 @asynccontextmanager
