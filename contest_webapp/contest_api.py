@@ -820,7 +820,13 @@ async def admin_overview(x_telegram_init_data: str = Header(default="")) -> JSON
             item["net_votes"] = int(item["confirmed_votes_count"] or 0) - int(item["penalty_votes"] or 0)
             items.append(item)
 
-        return JSONResponse({"ok": True, "settings": settings, "confirmations_count": int(confirmations_count or 0), "items": items})
+        payload = {
+            "ok": True,
+            "settings": settings,
+            "confirmations_count": int(confirmations_count or 0),
+            "items": items,
+        }
+        return JSONResponse(jsonable_encoder(payload))
     except VoteError as exc:
         return JSONResponse({"ok": False, "error_code": exc.code, "message": exc.message}, status_code=exc.status)
     except Exception:
