@@ -33,5 +33,9 @@ async def root() -> HTMLResponse:
     html = html.replace("__APP_ASSET_VERSION__", APP_ASSET_VERSION)
     return HTMLResponse(
         content=html,
-        headers={"Cache-Control": "no-store, no-cache, must-revalidate, max-age=0"},
+        headers={
+            "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+            "Pragma": "no-cache",
+            "Expires": "0",
+        },
     )
