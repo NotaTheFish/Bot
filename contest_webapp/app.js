@@ -303,9 +303,9 @@ async function fetchJson(path, options = {}) {
   return payload;
 }
 
-async function loadAdminOverview() {
-  const options = arguments[0] || {};
+async function loadAdminOverview(options = {}) {
   const throwOnError = Boolean(options.throwOnError);
+  const fallbackMessage = options.fallbackMessage || "Не удалось загрузить админ-обзор";
 
   try {
     const payload = await fetchJson("/api/contest/admin/overview");
@@ -322,11 +322,10 @@ async function loadAdminOverview() {
       )
       .join("");
   } catch (error) {
-    const message = error.message || "Не удалось загрузить обзор.";
-    adminOverviewEl.textContent = message;
+    adminOverviewEl.textContent = fallbackMessage;
 
     if (throwOnError) {
-      throw new Error(message);
+      throw new Error(error.message || fallbackMessage);
     }
   }
 }
@@ -412,11 +411,7 @@ async function refreshAfterAdminAction() {
   applyContestState(statePayload, entriesPayload);
 
   if (state.isAdmin) {
-    await loadAdminOverview({ throwOnError: true }).catch((error) => {
-      throw new Error(
-        `Не удалось обновить админ-обзор: ${error.message || "ошибка API"}`
-      );
-    });
+    await loadAdminOverview({ fallbackMessage: "Не удалось загрузить админ-обзор" });
   }
 
   renderDataState();
