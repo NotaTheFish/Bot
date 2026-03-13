@@ -15,6 +15,11 @@ body { margin: 0; background: #f4f6fa; color: #1d2530; }
 
 .entry-card { background: #fff; border-radius: 12px; overflow: hidden; border: 1px solid #e2e7f2; display: flex; flex-direction: column; }
 .entry-card__image { width: 100%; aspect-ratio: 1; object-fit: cover; background: #e8edf8; }
+
+.entry-card__image[hidden],
+.entry-card__image-fallback[hidden] {
+  display: none !important;
+}
 .entry-card__image-fallback {
   width: 100%;
   aspect-ratio: 1;
