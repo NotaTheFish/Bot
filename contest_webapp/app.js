@@ -91,7 +91,20 @@ function toAbsoluteUrl(rawUrl) {
 }
 
 function buildEntryImageUrl(entry) {
-  return toAbsoluteUrl(entry?.image_url);
+  const directUrl = toAbsoluteUrl(entry?.image_url);
+  if (directUrl) return directUrl;
+
+  const fileUrl = toAbsoluteUrl(entry?.file_url);
+  if (fileUrl) return fileUrl;
+
+  const storageUrl = toAbsoluteUrl(entry?.storage_url);
+  if (storageUrl) return storageUrl;
+
+  if (MEDIA_BASE_URL && entry?.storage_message_id) {
+    return toAbsoluteUrl(`${MEDIA_BASE_URL.replace(/\/$/, "")}/${entry.storage_message_id}`);
+  }
+
+  return "";
 }
 
 function entryDisabled(entry) {

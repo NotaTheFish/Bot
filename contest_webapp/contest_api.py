@@ -452,7 +452,7 @@ async def _apply_penalties_if_needed(conn: asyncpg.Connection) -> None:
 async def approved_entries(request: Request, x_telegram_init_data: str = Header(default="")) -> JSONResponse:
     try:
         auth = _extract_auth(x_telegram_init_data)
-        request_origin = _base_origin(str(request.base_url))
+        request_origin = _base_origin(str(getattr(request, "base_url", "") or ""))
         rows = await get_pool().fetch(
             """
             SELECT
@@ -462,6 +462,9 @@ async def approved_entries(request: Request, x_telegram_init_data: str = Header(
                 e.owner_username_last_seen,
                 e.owner_first_name_last_seen,
                 e.owner_last_name_last_seen,
+                e.storage_chat_id,
+                e.storage_message_id,
+                e.storage_message_ids,
                 e.submitted_at,
                 e.created_at,
                 e.penalty_votes,
