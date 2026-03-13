@@ -59,6 +59,8 @@ ADMIN_IDS = _env_admin_ids()
 CONTEST_MEDIA_BASE_URL = _env("CONTEST_MEDIA_BASE_URL")
 MEDIA_BASE_URL = _env("MEDIA_BASE_URL")
 TELEGRAM_FILE_BASE_URL = "https://api.telegram.org/file"
+ENTRY_IMAGE_TOKEN_SECRET = _env("ENTRY_IMAGE_TOKEN_SECRET")
+ENTRY_IMAGE_TOKEN_TTL_SECONDS = max(1, _env_int("ENTRY_IMAGE_TOKEN_TTL_SECONDS", 3600))
 
 router = APIRouter(prefix="/contest")
 
@@ -248,6 +250,39 @@ def _is_admin(user_id: int) -> bool:
     return int(user_id) in ADMIN_IDS
 
 
+def _build_entry_image_token(entry_id: int, now: int | None = None) -> str | None:
+    secret = ENTRY_IMAGE_TOKEN_SECRET.encode("utf-8")
+    if not secret:
+        return None
+    issued_at = int(now or time.time())
+    payload = f"{int(entry_id)}:{issued_at}"
+    signature = hmac.new(secret, payload.encode("utf-8"), hashlib.sha256).hexdigest()
+    return f"{issued_at}.{signature}"
+
+
+def _verify_entry_image_token(entry_id: int, token: str | None, now: int | None = None) -> bool:
+    if not token:
+        return True
+
+    secret = ENTRY_IMAGE_TOKEN_SECRET.encode("utf-8")
+    if not secret:
+        return True
+
+    try:
+        issued_at_raw, signature = str(token).split(".", 1)
+        issued_at = int(issued_at_raw)
+    except (TypeError, ValueError):
+        return False
+
+    current = int(now or time.time())
+    if issued_at <= 0 or current - issued_at > ENTRY_IMAGE_TOKEN_TTL_SECONDS:
+        return False
+
+    payload = f"{int(entry_id)}:{issued_at}"
+    expected = hmac.new(secret, payload.encode("utf-8"), hashlib.sha256).hexdigest()
+    return hmac.compare_digest(expected, signature)
+
+
 def _base_origin(value: str) -> str | None:
     raw = (value or "").strip()
     if not raw:
@@ -288,6 +323,10 @@ def _build_entry_image_url(entry: dict[str, Any], request_origin: str | None = N
     if entry_id is not None:
         local_url = _absolute_url(f"/api/contest/entries/{entry_id}/image", request_origin)
         if local_url:
+            token = _build_entry_image_token(int(entry_id))
+            if token:
+                separator = "&" if "?" in local_url else "?"
+                return f"{local_url}{separator}t={token}"
             return local_url
 
     for key in ("image_url", "file_url", "storage_url"):
@@ -604,9 +643,8 @@ async def approved_entries(request: Request, x_telegram_init_data: str = Header(
 
 
 @router.get("/entries/{entry_id}/image")
-async def entry_image(entry_id: int, x_telegram_init_data: str = Header(default="")) -> Response:
+async def entry_image(entry_id: int, t: str = "", x_telegram_init_data: str = Header(default="")) -> Response:
     try:
-        _extract_auth(x_telegram_init_data)
         row = await get_pool().fetchrow(
             """
             SELECT id, status, COALESCE(is_deleted, FALSE) AS is_deleted, storage_chat_id, storage_message_id, storage_message_ids
@@ -625,6 +663,12 @@ async def entry_image(entry_id: int, x_telegram_init_data: str = Header(default=
         if entry.get("status") != "approved" or bool(entry.get("is_deleted")):
             return JSONResponse(
                 {"ok": False, "error_code": "entry_not_available", "message": "Работа недоступна."},
+                status_code=404,
+            )
+
+        if not _verify_entry_image_token(entry_id, t):
+            return JSONResponse(
+                {"ok": False, "error_code": "entry_not_found", "message": "Работа не найдена."},
                 status_code=404,
             )
 
