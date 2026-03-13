@@ -283,6 +283,9 @@ async function fetchJson(path, options = {}) {
 }
 
 async function loadAdminOverview() {
+  const options = arguments[0] || {};
+  const throwOnError = Boolean(options.throwOnError);
+
   try {
     const payload = await fetchJson("/api/contest/admin/overview");
 
@@ -298,11 +301,52 @@ async function loadAdminOverview() {
       )
       .join("");
   } catch (error) {
-    adminOverviewEl.textContent = error.message || "Не удалось загрузить обзор.";
+    const message = error.message || "Не удалось загрузить обзор.";
+    adminOverviewEl.textContent = message;
+
+    if (throwOnError) {
+      throw new Error(message);
+    }
   }
 }
 
-async function loadData() {
+function applyContestState(statePayload, entriesPayload) {
+  state.entries = entriesPayload.items || [];
+  state.draftEntryIds = new Set(statePayload.draft_entry_ids || []);
+  state.confirmedEntryIds = new Set(statePayload.confirmed_entry_ids || []);
+  state.submissionOpen = Boolean(statePayload.submission_open);
+  state.votingOpen = Boolean(statePayload.voting_open);
+  state.confirmed = Boolean(statePayload.confirmed);
+  state.isAdmin = Boolean(statePayload.is_admin);
+  state.isChannelMember = Boolean(statePayload.is_channel_member);
+
+  if (!state.entries.some((item) => item.id === state.activeEntryId)) {
+    state.activeEntryId = null;
+  }
+
+  adminPanelEl.hidden = !state.isAdmin;
+}
+
+function renderDataState() {
+  renderAdminStatusCard();
+  updateHeader();
+  renderEntries();
+  updateAdminButtons();
+}
+
+function notifyAdminError(message) {
+  if (!state.isAdmin) return;
+
+  if (typeof tg?.showAlert === "function") {
+    tg.showAlert(message);
+    return;
+  }
+
+  window.alert(message);
+}
+
+async function loadData(options = {}) {
+  const throwOnError = Boolean(options.throwOnError);
   setStatus("Загрузка...");
 
   try {
@@ -311,31 +355,50 @@ async function loadData() {
       fetchJson("/api/contest/state"),
     ]);
 
-    state.entries = entriesPayload.items || [];
-    state.draftEntryIds = new Set(statePayload.draft_entry_ids || []);
-    state.confirmedEntryIds = new Set(statePayload.confirmed_entry_ids || []);
-    state.submissionOpen = Boolean(statePayload.submission_open);
-    state.votingOpen = Boolean(statePayload.voting_open);
-    state.confirmed = Boolean(statePayload.confirmed);
-    state.isAdmin = Boolean(statePayload.is_admin);
-    state.isChannelMember = Boolean(statePayload.is_channel_member);
+    applyContestState(statePayload, entriesPayload);
 
     if (state.isAdmin) {
-      adminPanelEl.hidden = false;
-      renderAdminStatusCard();
       await loadAdminOverview();
-    } else {
-      adminPanelEl.hidden = true;
     }
 
-    renderAdminStatusCard();
-    updateHeader();
-    renderEntries();
-    updateAdminButtons();
+    renderDataState();
     setStatus("");
   } catch (error) {
-    setStatus(error.message || "Не удалось загрузить данные.");
+    const message = error.message || "Не удалось загрузить данные.";
+    setStatus(message);
+
+    if (throwOnError) {
+      throw new Error(message);
+    }
   }
+}
+
+async function refreshAfterAdminAction() {
+  const statePayload = await fetchJson("/api/contest/state").catch((error) => {
+    throw new Error(
+      `Не удалось обновить состояние конкурса: ${error.message || "ошибка API"}`
+    );
+  });
+
+  const entriesPayload = await fetchJson("/api/contest/entries/approved").catch(
+    (error) => {
+      throw new Error(
+        `Не удалось обновить список работ: ${error.message || "ошибка API"}`
+      );
+    }
+  );
+
+  applyContestState(statePayload, entriesPayload);
+
+  if (state.isAdmin) {
+    await loadAdminOverview({ throwOnError: true }).catch((error) => {
+      throw new Error(
+        `Не удалось обновить админ-обзор: ${error.message || "ошибка API"}`
+      );
+    });
+  }
+
+  renderDataState();
 }
 
 async function toggleActiveSelection() {
@@ -430,16 +493,17 @@ async function adminStage(path) {
 
   try {
     await fetchJson(path, { method: "POST", body: "{}" });
-    await Promise.all([loadData(), loadAdminOverview()]);
-    updateAdminButtons();
+    await refreshAfterAdminAction();
     setStatus("Стадия конкурса обновлена.");
   } catch (error) {
     const message = error.message || "Не удалось изменить стадию.";
     if (/already|уже|не требуется/i.test(message)) {
       setStatus("Действие уже не требуется.");
+      notifyAdminError("Действие уже не требуется.");
       return;
     }
     setStatus(message);
+    notifyAdminError(message);
   } finally {
     setBusy(false);
     updateAdminButtons();
