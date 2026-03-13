@@ -3,23 +3,40 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Голосование конкурса</title>
+    <title>Конкурс рисунков</title>
     <link rel="stylesheet" href="/static/styles.css" />
     <script src="https://telegram.org/js/telegram-web-app.js"></script>
   </head>
   <body>
     <main class="app">
       <header class="app__header">
-        <h1>Голосование конкурса</h1>
-        <p id="votesCounter" class="votes-counter">Осталось голосов: —</p>
+        <h1>Конкурс рисунков</h1>
+        <p id="contestStage" class="stage-badge">Статус: загрузка...</p>
+        <p id="votesCounter" class="votes-counter">Выбрано: 0/3</p>
         <button id="rulesLink" class="rules-link" type="button">Правила конкурса</button>
       </header>
 
       <section id="entriesGrid" class="entries-grid" aria-live="polite"></section>
       <p id="statusMessage" class="status-message"></p>
+
+      <section id="adminPanel" class="admin-panel" hidden>
+        <h2>Режим администратора</h2>
+        <div class="admin-actions">
+          <button id="closeSubmissionBtn" class="vote-button vote-button--secondary" type="button">Закрыть прием заявок</button>
+          <button id="openVotingBtn" class="vote-button" type="button">Открыть голосование</button>
+          <button id="closeVotingBtn" class="vote-button vote-button--danger" type="button">Закрыть голосование</button>
+        </div>
+        <div id="adminOverview" class="admin-overview"></div>
+      </section>
     </main>
 
-    <section id="rulesModal" hidden>
+    <footer id="actionBar" class="action-bar" hidden>
+      <p id="actionBarText"></p>
+      <button id="actionBarButton" class="vote-button" type="button"></button>
+      <button id="confirmVotesBtn" class="vote-button vote-button--confirm" type="button" hidden>Подтвердить голоса</button>
+    </footer>
+
+    <section id="rulesModal" class="modal" hidden>
       <article class="entry-card">
         <div class="entry-card__body">
           <h2 class="entry-card__title">Правила конкурса</h2>
@@ -29,13 +46,23 @@
       </article>
     </section>
 
+    <section id="confirmModal" class="modal" hidden>
+      <article class="entry-card">
+        <div class="entry-card__body">
+          <h2 class="entry-card__title">Подтвердить голоса?</h2>
+          <p class="status-message">После подтверждения изменить выбор нельзя.</p>
+          <button id="confirmYes" class="vote-button vote-button--confirm" type="button">Подтвердить</button>
+          <button id="confirmNo" class="vote-button vote-button--secondary" type="button">Отмена</button>
+        </div>
+      </article>
+    </section>
+
     <template id="entryCardTemplate">
       <article class="entry-card">
         <img class="entry-card__image" alt="Работа участника" loading="lazy" />
         <div class="entry-card__body">
           <h2 class="entry-card__title"></h2>
-          <p class="entry-card__votes"></p>
-          <button class="vote-button" type="button">Проголосовать</button>
+          <p class="entry-card__meta"></p>
         </div>
       </article>
     </template>
