@@ -108,9 +108,10 @@ function renderEntries() {
 function renderActionBar() {
   const entry = state.entries.find((item) => item.id === state.activeEntryId);
   const selected = selectedCount();
-  const canConfirm = !state.confirmed && selected === 3;
+  const canConfirm = !state.confirmed && state.draftEntryIds.size === 3;
 
   confirmVotesBtnEl.hidden = !canConfirm;
+  confirmVotesBtnEl.disabled = state.busy || state.draftEntryIds.size !== 3 || state.confirmed;
   actionBarEl.hidden = !entry;
 
   if (!entry) return;
@@ -218,6 +219,9 @@ async function toggleActiveSelection() {
 }
 
 async function confirmVotes() {
+  if (state.draftEntryIds.size !== 3 || state.confirmed || state.busy) {
+    return;
+  }
   confirmModalEl.hidden = false;
 }
 

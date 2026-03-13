@@ -11,6 +11,7 @@ from urllib.parse import parse_qsl
 import aiohttp
 import asyncpg
 from fastapi import APIRouter, Header, HTTPException, Request
+from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse
 
 logger = logging.getLogger(__name__)
@@ -370,7 +371,15 @@ async def approved_entries(x_telegram_init_data: str = Header(default="")) -> JS
                 item.pop("votes_count", None)
                 item.pop("penalty_votes", None)
             items.append(item)
-        return JSONResponse({"ok": True, "current_user": {"user_id": current_user_id, "is_admin": _is_admin(current_user_id)}, "items": items})
+        return JSONResponse(
+            content=jsonable_encoder(
+                {
+                    "ok": True,
+                    "current_user": {"user_id": current_user_id, "is_admin": _is_admin(current_user_id)},
+                    "items": items,
+                }
+            )
+        )
     except VoteError as exc:
         return JSONResponse({"ok": False, "error_code": exc.code, "message": exc.message}, status_code=exc.status)
 
@@ -394,21 +403,23 @@ async def contest_state(x_telegram_init_data: str = Header(default="")) -> JSONR
             )
         is_channel_member = await _check_channel_subscription(auth["user_id"])
         return JSONResponse(
-            {
-                "ok": True,
-                "user_id": auth["user_id"],
-                "is_admin": _is_admin(auth["user_id"]),
-                "enabled": settings["enabled"],
-                "submission_open": settings["submission_open"],
-                "voting_open": settings["voting_open"],
-                "votes_required": VOTE_CONFIRM_REQUIRED,
-                "is_channel_member": is_channel_member,
-                "has_own_approved_entry": has_own_approved,
-                "confirmed": bool(confirmed),
-                "confirmed_at": confirmed["confirmed_at"] if confirmed else None,
-                "confirmed_entry_ids": list(confirmed["selected_entry_ids"] or []) if confirmed else [],
-                "draft_entry_ids": draft_entry_ids,
-            }
+            content=jsonable_encoder(
+                {
+                    "ok": True,
+                    "user_id": auth["user_id"],
+                    "is_admin": _is_admin(auth["user_id"]),
+                    "enabled": settings["enabled"],
+                    "submission_open": settings["submission_open"],
+                    "voting_open": settings["voting_open"],
+                    "votes_required": VOTE_CONFIRM_REQUIRED,
+                    "is_channel_member": is_channel_member,
+                    "has_own_approved_entry": has_own_approved,
+                    "confirmed": bool(confirmed),
+                    "confirmed_at": confirmed["confirmed_at"] if confirmed else None,
+                    "confirmed_entry_ids": list(confirmed["selected_entry_ids"] or []) if confirmed else [],
+                    "draft_entry_ids": draft_entry_ids,
+                }
+            )
         )
     except VoteError as exc:
         return JSONResponse({"ok": False, "error_code": exc.code, "message": exc.message}, status_code=exc.status)
