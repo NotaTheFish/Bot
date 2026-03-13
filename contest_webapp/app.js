@@ -24,6 +24,10 @@ const openSubmissionBtnEl = document.getElementById("openSubmissionBtn");
 const closeSubmissionBtnEl = document.getElementById("closeSubmissionBtn");
 const openVotingBtnEl = document.getElementById("openVotingBtn");
 const closeVotingBtnEl = document.getElementById("closeVotingBtn");
+const imagePreviewModalEl = document.getElementById("imagePreviewModal");
+const imagePreviewCloseEl = document.getElementById("imagePreviewClose");
+const imagePreviewTitleEl = document.getElementById("imagePreviewTitle");
+const imagePreviewImageEl = document.getElementById("imagePreviewImage");
 
 const tg = window.Telegram?.WebApp;
 if (tg) {
@@ -131,6 +135,20 @@ function setBusy(value) {
   updateAdminButtons();
 }
 
+function openImagePreview(entry, imageUrl) {
+  if (!imagePreviewModalEl || !imagePreviewImageEl || !imagePreviewTitleEl || !imageUrl) return;
+  const displayNumber = Number(entry.display_number) > 0 ? entry.display_number : entry.id;
+  imagePreviewTitleEl.textContent = `Работа #${displayNumber}`;
+  imagePreviewImageEl.src = imageUrl;
+  imagePreviewModalEl.hidden = false;
+}
+
+function closeImagePreview() {
+  if (!imagePreviewModalEl || !imagePreviewImageEl) return;
+  imagePreviewModalEl.hidden = true;
+  imagePreviewImageEl.removeAttribute("src");
+}
+
 function renderEntries() {
   entriesGridEl.innerHTML = "";
 
@@ -146,6 +164,7 @@ function renderEntries() {
     const image = fragment.querySelector(".entry-card__image");
     const title = fragment.querySelector(".entry-card__title");
     const meta = fragment.querySelector(".entry-card__meta");
+    const previewBtn = fragment.querySelector(".entry-card__preview-btn");
 
     const imageFallback = document.createElement("div");
     imageFallback.className = "entry-card__image-fallback";
@@ -180,17 +199,38 @@ function renderEntries() {
     const showFallback = () => {
       image.hidden = true;
       imageFallback.hidden = false;
+      console.warn("Contest entry image failed to load", { entryId: entry.id, imageUrl });
     };
 
     if (imageUrl) {
       image.hidden = false;
       imageFallback.hidden = true;
+      image.onload = () => {
+        image.hidden = false;
+        imageFallback.hidden = true;
+        console.debug("Contest entry image loaded", { entryId: entry.id, imageUrl });
+      };
       image.onerror = showFallback;
       image.src = imageUrl;
     } else {
       image.removeAttribute("src");
+      console.warn("Contest entry image URL missing", { entryId: entry.id });
       showFallback();
     }
+
+    image.addEventListener("click", (event) => {
+      event.stopPropagation();
+      if (imageUrl) {
+        openImagePreview(entry, imageUrl);
+      }
+    });
+
+    previewBtn?.addEventListener("click", (event) => {
+      event.stopPropagation();
+      if (imageUrl) {
+        openImagePreview(entry, imageUrl);
+      }
+    });
 
     card.addEventListener("click", () => {
       state.activeEntryId = entry.id;
@@ -540,6 +580,17 @@ confirmNoEl?.addEventListener("click", () => {
   confirmModalEl.hidden = true;
 });
 confirmYesEl?.addEventListener("click", submitConfirmVotes);
+imagePreviewCloseEl?.addEventListener("click", closeImagePreview);
+imagePreviewModalEl?.addEventListener("click", (event) => {
+  if (event.target === imagePreviewModalEl) {
+    closeImagePreview();
+  }
+});
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && imagePreviewModalEl && !imagePreviewModalEl.hidden) {
+    closeImagePreview();
+  }
+});
 openSubmissionBtnEl?.addEventListener("click", () =>
   adminStage("/api/contest/admin/submission/open")
 );

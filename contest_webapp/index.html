@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Конкурс рисунков</title>
-    <link rel="stylesheet" href="/static/styles.css" />
+    <link rel="stylesheet" href="/static/styles.css?v=__APP_ASSET_VERSION__" />
     <script src="https://telegram.org/js/telegram-web-app.js"></script>
   </head>
   <body>
@@ -59,9 +59,21 @@
       </article>
     </section>
 
+
+    <section id="imagePreviewModal" class="modal modal--preview" hidden>
+      <article class="preview-card" role="dialog" aria-modal="true" aria-label="Просмотр рисунка">
+        <button id="imagePreviewClose" class="preview-card__close" type="button" aria-label="Закрыть">✕</button>
+        <p id="imagePreviewTitle" class="preview-card__title"></p>
+        <img id="imagePreviewImage" class="preview-card__image" alt="Увеличенный рисунок" />
+      </article>
+    </section>
+
     <template id="entryCardTemplate">
       <article class="entry-card">
-        <img class="entry-card__image" alt="Работа участника" loading="lazy" />
+        <div class="entry-card__media">
+          <img class="entry-card__image" alt="Работа участника" loading="lazy" />
+          <button class="entry-card__preview-btn" type="button" aria-label="Увеличить изображение">🔍</button>
+        </div> />
         <div class="entry-card__body">
           <h2 class="entry-card__title"></h2>
           <p class="entry-card__meta"></p>
@@ -69,6 +81,6 @@
       </article>
     </template>
 
-    <script src="/static/app.js"></script>
+    <script src="/static/app.js?v=__APP_ASSET_VERSION__"></script>
   </body>
 </html>

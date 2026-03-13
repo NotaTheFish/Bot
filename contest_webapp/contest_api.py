@@ -688,6 +688,7 @@ async def approved_entries(request: Request, x_telegram_init_data: str = Header(
             item = dict(row)
             item["is_owned_by_current_user"] = int(item["owner_user_id"]) == current_user_id
             item["image_url"] = _build_entry_image_url(item, request_origin)
+            logger.debug("Approved entry image URL prepared entry_id=%s storage_message_id=%s image_url=%s", item.get("id"), item.get("storage_message_id"), item.get("image_url"))
             if not _is_admin(current_user_id):
                 item.pop("votes_count", None)
                 item.pop("penalty_votes", None)
@@ -711,9 +712,11 @@ async def approved_entries(request: Request, x_telegram_init_data: str = Header(
 @router.get("/entries/{entry_id}/image")
 async def entry_image(entry_id: int, t: str = "", x_telegram_init_data: str = Header(default="")) -> Response:
     try:
+        logger.debug("Contest entry image requested entry_id=%s token_present=%s", entry_id, bool(t))
         cached = _cache_get_entry_image(entry_id)
         if cached:
             payload, content_type = cached
+            logger.debug("Contest entry image cache hit entry_id=%s content_type=%s bytes=%s", entry_id, content_type, len(payload))
             return Response(content=payload, media_type=content_type)
 
         row = await get_pool().fetchrow(
@@ -769,6 +772,7 @@ async def entry_image(entry_id: int, t: str = "", x_telegram_init_data: str = He
         )
         payload, content_type = await _download_image_by_file_id(resolved_file_id)
         _cache_set_entry_image(entry_id, payload, content_type)
+        logger.info("Contest entry image served entry_id=%s storage_message_id=%s content_type=%s bytes=%s", entry_id, storage_message_id, content_type, len(payload))
         return Response(content=payload, media_type=content_type)
     except VoteError as exc:
         return JSONResponse({"ok": False, "error_code": exc.code, "message": exc.message}, status_code=exc.status)

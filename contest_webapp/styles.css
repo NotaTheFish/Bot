@@ -14,7 +14,9 @@ body { margin: 0; background: #f4f6fa; color: #1d2530; }
 @media (min-width: 700px) { .entries-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
 
 .entry-card { background: #fff; border-radius: 12px; overflow: hidden; border: 1px solid #e2e7f2; display: flex; flex-direction: column; }
-.entry-card__image { width: 100%; aspect-ratio: 1; object-fit: cover; background: #e8edf8; }
+.entry-card__media { position: relative; }
+.entry-card__image { width: 100%; aspect-ratio: 1; object-fit: cover; background: #e8edf8; display: block; }
+.entry-card__preview-btn { position: absolute; right: 8px; bottom: 8px; border: 0; border-radius: 999px; width: 34px; height: 34px; background: rgba(17,24,39,.72); color: #fff; font-size: 16px; }
 
 .entry-card__image[hidden],
 .entry-card__image-fallback[hidden] {
@@ -57,6 +59,12 @@ body { margin: 0; background: #f4f6fa; color: #1d2530; }
 .modal { position: fixed; inset: 0; background: rgba(17,24,39,.55); display: grid; place-items: center; padding: 16px; z-index: 10; }
 .modal[hidden] { display: none; }
 .modal .entry-card { width: min(460px, 100%); }
+
+.modal--preview { z-index: 20; }
+.preview-card { position: relative; width: min(760px, 100%); max-height: min(90vh, 920px); background: #0f1727; border-radius: 12px; padding: 44px 12px 14px; }
+.preview-card__close { position: absolute; top: 8px; right: 8px; width: 34px; height: 34px; border: 0; border-radius: 999px; background: rgba(255,255,255,.18); color: #fff; font-size: 18px; }
+.preview-card__title { margin: 0 0 10px; color: #dde6fb; font-weight: 600; }
+.preview-card__image { width: 100%; max-height: calc(90vh - 120px); object-fit: contain; border-radius: 10px; background: #111827; }
 
 .admin-panel { background: #fff; margin-top: 18px; border-radius: 12px; padding: 14px; border: 1px solid #e2e7f2; }
 
