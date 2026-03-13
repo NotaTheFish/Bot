@@ -57,6 +57,10 @@
 
 ## Выдача изображений
 
-Сервис `contest_webapp` **не** поднимает собственный маршрут для выдачи файлов работ (в `main_webapp.py` есть только `/` и `/static/*`).
+Сервис `contest_webapp` поднимает локальный proxy-эндпоинт:
 
-`CONTEST_MEDIA_BASE_URL` должен указывать на внешний media/proxy endpoint (например, отдельный сервис), который отдает файл по `/{storage_message_id}`.
+- `GET /api/contest/entries/{entry_id}/image`
+
+Эндпоинт загружает изображение по метаданным `storage_chat_id` + `storage_message_id` (или первому id из `storage_message_ids`) через Telegram Bot API и возвращает бинарный ответ с корректным `Content-Type`.
+
+`GET /api/contest/entries/approved` возвращает для каждой одобренной работы поле `image_url`, указывающее на этот локальный маршрут. Внешние `CONTEST_MEDIA_BASE_URL`/`MEDIA_BASE_URL` остаются только как fallback для совместимости.

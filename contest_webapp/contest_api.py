@@ -13,7 +13,7 @@ import aiohttp
 import asyncpg
 from fastapi import APIRouter, Header, HTTPException, Request
 from fastapi.encoders import jsonable_encoder
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 
 logger = logging.getLogger(__name__)
 
@@ -58,6 +58,7 @@ VOTE_CONFIRM_REQUIRED = 3
 ADMIN_IDS = _env_admin_ids()
 CONTEST_MEDIA_BASE_URL = _env("CONTEST_MEDIA_BASE_URL")
 MEDIA_BASE_URL = _env("MEDIA_BASE_URL")
+TELEGRAM_FILE_BASE_URL = "https://api.telegram.org/file"
 
 router = APIRouter(prefix="/contest")
 
@@ -283,6 +284,12 @@ def _absolute_url(raw_url: str | None, request_origin: str | None = None) -> str
 
 
 def _build_entry_image_url(entry: dict[str, Any], request_origin: str | None = None) -> str | None:
+    entry_id = entry.get("id")
+    if entry_id is not None:
+        local_url = _absolute_url(f"/api/contest/entries/{entry_id}/image", request_origin)
+        if local_url:
+            return local_url
+
     for key in ("image_url", "file_url", "storage_url"):
         value = entry.get(key)
         if isinstance(value, str) and value.strip():
@@ -305,6 +312,96 @@ def _build_entry_image_url(entry: dict[str, Any], request_origin: str | None = N
             return normalized
         logger.warning("Entry %s has invalid media base URL: %r", entry.get("id"), media_base)
     return None
+
+
+def _entry_storage_message_id(entry: dict[str, Any]) -> int | None:
+    message_id = entry.get("storage_message_id")
+    if message_id:
+        try:
+            return int(message_id)
+        except (TypeError, ValueError):
+            return None
+
+    storage_message_ids = entry.get("storage_message_ids")
+    if isinstance(storage_message_ids, list) and storage_message_ids:
+        try:
+            return int(storage_message_ids[0])
+        except (TypeError, ValueError):
+            return None
+    return None
+
+
+async def _telegram_api_call(method: str, params: dict[str, Any]) -> dict[str, Any]:
+    method_url = f"https://api.telegram.org/bot{BOT_TOKEN}/{method}"
+    async with get_http().post(method_url, json=params) as resp:
+        data = await resp.json(content_type=None)
+    if not data.get("ok"):
+        raise RuntimeError(f"Telegram method {method} failed: {data}")
+    return data
+
+
+def _extract_photo_file_id(message: dict[str, Any]) -> str | None:
+    photos = message.get("photo")
+    if isinstance(photos, list) and photos:
+        for item in reversed(photos):
+            file_id = item.get("file_id") if isinstance(item, dict) else None
+            if file_id:
+                return str(file_id)
+
+    for field in ("document", "animation", "sticker"):
+        media = message.get(field)
+        if isinstance(media, dict) and media.get("file_id"):
+            return str(media["file_id"])
+
+    return None
+
+
+async def _download_entry_image(storage_chat_id: int, storage_message_id: int) -> tuple[bytes, str]:
+    forwarded_message_id: int | None = None
+    try:
+        forwarded = await _telegram_api_call(
+            "forwardMessage",
+            {
+                "chat_id": storage_chat_id,
+                "from_chat_id": storage_chat_id,
+                "message_id": storage_message_id,
+                "disable_notification": True,
+            },
+        )
+        result = forwarded.get("result") or {}
+        forwarded_message_id = int(result.get("message_id") or 0) or None
+        file_id = _extract_photo_file_id(result)
+        if not file_id:
+            raise RuntimeError("No supported image attachment in forwarded message")
+
+        get_file = await _telegram_api_call("getFile", {"file_id": file_id})
+        file_result = get_file.get("result") or {}
+        file_path = str(file_result.get("file_path") or "").strip()
+        if not file_path:
+            raise RuntimeError("Telegram getFile returned empty file_path")
+
+        file_url = f"{TELEGRAM_FILE_BASE_URL}/bot{BOT_TOKEN}/{file_path}"
+        async with get_http().get(file_url) as file_resp:
+            if file_resp.status != 200:
+                raise RuntimeError(f"Telegram file download failed with status {file_resp.status}")
+            payload = await file_resp.read()
+            content_type = (file_resp.headers.get("Content-Type") or "application/octet-stream").strip()
+        if not payload:
+            raise RuntimeError("Downloaded Telegram image is empty")
+        return payload, content_type
+    finally:
+        if forwarded_message_id:
+            try:
+                await _telegram_api_call(
+                    "deleteMessage",
+                    {"chat_id": storage_chat_id, "message_id": forwarded_message_id},
+                )
+            except Exception:
+                logger.warning(
+                    "Unable to delete temporary forwarded message chat_id=%s message_id=%s",
+                    storage_chat_id,
+                    forwarded_message_id,
+                )
 
 
 def _internal_error_response(message: str) -> JSONResponse:
@@ -504,6 +601,68 @@ async def approved_entries(request: Request, x_telegram_init_data: str = Header(
     except Exception:
         logger.exception("Failed to load approved entries")
         return _internal_error_response("Не удалось загрузить список работ.")
+
+
+@router.get("/entries/{entry_id}/image")
+async def entry_image(entry_id: int, x_telegram_init_data: str = Header(default="")) -> Response:
+    try:
+        _extract_auth(x_telegram_init_data)
+        row = await get_pool().fetchrow(
+            """
+            SELECT id, status, COALESCE(is_deleted, FALSE) AS is_deleted, storage_chat_id, storage_message_id, storage_message_ids
+            FROM contest_entries
+            WHERE id = $1
+            """,
+            entry_id,
+        )
+        if row is None:
+            return JSONResponse(
+                {"ok": False, "error_code": "entry_not_found", "message": "Работа не найдена."},
+                status_code=404,
+            )
+
+        entry = dict(row)
+        if entry.get("status") != "approved" or bool(entry.get("is_deleted")):
+            return JSONResponse(
+                {"ok": False, "error_code": "entry_not_available", "message": "Работа недоступна."},
+                status_code=404,
+            )
+
+        storage_chat_id_raw = entry.get("storage_chat_id")
+        storage_message_id = _entry_storage_message_id(entry)
+        if storage_chat_id_raw is None or storage_message_id is None:
+            logger.warning(
+                "Contest entry image metadata missing entry_id=%s storage_chat_id=%s storage_message_id=%s",
+                entry_id,
+                storage_chat_id_raw,
+                storage_message_id,
+            )
+            return JSONResponse(
+                {
+                    "ok": False,
+                    "error_code": "image_not_found",
+                    "message": "Изображение для работы недоступно.",
+                },
+                status_code=404,
+            )
+
+        payload, content_type = await _download_entry_image(int(storage_chat_id_raw), storage_message_id)
+        return Response(content=payload, media_type=content_type)
+    except VoteError as exc:
+        return JSONResponse({"ok": False, "error_code": exc.code, "message": exc.message}, status_code=exc.status)
+    except RuntimeError as exc:
+        logger.warning("Failed to fetch contest entry image entry_id=%s: %s", entry_id, exc)
+        return JSONResponse(
+            {
+                "ok": False,
+                "error_code": "image_unavailable",
+                "message": "Не удалось получить изображение из Telegram storage.",
+            },
+            status_code=502,
+        )
+    except Exception:
+        logger.exception("Failed to serve contest entry image entry_id=%s", entry_id)
+        return _internal_error_response("Не удалось получить изображение работы.")
 
 
 @router.get("/state")
