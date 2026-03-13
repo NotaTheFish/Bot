@@ -43,13 +43,17 @@
 - `POST /api/contest/votes/confirm`
 - `GET /api/contest/admin/overview`
 - `GET /api/contest/admin/entry/{id}/votes`
+- `POST /api/contest/admin/submission/open`
 - `POST /api/contest/admin/submission/close`
 - `POST /api/contest/admin/voting/open`
 - `POST /api/contest/admin/voting/close`
 
 ## Миграция
 
-Примените SQL из `contest_webapp/migrations/20260312_vote_draft_confirmation.sql` перед выкладкой.
+Примените SQL из:
+- `contest_webapp/migrations/20260312_vote_draft_confirmation.sql`
+- `contest_webapp/migrations/20260313_contest_display_order_anchor.sql`
+перед выкладкой.
 
 ## Выдача изображений
 

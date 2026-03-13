@@ -1,5 +1,5 @@
 const API_BASE_URL = window.CONTEST_API_BASE_URL || "";
-const MEDIA_BASE_URL = window.CONTEST_MEDIA_BASE_URL || "";
+const MEDIA_BASE_URL = window.CONTEST_MEDIA_BASE_URL || window.MEDIA_BASE_URL || "";
 
 const votesCounterEl = document.getElementById("votesCounter");
 const contestStageEl = document.getElementById("contestStage");
@@ -20,6 +20,7 @@ const confirmNoEl = document.getElementById("confirmNo");
 const adminPanelEl = document.getElementById("adminPanel");
 const adminStatusCardEl = document.getElementById("adminStatusCard");
 const adminOverviewEl = document.getElementById("adminOverview");
+const openSubmissionBtnEl = document.getElementById("openSubmissionBtn");
 const closeSubmissionBtnEl = document.getElementById("closeSubmissionBtn");
 const openVotingBtnEl = document.getElementById("openVotingBtn");
 const closeVotingBtnEl = document.getElementById("closeVotingBtn");
@@ -113,11 +114,12 @@ function entryDisabled(entry) {
 }
 
 function updateAdminButtons() {
-  if (!openVotingBtnEl || !closeVotingBtnEl || !closeSubmissionBtnEl) return;
+  if (!openSubmissionBtnEl || !openVotingBtnEl || !closeVotingBtnEl || !closeSubmissionBtnEl) return;
 
+  openSubmissionBtnEl.disabled = state.submissionOpen || state.busy;
+  closeSubmissionBtnEl.disabled = !state.submissionOpen || state.busy;
   openVotingBtnEl.disabled = state.votingOpen || state.busy;
   closeVotingBtnEl.disabled = !state.votingOpen || state.busy;
-  closeSubmissionBtnEl.disabled = !state.submissionOpen || state.busy;
 }
 
 function setBusy(value) {
@@ -148,7 +150,8 @@ function renderEntries() {
     imageFallback.hidden = true;
     image.insertAdjacentElement("afterend", imageFallback);
 
-    title.textContent = `Работа #${entry.id}`;
+    const displayNumber = Number(entry.display_number) > 0 ? entry.display_number : entry.id;
+    title.textContent = `Работа #${displayNumber}`;
 
     const inDraft = state.draftEntryIds.has(entry.id);
     const isConfirmed = state.confirmedEntryIds.has(entry.id);
@@ -273,7 +276,25 @@ async function fetchJson(path, options = {}) {
     },
   });
 
-  const payload = await response.json();
+  const rawText = await response.text();
+  let payload = null;
+
+  if (rawText) {
+    try {
+      payload = JSON.parse(rawText);
+    } catch {
+      const safeText = rawText.trim();
+      const fallbackMessage =
+        safeText && safeText.length <= 200
+          ? `Сервер вернул некорректный ответ: ${safeText}`
+          : "Сервер вернул некорректный ответ";
+      throw new Error(fallbackMessage);
+    }
+  }
+
+  if (!payload || typeof payload !== "object") {
+    throw new Error("Сервер вернул пустой ответ");
+  }
 
   if (!response.ok || payload.ok === false) {
     throw new Error(payload.message || "Ошибка API");
@@ -293,7 +314,7 @@ async function loadAdminOverview() {
       .map(
         (item) => `
       <article class="admin-overview-item">
-        <b>#${item.id}</b> · автор ${item.owner_user_id}<br />
+        <b>Работа #${item.display_number || "—"} (entry_id=${item.id})</b> · автор ${item.owner_user_id}<br />
         Статус: ${item.status}; подтверждено: ${item.confirmed_votes_count}; penalty: ${item.penalty_votes}; net: ${item.net_votes}<br />
         Suspicious: ${item.suspicious_votes_count}
       </article>
@@ -483,6 +504,7 @@ async function adminStage(path) {
   if (
     (path === "/api/contest/admin/voting/open" && state.votingOpen) ||
     (path === "/api/contest/admin/voting/close" && !state.votingOpen) ||
+    (path === "/api/contest/admin/submission/open" && state.submissionOpen) ||
     (path === "/api/contest/admin/submission/close" && !state.submissionOpen)
   ) {
     setStatus("Действие уже не требуется.");
@@ -520,6 +542,9 @@ confirmNoEl?.addEventListener("click", () => {
   confirmModalEl.hidden = true;
 });
 confirmYesEl?.addEventListener("click", submitConfirmVotes);
+openSubmissionBtnEl?.addEventListener("click", () =>
+  adminStage("/api/contest/admin/submission/open")
+);
 closeSubmissionBtnEl?.addEventListener("click", () =>
   adminStage("/api/contest/admin/submission/close")
 );

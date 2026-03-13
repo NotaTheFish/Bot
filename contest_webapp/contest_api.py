@@ -7,6 +7,7 @@ import time
 from dataclasses import dataclass
 from typing import Any
 from urllib.parse import parse_qsl
+from urllib.parse import urlparse
 
 import aiohttp
 import asyncpg
@@ -56,6 +57,7 @@ MAX_VOTES_PER_USER = max(1, _env_int("CONTEST_MAX_VOTES_PER_USER", 3))
 VOTE_CONFIRM_REQUIRED = 3
 ADMIN_IDS = _env_admin_ids()
 CONTEST_MEDIA_BASE_URL = _env("CONTEST_MEDIA_BASE_URL")
+MEDIA_BASE_URL = _env("MEDIA_BASE_URL")
 
 router = APIRouter(prefix="/contest")
 
@@ -151,7 +153,49 @@ async def ensure_schema() -> None:
         await conn.execute("ALTER TABLE contest_votes ADD COLUMN IF NOT EXISTS suspicion_reason TEXT")
         await conn.execute("ALTER TABLE contest_votes ADD COLUMN IF NOT EXISTS confirmed_at TIMESTAMPTZ")
         await conn.execute("ALTER TABLE contest_entries ADD COLUMN IF NOT EXISTS penalty_votes INTEGER NOT NULL DEFAULT 0")
+        await conn.execute("ALTER TABLE contest_entries ADD COLUMN IF NOT EXISTS display_order_anchor TIMESTAMPTZ")
+        await conn.execute(
+            """
+            UPDATE contest_entries
+            SET display_order_anchor = COALESCE(display_order_anchor, submitted_at, created_at, NOW())
+            WHERE status = 'approved'
+              AND COALESCE(is_deleted, FALSE) = FALSE
+              AND display_order_anchor IS NULL
+            """
+        )
         await conn.execute("ALTER TABLE contest_settings ADD COLUMN IF NOT EXISTS penalties_applied_at TIMESTAMPTZ")
+        await conn.execute(
+            """
+            CREATE OR REPLACE FUNCTION set_contest_entry_display_order_anchor()
+            RETURNS TRIGGER
+            LANGUAGE plpgsql
+            AS $$
+            BEGIN
+                IF NEW.status = 'approved' AND COALESCE(NEW.is_deleted, FALSE) = FALSE THEN
+                    IF TG_OP = 'INSERT' THEN
+                        IF NEW.display_order_anchor IS NULL THEN
+                            NEW.display_order_anchor := NOW();
+                        END IF;
+                    ELSIF OLD.status <> 'approved'
+                        OR COALESCE(OLD.is_deleted, FALSE) = TRUE
+                        OR OLD.display_order_anchor IS NULL THEN
+                        NEW.display_order_anchor := NOW();
+                    END IF;
+                END IF;
+                RETURN NEW;
+            END
+            $$
+            """
+        )
+        await conn.execute("DROP TRIGGER IF EXISTS trg_contest_entry_display_order_anchor ON contest_entries")
+        await conn.execute(
+            """
+            CREATE TRIGGER trg_contest_entry_display_order_anchor
+            BEFORE INSERT OR UPDATE OF status, is_deleted ON contest_entries
+            FOR EACH ROW
+            EXECUTE FUNCTION set_contest_entry_display_order_anchor()
+            """
+        )
 
         await conn.execute(
             """
@@ -203,11 +247,35 @@ def _is_admin(user_id: int) -> bool:
     return int(user_id) in ADMIN_IDS
 
 
-def _build_entry_image_url(entry: dict[str, Any]) -> str | None:
+def _base_origin(value: str) -> str | None:
+    raw = (value or "").strip()
+    if not raw:
+        return None
+    parsed = urlparse(raw)
+    if parsed.scheme and parsed.netloc:
+        return f"{parsed.scheme}://{parsed.netloc}"
+    return None
+
+
+def _absolute_url(raw_url: str | None, request_origin: str | None = None) -> str | None:
+    value = (raw_url or "").strip()
+    if not value:
+        return None
+    parsed = urlparse(value)
+    if parsed.scheme and parsed.netloc:
+        return value
+    if value.startswith("//"):
+        return f"https:{value}"
+    if request_origin:
+        return f"{request_origin.rstrip('/')}/{value.lstrip('/')}"
+    return value
+
+
+def _build_entry_image_url(entry: dict[str, Any], request_origin: str | None = None) -> str | None:
     for key in ("image_url", "file_url", "storage_url"):
         value = entry.get(key)
         if isinstance(value, str) and value.strip():
-            return value.strip()
+            return _absolute_url(value, request_origin)
 
     storage_message_id = entry.get("storage_message_id")
     if not storage_message_id:
@@ -215,9 +283,21 @@ def _build_entry_image_url(entry: dict[str, Any]) -> str | None:
         if isinstance(storage_message_ids, list) and storage_message_ids:
             storage_message_id = storage_message_ids[0]
 
-    if storage_message_id and CONTEST_MEDIA_BASE_URL:
-        return f"{CONTEST_MEDIA_BASE_URL.rstrip('/')}/{storage_message_id}"
+    media_base = CONTEST_MEDIA_BASE_URL or MEDIA_BASE_URL
+    if storage_message_id and media_base:
+        return _absolute_url(f"{media_base.rstrip('/')}/{storage_message_id}", request_origin)
     return None
+
+
+def _internal_error_response(message: str) -> JSONResponse:
+    return JSONResponse(
+        {
+            "ok": False,
+            "error_code": "internal_error",
+            "message": message,
+        },
+        status_code=500,
+    )
 
 
 async def _check_channel_subscription(user_id: int) -> bool:
@@ -351,13 +431,15 @@ async def _apply_penalties_if_needed(conn: asyncpg.Connection) -> None:
 
 
 @router.get("/entries/approved")
-async def approved_entries(x_telegram_init_data: str = Header(default="")) -> JSONResponse:
+async def approved_entries(request: Request, x_telegram_init_data: str = Header(default="")) -> JSONResponse:
     try:
         auth = _extract_auth(x_telegram_init_data)
+        request_origin = _base_origin(str(request.base_url))
         rows = await get_pool().fetch(
             """
             SELECT
                 e.id,
+                ROW_NUMBER() OVER (ORDER BY e.display_order_anchor ASC, e.id ASC) AS display_number,
                 e.owner_user_id,
                 e.owner_username_last_seen,
                 e.owner_first_name_last_seen,
@@ -377,7 +459,7 @@ async def approved_entries(x_telegram_init_data: str = Header(default="")) -> JS
             ) v ON v.entry_id = e.id
             WHERE e.status = 'approved'
               AND COALESCE(e.is_deleted, FALSE) = FALSE
-            ORDER BY e.submitted_at DESC NULLS LAST, e.id DESC
+            ORDER BY e.display_order_anchor ASC, e.id ASC
             """
         )
         current_user_id = int(auth["user_id"])
@@ -385,7 +467,7 @@ async def approved_entries(x_telegram_init_data: str = Header(default="")) -> JS
         for row in rows:
             item = dict(row)
             item["is_owned_by_current_user"] = int(item["owner_user_id"]) == current_user_id
-            item["image_url"] = _build_entry_image_url(item)
+            item["image_url"] = _build_entry_image_url(item, request_origin)
             if not _is_admin(current_user_id):
                 item.pop("votes_count", None)
                 item.pop("penalty_votes", None)
@@ -401,6 +483,9 @@ async def approved_entries(x_telegram_init_data: str = Header(default="")) -> JS
         )
     except VoteError as exc:
         return JSONResponse({"ok": False, "error_code": exc.code, "message": exc.message}, status_code=exc.status)
+    except Exception:
+        logger.exception("Failed to load approved entries")
+        return _internal_error_response("Не удалось загрузить список работ.")
 
 
 @router.get("/state")
@@ -697,12 +782,20 @@ async def admin_overview(x_telegram_init_data: str = Header(default="")) -> JSON
                 """
                 SELECT
                     e.id,
+                    CASE
+                        WHEN e.status = 'approved' THEN ROW_NUMBER() OVER (
+                            PARTITION BY (e.status = 'approved')
+                            ORDER BY e.display_order_anchor ASC, e.id ASC
+                        )
+                        ELSE NULL
+                    END AS display_number,
                     e.owner_user_id,
                     e.owner_username_last_seen,
                     e.owner_first_name_last_seen,
                     e.owner_last_name_last_seen,
                     e.status,
                     e.submitted_at,
+                    e.display_order_anchor,
                     e.penalty_votes,
                     COALESCE(v.confirmed_votes_count, 0) AS confirmed_votes_count,
                     COALESCE(v.suspicious_votes_count, 0) AS suspicious_votes_count
@@ -716,7 +809,7 @@ async def admin_overview(x_telegram_init_data: str = Header(default="")) -> JSON
                     GROUP BY entry_id
                 ) v ON v.entry_id = e.id
                 WHERE COALESCE(e.is_deleted, FALSE) = FALSE
-                ORDER BY e.submitted_at DESC NULLS LAST, e.id DESC
+                ORDER BY e.display_order_anchor ASC, e.id ASC
                 """
             )
             confirmations_count = await conn.fetchval("SELECT COUNT(*)::INT FROM contest_vote_confirmations")
@@ -730,6 +823,9 @@ async def admin_overview(x_telegram_init_data: str = Header(default="")) -> JSON
         return JSONResponse({"ok": True, "settings": settings, "confirmations_count": int(confirmations_count or 0), "items": items})
     except VoteError as exc:
         return JSONResponse({"ok": False, "error_code": exc.code, "message": exc.message}, status_code=exc.status)
+    except Exception:
+        logger.exception("Failed to build admin overview")
+        return _internal_error_response("Не удалось загрузить админ-обзор.")
 
 
 @router.get("/admin/entry/{entry_id}/votes")
@@ -796,6 +892,18 @@ async def _set_stage(*, auth_user_id: int, submission_open: bool | None = None, 
     return JSONResponse({"ok": True, "enabled": new_enabled, "submission_open": new_submission, "voting_open": new_voting})
 
 
+@router.post("/admin/submission/open")
+async def admin_submission_open(x_telegram_init_data: str = Header(default="")) -> JSONResponse:
+    try:
+        auth = _extract_auth(x_telegram_init_data)
+        return await _set_stage(auth_user_id=auth["user_id"], submission_open=True)
+    except VoteError as exc:
+        return JSONResponse({"ok": False, "error_code": exc.code, "message": exc.message}, status_code=exc.status)
+    except Exception:
+        logger.exception("admin_submission_open failed")
+        return _internal_error_response("Не удалось обновить стадию конкурса.")
+
+
 @router.post("/admin/submission/close")
 async def admin_submission_close(x_telegram_init_data: str = Header(default="")) -> JSONResponse:
     try:
@@ -803,6 +911,9 @@ async def admin_submission_close(x_telegram_init_data: str = Header(default=""))
         return await _set_stage(auth_user_id=auth["user_id"], submission_open=False)
     except VoteError as exc:
         return JSONResponse({"ok": False, "error_code": exc.code, "message": exc.message}, status_code=exc.status)
+    except Exception:
+        logger.exception("admin_submission_close failed")
+        return _internal_error_response("Не удалось обновить стадию конкурса.")
 
 
 @router.post("/admin/voting/open")
@@ -812,6 +923,9 @@ async def admin_voting_open(x_telegram_init_data: str = Header(default="")) -> J
         return await _set_stage(auth_user_id=auth["user_id"], enabled=True, submission_open=False, voting_open=True)
     except VoteError as exc:
         return JSONResponse({"ok": False, "error_code": exc.code, "message": exc.message}, status_code=exc.status)
+    except Exception:
+        logger.exception("admin_voting_open failed")
+        return _internal_error_response("Не удалось обновить стадию конкурса.")
 
 
 @router.post("/admin/voting/close")
@@ -821,6 +935,9 @@ async def admin_voting_close(x_telegram_init_data: str = Header(default="")) -> 
         return await _set_stage(auth_user_id=auth["user_id"], voting_open=False)
     except VoteError as exc:
         return JSONResponse({"ok": False, "error_code": exc.code, "message": exc.message}, status_code=exc.status)
+    except Exception:
+        logger.exception("admin_voting_close failed")
+        return _internal_error_response("Не удалось обновить стадию конкурса.")
 
 
 @router.get("/health")
