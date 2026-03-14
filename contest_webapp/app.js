@@ -111,6 +111,70 @@ function buildEntryImageUrl(entry) {
   return "";
 }
 
+async function loadEntryImageIntoElement(imgEl, fallbackEl, imageUrl, entryId) {
+  const normalizedImageUrl = safeString(imageUrl);
+  if (!normalizedImageUrl) {
+    imgEl.removeAttribute("src");
+    imgEl.hidden = true;
+    fallbackEl.hidden = false;
+    console.warn("Contest entry image URL missing", { entryId });
+    return null;
+  }
+
+  try {
+    const response = await fetch(normalizedImageUrl, {
+      headers: {
+        ...authHeaders,
+      },
+    });
+
+    if (!response.ok) {
+      imgEl.removeAttribute("src");
+      imgEl.hidden = true;
+      fallbackEl.hidden = false;
+      console.warn("Contest entry image request failed", {
+        entryId,
+        imageUrl: normalizedImageUrl,
+        status: response.status,
+      });
+      return null;
+    }
+
+    const blob = await response.blob();
+    if (!blob.type || !blob.type.startsWith("image/")) {
+      imgEl.removeAttribute("src");
+      imgEl.hidden = true;
+      fallbackEl.hidden = false;
+      console.warn("Contest entry image content type is invalid", {
+        entryId,
+        imageUrl: normalizedImageUrl,
+        contentType: blob.type || "unknown",
+      });
+      return null;
+    }
+
+    const objectUrl = URL.createObjectURL(blob);
+    imgEl.src = objectUrl;
+    imgEl.hidden = false;
+    fallbackEl.hidden = true;
+    console.debug("Contest entry image loaded", {
+      entryId,
+      imageUrl: normalizedImageUrl,
+    });
+    return objectUrl;
+  } catch (error) {
+    imgEl.removeAttribute("src");
+    imgEl.hidden = true;
+    fallbackEl.hidden = false;
+    console.warn("Contest entry image failed to load", {
+      entryId,
+      imageUrl: normalizedImageUrl,
+      error: error?.message || String(error),
+    });
+    return null;
+  }
+}
+
 function entryDisabled(entry) {
   return (
     state.confirmed ||
@@ -195,40 +259,22 @@ function renderEntries() {
     }
 
     const imageUrl = buildEntryImageUrl(entry);
-
-    const showFallback = () => {
-      image.hidden = true;
-      imageFallback.hidden = false;
-      console.warn("Contest entry image failed to load", { entryId: entry.id, imageUrl });
-    };
-
-    if (imageUrl) {
-      image.hidden = false;
-      imageFallback.hidden = true;
-      image.onload = () => {
-        image.hidden = false;
-        imageFallback.hidden = true;
-        console.debug("Contest entry image loaded", { entryId: entry.id, imageUrl });
-      };
-      image.onerror = showFallback;
-      image.src = imageUrl;
-    } else {
-      image.removeAttribute("src");
-      console.warn("Contest entry image URL missing", { entryId: entry.id });
-      showFallback();
-    }
+    let loadedImageObjectUrl = null;
+    loadEntryImageIntoElement(image, imageFallback, imageUrl, entry.id).then((objectUrl) => {
+      loadedImageObjectUrl = objectUrl;
+    });
 
     image.addEventListener("click", (event) => {
       event.stopPropagation();
-      if (imageUrl) {
-        openImagePreview(entry, imageUrl);
+      if (loadedImageObjectUrl) {
+        openImagePreview(entry, loadedImageObjectUrl);
       }
     });
 
     previewBtn?.addEventListener("click", (event) => {
       event.stopPropagation();
-      if (imageUrl) {
-        openImagePreview(entry, imageUrl);
+      if (loadedImageObjectUrl) {
+        openImagePreview(entry, loadedImageObjectUrl);
       }
     });
 
