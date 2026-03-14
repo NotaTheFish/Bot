@@ -9,6 +9,7 @@ import time
 from dataclasses import asdict, dataclass
 from typing import Any
 from urllib.parse import parse_qsl
+from urllib.parse import quote
 from urllib.parse import urlparse
 
 import aiohttp
@@ -78,6 +79,8 @@ TELEGRAM_FILE_PATH_CACHE_TTL_SECONDS = max(1, _env_int("TELEGRAM_FILE_PATH_CACHE
 CUSTOM_EMOJI_URL_CACHE_TTL_SECONDS = max(1, _env_int("CUSTOM_EMOJI_URL_CACHE_TTL_SECONDS", 300))
 CUSTOM_EMOJI_META_CACHE_TTL_SECONDS = max(1, _env_int("CUSTOM_EMOJI_META_CACHE_TTL_SECONDS", 300))
 CUSTOM_EMOJI_ASSET_CACHE_TTL_SECONDS = max(1, _env_int("CUSTOM_EMOJI_ASSET_CACHE_TTL_SECONDS", 300))
+CUSTOM_EMOJI_ASSET_URL_TTL_SECONDS = max(30, _env_int("CUSTOM_EMOJI_ASSET_URL_TTL_SECONDS", 900))
+CUSTOM_EMOJI_ASSET_SIGNING_SECRET = _env("CUSTOM_EMOJI_ASSET_SIGNING_SECRET") or ENTRY_IMAGE_TOKEN_SECRET or BOT_TOKEN
 
 
 @dataclass(slots=True)
@@ -109,6 +112,32 @@ def _hash_optional(value: str | None) -> str | None:
     if not value:
         return None
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+def _custom_emoji_asset_signature(custom_emoji_id: str, exp: int) -> str:
+    secret = (CUSTOM_EMOJI_ASSET_SIGNING_SECRET or "").encode("utf-8")
+    payload = f"{custom_emoji_id}:{exp}".encode("utf-8")
+    return hmac.new(secret, payload, hashlib.sha256).hexdigest()
+
+
+def build_signed_custom_emoji_asset_url(custom_emoji_id: str) -> str:
+    safe_custom_emoji_id = quote(str(custom_emoji_id), safe="")
+    exp = int(time.time()) + CUSTOM_EMOJI_ASSET_URL_TTL_SECONDS
+    sig = _custom_emoji_asset_signature(str(custom_emoji_id), exp)
+    return f"/api/contest/custom-emoji/{safe_custom_emoji_id}/asset?exp={exp}&sig={sig}"
+
+
+def _is_valid_custom_emoji_asset_signature(custom_emoji_id: str, exp: str, sig: str) -> bool:
+    if not exp or not sig:
+        return False
+    try:
+        exp_ts = int(exp)
+    except (TypeError, ValueError):
+        return False
+    if exp_ts < int(time.time()):
+        return False
+    expected_sig = _custom_emoji_asset_signature(str(custom_emoji_id), exp_ts)
+    return hmac.compare_digest(expected_sig, str(sig))
 
 
 def _telegram_secret(bot_token: str) -> bytes:
@@ -736,27 +765,28 @@ async def render_telegram_text_with_entities_to_html(text: str, entities: Any) -
 
         safe_id = html.escape(custom_emoji_id, quote=True)
         safe_emoji = html.escape(emoji_info.emoji or fallback_emoji, quote=True)
+        signed_asset_url = html.escape(build_signed_custom_emoji_asset_url(custom_emoji_id), quote=True)
         if emoji_info.render_mode == "image":
             parts.append(
                 '<span class="tg-inline-emoji" data-custom-emoji-id="{}" data-render-mode="image">'
-                '<img class="tg-custom-emoji" src="/api/contest/custom-emoji/{}/asset" alt="{}" loading="lazy" />'
-                "</span>".format(safe_id, safe_id, safe_emoji)
+                '<img class="tg-custom-emoji" src="{}" alt="{}" loading="lazy" />'
+                "</span>".format(safe_id, signed_asset_url, safe_emoji)
             )
         elif emoji_info.render_mode == "lottie":
             parts.append(
                 '<span class="tg-inline-emoji tg-inline-emoji--lottie" '
                 'data-custom-emoji-id="{}" data-render-mode="lottie" '
-                'data-asset-url="/api/contest/custom-emoji/{}/asset" aria-label="{}"></span>'.format(
+                'data-asset-url="{}" aria-label="{}"></span>'.format(
                     safe_id,
-                    safe_id,
+                    signed_asset_url,
                     safe_emoji,
                 )
             )
         elif emoji_info.render_mode == "video":
             parts.append(
                 '<span class="tg-inline-emoji tg-inline-emoji--video" data-custom-emoji-id="{}" data-render-mode="video">'
-                '<video class="tg-custom-emoji-video" autoplay loop muted playsinline src="/api/contest/custom-emoji/{}/asset" aria-label="{}"></video>'
-                "</span>".format(safe_id, safe_id, safe_emoji)
+                '<video class="tg-custom-emoji-video" autoplay loop muted playsinline src="{}" aria-label="{}"></video>'
+                "</span>".format(safe_id, signed_asset_url, safe_emoji)
             )
         else:
             parts.append(f'<span class="tg-inline-emoji tg-inline-emoji--fallback">{safe_emoji}</span>')
@@ -1541,7 +1571,7 @@ async def custom_emoji_meta(custom_emoji_id: str, x_telegram_init_data: str = He
                     "ok": True,
                     "custom_emoji_id": str(custom_emoji_id),
                     "render_mode": "fallback",
-                    "asset_url": f"/api/contest/custom-emoji/{custom_emoji_id}/asset",
+                    "asset_url": build_signed_custom_emoji_asset_url(custom_emoji_id),
                     "mime_type": "application/octet-stream",
                     "width": 100,
                     "height": 100,
@@ -1553,7 +1583,7 @@ async def custom_emoji_meta(custom_emoji_id: str, x_telegram_init_data: str = He
                 "ok": True,
                 "custom_emoji_id": meta.custom_emoji_id,
                 "render_mode": meta.render_mode,
-                "asset_url": f"/api/contest/custom-emoji/{meta.custom_emoji_id}/asset",
+                "asset_url": build_signed_custom_emoji_asset_url(meta.custom_emoji_id),
                 "mime_type": meta.mime_type,
                 "width": meta.width,
                 "height": meta.height,
@@ -1566,9 +1596,10 @@ async def custom_emoji_meta(custom_emoji_id: str, x_telegram_init_data: str = He
 
 
 @router.get("/custom-emoji/{custom_emoji_id}/asset")
-async def custom_emoji_asset(custom_emoji_id: str, x_telegram_init_data: str = Header(default="")) -> Response:
+async def custom_emoji_asset(custom_emoji_id: str, exp: str = "", sig: str = "") -> Response:
     try:
-        _extract_auth(x_telegram_init_data)
+        if not _is_valid_custom_emoji_asset_signature(custom_emoji_id, exp, sig):
+            return Response(content=b"", media_type="application/octet-stream", status_code=403)
         meta = await _resolve_custom_emoji_info(custom_emoji_id)
         if not meta:
             return Response(content=b"", media_type="application/octet-stream", status_code=404)

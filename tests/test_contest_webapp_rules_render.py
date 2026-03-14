@@ -39,7 +39,8 @@ class ContestWebappRulesRenderTests(unittest.IsolatedAsyncioTestCase):
             rendered = await contest_api.render_telegram_text_with_entities_to_html(text, entities)
 
         self.assertIn('data-render-mode="image"', rendered)
-        self.assertIn('/api/contest/custom-emoji/ce1/asset', rendered)
+        self.assertIn('/api/contest/custom-emoji/ce1/asset?exp=', rendered)
+        self.assertIn('&amp;sig=', rendered)
 
     async def test_render_lottie_custom_emoji_placeholder(self):
         text = "A😀B"
@@ -65,7 +66,7 @@ class ContestWebappRulesRenderTests(unittest.IsolatedAsyncioTestCase):
             rendered = await contest_api.render_telegram_text_with_entities_to_html(text, entities)
 
         self.assertIn("tg-inline-emoji--lottie", rendered)
-        self.assertIn('data-asset-url="/api/contest/custom-emoji/ce1/asset"', rendered)
+        self.assertIn('data-asset-url="/api/contest/custom-emoji/ce1/asset?exp=', rendered)
 
     async def test_render_video_custom_emoji(self):
         text = "A😀B"
@@ -122,6 +123,43 @@ class ContestWebappRulesEndpointTests(unittest.IsolatedAsyncioTestCase):
         payload = json.loads(response.body)
         self.assertTrue(payload["ok"])
         self.assertEqual(payload["rules_html"], "Hi <img />")
+
+
+class ContestWebappCustomEmojiAssetAuthTests(unittest.IsolatedAsyncioTestCase):
+    async def test_custom_emoji_asset_without_signature_is_forbidden(self):
+        response = await contest_api.custom_emoji_asset("ce1")
+        self.assertEqual(response.status_code, 403)
+
+    async def test_custom_emoji_asset_with_valid_signature_works_without_telegram_header(self):
+        meta = contest_api.CustomEmojiRenderInfo(
+            custom_emoji_id="ce1",
+            file_id="file1",
+            file_unique_id="u1",
+            is_animated=False,
+            is_video=False,
+            emoji="😀",
+            set_name=None,
+            source_format="webp",
+            file_path="stickers/a.webp",
+            thumbnail_file_id=None,
+            render_mode="image",
+            mime_type="image/webp",
+            width=100,
+            height=100,
+        )
+        exp = str(int(time.time()) + 60)
+        sig = contest_api._custom_emoji_asset_signature("ce1", int(exp))
+
+        with (
+            patch.object(contest_api, "_resolve_custom_emoji_info", AsyncMock(return_value=meta)),
+            patch.object(contest_api, "_download_custom_emoji_asset", AsyncMock(return_value=(b"bin", "image/webp"))),
+            patch.object(contest_api, "_extract_auth") as extract_auth,
+        ):
+            response = await contest_api.custom_emoji_asset("ce1", exp=exp, sig=sig)
+
+        self.assertEqual(response.status_code, 200)
+        extract_auth.assert_not_called()
+
 
 
 class ContestWebappCustomEmojiResolverTests(unittest.IsolatedAsyncioTestCase):
