@@ -2432,6 +2432,30 @@ async def _mark_contest_entry_deleted(entry_id: int, admin_id: int) -> tuple[int
 
     return int(row["owner_user_id"]), sorted(invalidated_by_user.items(), key=lambda item: item[0])
 
+
+async def _notify_voters_about_refunded_votes(entry_id: int, invalidated_votes: list[tuple[int, int]]) -> tuple[int, int]:
+    notified = 0
+    not_notified = 0
+    for voter_user_id, refunded_votes_count in invalidated_votes:
+        vote_wording = (
+            f"Вам возвращён {refunded_votes_count} голос из-за удаления/дисквалификации рисунка в конкурсе."
+            if refunded_votes_count == 1
+            else f"Вам возвращено {refunded_votes_count} голосов из-за удаления/дисквалификации рисунка в конкурсе."
+        )
+        try:
+            await bot.send_message(voter_user_id, vote_wording)
+            notified += 1
+        except (TelegramForbiddenError, TelegramBadRequest) as exc:
+            not_notified += 1
+            logger.info(
+                "Unable to notify contest voter about refunded votes: entry_id=%s voter_user_id=%s votes=%s reason=%s",
+                entry_id,
+                voter_user_id,
+                refunded_votes_count,
+                exc,
+            )
+    return notified, not_notified
+
 async def set_storage_chat_id(storage_chat_id: int) -> None:
     await set_meta(STORAGE_CHAT_META_KEY, str(storage_chat_id))
 
@@ -4647,6 +4671,8 @@ async def contest_entry_delete(callback: CallbackQuery):
     participant_id, invalidated_votes = delete_result
 
     await callback.answer("Рисунок удалён")
+    notified_count = 0
+    not_notified_count = 0
     if invalidated_votes:
         invalidated_total = sum(count for _, count in invalidated_votes)
         invalidated_lines = "\n".join(f"• {user_id}: {count}" for user_id, count in invalidated_votes)
@@ -4654,6 +4680,13 @@ async def contest_entry_delete(callback: CallbackQuery):
             f"Рисунок в заявке #{entry_id} удалён 🗑\n"
             f"Инвалидировано голосов: {invalidated_total}\n"
             f"По пользователям:\n{invalidated_lines}"
+        )
+        notified_count, not_notified_count = await _notify_voters_about_refunded_votes(entry_id, invalidated_votes)
+        logger.info(
+            "Contest vote refund notifications finished: entry_id=%s notified=%s not_notified=%s",
+            entry_id,
+            notified_count,
+            not_notified_count,
         )
     else:
         await callback.message.answer(f"Рисунок в заявке #{entry_id} удалён 🗑")

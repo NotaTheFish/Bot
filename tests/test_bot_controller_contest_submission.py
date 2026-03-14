@@ -3,7 +3,7 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from aiogram.exceptions import TelegramForbiddenError
+from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
 from aiogram.types import MessageEntity
 
 os.environ.setdefault("BOT_TOKEN", "123:abc")
@@ -737,6 +737,7 @@ class ContestSubmissionTests(unittest.IsolatedAsyncioTestCase):
         with (
             patch.object(main_core, "is_admin_user", return_value=True),
             patch.object(main_core, "_mark_contest_entry_deleted", AsyncMock(return_value=(88, []))) as delete_entry,
+            patch.object(main_core, "_notify_voters_about_refunded_votes", AsyncMock()) as notify_voters,
             patch.object(main_core, "_build_contest_entry_log_payload", AsyncMock(return_value=("caption", None))),
             patch.object(main_core, "_update_contest_storage_log", AsyncMock()) as update_log,
             patch.object(main_core.bot, "send_message", AsyncMock()) as send_message,
@@ -746,9 +747,69 @@ class ContestSubmissionTests(unittest.IsolatedAsyncioTestCase):
         delete_entry.assert_awaited_once_with(15, 1)
         callback.message.edit_reply_markup.assert_not_awaited()
         update_log.assert_awaited_once_with(15, caption="caption", reply_markup=None)
+        notify_voters.assert_not_awaited()
         send_message.assert_awaited_once_with(88, "Ваш рисунок был удалён организатором. Вы можете отправить новый рисунок.")
         callback.answer.assert_awaited_once_with("Рисунок удалён")
         callback.message.answer.assert_awaited_once_with("Рисунок в заявке #15 удалён 🗑")
+
+    async def test_delete_notifies_voters_about_refunded_votes(self):
+        callback = SimpleNamespace(
+            data="contest:delete:15",
+            from_user=SimpleNamespace(id=1),
+            answer=AsyncMock(),
+            message=SimpleNamespace(answer=AsyncMock(), edit_reply_markup=AsyncMock()),
+        )
+
+        with (
+            patch.object(main_core, "is_admin_user", return_value=True),
+            patch.object(main_core, "_mark_contest_entry_deleted", AsyncMock(return_value=(88, [(1001, 1), (1002, 2)]))),
+            patch.object(main_core, "_notify_voters_about_refunded_votes", AsyncMock(return_value=(1, 1))) as notify_voters,
+            patch.object(main_core, "_build_contest_entry_log_payload", AsyncMock(return_value=("caption", None))),
+            patch.object(main_core, "_update_contest_storage_log", AsyncMock()),
+            patch.object(main_core.bot, "send_message", AsyncMock()),
+        ):
+            await main_core.contest_entry_delete(callback)
+
+        notify_voters.assert_awaited_once_with(15, [(1001, 1), (1002, 2)])
+        callback.message.answer.assert_awaited_once_with(
+            "Рисунок в заявке #15 удалён 🗑\n"
+            "Инвалидировано голосов: 3\n"
+            "По пользователям:\n"
+            "• 1001: 1\n"
+            "• 1002: 2"
+        )
+
+    async def test_notify_voters_about_refunded_votes_handles_telegram_errors(self):
+        with patch.object(
+            main_core.bot,
+            "send_message",
+            AsyncMock(
+                side_effect=[
+                    None,
+                    TelegramForbiddenError(method="sendMessage", message="blocked"),
+                    TelegramBadRequest(method="sendMessage", message="chat not found"),
+                ]
+            ),
+        ) as send_message:
+            notified, not_notified = await main_core._notify_voters_about_refunded_votes(
+                15,
+                [(1001, 1), (1002, 2), (1003, 5)],
+            )
+
+        self.assertEqual((notified, not_notified), (1, 2))
+        self.assertEqual(send_message.await_count, 3)
+        self.assertEqual(
+            send_message.await_args_list[0].args,
+            (1001, "Вам возвращён 1 голос из-за удаления/дисквалификации рисунка в конкурсе."),
+        )
+        self.assertEqual(
+            send_message.await_args_list[1].args,
+            (1002, "Вам возвращено 2 голосов из-за удаления/дисквалификации рисунка в конкурсе."),
+        )
+        self.assertEqual(
+            send_message.await_args_list[2].args,
+            (1003, "Вам возвращено 5 голосов из-за удаления/дисквалификации рисунка в конкурсе."),
+        )
 
     async def test_mark_contest_entry_deleted_uses_soft_delete_sql_fields(self):
         conn = AsyncMock()
@@ -785,6 +846,7 @@ class ContestSubmissionTests(unittest.IsolatedAsyncioTestCase):
         with (
             patch.object(main_core, "is_admin_user", return_value=True),
             patch.object(main_core, "_mark_contest_entry_deleted", AsyncMock(return_value=(88, []))),
+            patch.object(main_core, "_notify_voters_about_refunded_votes", AsyncMock()),
             patch.object(main_core, "_build_contest_entry_log_payload", AsyncMock(return_value=("caption", None))),
             patch.object(main_core, "_update_contest_storage_log", AsyncMock()),
             patch.object(main_core.bot, "send_message", AsyncMock(side_effect=TelegramForbiddenError(method="sendMessage", message="blocked"))),
@@ -857,6 +919,7 @@ class ContestSubmissionTests(unittest.IsolatedAsyncioTestCase):
             patch.object(main_core, "is_admin_user", return_value=True),
             patch.object(main_core, "_set_contest_entry_approved", AsyncMock(return_value=88)),
             patch.object(main_core, "_mark_contest_entry_deleted", AsyncMock(return_value=(88, []))),
+            patch.object(main_core, "_notify_voters_about_refunded_votes", AsyncMock()),
             patch.object(main_core, "_build_contest_entry_log_payload", AsyncMock(return_value=("caption", None))),
             patch.object(main_core, "_update_contest_storage_log", AsyncMock()) as update_log,
             patch.object(main_core.bot, "send_message", AsyncMock()),
