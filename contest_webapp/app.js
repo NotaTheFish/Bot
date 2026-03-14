@@ -47,6 +47,7 @@ const state = {
   activeEntryId: null,
   submissionOpen: false,
   votingOpen: false,
+  phase: "submission",
   confirmed: false,
   activeVotesCount: 0,
   availableVotes: 3,
@@ -202,17 +203,26 @@ function cleanupEntryImageLoadResults() {
   }
 }
 
-const selectedCount = () =>
-  state.confirmed ? state.confirmedEntryIds.size : state.draftEntryIds.size;
+const selectedCount = () => state.draftEntryIds.size;
 
 function setStatus(message = "") {
   statusMessageEl.textContent = message;
 }
 
 function updateHeader() {
-  const requiredNow = state.confirmed ? state.activeVotesCount : state.availableVotes;
-  votesCounterEl.textContent = `Выбрано: ${selectedCount()}/${requiredNow}`;
-  contestStageEl.textContent = `Статус: ${state.votingOpen ? "идет голосование" : "голосование закрыто"}`;
+  const active = Math.max(0, Number(state.activeVotesCount) || 0);
+  const available = Math.max(0, Number(state.availableVotes) || 0);
+  const phaseLabels = {
+    submission: "идет прием заявок",
+    voting: "идет голосование",
+    results: "подведены итоги",
+  };
+  const stageText = phaseLabels[state.phase] || (state.votingOpen ? "идет голосование" : "голосование закрыто");
+  votesCounterEl.textContent =
+    available > 0
+      ? `Подтверждено: ${active}/3 · Осталось выбрать: ${available}`
+      : `Подтверждено: ${active}/3`;
+  contestStageEl.textContent = `Статус: ${stageText}`;
 }
 
 function safeString(value) {
@@ -450,7 +460,8 @@ async function loadEntryImageIntoElement(imgEl, fallbackEl, imageUrl, entryId) {
 
 function entryDisabled(entry) {
   return (
-    state.confirmed ||
+    state.availableVotes <= 0 ||
+    state.phase === "results" ||
     !state.votingOpen ||
     entry.is_owned_by_current_user ||
     !state.isChannelMember
@@ -524,11 +535,20 @@ function renderEntries() {
 
     if (isActive) card.classList.add("entry-card--active");
     if (inDraft || isConfirmed) card.classList.add("entry-card--in-draft");
-    if (state.confirmed) card.classList.add("entry-card--readonly");
+    if (state.availableVotes <= 0 || state.phase === "results") card.classList.add("entry-card--readonly");
     if (entryDisabled(entry)) card.classList.add("entry-card--disabled");
 
     if (entry.is_owned_by_current_user) {
       meta.textContent = "Ваша работа — голосовать нельзя";
+    } else if (state.phase === "results") {
+      const reward = entry.reward_label || "—";
+      const author = entry.author_label || "—";
+      const place = Number(entry.place) > 0 ? entry.place : "—";
+      const votes = Number.isFinite(Number(entry.net_votes)) ? Number(entry.net_votes) : 0;
+      meta.textContent = `Голосов: ${votes}\nМесто: ${place}\nНаграда: ${reward}\nАвтор: ${author}`;
+      if (place === 1) card.classList.add("entry-card--winner-gold");
+      if (place === 2) card.classList.add("entry-card--winner-silver");
+      if (place === 3) card.classList.add("entry-card--winner-bronze");
     } else if (isConfirmed) {
       meta.textContent = "Ваш подтвержденный выбор";
     } else if (inDraft) {
@@ -619,19 +639,25 @@ function renderActionBar() {
   const entry = state.entries.find((item) => item.id === state.activeEntryId);
   const selected = selectedCount();
   const requiredToConfirm = state.availableVotes;
-  const canConfirm = !state.confirmed && requiredToConfirm > 0 && state.draftEntryIds.size === requiredToConfirm;
+  const canConfirm = requiredToConfirm > 0 && state.draftEntryIds.size === requiredToConfirm;
 
   confirmVotesBtnEl.hidden = !canConfirm;
   confirmVotesBtnEl.disabled =
-    state.busy || state.confirmed || requiredToConfirm <= 0 || state.draftEntryIds.size !== requiredToConfirm;
+    state.busy || requiredToConfirm <= 0 || state.draftEntryIds.size !== requiredToConfirm;
 
   actionBarEl.hidden = !entry;
   if (!entry) return;
 
   const inDraft = state.draftEntryIds.has(entry.id);
-  actionBarTextEl.textContent = `Выбрано ${selected}/${state.availableVotes}`;
+  actionBarTextEl.textContent = `Выбрано в добор: ${selected}/${state.availableVotes}`;
 
-  if (state.confirmed) {
+  if (state.phase === "results") {
+    actionBarButtonEl.disabled = true;
+    actionBarButtonEl.textContent = "Итоги подведены";
+    return;
+  }
+
+  if (state.availableVotes <= 0) {
     actionBarButtonEl.disabled = true;
     actionBarButtonEl.textContent = "Голоса подтверждены";
     return;
@@ -652,12 +678,6 @@ function renderActionBar() {
   if (entry.is_owned_by_current_user) {
     actionBarButtonEl.disabled = true;
     actionBarButtonEl.textContent = "Нельзя за свою";
-    return;
-  }
-
-  if (state.availableVotes <= 0) {
-    actionBarButtonEl.disabled = true;
-    actionBarButtonEl.textContent = "Доступных голосов нет";
     return;
   }
 
@@ -755,7 +775,10 @@ function applyContestState(statePayload, entriesPayload) {
   state.confirmedEntryIds = new Set(statePayload.confirmed_entry_ids || []);
   state.submissionOpen = Boolean(statePayload.submission_open);
   state.votingOpen = Boolean(statePayload.voting_open);
-  state.confirmed = Boolean(statePayload.confirmed);
+  const phase = String(statePayload.phase || entriesPayload.phase || "").trim().toLowerCase();
+  state.phase = ["submission", "voting", "results"].includes(phase)
+    ? phase
+    : (state.votingOpen ? "voting" : (state.submissionOpen ? "submission" : "results"));
   const activeVotesCount = Number(statePayload.active_votes_count);
   const fallbackActiveVotesCount = state.confirmedEntryIds.size;
   state.activeVotesCount = Number.isFinite(activeVotesCount) ? Math.max(0, activeVotesCount) : fallbackActiveVotesCount;
@@ -765,6 +788,7 @@ function applyContestState(statePayload, entriesPayload) {
     ? Math.max(0, legacyVotesRemaining)
     : Math.max(0, 3 - state.activeVotesCount);
   state.availableVotes = Number.isFinite(availableVotes) ? Math.max(0, availableVotes) : fallbackAvailableVotes;
+  state.confirmed = state.availableVotes <= 0;
   state.isAdmin = Boolean(statePayload.is_admin);
   state.isChannelMember = Boolean(statePayload.is_channel_member);
 
@@ -879,7 +903,7 @@ async function toggleActiveSelection() {
 }
 
 async function confirmVotes() {
- if (state.draftEntryIds.size !== state.availableVotes || state.availableVotes <= 0 || state.confirmed || state.busy) {
+ if (state.draftEntryIds.size !== state.availableVotes || state.availableVotes <= 0 || state.busy) {
     return;
   }
 

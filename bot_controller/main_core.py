@@ -2437,11 +2437,18 @@ async def _notify_voters_about_refunded_votes(entry_id: int, invalidated_votes: 
     notified = 0
     not_notified = 0
     for voter_user_id, refunded_votes_count in invalidated_votes:
-        vote_wording = (
-            f"Вам возвращён {refunded_votes_count} голос из-за удаления/дисквалификации рисунка в конкурсе."
-            if refunded_votes_count == 1
-            else f"Вам возвращено {refunded_votes_count} голосов из-за удаления/дисквалификации рисунка в конкурсе."
-        )
+        last_two = refunded_votes_count % 100
+        last_digit = refunded_votes_count % 10
+        if last_two not in {11, 12, 13, 14} and last_digit == 1:
+            votes_label = "голос"
+            verb = "возвращён"
+        elif last_two not in {11, 12, 13, 14} and last_digit in {2, 3, 4}:
+            votes_label = "голоса"
+            verb = "возвращено"
+        else:
+            votes_label = "голосов"
+            verb = "возвращено"
+        vote_wording = f"Вам {verb} {refunded_votes_count} {votes_label} из-за удаления/дисквалификации рисунка в конкурсе."
         try:
             await bot.send_message(voter_user_id, vote_wording)
             notified += 1

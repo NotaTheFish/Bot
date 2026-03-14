@@ -58,6 +58,7 @@ DATABASE_URL = _env("DATABASE_URL")
 CONTEST_CHANNEL_ID = _env("CONTEST_CHANNEL_ID") or _env("CONTEST_VOTING_CHAT_ID")
 MAX_VOTES_PER_USER = max(1, _env_int("CONTEST_MAX_VOTES_PER_USER", 3))
 VOTE_CONFIRM_REQUIRED = 3
+CONTEST_PHASES = {"submission", "voting", "results"}
 ADMIN_IDS = _env_admin_ids()
 CONTEST_MEDIA_BASE_URL = _env("CONTEST_MEDIA_BASE_URL")
 MEDIA_BASE_URL = _env("MEDIA_BASE_URL")
@@ -232,6 +233,26 @@ async def ensure_schema() -> None:
         await conn.execute("CREATE INDEX IF NOT EXISTS idx_contest_votes_entry_status ON contest_votes(entry_id, status)")
         await conn.execute("ALTER TABLE contest_entries ADD COLUMN IF NOT EXISTS penalty_votes INTEGER NOT NULL DEFAULT 0")
         await conn.execute("ALTER TABLE contest_entries ADD COLUMN IF NOT EXISTS display_order_anchor TIMESTAMPTZ")
+        await conn.execute("ALTER TABLE contest_settings ADD COLUMN IF NOT EXISTS phase TEXT")
+        await conn.execute("ALTER TABLE contest_settings DROP CONSTRAINT IF EXISTS contest_settings_phase_check")
+        await conn.execute(
+            """
+            ALTER TABLE contest_settings
+            ADD CONSTRAINT contest_settings_phase_check
+            CHECK (phase IN ('submission', 'voting', 'results') OR phase IS NULL)
+            """
+        )
+        await conn.execute(
+            """
+            UPDATE contest_settings
+            SET phase = CASE
+                WHEN voting_open THEN 'voting'
+                WHEN submission_open THEN 'submission'
+                ELSE 'results'
+            END
+            WHERE phase IS NULL
+            """
+        )
         await conn.execute(
             """
             UPDATE contest_entries
@@ -969,15 +990,28 @@ async def _check_channel_subscription(user_id: int) -> bool:
 async def _get_contest_settings(conn: asyncpg.Connection | None = None) -> dict[str, Any]:
     db = conn or get_pool()
     row = await db.fetchrow(
-        "SELECT enabled, submission_open, voting_open, penalties_applied_at FROM contest_settings WHERE id = 1"
+        "SELECT enabled, submission_open, voting_open, penalties_applied_at, phase FROM contest_settings WHERE id = 1"
     )
     if row is None:
-        return {"enabled": False, "submission_open": False, "voting_open": False, "penalties_applied_at": None}
+        return {
+            "enabled": False,
+            "submission_open": False,
+            "voting_open": False,
+            "penalties_applied_at": None,
+            "phase": "submission",
+        }
+    submission_open = bool(row.get("submission_open", False))
+    voting_open = bool(row["voting_open"])
     return {
         "enabled": bool(row["enabled"]),
-        "submission_open": bool(row.get("submission_open", False)),
-        "voting_open": bool(row["voting_open"]),
+        "submission_open": submission_open,
+        "voting_open": voting_open,
         "penalties_applied_at": row.get("penalties_applied_at"),
+        "phase": _derive_contest_phase(
+            submission_open=submission_open,
+            voting_open=voting_open,
+            raw_phase=row.get("phase"),
+        ),
     }
 
 
@@ -1098,6 +1132,7 @@ async def approved_entries(request: Request, x_telegram_init_data: str = Header(
     try:
         auth = _extract_auth(x_telegram_init_data)
         request_origin = _base_origin(str(getattr(request, "base_url", "") or ""))
+        settings = await _get_contest_settings()
         rows = await get_pool().fetch(
             """
             SELECT
@@ -1132,6 +1167,13 @@ async def approved_entries(request: Request, x_telegram_init_data: str = Header(
             item = dict(row)
             item["is_owned_by_current_user"] = int(item["owner_user_id"]) == current_user_id
             item["image_url"] = _build_entry_image_url(item, request_origin)
+            votes_count = int(item.get("votes_count") or 0)
+            penalty_votes = int(item.get("penalty_votes") or 0)
+            item["net_votes"] = votes_count - penalty_votes
+            item["author_label"] = _author_label(
+                owner_user_id=int(item.get("owner_user_id") or 0),
+                owner_username_last_seen=item.get("owner_username_last_seen"),
+            )
             logger.info(
                 "Approved entry prepared id=%s display_number=%s image_url=%s storage_chat_id=%s storage_message_id=%s",
                 item.get("id"),
@@ -1144,10 +1186,23 @@ async def approved_entries(request: Request, x_telegram_init_data: str = Header(
                 item.pop("votes_count", None)
                 item.pop("penalty_votes", None)
             items.append(item)
+
+        phase = settings.get("phase") or "submission"
+        if phase == "results":
+            items.sort(key=lambda entry: (-int(entry.get("net_votes") or 0), int(entry.get("id") or 0)))
+            for index, item in enumerate(items, start=1):
+                item["place"] = index
+                item["reward_label"] = _reward_label_for_place(index)
+        else:
+            for item in items:
+                item["place"] = None
+                item["reward_label"] = None
+
         return JSONResponse(
             content=jsonable_encoder(
                 {
                     "ok": True,
+                    "phase": phase,
                     "current_user": {"user_id": current_user_id, "is_admin": _is_admin(current_user_id)},
                     "items": items,
                 }
@@ -1254,6 +1309,7 @@ async def contest_state(x_telegram_init_data: str = Header(default="")) -> JSONR
             )
             draft_entry_ids = await _get_draft_entry_ids(conn, auth["user_id"])
             active_votes_count = await _count_active_votes(conn, auth["user_id"])
+            confirmed_entry_ids = await _get_confirmed_entry_ids(conn, auth["user_id"])
             available_votes = max(0, MAX_VOTES_PER_USER - active_votes_count)
             has_own_approved = bool(
                 await conn.fetchval(
@@ -1271,15 +1327,16 @@ async def contest_state(x_telegram_init_data: str = Header(default="")) -> JSONR
                     "enabled": settings["enabled"],
                     "submission_open": settings["submission_open"],
                     "voting_open": settings["voting_open"],
+                    "phase": settings["phase"],
                     "votes_required": VOTE_CONFIRM_REQUIRED,
                     "active_votes_count": active_votes_count,
                     "available_votes": available_votes,
                     "votes_remaining": available_votes,
                     "is_channel_member": is_channel_member,
                     "has_own_approved_entry": has_own_approved,
-                    "confirmed": bool(confirmed),
+                    "confirmed": available_votes <= 0,
                     "confirmed_at": confirmed["confirmed_at"] if confirmed else None,
-                    "confirmed_entry_ids": list(confirmed["selected_entry_ids"] or []) if confirmed else [],
+                    "confirmed_entry_ids": confirmed_entry_ids,
                     "draft_entry_ids": draft_entry_ids,
                 }
             )
@@ -1296,12 +1353,11 @@ async def my_draft(x_telegram_init_data: str = Header(default="")) -> JSONRespon
     try:
         auth = _extract_auth(x_telegram_init_data)
         async with get_pool().acquire() as conn:
-            confirmed = await conn.fetchrow(
-                "SELECT confirmed_at, selected_entry_ids FROM contest_vote_confirmations WHERE voter_user_id = $1",
-                auth["user_id"],
-            )
-            if confirmed:
-                return JSONResponse({"ok": True, "confirmed": True, "entry_ids": list(confirmed["selected_entry_ids"] or [])})
+            active_votes_count = await _count_active_votes(conn, auth["user_id"])
+            confirmed_entry_ids = await _get_confirmed_entry_ids(conn, auth["user_id"])
+            available_votes = max(0, MAX_VOTES_PER_USER - active_votes_count)
+            if available_votes <= 0:
+                return JSONResponse({"ok": True, "confirmed": True, "entry_ids": confirmed_entry_ids})
             draft_entry_ids = await _get_draft_entry_ids(conn, auth["user_id"])
             return JSONResponse({"ok": True, "confirmed": False, "entry_ids": draft_entry_ids})
     except VoteError as exc:
@@ -1415,6 +1471,7 @@ async def confirm_votes(request: Request, x_telegram_init_data: str = Header(def
         if not is_member:
             raise VoteError("Чтобы голосовать, нужно подписаться на канал.", "subscription_required", 403)
 
+        current_active_ids: list[int] = []
         async with get_pool().acquire() as conn:
             async with conn.transaction():
                 settings = await _get_contest_settings(conn)
@@ -1486,6 +1543,7 @@ async def confirm_votes(request: Request, x_telegram_init_data: str = Header(def
                         suspicion_reason,
                     )
 
+                current_active_ids = await _get_confirmed_entry_ids(conn, auth["user_id"])
                 await conn.execute(
                     """
                     INSERT INTO contest_vote_confirmations (
@@ -1498,9 +1556,17 @@ async def confirm_votes(request: Request, x_telegram_init_data: str = Header(def
                         suspicion_reason
                     )
                     VALUES ($1, NOW(), $2::BIGINT[], $3, $4, $5, $6)
+                    ON CONFLICT (voter_user_id)
+                    DO UPDATE SET
+                        confirmed_at = NOW(),
+                        selected_entry_ids = EXCLUDED.selected_entry_ids,
+                        ip_hash = EXCLUDED.ip_hash,
+                        user_agent_hash = EXCLUDED.user_agent_hash,
+                        is_suspicious = EXCLUDED.is_suspicious,
+                        suspicion_reason = EXCLUDED.suspicion_reason
                     """,
                     auth["user_id"],
-                    unique_ids,
+                    current_active_ids,
                     ip_hash,
                     ua_hash,
                     suspicious,
@@ -1509,7 +1575,13 @@ async def confirm_votes(request: Request, x_telegram_init_data: str = Header(def
 
                 await conn.execute("DELETE FROM contest_vote_drafts WHERE voter_user_id = $1", auth["user_id"])
 
-        return JSONResponse({"ok": True, "confirmed": True, "entry_ids": unique_ids})
+        return JSONResponse(
+            {
+                "ok": True,
+                "confirmed": True,
+                "entry_ids": current_active_ids,
+            }
+        )
     except VoteError as exc:
         return JSONResponse({"ok": False, "error_code": exc.code, "message": exc.message}, status_code=exc.status)
     except Exception:
@@ -1539,7 +1611,8 @@ async def votes_state(x_telegram_init_data: str = Header(default="")) -> JSONRes
                 "votes_remaining": available_votes,
                 "voted_entry_ids": confirmed_entry_ids,
                 "draft_entry_ids": draft_entry_ids,
-                "confirmed": used >= VOTE_CONFIRM_REQUIRED,
+                "confirmed": available_votes <= 0,
+                "phase": settings.get("phase") or "submission",
                 "voting_open": bool(settings["enabled"]) and bool(settings["voting_open"]),
                 "is_channel_member": is_channel_member,
             }
@@ -1739,7 +1812,14 @@ async def admin_entry_votes(entry_id: int, x_telegram_init_data: str = Header(de
         return _internal_error_response("Не удалось загрузить голоса по работе.")
 
 
-async def _set_stage(*, auth_user_id: int, submission_open: bool | None = None, voting_open: bool | None = None, enabled: bool | None = None) -> JSONResponse:
+async def _set_stage(
+    *,
+    auth_user_id: int,
+    submission_open: bool | None = None,
+    voting_open: bool | None = None,
+    enabled: bool | None = None,
+    phase: str | None = None,
+) -> JSONResponse:
     _require_admin(auth_user_id)
     async with get_pool().acquire() as conn:
         async with conn.transaction():
@@ -1747,6 +1827,11 @@ async def _set_stage(*, auth_user_id: int, submission_open: bool | None = None, 
             new_enabled = settings["enabled"] if enabled is None else enabled
             new_submission = settings["submission_open"] if submission_open is None else submission_open
             new_voting = settings["voting_open"] if voting_open is None else voting_open
+            new_phase = _derive_contest_phase(
+                submission_open=bool(new_submission),
+                voting_open=bool(new_voting),
+                raw_phase=phase or settings.get("phase"),
+            )
 
             if voting_open is False:
                 await _apply_penalties_if_needed(conn)
@@ -1761,21 +1846,31 @@ async def _set_stage(*, auth_user_id: int, submission_open: bool | None = None, 
                 SET enabled = $1,
                     submission_open = $2,
                     voting_open = $3,
+                    phase = $4,
                     updated_at = NOW()
                 WHERE id = 1
                 """,
                 bool(new_enabled),
                 bool(new_submission),
                 bool(new_voting),
+                new_phase,
             )
-    return JSONResponse({"ok": True, "enabled": new_enabled, "submission_open": new_submission, "voting_open": new_voting})
+    return JSONResponse(
+        {
+            "ok": True,
+            "enabled": new_enabled,
+            "submission_open": new_submission,
+            "voting_open": new_voting,
+            "phase": new_phase,
+        }
+    )
 
 
 @router.post("/admin/submission/open")
 async def admin_submission_open(x_telegram_init_data: str = Header(default="")) -> JSONResponse:
     try:
         auth = _extract_auth(x_telegram_init_data)
-        return await _set_stage(auth_user_id=auth["user_id"], submission_open=True)
+        return await _set_stage(auth_user_id=auth["user_id"], submission_open=True, phase="submission")
     except VoteError as exc:
         return JSONResponse({"ok": False, "error_code": exc.code, "message": exc.message}, status_code=exc.status)
     except Exception:
@@ -1799,7 +1894,7 @@ async def admin_submission_close(x_telegram_init_data: str = Header(default=""))
 async def admin_voting_open(x_telegram_init_data: str = Header(default="")) -> JSONResponse:
     try:
         auth = _extract_auth(x_telegram_init_data)
-        return await _set_stage(auth_user_id=auth["user_id"], enabled=True, submission_open=False, voting_open=True)
+        return await _set_stage(auth_user_id=auth["user_id"], enabled=True, submission_open=False, voting_open=True, phase="voting")
     except VoteError as exc:
         return JSONResponse({"ok": False, "error_code": exc.code, "message": exc.message}, status_code=exc.status)
     except Exception:
@@ -1811,7 +1906,7 @@ async def admin_voting_open(x_telegram_init_data: str = Header(default="")) -> J
 async def admin_voting_close(x_telegram_init_data: str = Header(default="")) -> JSONResponse:
     try:
         auth = _extract_auth(x_telegram_init_data)
-        return await _set_stage(auth_user_id=auth["user_id"], voting_open=False)
+        return await _set_stage(auth_user_id=auth["user_id"], voting_open=False, phase="results")
     except VoteError as exc:
         return JSONResponse({"ok": False, "error_code": exc.code, "message": exc.message}, status_code=exc.status)
     except Exception:
@@ -1822,3 +1917,30 @@ async def admin_voting_close(x_telegram_init_data: str = Header(default="")) -> 
 @router.get("/health")
 async def health() -> dict[str, bool]:
     return {"ok": True}
+
+def _derive_contest_phase(*, submission_open: bool, voting_open: bool, raw_phase: str | None = None) -> str:
+    phase = (raw_phase or "").strip().lower()
+    if phase in CONTEST_PHASES:
+        return phase
+    if voting_open:
+        return "voting"
+    if submission_open:
+        return "submission"
+    return "results"
+
+
+def _reward_label_for_place(place: int) -> str:
+    if place == 1:
+        return "100к грибов"
+    if place == 2:
+        return "50к грибов"
+    if place == 3:
+        return "25к грибов"
+    return "Утешительный приз: 5к грибов"
+
+
+def _author_label(owner_user_id: int, owner_username_last_seen: str | None) -> str:
+    username = (owner_username_last_seen or "").strip().lstrip("@")
+    if username:
+        return f"@{username}"
+    return str(owner_user_id)
