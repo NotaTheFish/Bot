@@ -1,5 +1,6 @@
 import hashlib
 import hmac
+import html
 import json
 import logging
 import mimetypes
@@ -69,8 +70,10 @@ _pool: asyncpg.Pool | None = None
 _http: aiohttp.ClientSession | None = None
 _entry_image_cache: dict[int, tuple[float, bytes, str]] = {}
 _telegram_file_path_cache: dict[str, tuple[float, str]] = {}
+_custom_emoji_url_cache: dict[str, tuple[float, str]] = {}
 ENTRY_IMAGE_CACHE_TTL_SECONDS = max(1, _env_int("ENTRY_IMAGE_CACHE_TTL_SECONDS", 60))
 TELEGRAM_FILE_PATH_CACHE_TTL_SECONDS = max(1, _env_int("TELEGRAM_FILE_PATH_CACHE_TTL_SECONDS", 300))
+CUSTOM_EMOJI_URL_CACHE_TTL_SECONDS = max(1, _env_int("CUSTOM_EMOJI_URL_CACHE_TTL_SECONDS", 300))
 
 
 @dataclass(slots=True)
@@ -152,6 +155,7 @@ async def shutdown() -> None:
         await _pool.close()
     _entry_image_cache.clear()
     _telegram_file_path_cache.clear()
+    _custom_emoji_url_cache.clear()
 
 
 async def ensure_schema() -> None:
@@ -433,6 +437,165 @@ def _cache_get_file_path(file_id: str) -> str | None:
 
 def _cache_set_file_path(file_id: str, file_path: str) -> None:
     _telegram_file_path_cache[str(file_id)] = (time.time() + TELEGRAM_FILE_PATH_CACHE_TTL_SECONDS, str(file_path))
+
+
+def _cache_get_custom_emoji_url(custom_emoji_id: str) -> str | None:
+    cached = _custom_emoji_url_cache.get(str(custom_emoji_id))
+    if not cached:
+        return None
+    expires_at, url = cached
+    if time.time() >= expires_at:
+        _custom_emoji_url_cache.pop(str(custom_emoji_id), None)
+        return None
+    return url
+
+
+def _cache_set_custom_emoji_url(custom_emoji_id: str, url: str) -> None:
+    _custom_emoji_url_cache[str(custom_emoji_id)] = (time.time() + CUSTOM_EMOJI_URL_CACHE_TTL_SECONDS, str(url))
+
+
+def _utf16_index_boundaries(text: str) -> list[int]:
+    boundaries = [0]
+    index = 0
+    for char in text:
+        index += 2 if ord(char) > 0xFFFF else 1
+        boundaries.append(index)
+    return boundaries
+
+
+def _py_index_for_utf16_offset(boundaries: list[int], utf16_offset: int) -> int | None:
+    try:
+        return boundaries.index(utf16_offset)
+    except ValueError:
+        return None
+
+
+async def _custom_emoji_image_url(custom_emoji_id: str) -> str | None:
+    normalized_id = str(custom_emoji_id or "").strip()
+    if not normalized_id:
+        return None
+
+    cached = _cache_get_custom_emoji_url(normalized_id)
+    if cached:
+        return cached
+
+    stickers_data = await _telegram_api_call("getCustomEmojiStickers", {"custom_emoji_ids": [normalized_id]})
+    stickers = stickers_data.get("result")
+    if not isinstance(stickers, list) or not stickers:
+        return None
+
+    sticker: dict[str, Any] | None = None
+    for item in stickers:
+        if not isinstance(item, dict):
+            continue
+        if str(item.get("custom_emoji_id") or "") == normalized_id:
+            sticker = item
+            break
+    if sticker is None and isinstance(stickers[0], dict):
+        sticker = stickers[0]
+    if sticker is None:
+        return None
+
+    file_id = str(sticker.get("file_id") or "").strip()
+    if not file_id:
+        return None
+
+    get_file = await _telegram_api_call("getFile", {"file_id": file_id})
+    file_result = get_file.get("result") or {}
+    file_path = str(file_result.get("file_path") or "").strip()
+    if not file_path:
+        return None
+
+    file_url = f"{TELEGRAM_FILE_BASE_URL}/bot{BOT_TOKEN}/{file_path}"
+    _cache_set_custom_emoji_url(normalized_id, file_url)
+    return file_url
+
+
+async def render_telegram_text_with_custom_emoji(text: str, entities: Any) -> str:
+    source = str(text or "")
+    if not entities:
+        return html.escape(source)
+
+    parsed_entities = entities
+    if isinstance(entities, str):
+        try:
+            parsed_entities = json.loads(entities)
+        except json.JSONDecodeError:
+            return html.escape(source)
+
+    if not isinstance(parsed_entities, list):
+        return html.escape(source)
+
+    boundaries = _utf16_index_boundaries(source)
+    total_utf16_len = boundaries[-1]
+    cursor_utf16 = 0
+    parts: list[str] = []
+
+    def append_escaped_slice(start_utf16: int, end_utf16: int) -> None:
+        if end_utf16 < start_utf16:
+            return
+        start_idx = _py_index_for_utf16_offset(boundaries, start_utf16)
+        end_idx = _py_index_for_utf16_offset(boundaries, end_utf16)
+        if start_idx is None or end_idx is None:
+            return
+        if start_idx >= end_idx:
+            return
+        parts.append(html.escape(source[start_idx:end_idx]))
+
+    def get_plain_slice(start_utf16: int, end_utf16: int) -> str:
+        start_idx = _py_index_for_utf16_offset(boundaries, start_utf16)
+        end_idx = _py_index_for_utf16_offset(boundaries, end_utf16)
+        if start_idx is None or end_idx is None or start_idx > end_idx:
+            return ""
+        return source[start_idx:end_idx]
+
+    normalized_entities: list[dict[str, Any]] = [item for item in parsed_entities if isinstance(item, dict)]
+
+    def _entity_offset(item: dict[str, Any]) -> int:
+        try:
+            return int(item.get("offset") or 0)
+        except (TypeError, ValueError):
+            return 0
+
+    for entity in sorted(normalized_entities, key=_entity_offset):
+        if str(entity.get("type") or "") != "custom_emoji":
+            continue
+
+        try:
+            offset = int(entity.get("offset"))
+            length = int(entity.get("length"))
+        except (TypeError, ValueError):
+            continue
+
+        if length <= 0 or offset < 0:
+            continue
+
+        entity_end = offset + length
+        if entity_end > total_utf16_len or offset < cursor_utf16:
+            continue
+
+        custom_emoji_id = str(entity.get("custom_emoji_id") or "").strip()
+        if not custom_emoji_id:
+            continue
+
+        append_escaped_slice(cursor_utf16, offset)
+
+        try:
+            emoji_url = await _custom_emoji_image_url(custom_emoji_id)
+        except Exception:
+            logger.warning("Failed to resolve custom emoji URL for id=%s", custom_emoji_id, exc_info=True)
+            emoji_url = None
+
+        if emoji_url:
+            safe_url = html.escape(emoji_url, quote=True)
+            parts.append(f'<img class="tg-custom-emoji" src="{safe_url}" alt="emoji" />')
+        else:
+            parts.append(html.escape(get_plain_slice(offset, entity_end)))
+
+        cursor_utf16 = entity_end
+
+    append_escaped_slice(cursor_utf16, total_utf16_len)
+    return "".join(parts)
 
 
 def _normalize_content_type(value: str | None) -> str | None:
@@ -1135,7 +1298,15 @@ async def contest_rules(x_telegram_init_data: str = Header(default="")) -> JSONR
         row = await get_pool().fetchrow("SELECT rules_text, rules_entities_json FROM contest_settings WHERE id = 1")
         rules_text = str(row["rules_text"] if row else "" or "").strip()
         rules_entities_json = row["rules_entities_json"] if row else None
-        return JSONResponse({"ok": True, "rules_text": rules_text, "rules_entities_json": rules_entities_json})
+                rules_html = await render_telegram_text_with_custom_emoji(rules_text, rules_entities_json)
+        return JSONResponse(
+            {
+                "ok": True,
+                "rules_text": rules_text,
+                "rules_entities_json": rules_entities_json,
+                "rules_html": rules_html,
+            }
+        )
     except VoteError as exc:
         return JSONResponse({"ok": False, "error_code": exc.code, "message": exc.message}, status_code=exc.status)
     except Exception:
