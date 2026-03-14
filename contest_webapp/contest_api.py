@@ -1045,6 +1045,8 @@ async def contest_state(x_telegram_init_data: str = Header(default="")) -> JSONR
                 auth["user_id"],
             )
             draft_entry_ids = await _get_draft_entry_ids(conn, auth["user_id"])
+            active_votes_count = await _count_active_votes(conn, auth["user_id"])
+            available_votes = max(0, MAX_VOTES_PER_USER - active_votes_count)
             has_own_approved = bool(
                 await conn.fetchval(
                     "SELECT 1 FROM contest_entries WHERE owner_user_id = $1 AND status = 'approved' AND COALESCE(is_deleted, FALSE) = FALSE",
@@ -1062,6 +1064,9 @@ async def contest_state(x_telegram_init_data: str = Header(default="")) -> JSONR
                     "submission_open": settings["submission_open"],
                     "voting_open": settings["voting_open"],
                     "votes_required": VOTE_CONFIRM_REQUIRED,
+                    "active_votes_count": active_votes_count,
+                    "available_votes": available_votes,
+                    "votes_remaining": available_votes,
                     "is_channel_member": is_channel_member,
                     "has_own_approved_entry": has_own_approved,
                     "confirmed": bool(confirmed),
@@ -1120,6 +1125,7 @@ async def draft_select(request: Request, x_telegram_init_data: str = Header(defa
                 await _ensure_votable_entry(conn, entry_id, auth["user_id"])
 
                 active_votes_count = await _count_active_votes(conn, auth["user_id"])
+                available_votes = max(0, MAX_VOTES_PER_USER - active_votes_count)
                 draft_count = await conn.fetchval(
                     "SELECT COUNT(*)::INT FROM contest_vote_drafts WHERE voter_user_id = $1",
                     auth["user_id"],
@@ -1136,8 +1142,12 @@ async def draft_select(request: Request, x_telegram_init_data: str = Header(defa
                 )
                 if already or already_active:
                     raise VoteError("Работа уже в выборе.", "duplicate_vote", 409)
-                if active_votes_count + int(draft_count or 0) >= MAX_VOTES_PER_USER:
-                    raise VoteError("Можно выбрать только 3 работы.", "draft_limit_reached", 400)
+                if int(draft_count or 0) >= available_votes:
+                    raise VoteError(
+                        f"Можно выбрать только {available_votes} работ в текущей сессии.",
+                        "draft_limit_reached",
+                        400,
+                    )
 
                 await conn.execute(
                     """
@@ -1205,10 +1215,17 @@ async def confirm_votes(request: Request, x_telegram_init_data: str = Header(def
 
                 draft_entry_ids = await _get_draft_entry_ids(conn, auth["user_id"])
                 unique_ids = list(dict.fromkeys(draft_entry_ids))
-                if len(unique_ids) != VOTE_CONFIRM_REQUIRED:
-                    raise VoteError("Нужно выбрать ровно 3 разные работы.", "exactly_three_required", 400)
-
                 active_votes_count = await _count_active_votes(conn, auth["user_id"])
+                available_votes = max(0, MAX_VOTES_PER_USER - active_votes_count)
+                if available_votes <= 0:
+                    raise VoteError("Доступных голосов для подтверждения нет.", "vote_limit_reached", 400)
+                if len(unique_ids) != available_votes:
+                    raise VoteError(
+                        f"Нужно выбрать ровно {available_votes} разные работы.",
+                        "exactly_available_required",
+                        400,
+                    )
+
                 if active_votes_count + len(unique_ids) > MAX_VOTES_PER_USER:
                     raise VoteError("Можно иметь не больше 3 активных голосов.", "vote_limit_reached", 400)
 
@@ -1302,13 +1319,16 @@ async def votes_state(x_telegram_init_data: str = Header(default="")) -> JSONRes
             confirmed_entry_ids = await _get_confirmed_entry_ids(conn, auth["user_id"])
             draft_entry_ids = await _get_draft_entry_ids(conn, auth["user_id"])
         used = len(confirmed_entry_ids)
+        available_votes = max(0, MAX_VOTES_PER_USER - used)
         return JSONResponse(
             {
                 "ok": True,
                 "user_id": auth["user_id"],
                 "max_votes": MAX_VOTES_PER_USER,
                 "votes_used": used,
-                "votes_remaining": max(0, MAX_VOTES_PER_USER - used),
+                "active_votes_count": used,
+                "available_votes": available_votes,
+                "votes_remaining": available_votes,
                 "voted_entry_ids": confirmed_entry_ids,
                 "draft_entry_ids": draft_entry_ids,
                 "confirmed": used >= VOTE_CONFIRM_REQUIRED,

@@ -48,6 +48,8 @@ const state = {
   submissionOpen: false,
   votingOpen: false,
   confirmed: false,
+  activeVotesCount: 0,
+  availableVotes: 3,
   isAdmin: false,
   isChannelMember: false,
   busy: false,
@@ -103,7 +105,8 @@ function setStatus(message = "") {
 }
 
 function updateHeader() {
-  votesCounterEl.textContent = `Выбрано: ${selectedCount()}/3`;
+  const requiredNow = state.confirmed ? state.activeVotesCount : state.availableVotes;
+  votesCounterEl.textContent = `Выбрано: ${selectedCount()}/${requiredNow}`;
   contestStageEl.textContent = `Статус: ${state.votingOpen ? "идет голосование" : "голосование закрыто"}`;
 }
 
@@ -510,17 +513,18 @@ function renderAdminStatusCard() {
 function renderActionBar() {
   const entry = state.entries.find((item) => item.id === state.activeEntryId);
   const selected = selectedCount();
-  const canConfirm = !state.confirmed && state.draftEntryIds.size === 3;
+  const requiredToConfirm = state.availableVotes;
+  const canConfirm = !state.confirmed && requiredToConfirm > 0 && state.draftEntryIds.size === requiredToConfirm;
 
   confirmVotesBtnEl.hidden = !canConfirm;
   confirmVotesBtnEl.disabled =
-    state.busy || state.draftEntryIds.size !== 3 || state.confirmed;
+    state.busy || state.confirmed || requiredToConfirm <= 0 || state.draftEntryIds.size !== requiredToConfirm;
 
   actionBarEl.hidden = !entry;
   if (!entry) return;
 
   const inDraft = state.draftEntryIds.has(entry.id);
-  actionBarTextEl.textContent = `Выбрано ${selected}/3`;
+  actionBarTextEl.textContent = `Выбрано ${selected}/${state.availableVotes}`;
 
   if (state.confirmed) {
     actionBarButtonEl.disabled = true;
@@ -543,6 +547,12 @@ function renderActionBar() {
   if (entry.is_owned_by_current_user) {
     actionBarButtonEl.disabled = true;
     actionBarButtonEl.textContent = "Нельзя за свою";
+    return;
+  }
+
+  if (state.availableVotes <= 0) {
+    actionBarButtonEl.disabled = true;
+    actionBarButtonEl.textContent = "Доступных голосов нет";
     return;
   }
 
@@ -641,6 +651,15 @@ function applyContestState(statePayload, entriesPayload) {
   state.submissionOpen = Boolean(statePayload.submission_open);
   state.votingOpen = Boolean(statePayload.voting_open);
   state.confirmed = Boolean(statePayload.confirmed);
+  const activeVotesCount = Number(statePayload.active_votes_count);
+  const fallbackActiveVotesCount = state.confirmedEntryIds.size;
+  state.activeVotesCount = Number.isFinite(activeVotesCount) ? Math.max(0, activeVotesCount) : fallbackActiveVotesCount;
+  const availableVotes = Number(statePayload.available_votes);
+  const legacyVotesRemaining = Number(statePayload.votes_remaining);
+  const fallbackAvailableVotes = Number.isFinite(legacyVotesRemaining)
+    ? Math.max(0, legacyVotesRemaining)
+    : Math.max(0, 3 - state.activeVotesCount);
+  state.availableVotes = Number.isFinite(availableVotes) ? Math.max(0, availableVotes) : fallbackAvailableVotes;
   state.isAdmin = Boolean(statePayload.is_admin);
   state.isChannelMember = Boolean(statePayload.is_channel_member);
 
@@ -727,8 +746,8 @@ async function toggleActiveSelection() {
 
   const inDraft = state.draftEntryIds.has(entry.id);
 
-  if (!inDraft && state.draftEntryIds.size >= 3) {
-    setStatus("Можно выбрать только 3 работы.");
+  if (!inDraft && state.draftEntryIds.size >= state.availableVotes) {
+    setStatus(`Можно выбрать только ${state.availableVotes} работ в текущей сессии.`);
     return;
   }
 
@@ -755,7 +774,7 @@ async function toggleActiveSelection() {
 }
 
 async function confirmVotes() {
-  if (state.draftEntryIds.size !== 3 || state.confirmed || state.busy) {
+ if (state.draftEntryIds.size !== state.availableVotes || state.availableVotes <= 0 || state.confirmed || state.busy) {
     return;
   }
 
