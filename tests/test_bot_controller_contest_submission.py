@@ -1,7 +1,7 @@
 import os
 import unittest
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from aiogram.exceptions import TelegramForbiddenError
 from aiogram.types import MessageEntity
@@ -736,7 +736,7 @@ class ContestSubmissionTests(unittest.IsolatedAsyncioTestCase):
 
         with (
             patch.object(main_core, "is_admin_user", return_value=True),
-            patch.object(main_core, "_mark_contest_entry_deleted", AsyncMock(return_value=88)) as delete_entry,
+            patch.object(main_core, "_mark_contest_entry_deleted", AsyncMock(return_value=(88, []))) as delete_entry,
             patch.object(main_core, "_build_contest_entry_log_payload", AsyncMock(return_value=("caption", None))),
             patch.object(main_core, "_update_contest_storage_log", AsyncMock()) as update_log,
             patch.object(main_core.bot, "send_message", AsyncMock()) as send_message,
@@ -751,14 +751,25 @@ class ContestSubmissionTests(unittest.IsolatedAsyncioTestCase):
         callback.message.answer.assert_awaited_once_with("Рисунок в заявке #15 удалён 🗑")
 
     async def test_mark_contest_entry_deleted_uses_soft_delete_sql_fields(self):
+        conn = AsyncMock()
+        conn.fetchrow = AsyncMock(return_value={"owner_user_id": 88})
+        conn.fetch = AsyncMock(return_value=[])
+        tx_ctx = AsyncMock()
+        tx_ctx.__aenter__.return_value = None
+        tx_ctx.__aexit__.return_value = False
+        conn.transaction = MagicMock(return_value=tx_ctx)
         pool = AsyncMock()
-        pool.fetchrow = AsyncMock(return_value={"owner_user_id": 88})
+        acquire_ctx = AsyncMock()
+        acquire_ctx.__aenter__.return_value = conn
+        acquire_ctx.__aexit__.return_value = False
+        pool.acquire = MagicMock(return_value=acquire_ctx)
 
         with patch.object(main_core, "get_db_pool", AsyncMock(return_value=pool)):
-            participant_id = await main_core._mark_contest_entry_deleted(15, 1)
+            participant_id, invalidated = await main_core._mark_contest_entry_deleted(15, 1)
 
         self.assertEqual(participant_id, 88)
-        query = pool.fetchrow.await_args.args[0]
+        self.assertEqual(invalidated, [])
+        query = conn.fetchrow.await_args.args[0]
         self.assertIn("SET is_deleted = TRUE", query)
         self.assertIn("deleted_at = NOW()", query)
         self.assertIn("deleted_by_admin_id = $2", query)
@@ -773,7 +784,7 @@ class ContestSubmissionTests(unittest.IsolatedAsyncioTestCase):
 
         with (
             patch.object(main_core, "is_admin_user", return_value=True),
-            patch.object(main_core, "_mark_contest_entry_deleted", AsyncMock(return_value=88)),
+            patch.object(main_core, "_mark_contest_entry_deleted", AsyncMock(return_value=(88, []))),
             patch.object(main_core, "_build_contest_entry_log_payload", AsyncMock(return_value=("caption", None))),
             patch.object(main_core, "_update_contest_storage_log", AsyncMock()),
             patch.object(main_core.bot, "send_message", AsyncMock(side_effect=TelegramForbiddenError(method="sendMessage", message="blocked"))),
@@ -845,7 +856,7 @@ class ContestSubmissionTests(unittest.IsolatedAsyncioTestCase):
         with (
             patch.object(main_core, "is_admin_user", return_value=True),
             patch.object(main_core, "_set_contest_entry_approved", AsyncMock(return_value=88)),
-            patch.object(main_core, "_mark_contest_entry_deleted", AsyncMock(return_value=88)),
+            patch.object(main_core, "_mark_contest_entry_deleted", AsyncMock(return_value=(88, []))),
             patch.object(main_core, "_build_contest_entry_log_payload", AsyncMock(return_value=("caption", None))),
             patch.object(main_core, "_update_contest_storage_log", AsyncMock()) as update_log,
             patch.object(main_core.bot, "send_message", AsyncMock()),

@@ -728,8 +728,10 @@ CONTEST_TABLES_SQL = [
         user_agent_hash TEXT,
         is_suspicious BOOLEAN NOT NULL DEFAULT FALSE,
         suspicion_reason TEXT,
+        status TEXT NOT NULL DEFAULT 'active',
         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
         updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        CONSTRAINT contest_votes_status_check CHECK (status IN ('active', 'invalidated_by_disqualification')),
         UNIQUE(voter_user_id, entry_id)
     )
     """,
@@ -738,8 +740,16 @@ CONTEST_TABLES_SQL = [
     ON contest_votes(voter_user_id)
     """,
     """
+    CREATE INDEX IF NOT EXISTS idx_contest_votes_voter_status
+    ON contest_votes(voter_user_id, status)
+    """,
+    """
     CREATE INDEX IF NOT EXISTS idx_contest_votes_entry_id
     ON contest_votes(entry_id)
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_contest_votes_entry_status
+    ON contest_votes(entry_id, status)
     """,
 ]
 
@@ -903,6 +913,26 @@ CONTEST_MIGRATIONS_SQL = [
     """
     ALTER TABLE contest_votes
     ADD COLUMN IF NOT EXISTS suspicion_reason TEXT
+    """,
+    """
+    ALTER TABLE contest_votes
+    ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'active'
+    """,
+    """
+    ALTER TABLE contest_votes
+    DROP CONSTRAINT IF EXISTS contest_votes_status_check
+    """,
+    """
+    ALTER TABLE contest_votes
+    ADD CONSTRAINT contest_votes_status_check CHECK (status IN ('active', 'invalidated_by_disqualification'))
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_contest_votes_voter_status
+    ON contest_votes(voter_user_id, status)
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_contest_votes_entry_status
+    ON contest_votes(entry_id, status)
     """,
     """
     ALTER TABLE contest_votes
@@ -2362,25 +2392,45 @@ async def _set_contest_entry_rejected(entry_id: int, admin_id: int, reason: str)
     return int(row["owner_user_id"])
 
 
-async def _mark_contest_entry_deleted(entry_id: int, admin_id: int) -> int | None:
+async def _mark_contest_entry_deleted(entry_id: int, admin_id: int) -> tuple[int, list[tuple[int, int]]] | None:
     pool = await get_db_pool()
-    row = await pool.fetchrow(
-        """
-        UPDATE contest_entries
-        SET is_deleted = TRUE,
-            deleted_at = NOW(),
-            deleted_by_admin_id = $2,
-            updated_at = NOW()
-        WHERE id = $1
-          AND COALESCE(is_deleted, FALSE) = FALSE
-        RETURNING owner_user_id
-        """,
-        entry_id,
-        admin_id,
-    )
-    if not row:
-        return None
-    return int(row["owner_user_id"])
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            row = await conn.fetchrow(
+                """
+                UPDATE contest_entries
+                SET is_deleted = TRUE,
+                    deleted_at = NOW(),
+                    deleted_by_admin_id = $2,
+                    updated_at = NOW()
+                WHERE id = $1
+                  AND COALESCE(is_deleted, FALSE) = FALSE
+                RETURNING owner_user_id
+                """,
+                entry_id,
+                admin_id,
+            )
+            if not row:
+                return None
+
+            invalidated_rows = await conn.fetch(
+                """
+                UPDATE contest_votes
+                SET status = 'invalidated_by_disqualification',
+                    updated_at = NOW()
+                WHERE entry_id = $1
+                  AND status = 'active'
+                RETURNING voter_user_id
+                """,
+                entry_id,
+            )
+
+    invalidated_by_user: dict[int, int] = {}
+    for vote_row in invalidated_rows:
+        voter_user_id = int(vote_row["voter_user_id"])
+        invalidated_by_user[voter_user_id] = invalidated_by_user.get(voter_user_id, 0) + 1
+
+    return int(row["owner_user_id"]), sorted(invalidated_by_user.items(), key=lambda item: item[0])
 
 async def set_storage_chat_id(storage_chat_id: int) -> None:
     await set_meta(STORAGE_CHAT_META_KEY, str(storage_chat_id))
@@ -4590,13 +4640,23 @@ async def contest_entry_delete(callback: CallbackQuery):
         await callback.answer("Некорректная заявка", show_alert=True)
         return
 
-    participant_id = await _mark_contest_entry_deleted(entry_id, callback.from_user.id)
-    if participant_id is None:
+    delete_result = await _mark_contest_entry_deleted(entry_id, callback.from_user.id)
+    if delete_result is None:
         await callback.answer("Заявка не найдена", show_alert=True)
         return
+    participant_id, invalidated_votes = delete_result
 
     await callback.answer("Рисунок удалён")
-    await callback.message.answer(f"Рисунок в заявке #{entry_id} удалён 🗑")
+    if invalidated_votes:
+        invalidated_total = sum(count for _, count in invalidated_votes)
+        invalidated_lines = "\n".join(f"• {user_id}: {count}" for user_id, count in invalidated_votes)
+        await callback.message.answer(
+            f"Рисунок в заявке #{entry_id} удалён 🗑\n"
+            f"Инвалидировано голосов: {invalidated_total}\n"
+            f"По пользователям:\n{invalidated_lines}"
+        )
+    else:
+        await callback.message.answer(f"Рисунок в заявке #{entry_id} удалён 🗑")
 
     payload = await _build_contest_entry_log_payload(
         entry_id,

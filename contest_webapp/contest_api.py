@@ -166,6 +166,17 @@ async def ensure_schema() -> None:
         await conn.execute("ALTER TABLE contest_votes ADD COLUMN IF NOT EXISTS is_suspicious BOOLEAN NOT NULL DEFAULT FALSE")
         await conn.execute("ALTER TABLE contest_votes ADD COLUMN IF NOT EXISTS suspicion_reason TEXT")
         await conn.execute("ALTER TABLE contest_votes ADD COLUMN IF NOT EXISTS confirmed_at TIMESTAMPTZ")
+        await conn.execute("ALTER TABLE contest_votes ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'active'")
+        await conn.execute("ALTER TABLE contest_votes DROP CONSTRAINT IF EXISTS contest_votes_status_check")
+        await conn.execute(
+            """
+            ALTER TABLE contest_votes
+            ADD CONSTRAINT contest_votes_status_check
+            CHECK (status IN ('active', 'invalidated_by_disqualification'))
+            """
+        )
+        await conn.execute("CREATE INDEX IF NOT EXISTS idx_contest_votes_voter_status ON contest_votes(voter_user_id, status)")
+        await conn.execute("CREATE INDEX IF NOT EXISTS idx_contest_votes_entry_status ON contest_votes(entry_id, status)")
         await conn.execute("ALTER TABLE contest_entries ADD COLUMN IF NOT EXISTS penalty_votes INTEGER NOT NULL DEFAULT 0")
         await conn.execute("ALTER TABLE contest_entries ADD COLUMN IF NOT EXISTS display_order_anchor TIMESTAMPTZ")
         await conn.execute(
@@ -773,6 +784,7 @@ async def _is_suspicious(conn: asyncpg.Connection, voter_user_id: int, ip_hash: 
             SELECT COUNT(DISTINCT voter_user_id)::INT
             FROM contest_votes
             WHERE ip_hash = $1
+              AND status = 'active'
               AND created_at >= NOW() - INTERVAL '24 hours'
             """,
             ip_hash,
@@ -786,6 +798,7 @@ async def _is_suspicious(conn: asyncpg.Connection, voter_user_id: int, ip_hash: 
             SELECT COUNT(DISTINCT voter_user_id)::INT
             FROM contest_votes
             WHERE user_agent_hash = $1
+              AND status = 'active'
               AND created_at >= NOW() - INTERVAL '12 hours'
             """,
             user_agent_hash,
@@ -811,10 +824,18 @@ async def _is_suspicious(conn: asyncpg.Connection, voter_user_id: int, ip_hash: 
 
 async def _get_confirmed_entry_ids(conn: asyncpg.Connection, voter_user_id: int) -> list[int]:
     rows = await conn.fetch(
-        "SELECT entry_id FROM contest_votes WHERE voter_user_id = $1 ORDER BY created_at ASC",
+        "SELECT entry_id FROM contest_votes WHERE voter_user_id = $1 AND status = 'active' ORDER BY created_at ASC",
         voter_user_id,
     )
     return [int(r["entry_id"]) for r in rows]
+
+
+async def _count_active_votes(conn: asyncpg.Connection, voter_user_id: int) -> int:
+    count = await conn.fetchval(
+        "SELECT COUNT(*)::INT FROM contest_votes WHERE voter_user_id = $1 AND status = 'active'",
+        voter_user_id,
+    )
+    return int(count or 0)
 
 
 async def _get_draft_entry_ids(conn: asyncpg.Connection, voter_user_id: int) -> list[int]:
@@ -889,6 +910,7 @@ async def approved_entries(request: Request, x_telegram_init_data: str = Header(
             LEFT JOIN (
                 SELECT entry_id, COUNT(*)::INT AS votes_count
                 FROM contest_votes
+                WHERE status = 'active'
                 GROUP BY entry_id
             ) v ON v.entry_id = e.id
             WHERE e.status = 'approved'
@@ -1095,27 +1117,26 @@ async def draft_select(request: Request, x_telegram_init_data: str = Header(defa
                 if not bool(settings["enabled"]) or not bool(settings["voting_open"]):
                     raise VoteError("Голосование сейчас закрыто.", "voting_closed", 403)
 
-                confirmed_exists = await conn.fetchval(
-                    "SELECT 1 FROM contest_vote_confirmations WHERE voter_user_id = $1",
-                    auth["user_id"],
-                )
-                if confirmed_exists:
-                    raise VoteError("Голоса уже подтверждены.", "already_confirmed", 409)
-
                 await _ensure_votable_entry(conn, entry_id, auth["user_id"])
 
+                active_votes_count = await _count_active_votes(conn, auth["user_id"])
                 draft_count = await conn.fetchval(
                     "SELECT COUNT(*)::INT FROM contest_vote_drafts WHERE voter_user_id = $1",
                     auth["user_id"],
+                )
+                already_active = await conn.fetchval(
+                    "SELECT 1 FROM contest_votes WHERE voter_user_id = $1 AND entry_id = $2 AND status = 'active'",
+                    auth["user_id"],
+                    entry_id,
                 )
                 already = await conn.fetchval(
                     "SELECT 1 FROM contest_vote_drafts WHERE voter_user_id = $1 AND entry_id = $2",
                     auth["user_id"],
                     entry_id,
                 )
-                if already:
+                if already or already_active:
                     raise VoteError("Работа уже в выборе.", "duplicate_vote", 409)
-                if int(draft_count or 0) >= VOTE_CONFIRM_REQUIRED:
+                if active_votes_count + int(draft_count or 0) >= MAX_VOTES_PER_USER:
                     raise VoteError("Можно выбрать только 3 работы.", "draft_limit_reached", 400)
 
                 await conn.execute(
@@ -1148,11 +1169,8 @@ async def draft_unselect(request: Request, x_telegram_init_data: str = Header(de
 
         async with get_pool().acquire() as conn:
             async with conn.transaction():
-                confirmed_exists = await conn.fetchval(
-                    "SELECT 1 FROM contest_vote_confirmations WHERE voter_user_id = $1",
-                    auth["user_id"],
-                )
-                if confirmed_exists:
+                active_votes_count = await _count_active_votes(conn, auth["user_id"])
+                if active_votes_count >= MAX_VOTES_PER_USER:
                     raise VoteError("Голоса уже подтверждены.", "already_confirmed", 409)
 
                 await conn.execute(
@@ -1185,20 +1203,24 @@ async def confirm_votes(request: Request, x_telegram_init_data: str = Header(def
                 if not bool(settings["enabled"]) or not bool(settings["voting_open"]):
                     raise VoteError("Голосование сейчас закрыто.", "voting_closed", 403)
 
-                exists = await conn.fetchval(
-                    "SELECT 1 FROM contest_vote_confirmations WHERE voter_user_id = $1 FOR UPDATE",
-                    auth["user_id"],
-                )
-                if exists:
-                    raise VoteError("Голоса уже подтверждены.", "already_confirmed", 409)
-
                 draft_entry_ids = await _get_draft_entry_ids(conn, auth["user_id"])
                 unique_ids = list(dict.fromkeys(draft_entry_ids))
                 if len(unique_ids) != VOTE_CONFIRM_REQUIRED:
                     raise VoteError("Нужно выбрать ровно 3 разные работы.", "exactly_three_required", 400)
 
+                active_votes_count = await _count_active_votes(conn, auth["user_id"])
+                if active_votes_count + len(unique_ids) > MAX_VOTES_PER_USER:
+                    raise VoteError("Можно иметь не больше 3 активных голосов.", "vote_limit_reached", 400)
+
                 for entry_id in unique_ids:
                     await _ensure_votable_entry(conn, entry_id, auth["user_id"])
+                    duplicate_active = await conn.fetchval(
+                        "SELECT 1 FROM contest_votes WHERE voter_user_id = $1 AND entry_id = $2 AND status = 'active'",
+                        auth["user_id"],
+                        entry_id,
+                    )
+                    if duplicate_active:
+                        raise VoteError("Нельзя повторно голосовать за ту же работу.", "duplicate_vote", 409)
 
                 client_host = request.client.host if request.client else None
                 ip_hash = _hash_optional(client_host)
@@ -1211,6 +1233,7 @@ async def confirm_votes(request: Request, x_telegram_init_data: str = Header(def
                         INSERT INTO contest_votes (
                             voter_user_id,
                             entry_id,
+                            status,
                             ip_hash,
                             user_agent_hash,
                             is_suspicious,
@@ -1219,7 +1242,16 @@ async def confirm_votes(request: Request, x_telegram_init_data: str = Header(def
                             created_at,
                             updated_at
                         )
-                        VALUES ($1, $2, $3, $4, $5, $6, NOW(), NOW(), NOW())
+                        VALUES ($1, $2, 'active', $3, $4, $5, $6, NOW(), NOW(), NOW())
+                        ON CONFLICT (voter_user_id, entry_id)
+                        DO UPDATE SET
+                            status = 'active',
+                            ip_hash = EXCLUDED.ip_hash,
+                            user_agent_hash = EXCLUDED.user_agent_hash,
+                            is_suspicious = EXCLUDED.is_suspicious,
+                            suspicion_reason = EXCLUDED.suspicion_reason,
+                            confirmed_at = NOW(),
+                            updated_at = NOW()
                         """,
                         auth["user_id"],
                         entry_id,
@@ -1359,6 +1391,7 @@ async def admin_overview(x_telegram_init_data: str = Header(default="")) -> JSON
                         COUNT(*)::INT AS confirmed_votes_count,
                         COUNT(*) FILTER (WHERE is_suspicious = TRUE)::INT AS suspicious_votes_count
                     FROM contest_votes
+                    WHERE status = 'active'
                     GROUP BY entry_id
                 ) v ON v.entry_id = e.id
                 WHERE COALESCE(e.is_deleted, FALSE) = FALSE
@@ -1410,6 +1443,7 @@ async def admin_entry_votes(entry_id: int, x_telegram_init_data: str = Header(de
                 FROM contest_votes v
                 LEFT JOIN contest_vote_confirmations c ON c.voter_user_id = v.voter_user_id
                 WHERE v.entry_id = $1
+                  AND v.status = 'active'
                 ORDER BY v.created_at DESC
                 """,
                 entry_id,
