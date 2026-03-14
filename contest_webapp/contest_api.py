@@ -1757,6 +1757,89 @@ async def admin_overview(x_telegram_init_data: str = Header(default="")) -> JSON
         return _internal_error_response("Не удалось загрузить админ-обзор.")
 
 
+@router.get("/admin/entries/{entry_id}")
+async def admin_entry_detail(entry_id: int, x_telegram_init_data: str = Header(default="")) -> JSONResponse:
+    try:
+        auth = _extract_auth(x_telegram_init_data)
+        _require_admin(auth["user_id"])
+        async with get_pool().acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                SELECT
+                    e.id,
+                    CASE
+                        WHEN e.status = 'approved' THEN ROW_NUMBER() OVER (
+                            PARTITION BY (e.status = 'approved')
+                            ORDER BY e.display_order_anchor ASC, e.id ASC
+                        )
+                        ELSE NULL
+                    END AS display_number,
+                    e.owner_user_id,
+                    e.status,
+                    e.penalty_votes,
+                    COALESCE(v.confirmed_votes_count, 0) AS confirmed_votes_count,
+                    COALESCE(v.suspicious_votes_count, 0) AS suspicious_votes_count
+                FROM contest_entries e
+                LEFT JOIN (
+                    SELECT
+                        entry_id,
+                        COUNT(*)::INT AS confirmed_votes_count,
+                        COUNT(*) FILTER (WHERE is_suspicious = TRUE)::INT AS suspicious_votes_count
+                    FROM contest_votes
+                    WHERE status = 'active'
+                    GROUP BY entry_id
+                ) v ON v.entry_id = e.id
+                WHERE e.id = $1
+                  AND COALESCE(e.is_deleted, FALSE) = FALSE
+                """,
+                entry_id,
+            )
+
+            if not row:
+                raise VoteError("Работа не найдена.", "entry_not_found", 404)
+
+            item = dict(row)
+            item["net_votes"] = int(item.get("confirmed_votes_count") or 0) - int(item.get("penalty_votes") or 0)
+            item["tie_break_bonus"] = 0
+            item["effective_net_votes"] = int(item["net_votes"])
+
+            if item.get("status") == "approved":
+                approved_rows = await conn.fetch(
+                    """
+                    SELECT
+                        e.id,
+                        e.penalty_votes,
+                        COALESCE(v.confirmed_votes_count, 0) AS confirmed_votes_count
+                    FROM contest_entries e
+                    LEFT JOIN (
+                        SELECT entry_id, COUNT(*)::INT AS confirmed_votes_count
+                        FROM contest_votes
+                        WHERE status = 'active'
+                        GROUP BY entry_id
+                    ) v ON v.entry_id = e.id
+                    WHERE e.status = 'approved'
+                      AND COALESCE(e.is_deleted, FALSE) = FALSE
+                    """
+                )
+                approved_items = [dict(approved_row) for approved_row in approved_rows]
+                for approved_item in approved_items:
+                    approved_item["net_votes"] = int(approved_item.get("confirmed_votes_count") or 0) - int(
+                        approved_item.get("penalty_votes") or 0
+                    )
+                _apply_results_tie_break(approved_items)
+                matched = next((approved_item for approved_item in approved_items if int(approved_item.get("id") or 0) == entry_id), None)
+                if matched:
+                    item["tie_break_bonus"] = int(matched.get("tie_break_bonus") or 0)
+                    item["effective_net_votes"] = int(matched.get("effective_net_votes") or item["effective_net_votes"])
+
+        return JSONResponse({"ok": True, "item": item})
+    except VoteError as exc:
+        return JSONResponse({"ok": False, "error_code": exc.code, "message": exc.message}, status_code=exc.status)
+    except Exception:
+        logger.exception("Failed to load admin entry detail id=%s", entry_id)
+        return _internal_error_response("Не удалось загрузить детали работы.")
+
+
 @router.get("/admin/entry/{entry_id}/votes")
 async def admin_entry_votes(entry_id: int, x_telegram_init_data: str = Header(default="")) -> JSONResponse:
     try:

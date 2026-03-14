@@ -28,6 +28,9 @@ const imagePreviewModalEl = document.getElementById("imagePreviewModal");
 const imagePreviewCloseEl = document.getElementById("imagePreviewClose");
 const imagePreviewTitleEl = document.getElementById("imagePreviewTitle");
 const imagePreviewImageEl = document.getElementById("imagePreviewImage");
+const adminEntryDetailModalEl = document.getElementById("adminEntryDetailModal");
+const adminEntryDetailCloseEl = document.getElementById("adminEntryDetailClose");
+const adminEntryDetailContentEl = document.getElementById("adminEntryDetailContent");
 
 const tg = window.Telegram?.WebApp;
 if (tg) {
@@ -538,6 +541,18 @@ function renderEntries() {
 
     card.dataset.entryId = String(entry.id);
 
+    if (state.isAdmin) {
+      const adminDetailBtn = document.createElement("button");
+      adminDetailBtn.type = "button";
+      adminDetailBtn.className = "admin-entry-button entry-card__admin-detail-btn";
+      adminDetailBtn.textContent = "Подробнее";
+      adminDetailBtn.addEventListener("click", (event) => {
+        event.stopPropagation();
+        openAdminEntryDetail(entry.id);
+      });
+      fragment.querySelector(".entry-card__body")?.appendChild(adminDetailBtn);
+    }
+
     const imageFallback = document.createElement("div");
     imageFallback.className = "entry-card__image-fallback";
     imageFallback.textContent = "Изображение недоступно";
@@ -784,6 +799,56 @@ function renderAdminEntryLog(entry) {
   `;
 }
 
+
+function formatAdminEntryDetail(item) {
+  if (!item || typeof item !== "object") {
+    return "<p class=\"status-message\">Данные недоступны.</p>";
+  }
+
+  const rows = [
+    ["ID", item.id],
+    ["Номер", Number(item.display_number) > 0 ? item.display_number : "—"],
+    ["Автор (user_id)", item.owner_user_id || "—"],
+    ["Статус", safeString(item.status) || "—"],
+    ["Подтвержденные", Number(item.confirmed_votes_count) || 0],
+    ["Штраф", Number(item.penalty_votes) || 0],
+    ["Итог (net)", Number(item.net_votes) || 0],
+    ["Подозрительные", Number(item.suspicious_votes_count) || 0],
+    ["Tie-break бонус", Number(item.tie_break_bonus) || 0],
+    ["Tie-break итог", Number(item.effective_net_votes) || 0],
+  ];
+
+  return `
+    <div class="admin-detail-grid">
+      ${rows
+        .map(
+          ([label, value]) =>
+            `<div class="admin-detail-grid__row"><span class="admin-detail-grid__label">${label}</span><span class="admin-detail-grid__value">${value}</span></div>`
+        )
+        .join("")}
+    </div>
+  `;
+}
+
+function closeAdminEntryDetail() {
+  if (!adminEntryDetailModalEl) return;
+  adminEntryDetailModalEl.hidden = true;
+}
+
+async function openAdminEntryDetail(entryId) {
+  if (!adminEntryDetailModalEl || !adminEntryDetailContentEl || !state.isAdmin) return;
+
+  adminEntryDetailContentEl.innerHTML = '<p class="status-message">Загрузка...</p>';
+  adminEntryDetailModalEl.hidden = false;
+
+  try {
+    const payload = await fetchJson(`/api/contest/admin/entries/${entryId}`);
+    adminEntryDetailContentEl.innerHTML = formatAdminEntryDetail(payload.item);
+  } catch (error) {
+    adminEntryDetailContentEl.innerHTML = `<p class="status-message">${error.message || "Не удалось загрузить детали."}</p>`;
+  }
+}
+
 function applyContestState(statePayload, entriesPayload) {
   state.entries = entriesPayload.items || [];
   cleanupEntryImageLoadResults();
@@ -1021,8 +1086,13 @@ imagePreviewModalEl?.addEventListener("click", (event) => {
   }
 });
 document.addEventListener("keydown", (event) => {
-  if (event.key === "Escape" && imagePreviewModalEl && !imagePreviewModalEl.hidden) {
+  if (event.key !== "Escape") return;
+  if (imagePreviewModalEl && !imagePreviewModalEl.hidden) {
     closeImagePreview();
+    return;
+  }
+  if (adminEntryDetailModalEl && !adminEntryDetailModalEl.hidden) {
+    closeAdminEntryDetail();
   }
 });
 openSubmissionBtnEl?.addEventListener("click", () =>
@@ -1037,5 +1107,19 @@ openVotingBtnEl?.addEventListener("click", () =>
 closeVotingBtnEl?.addEventListener("click", () =>
   adminStage("/api/contest/admin/voting/close")
 );
+adminOverviewEl?.addEventListener("click", (event) => {
+  const button = event.target.closest(".admin-entry-button[data-entry-id]");
+  if (!button || !adminOverviewEl.contains(button)) return;
+  event.stopPropagation();
+  const entryId = Number(button.dataset.entryId);
+  if (!Number.isFinite(entryId) || entryId <= 0) return;
+  openAdminEntryDetail(entryId);
+});
+adminEntryDetailCloseEl?.addEventListener("click", closeAdminEntryDetail);
+adminEntryDetailModalEl?.addEventListener("click", (event) => {
+  if (event.target === adminEntryDetailModalEl) {
+    closeAdminEntryDetail();
+  }
+});
 
 loadData();

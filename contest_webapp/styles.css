@@ -199,3 +199,58 @@ body { margin: 0; background: #f4f6fa; color: #1d2530; }
   text-align: center;
   font-size: 1em;
 }
+
+.entry-card__admin-detail-btn {
+  width: auto;
+  margin-top: 10px;
+}
+
+.admin-entry-log {
+  border: 1px solid #e6ebf5;
+}
+
+.admin-entry-stats {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.admin-detail-card {
+  width: min(520px, 100%);
+}
+
+.admin-detail-card__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+
+.admin-detail-content {
+  margin-top: 4px;
+}
+
+.admin-detail-grid {
+  display: grid;
+  gap: 6px;
+}
+
+.admin-detail-grid__row {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  border: 1px solid #edf1f8;
+  border-radius: 8px;
+  padding: 7px 9px;
+  font-size: 13px;
+}
+
+.admin-detail-grid__label {
+  color: #66738a;
+}
+
+.admin-detail-grid__value {
+  font-weight: 600;
+  color: #243246;
+}
