@@ -460,16 +460,21 @@ def _detect_image_content_type(payload: bytes) -> str | None:
 
 def _content_type_for_file(file_path: str, header_content_type: str | None, payload: bytes) -> str:
     normalized_header = _normalize_content_type(header_content_type)
-    detected_image_type = _detect_image_content_type(payload)
     guessed, _ = mimetypes.guess_type(file_path)
     normalized_guess = _normalize_content_type(guessed)
 
-    if detected_image_type:
-        return detected_image_type
     if normalized_header and normalized_header.startswith("image/"):
         return normalized_header
     if normalized_guess and normalized_guess.startswith("image/"):
         return normalized_guess
+
+    if (not normalized_header or normalized_header == "application/octet-stream") and (
+        not normalized_guess or normalized_guess == "application/octet-stream"
+    ):
+        detected_image_type = _detect_image_content_type(payload)
+        if detected_image_type:
+            return detected_image_type
+
     if normalized_header and normalized_header != "application/octet-stream":
         return normalized_header
     if normalized_guess:
