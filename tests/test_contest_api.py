@@ -329,7 +329,10 @@ class ContestApiVotingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(payload["current_user"], {"user_id": 42, "is_admin": False})
         self.assertTrue(payload["items"][0]["is_owned_by_current_user"])
         self.assertEqual(payload["items"][0]["display_number"], 1)
-        self.assertEqual(payload["items"][0]["image_url"], "https://miniapp.example/api/contest/entries/5/image")
+        image_url = payload["items"][0]["image_url"]
+        self.assertTrue(image_url.startswith("/api/contest/entries/"))
+        self.assertFalse(image_url.startswith("http://"))
+        self.assertFalse(image_url.startswith("https://"))
 
     async def test_ensure_schema_adds_suspicion_reason_column(self):
         api = self._build_api()

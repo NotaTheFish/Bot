@@ -328,13 +328,11 @@ def _absolute_url(raw_url: str | None, request_origin: str | None = None) -> str
 def _build_entry_image_url(entry: dict[str, Any], request_origin: str | None = None) -> str | None:
     entry_id = entry.get("id")
     if entry_id is not None:
-        local_url = _absolute_url(f"/api/contest/entries/{entry_id}/image", request_origin)
-        if local_url:
-            token = _build_entry_image_token(int(entry_id))
-            if token:
-                separator = "&" if "?" in local_url else "?"
-                return f"{local_url}{separator}t={token}"
-            return local_url
+        local_url = f"/api/contest/entries/{entry_id}/image"
+        token = _build_entry_image_token(int(entry_id))
+        if token:
+            return f"{local_url}?t={token}"
+        return local_url
 
     for key in ("image_url", "file_url", "storage_url"):
         value = entry.get(key)
