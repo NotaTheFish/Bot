@@ -198,11 +198,15 @@ function isContestImageEndpointUrl(imageUrl) {
   const normalizedImageUrl = safeString(imageUrl);
   if (!normalizedImageUrl) return false;
 
+  const contestImageEndpointPathRegex = /^\/api\/contest\/entries\/\d+\/image\/?$/;
+
   try {
     const resolved = new URL(normalizedImageUrl, window.location.origin);
-    return /\/contest\/(entry-image|entries\/\d+\/image)\//.test(resolved.pathname);
+    return contestImageEndpointPathRegex.test(resolved.pathname);\/image)\//.test(resolved.pathname);
   } catch {
-    return /\/contest\/(entry-image|entries\/\d+\/image)\//.test(normalizedImageUrl);
+    const pathWithoutQuery = normalizedImageUrl.split(/[?#]/, 1)[0];
+    const fallbackPath = pathWithoutQuery.replace(/^[a-z][a-z0-9+.-]*:\/\/[^/]+/i, "");
+    return contestImageEndpointPathRegex.test(fallbackPath);
   }
 }
 
