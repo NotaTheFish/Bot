@@ -5,7 +5,7 @@ const votesCounterEl = document.getElementById("votesCounter");
 const contestStageEl = document.getElementById("contestStage");
 const entriesGridEl = document.getElementById("entriesGrid");
 const statusMessageEl = document.getElementById("statusMessage");
-const rulesLinkEl = document.getElementById("rulesLink");
+const rulesButtonEl = document.getElementById("rulesButton");
 const rulesModalEl = document.getElementById("rulesModal");
 const rulesContentEl = document.getElementById("rulesContent");
 const rulesCloseEl = document.getElementById("rulesClose");
@@ -594,17 +594,7 @@ async function loadAdminOverview(options = {}) {
   try {
     const payload = await fetchJson("/api/contest/admin/overview");
 
-    adminOverviewEl.innerHTML = (payload.items || [])
-      .map(
-        (item) => `
-      <article class="admin-overview-item">
-        <b>Работа #${item.display_number || "—"} (entry_id=${item.id})</b> · автор ${item.owner_user_id}<br />
-        Статус: ${item.status}; подтверждено: ${item.confirmed_votes_count}; penalty: ${item.penalty_votes}; net: ${item.net_votes}<br />
-        Suspicious: ${item.suspicious_votes_count}
-      </article>
-    `
-      )
-      .join("");
+    adminOverviewEl.innerHTML = (payload.items || []).map(renderAdminEntryLog).join("");
   } catch (error) {
     adminOverviewEl.textContent = fallbackMessage;
 
@@ -612,6 +602,35 @@ async function loadAdminOverview(options = {}) {
       throw new Error(error.message || fallbackMessage);
     }
   }
+}
+
+function renderAdminEntryLog(entry) {
+  const statusMap = {
+    approved: "Одобрено",
+    pending: "На проверке",
+    rejected: "Отклонено",
+  };
+
+  return `
+  <div class="admin-entry-log">
+    <div class="admin-entry-title">
+      Работа #${entry.display_number || "—"}
+    </div>
+
+    <div class="admin-entry-meta">
+      <div>ID: ${entry.id}</div>
+      <div>Автор: ${entry.owner_user_id}</div>
+    </div>
+
+    <div class="admin-entry-stats">
+      <div>Статус: ${statusMap[entry.status] ?? entry.status}</div>
+      <div>Подтверждений: ${entry.confirmed_votes_count}</div>
+      <div>Штраф: ${entry.penalty_votes}</div>
+      <div>Итог: ${entry.net_votes}</div>
+      <div>Подозрений: ${entry.suspicious_votes_count}</div>
+    </div>
+  </div>
+  `;
 }
 
 function applyContestState(statePayload, entriesPayload) {
@@ -812,7 +831,7 @@ async function adminStage(path) {
   }
 }
 
-rulesLinkEl?.addEventListener("click", openRules);
+rulesButtonEl?.addEventListener("click", openRules);
 rulesCloseEl?.addEventListener("click", () => {
   rulesModalEl.hidden = true;
 });

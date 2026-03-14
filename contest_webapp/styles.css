@@ -8,7 +8,26 @@ body { margin: 0; background: #f4f6fa; color: #1d2530; }
 .app__header { margin-bottom: 14px; }
 .stage-badge { font-size: 13px; color: #395071; margin: 6px 0; }
 .votes-counter { font-weight: 700; margin: 8px 0; }
-.rules-link { border: 0; background: transparent; color: #1b65d8; padding: 0; }
+.rules-button {
+  margin-top: 8px;
+  padding: 10px 14px;
+  border-radius: 10px;
+  border: none;
+  background: #eef3ff;
+  color: #2a4fd7;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all .15s ease;
+}
+
+.rules-button:hover {
+  background: #dfe8ff;
+}
+
+.rules-button:active {
+  transform: scale(0.97);
+}
 
 .entries-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
 @media (min-width: 700px) { .entries-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
@@ -116,3 +135,24 @@ body { margin: 0; background: #f4f6fa; color: #1d2530; }
 .admin-actions { display: grid; gap: 8px; margin-bottom: 12px; }
 .admin-overview { font-size: 12px; color: #445066; }
 .admin-overview-item { border-top: 1px solid #edf1f8; padding: 8px 0; }
+.admin-entry-log {
+  padding: 12px;
+  border-radius: 10px;
+  background: #f6f7fb;
+  margin-top: 10px;
+  font-size: 13px;
+}
+
+.admin-entry-title {
+  font-weight: 700;
+  margin-bottom: 6px;
+}
+
+.admin-entry-meta {
+  color: #666;
+  margin-bottom: 6px;
+}
+
+.admin-entry-stats div {
+  margin-bottom: 2px;
+}
