@@ -202,7 +202,7 @@ function isContestImageEndpointUrl(imageUrl) {
 
   try {
     const resolved = new URL(normalizedImageUrl, window.location.origin);
-    return contestImageEndpointPathRegex.test(resolved.pathname);\/image)\//.test(resolved.pathname);
+    return contestImageEndpointPathRegex.test(resolved.pathname);
   } catch {
     const pathWithoutQuery = normalizedImageUrl.split(/[?#]/, 1)[0];
     const fallbackPath = pathWithoutQuery.replace(/^[a-z][a-z0-9+.-]*:\/\/[^/]+/i, "");
@@ -233,6 +233,11 @@ function buildEntryImageUrl(entry) {
 
 async function loadEntryImageIntoElement(imgEl, fallbackEl, imageUrl, entryId) {
   const normalizedImageUrl = safeString(imageUrl);
+  console.debug("Contest entry image loader invoked", {
+    entryId,
+    hasUrl: Boolean(normalizedImageUrl),
+    imageUrl: normalizedImageUrl,
+  });
   if (!normalizedImageUrl) {
     imgEl.removeAttribute("src");
     imgEl.hidden = true;
@@ -425,10 +430,11 @@ function renderEntries() {
     }
 
     const imageUrl = buildEntryImageUrl(entry);
-    console.debug("Contest entry card mapping", {
-      entryId: entry.id,
-      displayNumber: entry.display_number,
-      imageUrl,
+    console.log("contest entry image debug", {
+      id: entry.id,
+      display_number: entry.display_number,
+      image_url: entry.image_url,
+      built_url: imageUrl,
     });
     loadEntryImageIntoElement(image, imageFallback, imageUrl, entry.id).then((objectUrl) => {
       if (entriesRenderToken !== currentRenderToken) {

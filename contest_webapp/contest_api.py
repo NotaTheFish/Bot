@@ -732,7 +732,14 @@ async def approved_entries(request: Request, x_telegram_init_data: str = Header(
             item = dict(row)
             item["is_owned_by_current_user"] = int(item["owner_user_id"]) == current_user_id
             item["image_url"] = _build_entry_image_url(item, request_origin)
-            logger.info("Approved entry mapping entry_id=%s display_number=%s image_url=%s", item.get("id"), item.get("display_number"), item.get("image_url"))
+            logger.info(
+                "Approved entry prepared id=%s display_number=%s image_url=%s storage_chat_id=%s storage_message_id=%s",
+                item.get("id"),
+                item.get("display_number"),
+                item.get("image_url"),
+                item.get("storage_chat_id"),
+                item.get("storage_message_id"),
+            )
             if not _is_admin(current_user_id):
                 item.pop("votes_count", None)
                 item.pop("penalty_votes", None)
