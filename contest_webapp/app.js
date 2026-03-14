@@ -200,15 +200,19 @@ function isContestImageEndpointUrl(imageUrl) {
 
   try {
     const resolved = new URL(normalizedImageUrl, window.location.origin);
-    return /\/contest\/entry-image\//.test(resolved.pathname);
+    return /\/contest\/(entry-image|entries\/\d+\/image)\//.test(resolved.pathname);
   } catch {
-    return /\/contest\/entry-image\//.test(normalizedImageUrl);
+    return /\/contest\/(entry-image|entries\/\d+\/image)\//.test(normalizedImageUrl);
   }
 }
 
 function buildEntryImageUrl(entry) {
   const directUrl = toAbsoluteUrl(entry?.image_url);
   if (directUrl) return directUrl;
+
+  if (Number(entry?.id) > 0) {
+    return toAbsoluteUrl(`/api/contest/entries/${entry.id}/image`);
+  }
 
   const fileUrl = toAbsoluteUrl(entry?.file_url);
   if (fileUrl) return fileUrl;
@@ -417,6 +421,11 @@ function renderEntries() {
     }
 
     const imageUrl = buildEntryImageUrl(entry);
+    console.debug("Contest entry card mapping", {
+      entryId: entry.id,
+      displayNumber: entry.display_number,
+      imageUrl,
+    });
     loadEntryImageIntoElement(image, imageFallback, imageUrl, entry.id).then((objectUrl) => {
       if (entriesRenderToken !== currentRenderToken) {
         if (isValidObjectUrl(objectUrl)) {

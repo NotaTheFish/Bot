@@ -304,6 +304,7 @@ class ContestApiVotingTests(unittest.IsolatedAsyncioTestCase):
                 return_value=[
                     {
                         "id": 5,
+                        "display_number": 1,
                         "owner_user_id": 42,
                         "owner_username_last_seen": "me",
                         "owner_first_name_last_seen": "Test",
@@ -318,15 +319,17 @@ class ContestApiVotingTests(unittest.IsolatedAsyncioTestCase):
                 ]
             )
         )
-        request = SimpleNamespace()
+        request = SimpleNamespace(base_url="https://miniapp.example/")
 
         with patch.object(api, "_extract_auth", return_value={"user_id": 42}):
             response = await api.approved_entries(request)
 
         payload = json.loads(response.text)
         self.assertEqual(response.status, 200)
-        self.assertEqual(payload["current_user"], {"user_id": 42})
+        self.assertEqual(payload["current_user"], {"user_id": 42, "is_admin": False})
         self.assertTrue(payload["items"][0]["is_owned_by_current_user"])
+        self.assertEqual(payload["items"][0]["display_number"], 1)
+        self.assertEqual(payload["items"][0]["image_url"], "https://miniapp.example/api/contest/entries/5/image")
 
     async def test_ensure_schema_adds_suspicion_reason_column(self):
         api = self._build_api()
