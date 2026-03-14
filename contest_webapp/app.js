@@ -41,6 +41,7 @@ const authHeaders = initData ? { "X-Telegram-Init-Data": initData } : {};
 const state = {
   entries: [],
   entryImageLoadResults: new Map(),
+  entryImageObjectUrls: new Map(),
   draftEntryIds: new Set(),
   confirmedEntryIds: new Set(),
   activeEntryId: null,
@@ -52,14 +53,36 @@ const state = {
   busy: false,
 };
 
+let entriesRenderToken = 0;
+
 function isValidObjectUrl(value) {
   return typeof value === "string" && value.startsWith("blob:");
 }
 
 function revokeEntryObjectUrl(entryId) {
-  const existing = state.entryImageLoadResults.get(entryId);
-  if (!existing || !isValidObjectUrl(existing.objectUrl)) return;
-  URL.revokeObjectURL(existing.objectUrl);
+  const existingObjectUrl = state.entryImageObjectUrls.get(entryId);
+  if (!isValidObjectUrl(existingObjectUrl)) return;
+  URL.revokeObjectURL(existingObjectUrl);
+}
+
+function setEntryObjectUrl(entryId, objectUrl) {
+  revokeEntryObjectUrl(entryId);
+
+  if (isValidObjectUrl(objectUrl)) {
+    state.entryImageObjectUrls.set(entryId, objectUrl);
+    return;
+  }
+
+  state.entryImageObjectUrls.delete(entryId);
+}
+
+function cleanupAllEntryObjectUrls() {
+  for (const objectUrl of state.entryImageObjectUrls.values()) {
+    if (!isValidObjectUrl(objectUrl)) continue;
+    URL.revokeObjectURL(objectUrl);
+  }
+
+  state.entryImageObjectUrls.clear();
 }
 
 function cleanupEntryImageLoadResults() {
@@ -239,6 +262,12 @@ function closeImagePreview() {
 }
 
 function renderEntries() {
+  entriesRenderToken += 1;
+  const currentRenderToken = entriesRenderToken;
+
+  cleanupAllEntryObjectUrls();
+  state.entryImageLoadResults.clear();
+
   entriesGridEl.innerHTML = "";
 
   if (!state.entries.length) {
@@ -285,16 +314,22 @@ function renderEntries() {
 
     const imageUrl = buildEntryImageUrl(entry);
     loadEntryImageIntoElement(image, imageFallback, imageUrl, entry.id).then((objectUrl) => {
+      if (entriesRenderToken !== currentRenderToken) {
+        if (isValidObjectUrl(objectUrl)) {
+          URL.revokeObjectURL(objectUrl);
+        }
+        return;
+      }
+
       if (!isValidObjectUrl(objectUrl)) {
-        revokeEntryObjectUrl(entry.id);
+        setEntryObjectUrl(entry.id, null);
         state.entryImageLoadResults.set(entry.id, {
-          objectUrl: null,
           sourceUrl: imageUrl,
         });
         return;
       }
 
-      revokeEntryObjectUrl(entry.id);
+      setEntryObjectUrl(entry.id, objectUrl);
       state.entryImageLoadResults.set(entry.id, {
         objectUrl,
         sourceUrl: imageUrl,
