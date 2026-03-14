@@ -40,6 +40,7 @@ const authHeaders = initData ? { "X-Telegram-Init-Data": initData } : {};
 
 const state = {
   entries: [],
+  entryImageLoadResults: new Map(),
   draftEntryIds: new Set(),
   confirmedEntryIds: new Set(),
   activeEntryId: null,
@@ -50,6 +51,26 @@ const state = {
   isChannelMember: false,
   busy: false,
 };
+
+function isValidObjectUrl(value) {
+  return typeof value === "string" && value.startsWith("blob:");
+}
+
+function revokeEntryObjectUrl(entryId) {
+  const existing = state.entryImageLoadResults.get(entryId);
+  if (!existing || !isValidObjectUrl(existing.objectUrl)) return;
+  URL.revokeObjectURL(existing.objectUrl);
+}
+
+function cleanupEntryImageLoadResults() {
+  const existingEntryIds = new Set(state.entries.map((entry) => entry.id));
+
+  for (const [entryId] of state.entryImageLoadResults) {
+    if (existingEntryIds.has(entryId)) continue;
+    revokeEntryObjectUrl(entryId);
+    state.entryImageLoadResults.delete(entryId);
+  }
+}
 
 const selectedCount = () =>
   state.confirmed ? state.confirmedEntryIds.size : state.draftEntryIds.size;
@@ -263,23 +284,35 @@ function renderEntries() {
     }
 
     const imageUrl = buildEntryImageUrl(entry);
-    let loadedImageObjectUrl = null;
     loadEntryImageIntoElement(image, imageFallback, imageUrl, entry.id).then((objectUrl) => {
-      loadedImageObjectUrl = objectUrl;
+      if (!isValidObjectUrl(objectUrl)) {
+        revokeEntryObjectUrl(entry.id);
+        state.entryImageLoadResults.set(entry.id, {
+          objectUrl: null,
+          sourceUrl: imageUrl,
+        });
+        return;
+      }
+
+      revokeEntryObjectUrl(entry.id);
+      state.entryImageLoadResults.set(entry.id, {
+        objectUrl,
+        sourceUrl: imageUrl,
+      });
     });
 
     image.addEventListener("click", (event) => {
       event.stopPropagation();
-      if (loadedImageObjectUrl) {
-        openImagePreview(entry, loadedImageObjectUrl);
-      }
+      const loadResult = state.entryImageLoadResults.get(entry.id);
+      if (!isValidObjectUrl(loadResult?.objectUrl)) return;
+      openImagePreview(entry, loadResult.objectUrl);
     });
 
     previewBtn?.addEventListener("click", (event) => {
       event.stopPropagation();
-      if (loadedImageObjectUrl) {
-        openImagePreview(entry, loadedImageObjectUrl);
-      }
+      const loadResult = state.entryImageLoadResults.get(entry.id);
+      if (!isValidObjectUrl(loadResult?.objectUrl)) return;
+      openImagePreview(entry, loadResult.objectUrl);
     });
 
     card.addEventListener("click", () => {
@@ -425,6 +458,7 @@ async function loadAdminOverview(options = {}) {
 
 function applyContestState(statePayload, entriesPayload) {
   state.entries = entriesPayload.items || [];
+  cleanupEntryImageLoadResults();
   state.draftEntryIds = new Set(statePayload.draft_entry_ids || []);
   state.confirmedEntryIds = new Set(statePayload.confirmed_entry_ids || []);
   state.submissionOpen = Boolean(statePayload.submission_open);
