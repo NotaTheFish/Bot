@@ -127,12 +127,13 @@ async function loadEntryImageIntoElement(imgEl, fallbackEl, imageUrl, entryId) {
         ...authHeaders,
       },
     });
+    const responseContentType = safeString(response.headers.get("content-type"));
 
     if (!response.ok) {
       imgEl.removeAttribute("src");
       imgEl.hidden = true;
       fallbackEl.hidden = false;
-      console.warn("Contest entry image request failed", {
+      console.warn("Contest entry image fetch failed", {
         entryId,
         imageUrl: normalizedImageUrl,
         status: response.status,
@@ -145,10 +146,11 @@ async function loadEntryImageIntoElement(imgEl, fallbackEl, imageUrl, entryId) {
       imgEl.removeAttribute("src");
       imgEl.hidden = true;
       fallbackEl.hidden = false;
-      console.warn("Contest entry image content type is invalid", {
+      console.warn("Contest entry image returned non-image blob", {
         entryId,
         imageUrl: normalizedImageUrl,
-        contentType: blob.type || "unknown",
+        status: response.status,
+        contentType: blob.type || responseContentType || "unknown",
       });
       return null;
     }
@@ -157,9 +159,11 @@ async function loadEntryImageIntoElement(imgEl, fallbackEl, imageUrl, entryId) {
     imgEl.src = objectUrl;
     imgEl.hidden = false;
     fallbackEl.hidden = true;
-    console.debug("Contest entry image loaded", {
+    console.debug("Contest entry image loaded via blob", {
       entryId,
       imageUrl: normalizedImageUrl,
+      status: response.status,
+      contentType: blob.type || responseContentType || "unknown",
     });
     return objectUrl;
   } catch (error) {
