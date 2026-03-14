@@ -1733,12 +1733,21 @@ async def admin_overview(x_telegram_init_data: str = Header(default="")) -> JSON
         if (settings.get("phase") or "submission") == "results":
             approved_items = [item for item in items if item.get("status") == "approved"]
             _apply_results_tie_break(approved_items)
+            for item in approved_items:
+                item["net_votes"] = int(item.get("effective_net_votes") or item.get("net_votes") or 0)
+
+        leaders = [dict(item) for item in items if item.get("status") == "approved"]
+        _apply_results_tie_break(leaders)
+        for item in leaders:
+            item["net_votes"] = int(item.get("effective_net_votes") or item.get("net_votes") or 0)
+        leaders = leaders[:5]
 
         payload = {
             "ok": True,
             "settings": settings,
             "confirmations_count": int(confirmations_count or 0),
             "items": items,
+            "leaders": leaders,
         }
         return JSONResponse(jsonable_encoder(payload))
     except VoteError as exc:

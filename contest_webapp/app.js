@@ -752,7 +752,10 @@ async function loadAdminOverview(options = {}) {
   try {
     const payload = await fetchJson("/api/contest/admin/overview");
 
-    adminOverviewEl.innerHTML = (payload.items || []).map(renderAdminEntryLog).join("");
+    const leaderItems = Array.isArray(payload.leaders) && payload.leaders.length
+      ? payload.leaders
+      : (payload.items || []).slice(0, 5);
+    adminOverviewEl.innerHTML = leaderItems.map(renderAdminEntryLog).join("");
   } catch (error) {
     adminOverviewEl.textContent = fallbackMessage;
 
@@ -763,30 +766,20 @@ async function loadAdminOverview(options = {}) {
 }
 
 function renderAdminEntryLog(entry) {
-  const statusMap = {
-    approved: "Одобрено",
-    pending: "На проверке",
-    rejected: "Отклонено",
-  };
+  const displayNumber = Number(entry.display_number) > 0 ? Number(entry.display_number) : "—";
+  const place = Number(entry.place) > 0 ? Number(entry.place) : "—";
+  const netVotes = Number.isFinite(Number(entry.net_votes)) ? Number(entry.net_votes) : 0;
+  const author = Number(entry.owner_user_id) > 0 ? entry.owner_user_id : "—";
 
   return `
   <div class="admin-entry-log">
-    <div class="admin-entry-title">
-      Работа #${entry.display_number || "—"}
-    </div>
-
-    <div class="admin-entry-meta">
-      <div>ID: ${entry.id}</div>
-      <div>Автор: ${entry.owner_user_id}</div>
-    </div>
-
+    <div class="admin-entry-title">Работа #${displayNumber}</div>
     <div class="admin-entry-stats">
-      <div>Статус: ${statusMap[entry.status] ?? entry.status}</div>
-      <div>Подтверждений: ${entry.confirmed_votes_count}</div>
-      <div>Штраф: ${entry.penalty_votes}</div>
-      <div>Итог: ${entry.net_votes}</div>
-      <div>Подозрений: ${entry.suspicious_votes_count}</div>
+      <div>Голосов: ${netVotes}</div>
+      <div>Место: ${place}</div>
+      <div>Автор: ${author}</div>
     </div>
+    <button class="admin-entry-button" type="button" data-entry-id="${entry.id}">Подробнее</button>
   </div>
   `;
 }

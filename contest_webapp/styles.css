@@ -161,6 +161,17 @@ body { margin: 0; background: #f4f6fa; color: #1d2530; }
   margin-bottom: 2px;
 }
 
+.admin-entry-button {
+  margin-top: 8px;
+  padding: 6px 10px;
+  border-radius: 8px;
+  border: 1px solid #d7ddeb;
+  background: #fff;
+  color: #2f3b52;
+  font-size: 12px;
+  cursor: pointer;
+}
+
 .tg-inline-emoji,
 .tg-custom-emoji,
 .tg-custom-emoji-video {
