@@ -1,4 +1,5 @@
 import json
+import time
 import unittest
 from unittest.mock import AsyncMock, patch
 
@@ -95,3 +96,47 @@ class ContestWebappRulesEndpointTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(payload["rules_text"], "Hi 😀")
         self.assertIn("rules_entities_json", payload)
         self.assertEqual(payload["rules_html"], "Hi <img />")
+
+class ContestWebappCustomEmojiResolverTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        contest_api.custom_emoji_cache.clear()
+
+    async def asyncTearDown(self):
+        contest_api.custom_emoji_cache.clear()
+
+    async def test_resolve_custom_emoji_url_cache_hit(self):
+        contest_api.custom_emoji_cache["ce1"] = (time.time() + 60, "https://cdn/cached.webp")
+
+        with patch.object(contest_api, "_telegram_api_call", AsyncMock()) as tg_call:
+            resolved = await contest_api._resolve_custom_emoji_url("ce1")
+
+        self.assertEqual(resolved, "https://cdn/cached.webp")
+        tg_call.assert_not_awaited()
+
+    async def test_resolve_custom_emoji_url_cache_miss_fetches_and_caches(self):
+        with patch.object(
+            contest_api,
+            "_telegram_api_call",
+            AsyncMock(
+                side_effect=[
+                    {"ok": True, "result": [{"custom_emoji_id": "ce1", "file_id": "f1"}]},
+                    {"ok": True, "result": {"file_path": "stickers/emoji1.webp"}},
+                ]
+            ),
+        ) as tg_call, patch.object(contest_api, "BOT_TOKEN", "123:abc"):
+            resolved = await contest_api._resolve_custom_emoji_url("ce1")
+
+        self.assertEqual(resolved, "https://api.telegram.org/file/bot123:abc/stickers/emoji1.webp")
+        self.assertEqual(tg_call.await_count, 2)
+        self.assertEqual(contest_api._cache_get_custom_emoji_url("ce1"), resolved)
+
+    async def test_resolve_custom_emoji_url_telegram_api_error(self):
+        with patch.object(
+            contest_api,
+            "_telegram_api_call",
+            AsyncMock(side_effect=RuntimeError("telegram unavailable")),
+        ):
+            with self.assertRaises(RuntimeError):
+                await contest_api._resolve_custom_emoji_url("ce1")
+
+        self.assertIsNone(contest_api._cache_get_custom_emoji_url("ce1"))
