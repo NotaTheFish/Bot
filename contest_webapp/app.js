@@ -497,6 +497,22 @@ function closeImagePreview() {
   imagePreviewImageEl.removeAttribute("src");
 }
 
+function setActiveCardState(previousEntryId, nextEntryId) {
+  if (previousEntryId != null) {
+    const previousCard = entriesGridEl.querySelector(
+      `.entry-card[data-entry-id="${String(previousEntryId)}"]`
+    );
+    previousCard?.classList.remove("entry-card--active");
+  }
+
+  if (nextEntryId != null) {
+    const nextCard = entriesGridEl.querySelector(
+      `.entry-card[data-entry-id="${String(nextEntryId)}"]`
+    );
+    nextCard?.classList.add("entry-card--active");
+  }
+}
+
 function renderEntries() {
   entriesRenderToken += 1;
   const currentRenderToken = entriesRenderToken;
@@ -519,6 +535,8 @@ function renderEntries() {
     const title = fragment.querySelector(".entry-card__title");
     const meta = fragment.querySelector(".entry-card__meta");
     const previewBtn = fragment.querySelector(".entry-card__preview-btn");
+
+    card.dataset.entryId = String(entry.id);
 
     const imageFallback = document.createElement("div");
     imageFallback.className = "entry-card__image-fallback";
@@ -602,8 +620,10 @@ function renderEntries() {
     });
 
     card.addEventListener("click", () => {
+      const previousActiveEntryId = state.activeEntryId;
       state.activeEntryId = entry.id;
-      renderEntries();
+      setActiveCardState(previousActiveEntryId, state.activeEntryId);
+      renderActionBar();
     });
 
     entriesGridEl.appendChild(fragment);
