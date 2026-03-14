@@ -157,8 +157,30 @@ body { margin: 0; background: #f4f6fa; color: #1d2530; }
   margin-bottom: 2px;
 }
 
-.tg-custom-emoji {
+.tg-inline-emoji,
+.tg-custom-emoji,
+.tg-custom-emoji-video {
+  display: inline-block;
   width: 1.2em;
   height: 1.2em;
   vertical-align: -0.2em;
+  overflow: hidden;
+}
+
+.tg-inline-emoji {
+  line-height: 1;
+}
+
+.tg-inline-emoji--lottie {
+  white-space: nowrap;
+}
+
+.tg-custom-emoji,
+.tg-custom-emoji-video {
+  object-fit: contain;
+}
+
+.tg-inline-emoji--fallback {
+  text-align: center;
+  font-size: 1em;
 }

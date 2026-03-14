@@ -56,6 +56,111 @@ const state = {
 };
 
 let entriesRenderToken = 0;
+const hydratedRulesContainers = new WeakMap();
+let lottieLoadPromise = null;
+
+function cleanupRulesEmoji(container) {
+  const cleanup = hydratedRulesContainers.get(container);
+  if (typeof cleanup === "function") {
+    cleanup();
+  }
+  hydratedRulesContainers.delete(container);
+}
+
+function loadLottieLibrary() {
+  if (window.lottie) return Promise.resolve(window.lottie);
+  if (lottieLoadPromise) return lottieLoadPromise;
+
+  const sources = [
+    "https://cdn.jsdelivr.net/npm/lottie-web@5.12.2/build/player/lottie.min.js",
+    "https://unpkg.com/lottie-web@5.12.2/build/player/lottie.min.js",
+  ];
+
+  lottieLoadPromise = new Promise((resolve, reject) => {
+    let index = 0;
+    const tryNext = () => {
+      if (window.lottie) {
+        resolve(window.lottie);
+        return;
+      }
+      if (index >= sources.length) {
+        reject(new Error("lottie-web is unavailable"));
+        return;
+      }
+      const script = document.createElement("script");
+      script.src = sources[index++];
+      script.async = true;
+      script.onload = () => {
+        if (window.lottie) {
+          resolve(window.lottie);
+          return;
+        }
+        tryNext();
+      };
+      script.onerror = tryNext;
+      document.head.appendChild(script);
+    };
+    tryNext();
+  });
+
+  return lottieLoadPromise;
+}
+
+async function hydrateCustomEmoji(container) {
+  cleanupRulesEmoji(container);
+  if (!container) return;
+
+  const lottieNodes = Array.from(container.querySelectorAll(".tg-inline-emoji--lottie"));
+  if (!lottieNodes.length) return;
+
+  let lottie;
+  try {
+    lottie = await loadLottieLibrary();
+  } catch (_error) {
+    for (const node of lottieNodes) {
+      if (!node.textContent.trim()) {
+        node.textContent = "◻️";
+      }
+      node.classList.add("tg-inline-emoji--fallback");
+    }
+    return;
+  }
+
+  const instances = [];
+  for (const node of lottieNodes) {
+    if (node.dataset.hydrated === "1") continue;
+    const path = safeString(node.dataset.assetUrl);
+    if (!path) {
+      node.textContent = "◻️";
+      node.classList.add("tg-inline-emoji--fallback");
+      continue;
+    }
+    node.dataset.hydrated = "1";
+    node.textContent = "";
+    const instance = lottie.loadAnimation({
+      container: node,
+      renderer: "svg",
+      loop: true,
+      autoplay: true,
+      path,
+    });
+    instances.push(instance);
+  }
+
+  hydratedRulesContainers.set(container, () => {
+    for (const instance of instances) {
+      try {
+        instance.destroy();
+      } catch (_error) {
+        // ignore
+      }
+    }
+    for (const node of lottieNodes) {
+      delete node.dataset.hydrated;
+      node.textContent = "";
+    }
+  });
+}
 
 function isValidObjectUrl(value) {
   return typeof value === "string" && value.startsWith("blob:");
@@ -806,6 +911,7 @@ async function submitConfirmVotes() {
 
 async function openRules() {
   try {
+    cleanupRulesEmoji(rulesContentEl);
     rulesContentEl.textContent = "Загрузка правил...";
     rulesModalEl.hidden = false;
 
@@ -813,6 +919,7 @@ async function openRules() {
     const rulesHtml = safeString(payload.rules_html);
     if (rulesHtml) {
       rulesContentEl.innerHTML = rulesHtml;
+      await hydrateCustomEmoji(rulesContentEl);
       return;
     }
 
@@ -858,6 +965,7 @@ async function adminStage(path) {
 
 rulesButtonEl?.addEventListener("click", openRules);
 rulesCloseEl?.addEventListener("click", () => {
+  cleanupRulesEmoji(rulesContentEl);
   rulesModalEl.hidden = true;
 });
 actionBarButtonEl?.addEventListener("click", toggleActiveSelection);

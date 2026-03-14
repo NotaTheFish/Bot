@@ -6,7 +6,7 @@ import logging
 import mimetypes
 import os
 import time
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from typing import Any
 from urllib.parse import parse_qsl
 from urllib.parse import urlparse
@@ -71,9 +71,31 @@ _http: aiohttp.ClientSession | None = None
 _entry_image_cache: dict[int, tuple[float, bytes, str]] = {}
 _telegram_file_path_cache: dict[str, tuple[float, str]] = {}
 custom_emoji_cache: dict[str, tuple[float, str]] = {}
+_custom_emoji_meta_cache: dict[str, tuple[float, "CustomEmojiRenderInfo"]] = {}
+_custom_emoji_asset_cache: dict[str, tuple[float, bytes, str]] = {}
 ENTRY_IMAGE_CACHE_TTL_SECONDS = max(1, _env_int("ENTRY_IMAGE_CACHE_TTL_SECONDS", 60))
 TELEGRAM_FILE_PATH_CACHE_TTL_SECONDS = max(1, _env_int("TELEGRAM_FILE_PATH_CACHE_TTL_SECONDS", 300))
 CUSTOM_EMOJI_URL_CACHE_TTL_SECONDS = max(1, _env_int("CUSTOM_EMOJI_URL_CACHE_TTL_SECONDS", 300))
+CUSTOM_EMOJI_META_CACHE_TTL_SECONDS = max(1, _env_int("CUSTOM_EMOJI_META_CACHE_TTL_SECONDS", 300))
+CUSTOM_EMOJI_ASSET_CACHE_TTL_SECONDS = max(1, _env_int("CUSTOM_EMOJI_ASSET_CACHE_TTL_SECONDS", 300))
+
+
+@dataclass(slots=True)
+class CustomEmojiRenderInfo:
+    custom_emoji_id: str
+    file_id: str
+    file_unique_id: str
+    is_animated: bool
+    is_video: bool
+    emoji: str | None
+    set_name: str | None
+    source_format: str
+    file_path: str | None
+    thumbnail_file_id: str | None
+    render_mode: str
+    mime_type: str
+    width: int
+    height: int
 
 
 @dataclass(slots=True)
@@ -156,6 +178,8 @@ async def shutdown() -> None:
     _entry_image_cache.clear()
     _telegram_file_path_cache.clear()
     custom_emoji_cache.clear()
+    _custom_emoji_meta_cache.clear()
+    _custom_emoji_asset_cache.clear()
 
 
 async def ensure_schema() -> None:
@@ -465,17 +489,81 @@ def _cache_set_custom_emoji_url(custom_emoji_id: str, url: str) -> None:
     custom_emoji_cache[str(custom_emoji_id)] = (time.time() + CUSTOM_EMOJI_URL_CACHE_TTL_SECONDS, str(url))
 
 
-async def _resolve_custom_emoji_url(custom_emoji_id: str) -> str | None:
-    """Resolve custom emoji URL via in-memory cache first, then Telegram API.
+def _cache_get_custom_emoji_meta(custom_emoji_id: str) -> CustomEmojiRenderInfo | None:
+    cached = _custom_emoji_meta_cache.get(str(custom_emoji_id))
+    if not cached:
+        return None
+    expires_at, meta = cached
+    if time.time() >= expires_at:
+        _custom_emoji_meta_cache.pop(str(custom_emoji_id), None)
+        return None
+    return meta
 
-    NOTE: for horizontal scaling (multiple app instances), this cache can be moved
-    to a shared backend (e.g. Redis/DB) without changing callers.
-    """
+
+def _cache_set_custom_emoji_meta(custom_emoji_id: str, meta: CustomEmojiRenderInfo) -> None:
+    _custom_emoji_meta_cache[str(custom_emoji_id)] = (time.time() + CUSTOM_EMOJI_META_CACHE_TTL_SECONDS, meta)
+
+
+def _cache_get_custom_emoji_asset(custom_emoji_id: str) -> tuple[bytes, str] | None:
+    cached = _custom_emoji_asset_cache.get(str(custom_emoji_id))
+    if not cached:
+        return None
+    expires_at, payload, mime_type = cached
+    if time.time() >= expires_at:
+        _custom_emoji_asset_cache.pop(str(custom_emoji_id), None)
+        return None
+    return payload, mime_type
+
+
+def _cache_set_custom_emoji_asset(custom_emoji_id: str, payload: bytes, mime_type: str) -> None:
+    _custom_emoji_asset_cache[str(custom_emoji_id)] = (
+        time.time() + CUSTOM_EMOJI_ASSET_CACHE_TTL_SECONDS,
+        payload,
+        mime_type,
+    )
+
+
+def _source_format_for_file_path(file_path: str | None) -> str:
+    if not file_path:
+        return "unknown"
+    lowered = file_path.lower()
+    if lowered.endswith(".tgs"):
+        return "tgs"
+    if lowered.endswith(".webm"):
+        return "webm"
+    if lowered.endswith(".webp"):
+        return "webp"
+    if lowered.endswith(".png"):
+        return "png"
+    return "unknown"
+
+
+def _render_mode_for_sticker(is_animated: bool, is_video: bool, source_format: str) -> str:
+    if is_video or source_format == "webm":
+        return "video"
+    if is_animated or source_format == "tgs":
+        return "lottie"
+    if source_format in {"webp", "png"}:
+        return "image"
+    return "fallback"
+
+
+def _mime_type_for_custom_emoji(source_format: str, render_mode: str) -> str:
+    if render_mode == "lottie":
+        return "application/x-tgsticker"
+    if render_mode == "video":
+        return "video/webm"
+    if source_format == "png":
+        return "image/png"
+    return "image/webp"
+
+
+async def _resolve_custom_emoji_info(custom_emoji_id: str) -> CustomEmojiRenderInfo | None:
     normalized_id = str(custom_emoji_id or "").strip()
     if not normalized_id:
         return None
 
-    cached = _cache_get_custom_emoji_url(normalized_id)
+    cached = _cache_get_custom_emoji_meta(normalized_id)
     if cached:
         return cached
 
@@ -486,9 +574,7 @@ async def _resolve_custom_emoji_url(custom_emoji_id: str) -> str | None:
 
     sticker: dict[str, Any] | None = None
     for item in stickers:
-        if not isinstance(item, dict):
-            continue
-        if str(item.get("custom_emoji_id") or "") == normalized_id:
+        if isinstance(item, dict) and str(item.get("custom_emoji_id") or "") == normalized_id:
             sticker = item
             break
     if sticker is None and isinstance(stickers[0], dict):
@@ -500,15 +586,43 @@ async def _resolve_custom_emoji_url(custom_emoji_id: str) -> str | None:
     if not file_id:
         return None
 
+    file_unique_id = str(sticker.get("file_unique_id") or "").strip()
+    is_animated = bool(sticker.get("is_animated"))
+    is_video = bool(sticker.get("is_video"))
+    emoji = str(sticker.get("emoji") or "").strip() or None
+    set_name = str(sticker.get("set_name") or "").strip() or None
+    width = int(sticker.get("width") or 100)
+    height = int(sticker.get("height") or 100)
+    thumbnail = sticker.get("thumbnail") if isinstance(sticker.get("thumbnail"), dict) else None
+    thumbnail_file_id = str((thumbnail or {}).get("file_id") or "").strip() or None
+
     get_file = await _telegram_api_call("getFile", {"file_id": file_id})
     file_result = get_file.get("result") or {}
-    file_path = str(file_result.get("file_path") or "").strip()
+    file_path = str(file_result.get("file_path") or "").strip() or None
     if not file_path:
         return None
 
-    file_url = f"{TELEGRAM_FILE_BASE_URL}/bot{BOT_TOKEN}/{file_path}"
-    _cache_set_custom_emoji_url(normalized_id, file_url)
-    return file_url
+    _cache_set_file_path(file_id, file_path)
+    source_format = _source_format_for_file_path(file_path)
+    render_mode = _render_mode_for_sticker(is_animated, is_video, source_format)
+    meta = CustomEmojiRenderInfo(
+        custom_emoji_id=normalized_id,
+        file_id=file_id,
+        file_unique_id=file_unique_id,
+        is_animated=is_animated,
+        is_video=is_video,
+        emoji=emoji,
+        set_name=set_name,
+        source_format=source_format,
+        file_path=file_path,
+        thumbnail_file_id=thumbnail_file_id,
+        render_mode=render_mode,
+        mime_type=_mime_type_for_custom_emoji(source_format, render_mode),
+        width=max(1, width),
+        height=max(1, height),
+    )
+    _cache_set_custom_emoji_meta(normalized_id, meta)
+    return meta
 
 
 def _utf16_index_boundaries(text: str) -> list[int]:
@@ -528,10 +642,18 @@ def _py_index_for_utf16_offset(boundaries: list[int], utf16_offset: int) -> int 
 
 
 async def _custom_emoji_image_url(custom_emoji_id: str) -> str | None:
-    return await _resolve_custom_emoji_url(custom_emoji_id)
+    resolved = await _resolve_custom_emoji_info(custom_emoji_id)
+    if not resolved or not resolved.file_path:
+        return None
+    cached = _cache_get_custom_emoji_url(custom_emoji_id)
+    if cached:
+        return cached
+    file_url = f"{TELEGRAM_FILE_BASE_URL}/bot{BOT_TOKEN}/{resolved.file_path}"
+    _cache_set_custom_emoji_url(custom_emoji_id, file_url)
+    return file_url
 
 
-async def render_telegram_text_with_custom_emoji(text: str, entities: Any) -> str:
+async def render_telegram_text_with_entities_to_html(text: str, entities: Any) -> str:
     source = str(text or "")
     if not entities:
         return html.escape(source)
@@ -600,22 +722,53 @@ async def render_telegram_text_with_custom_emoji(text: str, entities: Any) -> st
 
         append_escaped_slice(cursor_utf16, offset)
 
+        fallback_emoji = html.escape(get_plain_slice(offset, entity_end) or "◻️")
         try:
-            emoji_url = await _custom_emoji_image_url(custom_emoji_id)
+            emoji_info = await _resolve_custom_emoji_info(custom_emoji_id)
         except Exception:
-            logger.warning("Failed to resolve custom emoji URL for id=%s", custom_emoji_id, exc_info=True)
-            emoji_url = None
+            logger.warning("Failed to resolve custom emoji meta for id=%s", custom_emoji_id, exc_info=True)
+            emoji_info = None
 
-        if emoji_url:
-            safe_url = html.escape(emoji_url, quote=True)
-            parts.append(f'<img class="tg-custom-emoji" src="{safe_url}" alt="emoji" />')
+        if not emoji_info:
+            parts.append(f'<span class="tg-inline-emoji tg-inline-emoji--fallback">{fallback_emoji}</span>')
+            cursor_utf16 = entity_end
+            continue
+
+        safe_id = html.escape(custom_emoji_id, quote=True)
+        safe_emoji = html.escape(emoji_info.emoji or fallback_emoji, quote=True)
+        if emoji_info.render_mode == "image":
+            parts.append(
+                '<span class="tg-inline-emoji" data-custom-emoji-id="{}" data-render-mode="image">'
+                '<img class="tg-custom-emoji" src="/api/contest/custom-emoji/{}/asset" alt="{}" loading="lazy" />'
+                "</span>".format(safe_id, safe_id, safe_emoji)
+            )
+        elif emoji_info.render_mode == "lottie":
+            parts.append(
+                '<span class="tg-inline-emoji tg-inline-emoji--lottie" '
+                'data-custom-emoji-id="{}" data-render-mode="lottie" '
+                'data-asset-url="/api/contest/custom-emoji/{}/asset" aria-label="{}"></span>'.format(
+                    safe_id,
+                    safe_id,
+                    safe_emoji,
+                )
+            )
+        elif emoji_info.render_mode == "video":
+            parts.append(
+                '<span class="tg-inline-emoji tg-inline-emoji--video" data-custom-emoji-id="{}" data-render-mode="video">'
+                '<video class="tg-custom-emoji-video" autoplay loop muted playsinline src="/api/contest/custom-emoji/{}/asset" aria-label="{}"></video>'
+                "</span>".format(safe_id, safe_id, safe_emoji)
+            )
         else:
-            parts.append(html.escape(get_plain_slice(offset, entity_end)))
+            parts.append(f'<span class="tg-inline-emoji tg-inline-emoji--fallback">{safe_emoji}</span>')
 
         cursor_utf16 = entity_end
 
     append_escaped_slice(cursor_utf16, total_utf16_len)
     return "".join(parts)
+
+
+async def render_telegram_text_with_custom_emoji(text: str, entities: Any) -> str:
+    return await render_telegram_text_with_entities_to_html(text, entities)
 
 
 def _normalize_content_type(value: str | None) -> str | None:
@@ -691,6 +844,31 @@ async def _download_image_by_file_id(file_id: str, *, entry_id: int | None = Non
         content_type,
     )
     return payload, content_type
+
+
+async def _download_custom_emoji_asset(meta: CustomEmojiRenderInfo) -> tuple[bytes, str]:
+    cached = _cache_get_custom_emoji_asset(meta.custom_emoji_id)
+    if cached:
+        return cached
+    if not meta.file_path:
+        raise RuntimeError("Custom emoji file_path is empty")
+
+    file_url = f"{TELEGRAM_FILE_BASE_URL}/bot{BOT_TOKEN}/{meta.file_path}"
+    async with get_http().get(file_url) as file_resp:
+        if file_resp.status != 200:
+            raise RuntimeError(f"Telegram custom emoji download failed with status {file_resp.status}")
+        payload = await file_resp.read()
+        source_header = file_resp.headers.get("Content-Type")
+    if not payload:
+        raise RuntimeError("Downloaded custom emoji asset is empty")
+
+    mime_type = _content_type_for_file(meta.file_path, source_header, payload)
+    if meta.render_mode == "lottie":
+        mime_type = "application/x-tgsticker"
+    elif meta.render_mode == "video":
+        mime_type = "video/webm"
+    _cache_set_custom_emoji_asset(meta.custom_emoji_id, payload, mime_type)
+    return payload, mime_type
 
 
 async def _resolve_entry_file_id(
@@ -1352,6 +1530,60 @@ async def cast_vote(request: Request, x_telegram_init_data: str = Header(default
         raise exc
 
 
+@router.get("/custom-emoji/{custom_emoji_id}/meta")
+async def custom_emoji_meta(custom_emoji_id: str, x_telegram_init_data: str = Header(default="")) -> JSONResponse:
+    try:
+        _extract_auth(x_telegram_init_data)
+        meta = await _resolve_custom_emoji_info(custom_emoji_id)
+        if not meta:
+            return JSONResponse(
+                {
+                    "ok": True,
+                    "custom_emoji_id": str(custom_emoji_id),
+                    "render_mode": "fallback",
+                    "asset_url": f"/api/contest/custom-emoji/{custom_emoji_id}/asset",
+                    "mime_type": "application/octet-stream",
+                    "width": 100,
+                    "height": 100,
+                }
+            )
+
+        return JSONResponse(
+            {
+                "ok": True,
+                "custom_emoji_id": meta.custom_emoji_id,
+                "render_mode": meta.render_mode,
+                "asset_url": f"/api/contest/custom-emoji/{meta.custom_emoji_id}/asset",
+                "mime_type": meta.mime_type,
+                "width": meta.width,
+                "height": meta.height,
+                "meta": asdict(meta),
+            }
+        )
+    except Exception:
+        logger.exception("Failed to load custom emoji meta for id=%s", custom_emoji_id)
+        return _internal_error_response("Не удалось загрузить метаданные premium emoji.")
+
+
+@router.get("/custom-emoji/{custom_emoji_id}/asset")
+async def custom_emoji_asset(custom_emoji_id: str, x_telegram_init_data: str = Header(default="")) -> Response:
+    try:
+        _extract_auth(x_telegram_init_data)
+        meta = await _resolve_custom_emoji_info(custom_emoji_id)
+        if not meta:
+            return Response(content=b"", media_type="application/octet-stream", status_code=404)
+        payload, mime_type = await _download_custom_emoji_asset(meta)
+        headers = {
+            "Cache-Control": "public, max-age=300",
+            "X-Custom-Emoji-Render-Mode": meta.render_mode,
+            "X-Custom-Emoji-Source-Format": meta.source_format,
+        }
+        return Response(content=payload, media_type=mime_type, headers=headers)
+    except Exception:
+        logger.exception("Failed to load custom emoji asset for id=%s", custom_emoji_id)
+        return Response(content=b"", media_type="application/octet-stream", status_code=404)
+
+
 @router.get("/rules")
 async def contest_rules(x_telegram_init_data: str = Header(default="")) -> JSONResponse:
     try:
@@ -1359,7 +1591,7 @@ async def contest_rules(x_telegram_init_data: str = Header(default="")) -> JSONR
         row = await get_pool().fetchrow("SELECT rules_text, rules_entities_json FROM contest_settings WHERE id = 1")
         rules_text = str(row["rules_text"] if row else "" or "").strip()
         rules_entities_json = row["rules_entities_json"] if row else None
-        rules_html = await render_telegram_text_with_custom_emoji(rules_text, rules_entities_json)
+        rules_html = await render_telegram_text_with_entities_to_html(rules_text, rules_entities_json)
         return JSONResponse(
             {
                 "ok": True,
