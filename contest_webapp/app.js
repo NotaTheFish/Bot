@@ -649,7 +649,10 @@ function renderActionBar() {
   if (!entry) return;
 
   const inDraft = state.draftEntryIds.has(entry.id);
-  actionBarTextEl.textContent = `Выбрано в добор: ${selected}/${state.availableVotes}`;
+  actionBarTextEl.textContent =
+    state.availableVotes > 0
+      ? `Выбрано в добор: ${selected}/${state.availableVotes}`
+      : "Голоса подтверждены";
 
   if (state.phase === "results") {
     actionBarButtonEl.disabled = true;
@@ -903,7 +906,7 @@ async function toggleActiveSelection() {
 }
 
 async function confirmVotes() {
- if (state.draftEntryIds.size !== state.availableVotes || state.availableVotes <= 0 || state.busy) {
+  if (state.draftEntryIds.size !== state.availableVotes || state.availableVotes <= 0 || state.busy) {
     return;
   }
 
@@ -915,16 +918,16 @@ async function submitConfirmVotes() {
   confirmModalEl.hidden = true;
 
   try {
-    const payload = await fetchJson("/api/contest/votes/confirm", {
-      method: "POST",
-      body: "{}",
-    });
+    const [confirmPayload, entriesPayload] = await Promise.all([
+      fetchJson("/api/contest/votes/confirm", {
+        method: "POST",
+        body: "{}",
+      }),
+      fetchJson("/api/contest/entries/approved"),
+    ]);
 
-    state.confirmed = Boolean(payload.confirmed);
-    state.confirmedEntryIds = new Set(payload.entry_ids || []);
-    state.draftEntryIds = new Set();
-    updateHeader();
-    renderEntries();
+    applyContestState(confirmPayload, entriesPayload);
+    renderDataState();
     setStatus("Голоса подтверждены.");
   } catch (error) {
     setStatus(error.message || "Не удалось подтвердить голоса.");

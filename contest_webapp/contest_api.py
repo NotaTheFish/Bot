@@ -1189,14 +1189,18 @@ async def approved_entries(request: Request, x_telegram_init_data: str = Header(
 
         phase = settings.get("phase") or "submission"
         if phase == "results":
-            items.sort(key=lambda entry: (-int(entry.get("net_votes") or 0), int(entry.get("id") or 0)))
-            for index, item in enumerate(items, start=1):
-                item["place"] = index
-                item["reward_label"] = _reward_label_for_place(index)
+            _apply_results_tie_break(items)
+            for item in items:
+                if not _is_admin(current_user_id):
+                    item.pop("tie_break_bonus", None)
+                    item.pop("effective_net_votes", None)
+                item["net_votes"] = int(item.get("effective_net_votes") or item.get("net_votes") or 0)
         else:
             for item in items:
                 item["place"] = None
                 item["reward_label"] = None
+                item.pop("tie_break_bonus", None)
+                item.pop("effective_net_votes", None)
 
         return JSONResponse(
             content=jsonable_encoder(
@@ -1301,46 +1305,16 @@ async def entry_image(entry_id: int, t: str = "", x_telegram_init_data: str = He
 async def contest_state(x_telegram_init_data: str = Header(default="")) -> JSONResponse:
     try:
         auth = _extract_auth(x_telegram_init_data)
+        is_channel_member = await _check_channel_subscription(auth["user_id"])
         async with get_pool().acquire() as conn:
             settings = await _get_contest_settings(conn)
-            confirmed = await conn.fetchrow(
-                "SELECT confirmed_at, selected_entry_ids FROM contest_vote_confirmations WHERE voter_user_id = $1",
-                auth["user_id"],
+            payload = await _build_vote_state_payload(
+                conn,
+                user_id=auth["user_id"],
+                settings=settings,
+                is_channel_member=is_channel_member,
             )
-            draft_entry_ids = await _get_draft_entry_ids(conn, auth["user_id"])
-            active_votes_count = await _count_active_votes(conn, auth["user_id"])
-            confirmed_entry_ids = await _get_confirmed_entry_ids(conn, auth["user_id"])
-            available_votes = max(0, MAX_VOTES_PER_USER - active_votes_count)
-            has_own_approved = bool(
-                await conn.fetchval(
-                    "SELECT 1 FROM contest_entries WHERE owner_user_id = $1 AND status = 'approved' AND COALESCE(is_deleted, FALSE) = FALSE",
-                    auth["user_id"],
-                )
-            )
-        is_channel_member = await _check_channel_subscription(auth["user_id"])
-        return JSONResponse(
-            content=jsonable_encoder(
-                {
-                    "ok": True,
-                    "user_id": auth["user_id"],
-                    "is_admin": _is_admin(auth["user_id"]),
-                    "enabled": settings["enabled"],
-                    "submission_open": settings["submission_open"],
-                    "voting_open": settings["voting_open"],
-                    "phase": settings["phase"],
-                    "votes_required": VOTE_CONFIRM_REQUIRED,
-                    "active_votes_count": active_votes_count,
-                    "available_votes": available_votes,
-                    "votes_remaining": available_votes,
-                    "is_channel_member": is_channel_member,
-                    "has_own_approved_entry": has_own_approved,
-                    "confirmed": available_votes <= 0,
-                    "confirmed_at": confirmed["confirmed_at"] if confirmed else None,
-                    "confirmed_entry_ids": confirmed_entry_ids,
-                    "draft_entry_ids": draft_entry_ids,
-                }
-            )
-        )
+        return JSONResponse(content=jsonable_encoder(payload))
     except VoteError as exc:
         return JSONResponse({"ok": False, "error_code": exc.code, "message": exc.message}, status_code=exc.status)
     except Exception:
@@ -1575,13 +1549,16 @@ async def confirm_votes(request: Request, x_telegram_init_data: str = Header(def
 
                 await conn.execute("DELETE FROM contest_vote_drafts WHERE voter_user_id = $1", auth["user_id"])
 
-        return JSONResponse(
-            {
-                "ok": True,
-                "confirmed": True,
-                "entry_ids": current_active_ids,
-            }
-        )
+        async with get_pool().acquire() as conn:
+            settings = await _get_contest_settings(conn)
+            state_payload = await _build_vote_state_payload(
+                conn,
+                user_id=auth["user_id"],
+                settings=settings,
+                is_channel_member=is_member,
+            )
+
+        return JSONResponse(content=jsonable_encoder(state_payload))
     except VoteError as exc:
         return JSONResponse({"ok": False, "error_code": exc.code, "message": exc.message}, status_code=exc.status)
     except Exception:
@@ -1593,30 +1570,19 @@ async def confirm_votes(request: Request, x_telegram_init_data: str = Header(def
 async def votes_state(x_telegram_init_data: str = Header(default="")) -> JSONResponse:
     try:
         auth = _extract_auth(x_telegram_init_data)
-        settings = await _get_contest_settings()
         is_channel_member = await _check_channel_subscription(auth["user_id"])
         async with get_pool().acquire() as conn:
-            confirmed_entry_ids = await _get_confirmed_entry_ids(conn, auth["user_id"])
-            draft_entry_ids = await _get_draft_entry_ids(conn, auth["user_id"])
-        used = len(confirmed_entry_ids)
-        available_votes = max(0, MAX_VOTES_PER_USER - used)
-        return JSONResponse(
-            {
-                "ok": True,
-                "user_id": auth["user_id"],
-                "max_votes": MAX_VOTES_PER_USER,
-                "votes_used": used,
-                "active_votes_count": used,
-                "available_votes": available_votes,
-                "votes_remaining": available_votes,
-                "voted_entry_ids": confirmed_entry_ids,
-                "draft_entry_ids": draft_entry_ids,
-                "confirmed": available_votes <= 0,
-                "phase": settings.get("phase") or "submission",
-                "voting_open": bool(settings["enabled"]) and bool(settings["voting_open"]),
-                "is_channel_member": is_channel_member,
-            }
-        )
+            settings = await _get_contest_settings(conn)
+            payload = await _build_vote_state_payload(
+                conn,
+                user_id=auth["user_id"],
+                settings=settings,
+                is_channel_member=is_channel_member,
+            )
+        payload["max_votes"] = MAX_VOTES_PER_USER
+        payload["votes_used"] = payload["active_votes_count"]
+        payload["voted_entry_ids"] = payload["confirmed_entry_ids"]
+        return JSONResponse(content=jsonable_encoder(payload))
     except VoteError as exc:
         return JSONResponse({"ok": False, "error_code": exc.code, "message": exc.message}, status_code=exc.status)
     except Exception:
@@ -1760,7 +1726,13 @@ async def admin_overview(x_telegram_init_data: str = Header(default="")) -> JSON
         for row in rows:
             item = dict(row)
             item["net_votes"] = int(item["confirmed_votes_count"] or 0) - int(item["penalty_votes"] or 0)
+            item["tie_break_bonus"] = 0
+            item["effective_net_votes"] = item["net_votes"]
             items.append(item)
+
+        if (settings.get("phase") or "submission") == "results":
+            approved_items = [item for item in items if item.get("status") == "approved"]
+            _apply_results_tie_break(approved_items)
 
         payload = {
             "ok": True,
@@ -1944,3 +1916,92 @@ def _author_label(owner_user_id: int, owner_username_last_seen: str | None) -> s
     if username:
         return f"@{username}"
     return str(owner_user_id)
+
+
+def _submitted_sort_key(value: Any) -> float:
+    if value is None:
+        return float("inf")
+    if hasattr(value, "timestamp"):
+        try:
+            return float(value.timestamp())
+        except Exception:
+            return float("inf")
+    return float("inf")
+
+
+def _apply_results_tie_break(items: list[dict[str, Any]]) -> None:
+    if not items:
+        return
+
+    for item in items:
+        item["tie_break_bonus"] = 0
+
+    grouped: dict[int, list[dict[str, Any]]] = {}
+    for item in items:
+        grouped.setdefault(int(item.get("net_votes") or 0), []).append(item)
+
+    for tied_items in grouped.values():
+        if len(tied_items) <= 1:
+            continue
+        winner = sorted(
+            tied_items,
+            key=lambda entry: (
+                int(entry.get("penalty_votes") or 0),
+                _submitted_sort_key(entry.get("submitted_at") or entry.get("created_at")),
+                int(entry.get("id") or 0),
+            ),
+        )[0]
+        winner["tie_break_bonus"] = 1
+
+    for item in items:
+        item["effective_net_votes"] = int(item.get("net_votes") or 0) + int(item.get("tie_break_bonus") or 0)
+
+    items.sort(
+        key=lambda entry: (
+            -int(entry.get("effective_net_votes") or 0),
+            int(entry.get("penalty_votes") or 0),
+            _submitted_sort_key(entry.get("submitted_at") or entry.get("created_at")),
+            int(entry.get("id") or 0),
+        )
+    )
+
+    for index, item in enumerate(items, start=1):
+        item["place"] = index
+        item["reward_label"] = _reward_label_for_place(index)
+
+
+async def _build_vote_state_payload(
+    conn: asyncpg.Connection,
+    *,
+    user_id: int,
+    settings: dict[str, Any],
+    is_channel_member: bool,
+) -> dict[str, Any]:
+    active_votes_count = await _count_active_votes(conn, user_id)
+    confirmed_entry_ids = await _get_confirmed_entry_ids(conn, user_id)
+    draft_entry_ids = await _get_draft_entry_ids(conn, user_id)
+    available_votes = max(0, MAX_VOTES_PER_USER - active_votes_count)
+    has_own_approved = bool(
+        await conn.fetchval(
+            "SELECT 1 FROM contest_entries WHERE owner_user_id = $1 AND status = 'approved' AND COALESCE(is_deleted, FALSE) = FALSE",
+            user_id,
+        )
+    )
+    return {
+        "ok": True,
+        "user_id": user_id,
+        "is_admin": _is_admin(user_id),
+        "enabled": settings["enabled"],
+        "submission_open": settings["submission_open"],
+        "voting_open": settings["voting_open"],
+        "phase": settings["phase"],
+        "votes_required": VOTE_CONFIRM_REQUIRED,
+        "active_votes_count": active_votes_count,
+        "available_votes": available_votes,
+        "votes_remaining": available_votes,
+        "is_channel_member": is_channel_member,
+        "has_own_approved_entry": has_own_approved,
+        "confirmed": available_votes <= 0,
+        "confirmed_entry_ids": confirmed_entry_ids,
+        "draft_entry_ids": draft_entry_ids,
+    }
