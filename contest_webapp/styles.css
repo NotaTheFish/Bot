@@ -156,3 +156,9 @@ body { margin: 0; background: #f4f6fa; color: #1d2530; }
 .admin-entry-stats div {
   margin-bottom: 2px;
 }
+
+.tg-custom-emoji {
+  width: 1.2em;
+  height: 1.2em;
+  vertical-align: -0.2em;
+}

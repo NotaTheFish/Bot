@@ -791,6 +791,12 @@ async function openRules() {
     rulesModalEl.hidden = false;
 
     const payload = await fetchJson("/api/contest/rules");
+    const rulesHtml = safeString(payload.rules_html);
+    if (rulesHtml) {
+      rulesContentEl.innerHTML = rulesHtml;
+      return;
+    }
+
     rulesContentEl.textContent =
       payload.rules_text || "Правила пока не опубликованы.";
   } catch (error) {
