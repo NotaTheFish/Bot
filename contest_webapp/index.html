@@ -78,23 +78,49 @@
         <div class="admin-actions" aria-label="Управление этапами конкурса">
           <div class="admin-control-group" role="group" aria-labelledby="submissionControlLabel">
             <div class="admin-control-group__header">
-              <p id="submissionControlLabel" class="admin-control-group__title">Приём заявок</p>
-              <span class="admin-control-group__hint">Управление доступностью отправки работ</span>
+              <div class="admin-control-group__copy">
+                <p id="submissionControlLabel" class="admin-control-group__title">Приём заявок</p>
+                <span class="admin-control-group__hint">Управление доступностью отправки работ</span>
+              </div>
+              <span id="submissionStatusText" class="admin-control-group__status">Закрыт</span>
             </div>
-            <div class="admin-segmented-control" aria-label="Состояние приёма заявок">
-              <button id="openSubmissionBtn" class="admin-segment admin-segment--open" type="button">Открыт</button>
-              <button id="closeSubmissionBtn" class="admin-segment admin-segment--closed" type="button">Закрыт</button>
-            </div>
+            <button
+              id="submissionToggle"
+              class="admin-switch"
+              type="button"
+              role="switch"
+              aria-labelledby="submissionControlLabel submissionStatusText"
+              aria-checked="false"
+              aria-busy="false"
+              data-state="unchecked"
+            >
+              <span class="admin-switch__track" aria-hidden="true">
+                <span class="admin-switch__thumb"></span>
+              </span>
+            </button>
           </div>
           <div class="admin-control-group" role="group" aria-labelledby="votingControlLabel">
             <div class="admin-control-group__header">
-              <p id="votingControlLabel" class="admin-control-group__title">Голосование</p>
-              <span class="admin-control-group__hint">Переключение режима голосования участников</span>
+              <div class="admin-control-group__copy">
+                <p id="votingControlLabel" class="admin-control-group__title">Голосовние</p>
+                <span class="admin-control-group__hint">Переключение режима голосования участников</span>
+              </div>
+              <span id="votingStatusText" class="admin-control-group__status">Закрыто</span>
             </div>
-            <div class="admin-segmented-control" aria-label="Состояние голосования">
-              <button id="openVotingBtn" class="admin-segment admin-segment--open" type="button">Открыто</button>
-              <button id="closeVotingBtn" class="admin-segment admin-segment--closed" type="button">Закрыто</button>
-            </div>
+            <button
+              id="votingToggle"
+              class="admin-switch"
+              type="button"
+              role="switch"
+              aria-labelledby="votingControlLabel votingStatusText"
+              aria-checked="false"
+              aria-busy="false"
+              data-state="unchecked"
+            >
+              <span class="admin-switch__track" aria-hidden="true">
+                <span class="admin-switch__thumb"></span>
+              </span>
+            </button>
           </div>
         </div>
         <div id="adminOverview" class="admin-overview"></div>

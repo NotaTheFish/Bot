@@ -20,10 +20,10 @@ const confirmNoEl = document.getElementById("confirmNo");
 const adminPanelEl = document.getElementById("adminPanel");
 const adminStatusCardEl = document.getElementById("adminStatusCard");
 const adminOverviewEl = document.getElementById("adminOverview");
-const openSubmissionBtnEl = document.getElementById("openSubmissionBtn");
-const closeSubmissionBtnEl = document.getElementById("closeSubmissionBtn");
-const openVotingBtnEl = document.getElementById("openVotingBtn");
-const closeVotingBtnEl = document.getElementById("closeVotingBtn");
+const submissionToggleEl = document.getElementById("submissionToggle");
+const submissionStatusTextEl = document.getElementById("submissionStatusText");
+const votingToggleEl = document.getElementById("votingToggle");
+const votingStatusTextEl = document.getElementById("votingStatusText");
 const imagePreviewModalEl = document.getElementById("imagePreviewModal");
 const imagePreviewCloseEl = document.getElementById("imagePreviewClose");
 const imagePreviewTitleEl = document.getElementById("imagePreviewTitle");
@@ -557,40 +557,40 @@ function entryDisabled(entry) {
   );
 }
 
+function updateAdminSwitch(toggleEl, statusEl, options = {}) {
+  if (!toggleEl || !statusEl) return;
+
+  const {
+    isOpen = false,
+    busy = false,
+    openText = "Открыт",
+    closedText = "Закрыт",
+  } = options;
+
+  statusEl.textContent = isOpen ? openText : closedText;
+  toggleEl.disabled = busy;
+  toggleEl.setAttribute("aria-checked", String(isOpen));
+  toggleEl.setAttribute("aria-busy", String(busy));
+  toggleEl.dataset.state = isOpen ? "checked" : "unchecked";
+  toggleEl.classList.toggle("admin-switch--checked", isOpen);
+  toggleEl.classList.toggle("admin-switch--busy", busy);
+  toggleEl.classList.toggle("admin-switch--disabled", busy);
+}
+
 function updateAdminButtons() {
-  const controls = [
-    {
-      openButton: openSubmissionBtnEl,
-      closeButton: closeSubmissionBtnEl,
-      isOpen: state.submissionOpen,
-    },
-    {
-      openButton: openVotingBtnEl,
-      closeButton: closeVotingBtnEl,
-      isOpen: state.votingOpen,
-    },
-  ];
+  updateAdminSwitch(submissionToggleEl, submissionStatusTextEl, {
+    isOpen: state.submissionOpen,
+    busy: state.busy,
+    openText: "Открыт",
+    closedText: "Закрыт",
+  });
 
-  for (const control of controls) {
-    const { openButton, closeButton, isOpen } = control;
-    if (!openButton || !closeButton) continue;
-
-    const openDisabled = isOpen || state.busy;
-    const closeDisabled = !isOpen || state.busy;
-
-    openButton.disabled = openDisabled;
-    closeButton.disabled = closeDisabled;
-
-    openButton.classList.toggle("admin-segment--active", isOpen);
-    closeButton.classList.toggle("admin-segment--active", !isOpen);
-    openButton.classList.toggle("admin-segment--inactive", !isOpen);
-    closeButton.classList.toggle("admin-segment--inactive", isOpen);
-
-    openButton.setAttribute("aria-pressed", String(isOpen));
-    closeButton.setAttribute("aria-pressed", String(!isOpen));
-    openButton.dataset.state = isOpen ? "enabled" : "off";
-    closeButton.dataset.state = isOpen ? "off" : "enabled";
-  }
+  updateAdminSwitch(votingToggleEl, votingStatusTextEl, {
+    isOpen: state.votingOpen,
+    busy: state.busy,
+    openText: "Открыто",
+    closedText: "Закрыто",
+  });
 }
 
 function setBusy(value) {
@@ -1211,17 +1211,19 @@ document.addEventListener("keydown", (event) => {
     closeAdminEntryDetail();
   }
 });
-openSubmissionBtnEl?.addEventListener("click", () =>
-  adminStage("/api/contest/admin/submission/open")
+submissionToggleEl?.addEventListener("click", () =>
+  adminStage(
+    state.submissionOpen
+      ? "/api/contest/admin/submission/close"
+      : "/api/contest/admin/submission/open"
+  )
 );
-closeSubmissionBtnEl?.addEventListener("click", () =>
-  adminStage("/api/contest/admin/submission/close")
-);
-openVotingBtnEl?.addEventListener("click", () =>
-  adminStage("/api/contest/admin/voting/open")
-);
-closeVotingBtnEl?.addEventListener("click", () =>
-  adminStage("/api/contest/admin/voting/close")
+votingToggleEl?.addEventListener("click", () =>
+  adminStage(
+    state.votingOpen
+      ? "/api/contest/admin/voting/close"
+      : "/api/contest/admin/voting/open"
+  )
 );
 adminOverviewEl?.addEventListener("click", (event) => {
   const button = event.target.closest(".admin-entry-button[data-entry-id]");
