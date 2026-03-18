@@ -186,6 +186,10 @@ body.theme-light {
   --shadow-soft: 0 10px 24px rgba(45, 55, 72, 0.08);
   --shadow-strong: 0 18px 40px rgba(27, 34, 45, 0.14);
   --focus-ring: 0 0 0 3px rgba(86, 111, 146, 0.22);
+  --theme-toggle-hover-bg: rgba(78, 89, 104, 0.14);
+  --theme-toggle-hover-color: #2f3946;
+  --theme-toggle-active-bg: rgba(66, 74, 88, 0.2);
+  --theme-toggle-active-color: #202833;
 }
 
 body.theme-dark {
@@ -252,10 +256,23 @@ body.theme-dark {
   --shadow-soft: 0 12px 30px rgba(8, 10, 15, 0.32);
   --shadow-strong: 0 20px 48px rgba(4, 6, 10, 0.42);
   --focus-ring: 0 0 0 3px rgba(154, 106, 115, 0.24);
+  --theme-toggle-hover-bg: rgba(124, 73, 84, 0.22);
+  --theme-toggle-hover-color: #f2d7dc;
+  --theme-toggle-active-bg: rgba(142, 83, 94, 0.3);
+  --theme-toggle-active-color: #fff0f3;
 }
 
 .app { max-width: 980px; margin: 0 auto; padding: 16px 16px 120px; }
-.app__header { position: relative; margin-bottom: 14px; padding-right: 56px; }
+.app__header { position: relative; margin-bottom: 14px; padding-right: 60px; }
+
+.theme-toggle-wrap {
+  position: absolute;
+  top: 0;
+  right: 0;
+  display: flex;
+  align-items: flex-start;
+  justify-content: flex-end;
+}
 
 .theme-toggle,
 .entry-card__preview-btn,
@@ -265,34 +282,57 @@ body.theme-dark {
   cursor: pointer;
 }
 
+.theme-toggle__icon {
+  width: 20px;
+  height: 20px;
+  flex: 0 0 auto;
+  pointer-events: none;
+}
+
+.theme-toggle__icon--sun,
+body.theme-dark .theme-toggle__icon--moon {
+  display: none;
+}
+
+body.theme-dark .theme-toggle__icon--sun {
+  display: block;
+}
+
+body.theme-light .theme-toggle__icon--moon,
+body:not(.theme-dark) .theme-toggle__icon--moon {
+  display: block;
+}
+
+body.theme-light .theme-toggle__icon--sun,
+body:not(.theme-dark) .theme-toggle__icon--sun {
+  display: none;
+}
+
 .theme-toggle {
-  position: absolute;
-  top: 0;
-  right: 0;
-  width: 40px;
-  height: 40px;
+  appearance: none;
+  -webkit-appearance: none;
+  width: 38px;
+  height: 38px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  border: 1px solid var(--control-surface-border);
+  padding: 0;
+  border: none;
   border-radius: 999px;
-  background: var(--control-surface-bg);
+  background: transparent;
   color: var(--text-secondary);
-  font-size: 18px;
-  box-shadow: var(--control-surface-shadow);
+  box-shadow: none;
 }
 
 .theme-toggle:hover {
-  background: var(--control-surface-hover-bg);
-  border-color: var(--control-surface-hover-border);
-  color: var(--text-primary);
-  box-shadow: var(--control-surface-hover-shadow);
+  background: color-mix(in srgb, var(--theme-toggle-hover-bg) 88%, transparent);
+  color: var(--theme-toggle-hover-color);
   transform: var(--interactive-translate-hover);
 }
 
 .theme-toggle:active {
-  background: var(--control-surface-active-bg);
-  box-shadow: var(--control-surface-active-shadow);
+  background: color-mix(in srgb, var(--theme-toggle-active-bg) 92%, transparent);
+  color: var(--theme-toggle-active-color);
   transform: var(--interactive-translate-active) var(--interactive-scale-active);
 }
 
@@ -304,7 +344,7 @@ body.theme-dark {
 .admin-entry-button:focus-visible,
 .admin-segment:focus-visible {
   outline: none;
-  box-shadow: var(--interactive-focus-ring), var(--control-surface-shadow);
+  box-shadow: var(--interactive-focus-ring);
 }
 
 .stage-badge { font-size: 13px; color: var(--text-secondary); margin: 6px 0; }

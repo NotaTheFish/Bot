@@ -230,7 +230,9 @@ function syncThemeToggleUi(theme) {
   if (!themeToggleEl) return;
 
   const isDarkTheme = theme === DARK_THEME;
-  themeToggleEl.textContent = isDarkTheme ? "☀️" : "🌙";
+  themeToggleEl.dataset.themeIntent = isDarkTheme ? LIGHT_THEME : DARK_THEME;
+  themeToggleEl.classList.toggle("theme-toggle--intent-light", isDarkTheme);
+  themeToggleEl.classList.toggle("theme-toggle--intent-dark", !isDarkTheme);
   themeToggleEl.setAttribute(
     "aria-label",
     isDarkTheme ? "Включить светлую тему" : "Включить тёмную тему"
