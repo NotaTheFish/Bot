@@ -31,6 +31,11 @@ const imagePreviewImageEl = document.getElementById("imagePreviewImage");
 const adminEntryDetailModalEl = document.getElementById("adminEntryDetailModal");
 const adminEntryDetailCloseEl = document.getElementById("adminEntryDetailClose");
 const adminEntryDetailContentEl = document.getElementById("adminEntryDetailContent");
+const themeToggleEl = document.getElementById("themeToggle");
+
+const THEME_STORAGE_KEY = "contest_webapp_theme";
+const LIGHT_THEME = "light";
+const DARK_THEME = "dark";
 
 const tg = window.Telegram?.WebApp;
 if (tg) {
@@ -210,6 +215,73 @@ const selectedCount = () => state.draftEntryIds.size;
 
 function setStatus(message = "") {
   statusMessageEl.textContent = message;
+}
+
+function readStoredTheme() {
+  try {
+    const savedTheme = window.localStorage?.getItem(THEME_STORAGE_KEY);
+    return savedTheme === DARK_THEME || savedTheme === LIGHT_THEME ? savedTheme : "";
+  } catch (_error) {
+    return "";
+  }
+}
+
+function syncThemeToggleUi(theme) {
+  if (!themeToggleEl) return;
+
+  const isDarkTheme = theme === DARK_THEME;
+  themeToggleEl.textContent = isDarkTheme ? "☀️" : "🌙";
+  themeToggleEl.setAttribute(
+    "aria-label",
+    isDarkTheme ? "Включить светлую тему" : "Включить тёмную тему"
+  );
+}
+
+function applyTheme(theme) {
+  const nextTheme = theme === DARK_THEME ? DARK_THEME : LIGHT_THEME;
+  document.body.classList.remove("theme-light", "theme-dark");
+  document.body.classList.add(`theme-${nextTheme}`);
+  syncThemeToggleUi(nextTheme);
+
+  try {
+    window.localStorage?.setItem(THEME_STORAGE_KEY, nextTheme);
+  } catch (_error) {
+    // ignore storage errors
+  }
+
+  return nextTheme;
+}
+
+function getPreferredTheme() {
+  const savedTheme = readStoredTheme();
+  if (savedTheme) return savedTheme;
+
+  const telegramThemeParams = tg?.themeParams;
+  if (telegramThemeParams && Object.keys(telegramThemeParams).length > 0) {
+    const telegramColorScheme = safeString(tg?.colorScheme).toLowerCase();
+    if (telegramColorScheme === DARK_THEME || telegramColorScheme === LIGHT_THEME) {
+      return telegramColorScheme;
+    }
+
+    const bgColor = safeString(telegramThemeParams.bg_color).replace("#", "");
+    const secondaryBgColor = safeString(telegramThemeParams.secondary_bg_color).replace("#", "");
+    const referenceColor = bgColor || secondaryBgColor;
+
+    if (/^[0-9a-f]{6}$/i.test(referenceColor)) {
+      const red = Number.parseInt(referenceColor.slice(0, 2), 16);
+      const green = Number.parseInt(referenceColor.slice(2, 4), 16);
+      const blue = Number.parseInt(referenceColor.slice(4, 6), 16);
+      const brightness = (red * 299 + green * 587 + blue * 114) / 1000;
+      return brightness < 128 ? DARK_THEME : LIGHT_THEME;
+    }
+  }
+
+  return LIGHT_THEME;
+}
+
+function toggleTheme() {
+  const isDarkTheme = document.body.classList.contains("theme-dark");
+  return applyTheme(isDarkTheme ? LIGHT_THEME : DARK_THEME);
 }
 
 function updateHeader() {
@@ -1068,6 +1140,7 @@ async function adminStage(path) {
   }
 }
 
+themeToggleEl?.addEventListener("click", toggleTheme);
 rulesButtonEl?.addEventListener("click", openRules);
 rulesCloseEl?.addEventListener("click", () => {
   cleanupRulesEmoji(rulesContentEl);
@@ -1122,4 +1195,5 @@ adminEntryDetailModalEl?.addEventListener("click", (event) => {
   }
 });
 
+applyTheme(getPreferredTheme());
 loadData();

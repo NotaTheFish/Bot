@@ -3,9 +3,38 @@
   font-family: Inter, system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
 }
 
-body { margin: 0; background: #f4f6fa; color: #1d2530; }
+body { margin: 0; background: #f4f6fa; color: #1d2530; transition: background .2s ease, color .2s ease; }
+body.theme-light { color-scheme: light; }
+body.theme-dark { color-scheme: dark; background: #111827; color: #e5eefc; }
 .app { max-width: 980px; margin: 0 auto; padding: 16px 16px 120px; }
-.app__header { margin-bottom: 14px; }
+.app__header { position: relative; margin-bottom: 14px; padding-right: 56px; }
+.theme-toggle {
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 40px;
+  height: 40px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid #d7e0ef;
+  border-radius: 999px;
+  background: #ffffff;
+  color: #2f3b52;
+  font-size: 18px;
+  cursor: pointer;
+  transition: background .15s ease, color .15s ease, border-color .15s ease, transform .15s ease;
+}
+
+.theme-toggle:hover {
+  background: #eef3ff;
+  border-color: #c8d5f0;
+}
+
+.theme-toggle:active {
+  transform: scale(0.97);
+}
+
 .stage-badge { font-size: 13px; color: #395071; margin: 6px 0; }
 .votes-counter { font-weight: 700; margin: 8px 0; }
 .rules-button {
@@ -253,4 +282,83 @@ body { margin: 0; background: #f4f6fa; color: #1d2530; }
 .admin-detail-grid__value {
   font-weight: 600;
   color: #243246;
+}
+
+body.theme-dark .stage-badge,
+body.theme-dark .entry-card__meta,
+body.theme-dark .status-message,
+body.theme-dark .action-bar p,
+body.theme-dark .admin-overview,
+body.theme-dark .admin-status-card__title,
+body.theme-dark .admin-status-item,
+body.theme-dark .admin-entry-meta,
+body.theme-dark .admin-detail-grid__label {
+  color: #aebbd3;
+}
+
+body.theme-dark .theme-toggle {
+  background: #1f2937;
+  border-color: #334155;
+  color: #f8d66d;
+}
+
+body.theme-dark .theme-toggle:hover {
+  background: #273449;
+}
+
+body.theme-dark .rules-button {
+  background: #1e3a5f;
+  color: #d6e6ff;
+}
+
+body.theme-dark .rules-button:hover {
+  background: #274a77;
+}
+
+body.theme-dark .entry-card,
+body.theme-dark .admin-panel,
+body.theme-dark .action-bar,
+body.theme-dark .modal .entry-card,
+body.theme-dark .admin-entry-button,
+body.theme-dark .admin-status-card,
+body.theme-dark .admin-entry-log,
+body.theme-dark .admin-detail-grid__row {
+  background: #1f2937;
+  border-color: #334155;
+  color: #e5eefc;
+}
+
+body.theme-dark .entry-card__image {
+  background: #243244;
+}
+
+body.theme-dark .entry-card__image-fallback {
+  background: #233044;
+  color: #c8d4e9;
+}
+
+body.theme-dark .preview-card {
+  background: #020617;
+}
+
+body.theme-dark .vote-button--secondary {
+  background: #64748b;
+}
+
+body.theme-dark .vote-button[disabled] {
+  background: #475569;
+}
+
+body.theme-dark .admin-status-indicator--closed {
+  background: #374151;
+  color: #f3b0b0;
+}
+
+body.theme-dark .admin-status-indicator--open {
+  background: #163a2d;
+  color: #8bf0b8;
+}
+
+body.theme-dark .action-bar {
+  border-top-color: #334155;
 }
