@@ -61,16 +61,35 @@
   --preview-button-active-bg: color-mix(in srgb, var(--bg-page) 20%, rgba(17, 24, 39, 0.78));
   --preview-button-border: color-mix(in srgb, var(--border-soft) 64%, transparent);
   --preview-button-color: var(--text-primary);
-  --action-bar-bg: color-mix(in srgb, var(--bg-elevated) 88%, var(--bg-surface));
-  --action-bar-border: color-mix(in srgb, var(--border-soft) 88%, transparent);
+  --action-bar-bg: #e1e5eb;
+  --action-bar-text: #46515f;
+  --action-bar-button-bg: #5a6674;
+  --action-bar-button-text: #f7f9fb;
+  --action-bar-button-border: rgba(58, 67, 79, 0.2);
+  --action-bar-button-shadow: 0 12px 24px rgba(28, 35, 44, 0.16);
+  --action-bar-button-hover-bg: #4c5a68;
+  --action-bar-button-hover-shadow: 0 16px 28px rgba(28, 35, 44, 0.18);
+  --action-bar-button-active-bg: #3f4c58;
+  --action-bar-button-active-shadow: 0 8px 16px rgba(28, 35, 44, 0.14);
+  --action-bar-button-disabled-bg: #c7ced7;
+  --action-bar-button-disabled-text: #768191;
+  --action-bar-button-disabled-shadow: none;
+  --action-bar-border: rgba(173, 182, 194, 0.88);
   --action-bar-shadow: 0 -10px 28px rgba(24, 31, 42, 0.12);
-  --rules-button-bg: linear-gradient(135deg, #566170 0%, #3f4a58 100%);
-  --rules-button-border: rgba(44, 52, 62, 0.22);
+  --rules-button-bg: #525d6b;
+  --rules-button-border: rgba(47, 55, 66, 0.26);
   --rules-button-shadow: 0 14px 28px rgba(30, 38, 48, 0.16);
   --rules-button-text: #f7f9fb;
-  --rules-button-hover-bg: linear-gradient(135deg, #606c7c 0%, #4a5564 100%);
-  --rules-button-active-bg: linear-gradient(135deg, #434d5b 0%, #353e4b 100%);
+  --rules-button-text-shadow: 0 1px 0 rgba(34, 41, 50, 0.24);
+  --rules-button-hover-bg: #465260;
+  --rules-button-hover-shadow: 0 18px 34px rgba(28, 35, 44, 0.2);
+  --rules-button-active-bg: #3b4652;
+  --rules-button-active-shadow: 0 10px 18px rgba(23, 29, 37, 0.18);
   --rules-button-focus-ring: 0 0 0 3px rgba(93, 112, 138, 0.28);
+  --rules-button-disabled-bg: #c8ced6;
+  --rules-button-disabled-border: rgba(119, 128, 141, 0.22);
+  --rules-button-disabled-shadow: none;
+  --rules-button-disabled-text: #77808d;
   --admin-open-bg: rgba(84, 120, 100, 0.14);
   --admin-open-border: rgba(81, 117, 100, 0.34);
   --admin-open-text: #3f6654;
@@ -159,14 +178,35 @@ body.theme-light {
   --entry-draft-shadow: 0 0 0 2px color-mix(in srgb, var(--accent-success) 18%, transparent), 0 12px 24px rgba(42, 72, 58, 0.1);
   --control-surface-hover-shadow: 0 12px 24px rgba(33, 41, 54, 0.12);
   --control-surface-active-shadow: 0 8px 16px rgba(33, 41, 54, 0.1);
+  --action-bar-bg: #dbe1e8;
+  --action-bar-text: #48525f;
+  --action-bar-button-bg: #586473;
+  --action-bar-button-text: #f7f9fb;
+  --action-bar-button-border: rgba(54, 63, 75, 0.22);
+  --action-bar-button-shadow: 0 12px 24px rgba(28, 35, 44, 0.16);
+  --action-bar-button-hover-bg: #4a5765;
+  --action-bar-button-hover-shadow: 0 16px 28px rgba(28, 35, 44, 0.18);
+  --action-bar-button-active-bg: #3d4956;
+  --action-bar-button-active-shadow: 0 8px 16px rgba(28, 35, 44, 0.14);
+  --action-bar-button-disabled-bg: #c5ccd5;
+  --action-bar-button-disabled-text: #737d8b;
+  --action-bar-button-disabled-shadow: none;
+  --action-bar-border: rgba(174, 183, 194, 0.92);
   --action-bar-shadow: 0 -10px 28px rgba(24, 31, 42, 0.12);
-  --rules-button-bg: linear-gradient(135deg, #5a6676 0%, #434f5d 100%);
-  --rules-button-border: rgba(48, 57, 69, 0.24);
+  --rules-button-bg: #4f5a68;
+  --rules-button-border: rgba(46, 55, 66, 0.28);
   --rules-button-shadow: 0 15px 32px rgba(28, 35, 44, 0.18);
   --rules-button-text: #f7f9fb;
-  --rules-button-hover-bg: linear-gradient(135deg, #647082 0%, #4c5868 100%);
-  --rules-button-active-bg: linear-gradient(135deg, #475261 0%, #394351 100%);
+  --rules-button-text-shadow: 0 1px 0 rgba(33, 41, 50, 0.24);
+  --rules-button-hover-bg: #434f5d;
+  --rules-button-hover-shadow: 0 18px 34px rgba(28, 35, 44, 0.2);
+  --rules-button-active-bg: #37424f;
+  --rules-button-active-shadow: 0 10px 18px rgba(23, 29, 37, 0.18);
   --rules-button-focus-ring: 0 0 0 3px rgba(96, 115, 141, 0.3);
+  --rules-button-disabled-bg: #c5ccd5;
+  --rules-button-disabled-border: rgba(117, 126, 139, 0.24);
+  --rules-button-disabled-shadow: none;
+  --rules-button-disabled-text: #737d8b;
   --admin-open-bg: rgba(79, 117, 100, 0.14);
   --admin-open-border: rgba(79, 117, 100, 0.34);
   --admin-open-text: #406655;
@@ -229,15 +269,35 @@ body.theme-dark {
   --preview-button-active-bg: color-mix(in srgb, var(--bg-page) 22%, rgba(7, 10, 16, 0.9));
   --preview-button-border: color-mix(in srgb, var(--border-soft) 70%, transparent);
   --preview-button-color: #f2f5fa;
-  --action-bar-border: color-mix(in srgb, var(--border-soft) 84%, transparent);
+  --action-bar-bg: #1f252d;
+  --action-bar-text: #c0c8d4;
+  --action-bar-button-bg: #57606c;
+  --action-bar-button-text: #f3f6fb;
+  --action-bar-button-border: rgba(165, 176, 190, 0.16);
+  --action-bar-button-shadow: 0 14px 26px rgba(8, 10, 15, 0.28);
+  --action-bar-button-hover-bg: #646d79;
+  --action-bar-button-hover-shadow: 0 18px 30px rgba(8, 10, 15, 0.32);
+  --action-bar-button-active-bg: #4a535f;
+  --action-bar-button-active-shadow: 0 10px 18px rgba(8, 10, 15, 0.24);
+  --action-bar-button-disabled-bg: #3d4550;
+  --action-bar-button-disabled-text: #8c99ab;
+  --action-bar-button-disabled-shadow: none;
+  --action-bar-border: rgba(80, 90, 103, 0.84);
   --action-bar-shadow: 0 -14px 32px rgba(4, 6, 10, 0.4);
-  --rules-button-bg: linear-gradient(135deg, #48515d 0%, #303842 100%);
-  --rules-button-border: rgba(168, 179, 192, 0.14);
+  --rules-button-bg: #343c46;
+  --rules-button-border: rgba(155, 167, 181, 0.14);
   --rules-button-shadow: 0 18px 34px rgba(8, 10, 15, 0.34);
   --rules-button-text: #f1f4f8;
-  --rules-button-hover-bg: linear-gradient(135deg, #56606d 0%, #39424d 100%);
-  --rules-button-active-bg: linear-gradient(135deg, #3b444f 0%, #2a3139 100%);
+  --rules-button-text-shadow: 0 1px 0 rgba(6, 9, 14, 0.34);
+  --rules-button-hover-bg: #404954;
+  --rules-button-hover-shadow: 0 20px 36px rgba(8, 10, 15, 0.36);
+  --rules-button-active-bg: #2b333c;
+  --rules-button-active-shadow: 0 12px 20px rgba(8, 10, 15, 0.3);
   --rules-button-focus-ring: 0 0 0 3px rgba(130, 145, 163, 0.28);
+  --rules-button-disabled-bg: #2a3139;
+  --rules-button-disabled-border: rgba(110, 122, 136, 0.2);
+  --rules-button-disabled-shadow: none;
+  --rules-button-disabled-text: #7e8a9b;
   --admin-open-bg: rgba(100, 133, 113, 0.2);
   --admin-open-border: rgba(117, 150, 130, 0.34);
   --admin-open-text: #bdd6c6;
@@ -387,26 +447,35 @@ body:not(.theme-dark) .theme-toggle__icon--sun {
   font-size: 14px;
   font-weight: 700;
   letter-spacing: 0.01em;
-  text-shadow: 0 1px 0 rgba(15, 20, 28, 0.24);
+  text-shadow: var(--rules-button-text-shadow);
   cursor: pointer;
   box-shadow: var(--rules-button-shadow);
 }
 
-.rules-button:hover {
+.rules-button:hover:not(:disabled) {
   background: var(--rules-button-hover-bg);
   color: var(--rules-button-text);
-  box-shadow: 0 18px 34px rgba(28, 35, 44, 0.2);
+  box-shadow: var(--rules-button-hover-shadow);
   transform: var(--interactive-translate-hover);
 }
 
-.rules-button:active {
+.rules-button:active:not(:disabled) {
   transform: var(--interactive-translate-active) var(--interactive-scale-active);
   background: var(--rules-button-active-bg);
-  box-shadow: 0 10px 18px rgba(23, 29, 37, 0.18);
+  box-shadow: var(--rules-button-active-shadow);
 }
 
 .rules-button:focus-visible {
   box-shadow: var(--rules-button-focus-ring), var(--rules-button-shadow);
+}
+
+.rules-button:disabled {
+  cursor: not-allowed;
+  background: var(--rules-button-disabled-bg);
+  color: var(--rules-button-disabled-text);
+  border-color: var(--rules-button-disabled-border);
+  box-shadow: var(--rules-button-disabled-shadow);
+  transform: none;
 }
 
 .entries-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
@@ -591,6 +660,7 @@ body:not(.theme-dark) .theme-toggle__icon--sun {
   right: 0;
   bottom: 0;
   background: var(--action-bar-bg);
+  color: var(--action-bar-text);
   border-top: 1px solid var(--action-bar-border);
   box-shadow: var(--action-bar-shadow);
   backdrop-filter: blur(14px);
@@ -603,7 +673,31 @@ body:not(.theme-dark) .theme-toggle__icon--sun {
   margin-top: 0;
 }
 
-.action-bar p { margin: 0 0 8px; font-size: 13px; color: var(--text-secondary); }
+.action-bar .vote-button {
+  background: var(--action-bar-button-bg);
+  color: var(--action-bar-button-text);
+  border-color: var(--action-bar-button-border);
+  box-shadow: var(--action-bar-button-shadow);
+}
+
+.action-bar .vote-button:hover:not(:disabled) {
+  background: var(--action-bar-button-hover-bg);
+  box-shadow: var(--action-bar-button-hover-shadow);
+}
+
+.action-bar .vote-button:active:not(:disabled) {
+  background: var(--action-bar-button-active-bg);
+  box-shadow: var(--action-bar-button-active-shadow);
+}
+
+.action-bar .vote-button:disabled {
+  background: var(--action-bar-button-disabled-bg);
+  color: var(--action-bar-button-disabled-text);
+  border-color: var(--action-bar-button-border);
+  box-shadow: var(--action-bar-button-disabled-shadow);
+}
+
+.action-bar p { margin: 0 0 8px; font-size: 13px; color: var(--action-bar-text); }
 
 .status-message { margin-top: 14px; color: var(--text-secondary); }
 .modal {
