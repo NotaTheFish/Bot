@@ -104,6 +104,9 @@
   --admin-closed-shadow: 0 10px 18px rgba(84, 44, 50, 0.14);
   --admin-switch-disabled-bg: rgba(188, 196, 208, 0.24);
   --admin-switch-disabled-text: #7c8797;
+  --admin-switch-thumb-bg: #ffffff;
+  --admin-switch-thumb-border: rgba(82, 96, 111, 0.18);
+  --admin-switch-busy-indicator: rgba(96, 108, 123, 0.45);
 }
 
 body,
@@ -221,6 +224,9 @@ body.theme-light {
   --admin-closed-shadow: 0 10px 18px rgba(84, 44, 50, 0.14);
   --admin-switch-disabled-bg: rgba(191, 198, 207, 0.26);
   --admin-switch-disabled-text: #7d8795;
+  --admin-switch-thumb-bg: #ffffff;
+  --admin-switch-thumb-border: rgba(85, 98, 114, 0.16);
+  --admin-switch-busy-indicator: rgba(103, 116, 132, 0.38);
   --hover-surface: #d9dfe7;
   --hover-accent: #465d7a;
   --shadow-soft: 0 10px 24px rgba(45, 55, 72, 0.08);
@@ -312,6 +318,9 @@ body.theme-dark {
   --admin-closed-shadow: 0 12px 24px rgba(26, 8, 11, 0.34);
   --admin-switch-disabled-bg: rgba(88, 98, 111, 0.45);
   --admin-switch-disabled-text: #9eabbc;
+  --admin-switch-thumb-bg: #eef3fb;
+  --admin-switch-thumb-border: rgba(218, 229, 244, 0.42);
+  --admin-switch-busy-indicator: rgba(226, 234, 245, 0.42);
   --hover-surface: #38414d;
   --shadow-soft: 0 12px 30px rgba(8, 10, 15, 0.32);
   --shadow-strong: 0 20px 48px rgba(4, 6, 10, 0.42);
@@ -860,15 +869,22 @@ body:not(.theme-dark) .theme-toggle__icon--sun {
   border-radius: 999px;
   background: linear-gradient(135deg, color-mix(in srgb, var(--admin-closed-bg) 80%, var(--bg-elevated)), color-mix(in srgb, var(--admin-closed-bg) 62%, var(--bg-surface)));
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.1), var(--shadow-soft);
+  outline: none;
 }
 
 .admin-switch:hover:not(:disabled) {
   transform: var(--interactive-translate-hover);
+  border-color: color-mix(in srgb, var(--admin-closed-border) 98%, var(--border-soft));
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.12), var(--admin-closed-shadow);
 }
 
 .admin-switch:active:not(:disabled) {
   transform: var(--interactive-translate-active) var(--interactive-scale-active);
+  background: linear-gradient(135deg, color-mix(in srgb, var(--admin-closed-active-bg) 84%, var(--bg-elevated)), color-mix(in srgb, var(--admin-closed-bg) 64%, var(--bg-surface)));
+}
+
+.admin-switch:focus-visible {
+  box-shadow: var(--interactive-focus-ring), inset 0 1px 0 rgba(255, 255, 255, 0.1), var(--shadow-soft);
 }
 
 .admin-switch__track {
@@ -877,6 +893,19 @@ body:not(.theme-dark) .theme-toggle__icon--sun {
   width: 100%;
   height: 100%;
   border-radius: inherit;
+  overflow: hidden;
+}
+
+.admin-switch__track::after {
+  content: "";
+  position: absolute;
+  inset: 8px 10px;
+  border-radius: 999px;
+  background: linear-gradient(90deg, transparent 0 22%, var(--admin-switch-busy-indicator) 40%, transparent 58%);
+  opacity: 0;
+  transform: translateX(-125%);
+  transition: opacity var(--transition-fast);
+  pointer-events: none;
 }
 
 .admin-switch__thumb {
@@ -886,10 +915,11 @@ body:not(.theme-dark) .theme-toggle__icon--sun {
   width: 28px;
   height: 28px;
   border-radius: 50%;
-  background: color-mix(in srgb, var(--bg-elevated) 96%, white 4%);
+  border: 1px solid var(--admin-switch-thumb-border);
+  background: var(--admin-switch-thumb-bg);
   box-shadow: 0 8px 18px rgba(24, 31, 42, 0.18);
   transform: translate(0, -50%);
-  transition: transform var(--transition-medium), background-color var(--transition-fast), box-shadow var(--transition-fast);
+  transition: transform var(--transition-medium), background-color var(--transition-fast), border-color var(--transition-fast), box-shadow var(--transition-fast), opacity var(--transition-fast);
 }
 
 .admin-switch--checked {
@@ -898,7 +928,12 @@ body:not(.theme-dark) .theme-toggle__icon--sun {
 }
 
 .admin-switch--checked:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--admin-open-border) 100%, var(--border-soft));
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.16), var(--admin-open-shadow);
+}
+
+.admin-switch--checked:active:not(:disabled) {
+  background: linear-gradient(135deg, color-mix(in srgb, var(--admin-open-active-bg) 92%, var(--bg-elevated)), color-mix(in srgb, var(--admin-open-bg) 78%, var(--bg-surface)));
 }
 
 .admin-switch--checked .admin-switch__thumb {
@@ -907,6 +942,12 @@ body:not(.theme-dark) .theme-toggle__icon--sun {
 
 .admin-switch--busy {
   cursor: progress;
+  opacity: 0.9;
+}
+
+.admin-switch--busy .admin-switch__track::after {
+  opacity: 1;
+  animation: admin-switch-busy 1.15s linear infinite;
 }
 
 .admin-switch--busy .admin-switch__thumb {
@@ -914,15 +955,27 @@ body:not(.theme-dark) .theme-toggle__icon--sun {
 }
 
 .admin-switch--disabled {
-  cursor: default;
+  cursor: not-allowed;
   border-color: color-mix(in srgb, var(--border-soft) 88%, transparent);
   background: color-mix(in srgb, var(--admin-switch-disabled-bg) 88%, var(--bg-surface));
   box-shadow: none;
+  transform: none;
 }
 
 .admin-switch--disabled .admin-switch__thumb {
   background: color-mix(in srgb, var(--admin-switch-disabled-text) 22%, var(--bg-elevated));
+  border-color: color-mix(in srgb, var(--admin-switch-disabled-text) 24%, transparent);
   box-shadow: none;
+}
+
+
+@keyframes admin-switch-busy {
+  from {
+    transform: translateX(-125%);
+  }
+  to {
+    transform: translateX(125%);
+  }
 }
 
 .admin-overview { font-size: 12px; color: var(--text-secondary); }

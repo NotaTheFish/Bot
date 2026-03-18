@@ -62,6 +62,7 @@ const state = {
   isAdmin: false,
   isChannelMember: false,
   busy: false,
+  adminStageBusyTarget: "",
 };
 
 let entriesRenderToken = 0;
@@ -580,16 +581,16 @@ function updateAdminSwitch(toggleEl, statusEl, options = {}) {
 function updateAdminButtons() {
   updateAdminSwitch(submissionToggleEl, submissionStatusTextEl, {
     isOpen: state.submissionOpen,
-    busy: state.busy,
+    busy: state.adminStageBusyTarget === "submission",
     openText: "Открыт",
     closedText: "Закрыт",
   });
 
   updateAdminSwitch(votingToggleEl, votingStatusTextEl, {
     isOpen: state.votingOpen,
-    busy: state.busy,
-    openText: "Открыто",
-    closedText: "Закрыто",
+    busy: state.adminStageBusyTarget === "voting",
+    openText: "Открыт",
+    closedText: "Закрыт",
   });
 }
 
@@ -1149,6 +1150,12 @@ async function openRules() {
   }
 }
 
+function getAdminStageBusyTarget(path) {
+  if (path.includes("/submission/")) return "submission";
+  if (path.includes("/voting/")) return "voting";
+  return "";
+}
+
 async function adminStage(path) {
   if (
     (path === "/api/contest/admin/voting/open" && state.votingOpen) ||
@@ -1160,7 +1167,9 @@ async function adminStage(path) {
     return;
   }
 
+  state.adminStageBusyTarget = getAdminStageBusyTarget(path);
   setBusy(true);
+  updateAdminButtons();
 
   try {
     await fetchJson(path, { method: "POST", body: "{}" });
@@ -1176,6 +1185,7 @@ async function adminStage(path) {
     setStatus(message);
     notifyAdminError(message);
   } finally {
+    state.adminStageBusyTarget = "";
     setBusy(false);
     updateAdminButtons();
   }
