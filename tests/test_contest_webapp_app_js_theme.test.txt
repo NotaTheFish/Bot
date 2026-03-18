@@ -37,6 +37,24 @@ function buildClassList() {
     contains(token) {
       return classes.has(token);
     },
+    toggle(token, force) {
+      if (force === undefined) {
+        if (classes.has(token)) {
+          classes.delete(token);
+          return false;
+        }
+        classes.add(token);
+        return true;
+      }
+
+      if (force) {
+        classes.add(token);
+        return true;
+      }
+
+      classes.delete(token);
+      return false;
+    },
     toArray() {
       return [...classes];
     },
@@ -65,6 +83,8 @@ function buildHarness({ storedTheme = null, tgColorScheme = '', tgThemeParams = 
     const themeToggleEl = {
       textContent: '',
       attributes: {},
+      dataset: {},
+      classList: (${buildClassList.toString()})(),
       setAttribute(name, value) {
         this.attributes[name] = value;
       },
@@ -123,13 +143,33 @@ test('getPreferredTheme falls back to light when no saved theme or Telegram para
   assert.equal(harness.getPreferredTheme(), 'light');
 });
 
-test('applyTheme updates body classes, toggle icon, label, and localStorage', () => {
+test('syncThemeToggleUi updates dataset, classes, and aria-label without relying on textContent', () => {
+  const harness = buildHarness();
+  harness.themeToggleEl.textContent = 'legacy icon';
+
+  harness.syncThemeToggleUi('dark');
+
+  assert.equal(harness.themeToggleEl.textContent, 'legacy icon');
+  assert.equal(harness.themeToggleEl.dataset.themeIntent, 'light');
+  assert.deepEqual(harness.themeToggleEl.classList.toArray(), ['theme-toggle--intent-light']);
+  assert.equal(harness.themeToggleEl.attributes['aria-label'], 'Включить светлую тему');
+
+  harness.syncThemeToggleUi('light');
+
+  assert.equal(harness.themeToggleEl.textContent, 'legacy icon');
+  assert.equal(harness.themeToggleEl.dataset.themeIntent, 'dark');
+  assert.deepEqual(harness.themeToggleEl.classList.toArray(), ['theme-toggle--intent-dark']);
+  assert.equal(harness.themeToggleEl.attributes['aria-label'], 'Включить тёмную тему');
+});
+
+test('applyTheme updates body classes, toggle UI state, label, and localStorage', () => {
   const harness = buildHarness();
   const appliedTheme = harness.applyTheme('dark');
 
   assert.equal(appliedTheme, 'dark');
   assert.deepEqual(harness.document.body.classList.toArray(), ['theme-dark']);
-  assert.equal(harness.themeToggleEl.textContent, '☀️');
+  assert.equal(harness.themeToggleEl.dataset.themeIntent, 'light');
+  assert.deepEqual(harness.themeToggleEl.classList.toArray(), ['theme-toggle--intent-light']);
   assert.equal(harness.themeToggleEl.attributes['aria-label'], 'Включить светлую тему');
   assert.equal(harness.storage.get('contest_webapp_theme'), 'dark');
 });
@@ -139,6 +179,7 @@ test('toggleTheme switches between dark and light themes', () => {
   assert.equal(harness.toggleTheme(), 'dark');
   assert.equal(harness.toggleTheme(), 'light');
   assert.deepEqual(harness.document.body.classList.toArray(), ['theme-light']);
-  assert.equal(harness.themeToggleEl.textContent, '🌙');
+  assert.equal(harness.themeToggleEl.dataset.themeIntent, 'dark');
+  assert.deepEqual(harness.themeToggleEl.classList.toArray(), ['theme-toggle--intent-dark']);
   assert.equal(harness.themeToggleEl.attributes['aria-label'], 'Включить тёмную тему');
 });
