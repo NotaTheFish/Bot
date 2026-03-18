@@ -1,0 +1,8 @@
+aiogram==3.13.1
+asyncpg
+APScheduler
+pytz
+telethon
+aiohttp
+python-dotenv
+openpyxl
