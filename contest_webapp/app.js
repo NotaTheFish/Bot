@@ -241,9 +241,20 @@ function syncThemeToggleUi(theme) {
 
 function applyTheme(theme) {
   const nextTheme = theme === DARK_THEME ? DARK_THEME : LIGHT_THEME;
-  document.body.classList.remove("theme-light", "theme-dark");
-  document.body.classList.add(`theme-${nextTheme}`);
+  const root = document.body;
+  if (!root) return nextTheme;
+
+  root.classList.remove("theme-light", "theme-dark");
+  root.classList.add(`theme-${nextTheme}`);
+  if (root.dataset) {
+    root.dataset.theme = nextTheme;
+  }
   syncThemeToggleUi(nextTheme);
+
+  if (tg) {
+    tg.setHeaderColor?.(nextTheme === DARK_THEME ? "#20252d" : "#edf1f5");
+    tg.setBackgroundColor?.(nextTheme === DARK_THEME ? "#20252d" : "#edf1f5");
+  }
 
   try {
     window.localStorage?.setItem(THEME_STORAGE_KEY, nextTheme);
@@ -282,7 +293,8 @@ function getPreferredTheme() {
 }
 
 function toggleTheme() {
-  const isDarkTheme = document.body.classList.contains("theme-dark");
+  const root = document.body;
+  const isDarkTheme = root?.classList.contains("theme-dark");
   return applyTheme(isDarkTheme ? LIGHT_THEME : DARK_THEME);
 }
 
@@ -1169,7 +1181,9 @@ async function adminStage(path) {
   }
 }
 
-themeToggleEl?.addEventListener("click", toggleTheme);
+themeToggleEl?.addEventListener("click", () => {
+  toggleTheme();
+});
 rulesButtonEl?.addEventListener("click", openRules);
 rulesCloseEl?.addEventListener("click", () => {
   cleanupRulesEmoji(rulesContentEl);

@@ -7,18 +7,36 @@
     <link rel="stylesheet" href="/static/styles.css?v=__APP_ASSET_VERSION__" />
     <script src="https://telegram.org/js/telegram-web-app.js"></script>
   </head>
-  <body>
+  <body class="theme-light">
+    <script>
+      (function () {
+        var STORAGE_KEY = "contest_webapp_theme";
+        var root = document.body;
+        if (!root) return;
+
+        try {
+          var savedTheme = window.localStorage && window.localStorage.getItem(STORAGE_KEY);
+          var nextTheme = savedTheme === "dark" ? "dark" : "light";
+          root.classList.remove("theme-light", "theme-dark");
+          root.classList.add("theme-" + nextTheme);
+        } catch (_error) {
+          root.classList.remove("theme-dark");
+          root.classList.add("theme-light");
+        }
+      })();
+    </script>
     <main class="app">
       <header class="app__header">
-        <div class="theme-toggle-wrap">
-          <button
-            id="themeToggle"
-            class="theme-toggle"
-            type="button"
-            aria-label="Включить тёмную тему"
-            data-theme-intent="dark"
-          >
-            <svg
+        <div class="app__header-top">
+          <div class="theme-toggle-wrap">
+            <button
+              id="themeToggle"
+              class="theme-toggle"
+              type="button"
+              aria-label="Включить тёмную тему"
+              data-theme-intent="dark"
+            >
+              <svg
               class="theme-toggle__icon theme-toggle__icon--moon"
               viewBox="0 0 24 24"
               aria-hidden="true"
@@ -27,8 +45,8 @@
                 d="M14.633 3.182a1 1 0 0 1 .498 1.245A8.5 8.5 0 1 0 19.573 8.87a1 1 0 0 1 1.245.498A10.5 10.5 0 1 1 14.633 3.182Z"
                 fill="currentColor"
               />
-            </svg>
-            <svg
+              </svg>
+              <svg
               class="theme-toggle__icon theme-toggle__icon--sun"
               viewBox="0 0 24 24"
               aria-hidden="true"
@@ -37,8 +55,11 @@
                 d="M12 6.25a5.75 5.75 0 1 1 0 11.5a5.75 5.75 0 0 1 0-11.5Zm0-4.25a1 1 0 0 1 1 1v1.75a1 1 0 1 1-2 0V3a1 1 0 0 1 1-1Zm0 17.25a1 1 0 0 1 1 1V22a1 1 0 1 1-2 0v-1.75a1 1 0 0 1 1-1ZM4.398 3.984a1 1 0 0 1 1.414 0L7.05 5.22A1 1 0 1 1 5.636 6.636L4.398 5.398a1 1 0 0 1 0-1.414Zm12.552 12.552a1 1 0 0 1 1.414 0l1.238 1.238a1 1 0 0 1-1.414 1.414l-1.238-1.238a1 1 0 0 1 0-1.414ZM2 12a1 1 0 0 1 1-1h1.75a1 1 0 1 1 0 2H3a1 1 0 0 1-1-1Zm17.25 0a1 1 0 0 1 1-1H22a1 1 0 1 1 0 2h-1.75a1 1 0 0 1-1-1ZM5.636 17.364A1 1 0 0 1 7.05 18.78l-1.238 1.238a1 1 0 0 1-1.414-1.414l1.238-1.238Zm12.552-12.552a1 1 0 0 1 1.414 1.414L18.364 7.05a1 1 0 1 1-1.414-1.414l1.238-1.238Z"
                 fill="currentColor"
               />
-            </svg>
-          </button>
+              </svg>
+            </button>
+          </div>
+        </div>
+        <div class="app__header-copy">
         </div>
         <h1>Конкурс рисунков</h1>
         <p id="contestStage" class="stage-badge">Статус: загрузка...</p>
