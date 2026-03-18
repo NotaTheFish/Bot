@@ -32,11 +32,27 @@
       <section id="adminPanel" class="admin-panel" hidden>
         <h2>Режим администратора</h2>
         <div id="adminStatusCard" class="admin-status-card"></div>
-        <div class="admin-actions">
-          <button id="openSubmissionBtn" class="vote-button" type="button">Открыть прием заявок</button>
-          <button id="closeSubmissionBtn" class="vote-button vote-button--secondary" type="button">Закрыть прием заявок</button>
-          <button id="openVotingBtn" class="vote-button" type="button">Открыть голосование</button>
-          <button id="closeVotingBtn" class="vote-button vote-button--danger" type="button">Закрыть голосование</button>
+        <div class="admin-actions" aria-label="Управление этапами конкурса">
+          <div class="admin-control-group" role="group" aria-labelledby="submissionControlLabel">
+            <div class="admin-control-group__header">
+              <p id="submissionControlLabel" class="admin-control-group__title">Приём заявок</p>
+              <span class="admin-control-group__hint">Управление доступностью отправки работ</span>
+            </div>
+            <div class="admin-segmented-control" aria-label="Состояние приёма заявок">
+              <button id="openSubmissionBtn" class="admin-segment admin-segment--open" type="button">Открыт</button>
+              <button id="closeSubmissionBtn" class="admin-segment admin-segment--closed" type="button">Закрыт</button>
+            </div>
+          </div>
+          <div class="admin-control-group" role="group" aria-labelledby="votingControlLabel">
+            <div class="admin-control-group__header">
+              <p id="votingControlLabel" class="admin-control-group__title">Голосование</p>
+              <span class="admin-control-group__hint">Переключение режима голосования участников</span>
+            </div>
+            <div class="admin-segmented-control" aria-label="Состояние голосования">
+              <button id="openVotingBtn" class="admin-segment admin-segment--open" type="button">Открыто</button>
+              <button id="closeVotingBtn" class="admin-segment admin-segment--closed" type="button">Закрыто</button>
+            </div>
+          </div>
         </div>
         <div id="adminOverview" class="admin-overview"></div>
       </section>

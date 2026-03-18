@@ -544,12 +544,39 @@ function entryDisabled(entry) {
 }
 
 function updateAdminButtons() {
-  if (!openSubmissionBtnEl || !openVotingBtnEl || !closeVotingBtnEl || !closeSubmissionBtnEl) return;
+  const controls = [
+    {
+      openButton: openSubmissionBtnEl,
+      closeButton: closeSubmissionBtnEl,
+      isOpen: state.submissionOpen,
+    },
+    {
+      openButton: openVotingBtnEl,
+      closeButton: closeVotingBtnEl,
+      isOpen: state.votingOpen,
+    },
+  ];
 
-  openSubmissionBtnEl.disabled = state.submissionOpen || state.busy;
-  closeSubmissionBtnEl.disabled = !state.submissionOpen || state.busy;
-  openVotingBtnEl.disabled = state.votingOpen || state.busy;
-  closeVotingBtnEl.disabled = !state.votingOpen || state.busy;
+  for (const control of controls) {
+    const { openButton, closeButton, isOpen } = control;
+    if (!openButton || !closeButton) continue;
+
+    const openDisabled = isOpen || state.busy;
+    const closeDisabled = !isOpen || state.busy;
+
+    openButton.disabled = openDisabled;
+    closeButton.disabled = closeDisabled;
+
+    openButton.classList.toggle("admin-segment--active", isOpen);
+    closeButton.classList.toggle("admin-segment--active", !isOpen);
+    openButton.classList.toggle("admin-segment--inactive", !isOpen);
+    closeButton.classList.toggle("admin-segment--inactive", isOpen);
+
+    openButton.setAttribute("aria-pressed", String(isOpen));
+    closeButton.setAttribute("aria-pressed", String(!isOpen));
+    openButton.dataset.state = isOpen ? "enabled" : "off";
+    closeButton.dataset.state = isOpen ? "off" : "enabled";
+  }
 }
 
 function setBusy(value) {
