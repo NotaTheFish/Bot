@@ -160,7 +160,19 @@
         <div class="entry-card__body">
           <div class="admin-detail-card__header">
             <h2 class="entry-card__title">Детали работы</h2>
-            <button id="adminEntryDetailClose" class="admin-entry-button" type="button">Закрыть</button>
+            <button
+              id="adminEntryDetailClose"
+              class="modal-close-icon"
+              type="button"
+              aria-label="Закрыть детали работы"
+            >
+              <svg viewBox="0 0 20 20" aria-hidden="true">
+                <path
+                  d="M5.293 5.293a1 1 0 0 1 1.414 0L10 8.586l3.293-3.293a1 1 0 1 1 1.414 1.414L11.414 10l3.293 3.293a1 1 0 0 1-1.414 1.414L10 11.414l-3.293 3.293a1 1 0 0 1-1.414-1.414L8.586 10 5.293 6.707a1 1 0 0 1 0-1.414Z"
+                  fill="currentColor"
+                />
+              </svg>
+            </button>
           </div>
           <div id="adminEntryDetailContent" class="admin-detail-content"></div>
         </div>

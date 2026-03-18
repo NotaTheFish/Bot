@@ -630,6 +630,33 @@ function setActiveCardState(previousEntryId, nextEntryId) {
   }
 }
 
+function clearActiveSelection() {
+  if (state.activeEntryId == null) return;
+  const previousActiveEntryId = state.activeEntryId;
+  state.activeEntryId = null;
+  setActiveCardState(previousActiveEntryId, null);
+  renderActionBar();
+}
+
+function shouldPreserveSelection(target) {
+  if (!(target instanceof Element)) return false;
+
+  return Boolean(
+    target.closest(
+      [
+        ".entry-card",
+        ".entry-card__preview-btn",
+        ".admin-entry-button",
+        ".theme-toggle",
+        ".rules-button",
+        ".admin-panel",
+        ".action-bar",
+        ".modal",
+      ].join(", ")
+    )
+  );
+}
+
 function renderEntries() {
   entriesRenderToken += 1;
   const currentRenderToken = entriesRenderToken;
@@ -750,7 +777,7 @@ function renderEntries() {
 
     card.addEventListener("click", () => {
       const previousActiveEntryId = state.activeEntryId;
-      state.activeEntryId = entry.id;
+      state.activeEntryId = previousActiveEntryId === entry.id ? null : entry.id;
       setActiveCardState(previousActiveEntryId, state.activeEntryId);
       renderActionBar();
     });
@@ -1248,6 +1275,11 @@ adminEntryDetailModalEl?.addEventListener("click", (event) => {
   if (event.target === adminEntryDetailModalEl) {
     closeAdminEntryDetail();
   }
+});
+document.addEventListener("click", (event) => {
+  if (state.activeEntryId == null) return;
+  if (shouldPreserveSelection(event.target)) return;
+  clearActiveSelection();
 });
 
 applyTheme(getPreferredTheme());

@@ -90,6 +90,19 @@
   --rules-button-disabled-border: rgba(119, 128, 141, 0.22);
   --rules-button-disabled-shadow: none;
   --rules-button-disabled-text: #77808d;
+  --detail-button-bg: color-mix(in srgb, var(--bg-elevated) 94%, var(--bg-page));
+  --detail-button-border: color-mix(in srgb, var(--border-soft) 88%, transparent);
+  --detail-button-text: var(--text-secondary);
+  --detail-button-shadow: 0 10px 20px rgba(34, 42, 54, 0.08);
+  --detail-button-hover-bg: color-mix(in srgb, var(--hover-surface) 74%, var(--bg-elevated));
+  --detail-button-hover-border: color-mix(in srgb, var(--accent-primary) 18%, var(--border-soft));
+  --detail-button-hover-shadow: 0 14px 24px rgba(34, 42, 54, 0.12);
+  --detail-button-active-bg: color-mix(in srgb, var(--hover-surface) 84%, var(--bg-surface));
+  --detail-button-active-shadow: 0 8px 16px rgba(34, 42, 54, 0.1);
+  --modal-close-color: color-mix(in srgb, var(--text-secondary) 92%, var(--text-primary));
+  --modal-close-hover-color: var(--text-primary);
+  --modal-close-hover-bg: color-mix(in srgb, var(--hover-surface) 56%, transparent);
+  --modal-close-active-bg: color-mix(in srgb, var(--hover-surface) 78%, transparent);
   --admin-open-bg: rgba(84, 120, 100, 0.14);
   --admin-open-border: rgba(81, 117, 100, 0.34);
   --admin-open-text: #3f6654;
@@ -196,20 +209,33 @@ body.theme-light {
   --action-bar-button-disabled-shadow: none;
   --action-bar-border: rgba(174, 183, 194, 0.92);
   --action-bar-shadow: 0 -10px 28px rgba(24, 31, 42, 0.12);
-  --rules-button-bg: #4f5a68;
-  --rules-button-border: rgba(46, 55, 66, 0.28);
-  --rules-button-shadow: 0 15px 32px rgba(28, 35, 44, 0.18);
-  --rules-button-text: #f7f9fb;
-  --rules-button-text-shadow: 0 1px 0 rgba(33, 41, 50, 0.24);
-  --rules-button-hover-bg: #434f5d;
-  --rules-button-hover-shadow: 0 18px 34px rgba(28, 35, 44, 0.2);
-  --rules-button-active-bg: #37424f;
-  --rules-button-active-shadow: 0 10px 18px rgba(23, 29, 37, 0.18);
-  --rules-button-focus-ring: 0 0 0 3px rgba(96, 115, 141, 0.3);
-  --rules-button-disabled-bg: #c5ccd5;
-  --rules-button-disabled-border: rgba(117, 126, 139, 0.24);
+    --rules-button-bg: color-mix(in srgb, var(--bg-elevated) 92%, #d8e0ea);
+  --rules-button-border: color-mix(in srgb, var(--border-soft) 82%, rgba(86, 99, 114, 0.08));
+  --rules-button-shadow: 0 12px 26px rgba(38, 47, 60, 0.1);
+  --rules-button-text: #4a5868;
+  --rules-button-text-shadow: none;
+  --rules-button-hover-bg: color-mix(in srgb, var(--hover-surface) 62%, var(--bg-elevated));
+  --rules-button-hover-shadow: 0 16px 30px rgba(34, 42, 54, 0.12);
+  --rules-button-active-bg: color-mix(in srgb, var(--hover-surface) 82%, var(--bg-surface));
+  --rules-button-active-shadow: 0 9px 18px rgba(34, 42, 54, 0.1);
+  --rules-button-focus-ring: 0 0 0 3px rgba(108, 126, 150, 0.2);
+  --rules-button-disabled-bg: #d3dae3;
+  --rules-button-disabled-border: rgba(123, 133, 146, 0.18);
   --rules-button-disabled-shadow: none;
   --rules-button-disabled-text: #737d8b;
+  --detail-button-bg: color-mix(in srgb, var(--bg-elevated) 94%, var(--bg-page));
+  --detail-button-border: color-mix(in srgb, var(--border-soft) 88%, transparent);
+  --detail-button-text: #4e5b6a;
+  --detail-button-shadow: 0 10px 20px rgba(34, 42, 54, 0.08);
+  --detail-button-hover-bg: color-mix(in srgb, var(--hover-surface) 72%, var(--bg-elevated));
+  --detail-button-hover-border: color-mix(in srgb, var(--accent-primary) 20%, var(--border-soft));
+  --detail-button-hover-shadow: 0 14px 24px rgba(34, 42, 54, 0.12);
+  --detail-button-active-bg: color-mix(in srgb, var(--hover-surface) 84%, var(--bg-surface));
+  --detail-button-active-shadow: 0 8px 16px rgba(34, 42, 54, 0.1);
+  --modal-close-color: color-mix(in srgb, var(--text-secondary) 92%, var(--text-primary));
+  --modal-close-hover-color: #26303b;
+  --modal-close-hover-bg: rgba(86, 99, 114, 0.1);
+  --modal-close-active-bg: rgba(86, 99, 114, 0.16);
   --admin-open-bg: rgba(79, 117, 100, 0.14);
   --admin-open-border: rgba(79, 117, 100, 0.34);
   --admin-open-text: #406655;
@@ -304,6 +330,19 @@ body.theme-dark {
   --rules-button-disabled-border: rgba(110, 122, 136, 0.2);
   --rules-button-disabled-shadow: none;
   --rules-button-disabled-text: #7e8a9b;
+  --detail-button-bg: color-mix(in srgb, var(--bg-card) 82%, var(--bg-elevated));
+  --detail-button-border: rgba(127, 140, 156, 0.22);
+  --detail-button-text: #c1cad6;
+  --detail-button-shadow: 0 12px 22px rgba(6, 9, 14, 0.24);
+  --detail-button-hover-bg: color-mix(in srgb, var(--bg-elevated) 44%, var(--bg-card));
+  --detail-button-hover-border: rgba(145, 159, 176, 0.28);
+  --detail-button-hover-shadow: 0 16px 28px rgba(6, 9, 14, 0.3);
+  --detail-button-active-bg: color-mix(in srgb, var(--bg-surface) 52%, var(--bg-card));
+  --detail-button-active-shadow: 0 10px 18px rgba(6, 9, 14, 0.24);
+  --modal-close-color: #aeb8c7;
+  --modal-close-hover-color: #eef2f8;
+  --modal-close-hover-bg: rgba(120, 132, 148, 0.14);
+  --modal-close-active-bg: rgba(120, 132, 148, 0.22);
   --admin-open-bg: rgba(100, 133, 113, 0.2);
   --admin-open-border: rgba(117, 150, 130, 0.34);
   --admin-open-text: #bdd6c6;
@@ -439,6 +478,7 @@ body:not(.theme-dark) .theme-toggle__icon--sun {
 .entry-card__preview-btn:focus-visible,
 .preview-card__close:focus-visible,
 .admin-entry-button:focus-visible,
+.modal-close-icon:focus-visible,
 .admin-switch:focus-visible {
   outline: none;
   box-shadow: var(--interactive-focus-ring);
@@ -1005,25 +1045,26 @@ body:not(.theme-dark) .theme-toggle__icon--sun {
 
 .admin-entry-button {
   margin-top: 8px;
-  padding: 6px 10px;
-  border-radius: 8px;
-  border: 1px solid var(--control-surface-border);
-  background: var(--control-surface-bg);
-  color: var(--control-surface-text);
+  padding: 7px 11px;
+  border-radius: 999px;
+  border: 1px solid var(--detail-button-border);
+  background: var(--detail-button-bg);
+  color: var(--detail-button-text);
   font-size: 12px;
-  box-shadow: var(--control-surface-shadow);
+  font-weight: 600;
+  box-shadow: var(--detail-button-shadow);
 }
 
 .admin-entry-button:hover {
-  background: var(--control-surface-hover-bg);
-  border-color: var(--control-surface-hover-border);
-  box-shadow: var(--control-surface-hover-shadow);
+  background: var(--detail-button-hover-bg);
+  border-color: var(--detail-button-hover-border);
+  box-shadow: var(--detail-button-hover-shadow);
   transform: var(--interactive-translate-hover);
 }
 
 .admin-entry-button:active {
-  background: var(--control-surface-active-bg);
-  box-shadow: var(--control-surface-active-shadow);
+  background: var(--detail-button-active-bg);
+  box-shadow: var(--detail-button-active-shadow);
   transform: var(--interactive-translate-active) var(--interactive-scale-active);
 }
 
@@ -1076,6 +1117,40 @@ body:not(.theme-dark) .theme-toggle__icon--sun {
   justify-content: space-between;
   gap: 12px;
   margin-bottom: 8px;
+}
+
+.modal-close-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  margin: -6px -6px -6px auto;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--modal-close-color);
+  cursor: pointer;
+  box-shadow: none;
+  transition: var(--interactive-transition);
+}
+
+.modal-close-icon svg {
+  width: 18px;
+  height: 18px;
+  pointer-events: none;
+}
+
+.modal-close-icon:hover {
+  background: var(--modal-close-hover-bg);
+  color: var(--modal-close-hover-color);
+  transform: var(--interactive-translate-hover);
+}
+
+.modal-close-icon:active {
+  background: var(--modal-close-active-bg);
+  transform: var(--interactive-translate-active) var(--interactive-scale-active);
 }
 
 .admin-detail-content {
