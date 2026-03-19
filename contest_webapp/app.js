@@ -718,8 +718,10 @@ function renderEntries() {
       const reward = entry.reward_label || "—";
       const author = entry.author_label || "—";
       const place = Number(entry.place) > 0 ? entry.place : "—";
-      const votes = Number.isFinite(Number(entry.net_votes)) ? Number(entry.net_votes) : 0;
-      meta.textContent = `Голосов: ${votes}\nМесто: ${place}\nНаграда: ${reward}\nАвтор: ${author}`;
+      const resultVotesSource = entry.effective_net_votes ?? entry.net_votes;
+      const votes = Number.isFinite(Number(resultVotesSource)) ? Number(resultVotesSource) : 0;
+      const rewardLine = Number(place) >= 1 && Number(place) <= 3 ? `Награда: ${reward}` : reward;
+      meta.textContent = `Голосов: ${votes}\nМесто: ${place}\n${rewardLine}\nАвтор: ${author}`;
       if (place === 1) card.classList.add("entry-card--winner-gold");
       if (place === 2) card.classList.add("entry-card--winner-silver");
       if (place === 3) card.classList.add("entry-card--winner-bronze");

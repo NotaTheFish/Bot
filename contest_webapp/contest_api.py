@@ -1191,10 +1191,10 @@ async def approved_entries(request: Request, x_telegram_init_data: str = Header(
         if phase == "results":
             _apply_results_tie_break(items)
             for item in items:
+                item["net_votes"] = int(item.get("effective_net_votes") or item.get("net_votes") or 0)
                 if not _is_admin(current_user_id):
                     item.pop("tie_break_bonus", None)
                     item.pop("effective_net_votes", None)
-                item["net_votes"] = int(item.get("effective_net_votes") or item.get("net_votes") or 0)
         else:
             for item in items:
                 item["place"] = None
@@ -2021,19 +2021,36 @@ def _submitted_sort_key(value: Any) -> float:
     return float("inf")
 
 
+def _results_sort_key(entry: dict[str, Any], *, score_field: str = "net_votes") -> tuple[int, int, float, int]:
+    return (
+        -int(entry.get(score_field) or 0),
+        int(entry.get("penalty_votes") or 0),
+        _submitted_sort_key(entry.get("submitted_at") or entry.get("created_at")),
+        int(entry.get("id") or 0),
+    )
+
+
 def _apply_results_tie_break(items: list[dict[str, Any]]) -> None:
     if not items:
         return
 
     for item in items:
         item["tie_break_bonus"] = 0
+        item["effective_net_votes"] = int(item.get("net_votes") or 0)
 
-    grouped: dict[int, list[dict[str, Any]]] = {}
-    for item in items:
-        grouped.setdefault(int(item.get("net_votes") or 0), []).append(item)
+    items.sort(key=_results_sort_key)
+    prize_zone_candidates = items[:5]
 
-    for tied_items in grouped.values():
+    grouped: dict[int, list[tuple[int, dict[str, Any]]]] = {}
+    for place, item in enumerate(prize_zone_candidates, start=1):
+        grouped.setdefault(int(item.get("net_votes") or 0), []).append((place, item))
+
+    for tied_group in grouped.values():
+        tied_places = [place for place, _ in tied_group]
+        tied_items = [item for _, item in tied_group]
         if len(tied_items) <= 1:
+            continue
+        if min(tied_places) > 3:
             continue
         winner = sorted(
             tied_items,
@@ -2048,14 +2065,7 @@ def _apply_results_tie_break(items: list[dict[str, Any]]) -> None:
     for item in items:
         item["effective_net_votes"] = int(item.get("net_votes") or 0) + int(item.get("tie_break_bonus") or 0)
 
-    items.sort(
-        key=lambda entry: (
-            -int(entry.get("effective_net_votes") or 0),
-            int(entry.get("penalty_votes") or 0),
-            _submitted_sort_key(entry.get("submitted_at") or entry.get("created_at")),
-            int(entry.get("id") or 0),
-        )
-    )
+    items.sort(key=lambda entry: _results_sort_key(entry, score_field="effective_net_votes"))
 
     for index, item in enumerate(items, start=1):
         item["place"] = index
