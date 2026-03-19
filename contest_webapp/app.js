@@ -926,14 +926,15 @@ async function loadAdminOverview(options = {}) {
 function renderAdminEntryLog(entry) {
   const displayNumber = Number(entry.display_number) > 0 ? Number(entry.display_number) : "—";
   const place = Number(entry.place) > 0 ? Number(entry.place) : "—";
-  const netVotes = Number.isFinite(Number(entry.net_votes)) ? Number(entry.net_votes) : 0;
+  const effectiveNetVotesSource = entry.effective_net_votes ?? entry.net_votes;
+  const effectiveNetVotes = Number.isFinite(Number(effectiveNetVotesSource)) ? Number(effectiveNetVotesSource) : 0;
   const author = Number(entry.owner_user_id) > 0 ? entry.owner_user_id : "—";
 
   return `
   <div class="admin-entry-log">
     <div class="admin-entry-title">Работа #${displayNumber}</div>
     <div class="admin-entry-stats">
-      <div>Голосов: ${netVotes}</div>
+      <div>Голосов: ${effectiveNetVotes}</div>
       <div>Место: ${place}</div>
       <div>Автор: ${author}</div>
     </div>

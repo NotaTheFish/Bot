@@ -1167,9 +1167,7 @@ async def approved_entries(request: Request, x_telegram_init_data: str = Header(
             item = dict(row)
             item["is_owned_by_current_user"] = int(item["owner_user_id"]) == current_user_id
             item["image_url"] = _build_entry_image_url(item, request_origin)
-            votes_count = int(item.get("votes_count") or 0)
-            penalty_votes = int(item.get("penalty_votes") or 0)
-            item["net_votes"] = votes_count - penalty_votes
+            _populate_vote_totals(item, confirmed_votes_key="confirmed_votes_count", raw_votes_fallback_key="votes_count")
             item["author_label"] = _author_label(
                 owner_user_id=int(item.get("owner_user_id") or 0),
                 owner_username_last_seen=item.get("owner_username_last_seen"),
@@ -1183,6 +1181,7 @@ async def approved_entries(request: Request, x_telegram_init_data: str = Header(
                 item.get("storage_message_id"),
             )
             if not _is_admin(current_user_id):
+                item.pop("confirmed_votes_count", None)
                 item.pop("votes_count", None)
                 item.pop("penalty_votes", None)
             items.append(item)
@@ -1191,10 +1190,8 @@ async def approved_entries(request: Request, x_telegram_init_data: str = Header(
         if phase == "results":
             _apply_results_tie_break(items)
             for item in items:
-                item["net_votes"] = int(item.get("effective_net_votes") or item.get("net_votes") or 0)
                 if not _is_admin(current_user_id):
                     item.pop("tie_break_bonus", None)
-                    item.pop("effective_net_votes", None)
         else:
             for item in items:
                 item["place"] = None
@@ -1725,22 +1722,14 @@ async def admin_overview(x_telegram_init_data: str = Header(default="")) -> JSON
         items = []
         for row in rows:
             item = dict(row)
-            item["net_votes"] = int(item["confirmed_votes_count"] or 0) - int(item["penalty_votes"] or 0)
-            item["tie_break_bonus"] = 0
-            item["effective_net_votes"] = item["net_votes"]
+            _populate_vote_totals(item)
+            item["place"] = None
+            item["reward_label"] = None
             items.append(item)
 
-        if (settings.get("phase") or "submission") == "results":
-            approved_items = [item for item in items if item.get("status") == "approved"]
-            _apply_results_tie_break(approved_items)
-            for item in approved_items:
-                item["net_votes"] = int(item.get("effective_net_votes") or item.get("net_votes") or 0)
-
-        leaders = [dict(item) for item in items if item.get("status") == "approved"]
-        _apply_results_tie_break(leaders)
-        for item in leaders:
-            item["net_votes"] = int(item.get("effective_net_votes") or item.get("net_votes") or 0)
-        leaders = leaders[:5]
+        approved_items = [item for item in items if item.get("status") == "approved"]
+        _apply_results_tie_break(approved_items)
+        leaders = approved_items[:5]
 
         payload = {
             "ok": True,
@@ -1799,9 +1788,9 @@ async def admin_entry_detail(entry_id: int, x_telegram_init_data: str = Header(d
                 raise VoteError("Работа не найдена.", "entry_not_found", 404)
 
             item = dict(row)
-            item["net_votes"] = int(item.get("confirmed_votes_count") or 0) - int(item.get("penalty_votes") or 0)
-            item["tie_break_bonus"] = 0
-            item["effective_net_votes"] = int(item["net_votes"])
+            _populate_vote_totals(item)
+            item["place"] = None
+            item["reward_label"] = None
 
             if item.get("status") == "approved":
                 approved_rows = await conn.fetch(
@@ -1823,14 +1812,14 @@ async def admin_entry_detail(entry_id: int, x_telegram_init_data: str = Header(d
                 )
                 approved_items = [dict(approved_row) for approved_row in approved_rows]
                 for approved_item in approved_items:
-                    approved_item["net_votes"] = int(approved_item.get("confirmed_votes_count") or 0) - int(
-                        approved_item.get("penalty_votes") or 0
-                    )
+                    _populate_vote_totals(approved_item)
                 _apply_results_tie_break(approved_items)
                 matched = next((approved_item for approved_item in approved_items if int(approved_item.get("id") or 0) == entry_id), None)
                 if matched:
                     item["tie_break_bonus"] = int(matched.get("tie_break_bonus") or 0)
                     item["effective_net_votes"] = int(matched.get("effective_net_votes") or item["effective_net_votes"])
+                    item["place"] = matched.get("place")
+                    item["reward_label"] = matched.get("reward_label")
 
         return JSONResponse({"ok": True, "item": item})
     except VoteError as exc:
@@ -2028,6 +2017,24 @@ def _results_sort_key(entry: dict[str, Any], *, score_field: str = "net_votes") 
         _submitted_sort_key(entry.get("submitted_at") or entry.get("created_at")),
         int(entry.get("id") or 0),
     )
+
+
+def _populate_vote_totals(
+    item: dict[str, Any],
+    *,
+    confirmed_votes_key: str = "confirmed_votes_count",
+    raw_votes_fallback_key: str | None = None,
+) -> dict[str, Any]:
+    confirmed_votes_count = int(item.get(confirmed_votes_key) or 0)
+    if confirmed_votes_count <= 0 and raw_votes_fallback_key:
+        confirmed_votes_count = int(item.get(raw_votes_fallback_key) or 0)
+
+    penalty_votes = int(item.get("penalty_votes") or 0)
+    item["confirmed_votes_count"] = confirmed_votes_count
+    item["net_votes"] = confirmed_votes_count - penalty_votes
+    item["tie_break_bonus"] = int(item.get("tie_break_bonus") or 0)
+    item["effective_net_votes"] = int(item.get("effective_net_votes") or item["net_votes"])
+    return item
 
 
 def _apply_results_tie_break(items: list[dict[str, Any]]) -> None:
