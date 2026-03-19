@@ -1,6 +1,7 @@
 import hashlib
 import hmac
 import json
+from datetime import datetime, timezone
 import time
 import unittest
 from urllib.parse import urlencode
@@ -9,6 +10,7 @@ from unittest.mock import AsyncMock, patch
 
 from bot_controller import contest_api
 from bot_controller.contest_api import ContestAPI, VoteError, parse_and_verify_init_data
+from contest_webapp import contest_api as webapp_contest_api
 
 
 def build_init_data(bot_token: str, user_id: int = 42, auth_date: int | None = None) -> str:
@@ -343,6 +345,108 @@ class ContestApiVotingTests(unittest.IsolatedAsyncioTestCase):
 
         queries = "\n".join(call.args[0] for call in conn.execute.await_args_list)
         self.assertIn("ADD COLUMN IF NOT EXISTS suspicion_reason", queries)
+
+
+class ContestAdminResultsPayloadTests(unittest.IsolatedAsyncioTestCase):
+    async def test_admin_overview_applies_tie_break_to_prize_zone_and_updates_places(self):
+        rows = [
+            {
+                "id": 101,
+                "display_number": 1,
+                "owner_user_id": 501,
+                "owner_username_last_seen": "winner",
+                "owner_first_name_last_seen": "Tie",
+                "owner_last_name_last_seen": "Winner",
+                "status": "approved",
+                "submitted_at": datetime(2026, 3, 10, 8, 0, tzinfo=timezone.utc),
+                "display_order_anchor": datetime(2026, 3, 10, 8, 0, tzinfo=timezone.utc),
+                "penalty_votes": 0,
+                "confirmed_votes_count": 5,
+                "suspicious_votes_count": 0,
+            },
+            {
+                "id": 102,
+                "display_number": 2,
+                "owner_user_id": 502,
+                "owner_username_last_seen": "runnerup",
+                "owner_first_name_last_seen": "Tie",
+                "owner_last_name_last_seen": "RunnerUp",
+                "status": "approved",
+                "submitted_at": datetime(2026, 3, 10, 8, 5, tzinfo=timezone.utc),
+                "display_order_anchor": datetime(2026, 3, 10, 8, 5, tzinfo=timezone.utc),
+                "penalty_votes": 0,
+                "confirmed_votes_count": 5,
+                "suspicious_votes_count": 0,
+            },
+        ]
+        conn = SimpleNamespace(fetch=AsyncMock(return_value=rows), fetchval=AsyncMock(return_value=3))
+        pool = SimpleNamespace(acquire=lambda: _AcquireCtx(conn))
+
+        with (
+            patch.object(webapp_contest_api, "_extract_auth", return_value={"user_id": 42}),
+            patch.object(webapp_contest_api, "_require_admin"),
+            patch.object(webapp_contest_api, "get_pool", return_value=pool),
+            patch.object(webapp_contest_api, "_apply_penalties_if_needed", AsyncMock()),
+            patch.object(
+                webapp_contest_api,
+                "_get_contest_settings",
+                AsyncMock(return_value={"phase": "results", "enabled": True, "submission_open": False, "voting_open": False}),
+            ),
+        ):
+            response = await webapp_contest_api.admin_overview("init-data")
+
+        payload = json.loads(response.body)
+        self.assertTrue(payload["ok"])
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual([item["id"] for item in payload["leaders"]], [101, 102])
+        self.assertEqual([item["effective_net_votes"] for item in payload["leaders"]], [6, 5])
+        self.assertEqual([item["place"] for item in payload["leaders"]], [1, 2])
+
+    async def test_admin_entry_detail_returns_consistent_result_metrics_and_keeps_raw_net_secondary(self):
+        row = {
+            "id": 101,
+            "display_number": 1,
+            "owner_user_id": 501,
+            "status": "approved",
+            "penalty_votes": 0,
+            "confirmed_votes_count": 5,
+            "suspicious_votes_count": 0,
+        }
+        approved_rows = [
+            {
+                "id": 101,
+                "penalty_votes": 0,
+                "confirmed_votes_count": 5,
+                "submitted_at": datetime(2026, 3, 10, 8, 0, tzinfo=timezone.utc),
+            },
+            {
+                "id": 102,
+                "penalty_votes": 0,
+                "confirmed_votes_count": 5,
+                "submitted_at": datetime(2026, 3, 10, 8, 5, tzinfo=timezone.utc),
+            },
+        ]
+        conn = SimpleNamespace(fetchrow=AsyncMock(return_value=row), fetch=AsyncMock(return_value=approved_rows))
+        pool = SimpleNamespace(acquire=lambda: _AcquireCtx(conn))
+
+        with (
+            patch.object(webapp_contest_api, "_extract_auth", return_value={"user_id": 42}),
+            patch.object(webapp_contest_api, "_require_admin"),
+            patch.object(webapp_contest_api, "get_pool", return_value=pool),
+        ):
+            response = await webapp_contest_api.admin_entry_detail(101, "init-data")
+
+        payload = json.loads(response.body)
+        item = payload["item"]
+        self.assertTrue(payload["ok"])
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(item["confirmed_votes_count"], 5)
+        self.assertEqual(item["penalty_votes"], 0)
+        self.assertEqual(item["tie_break_bonus"], 1)
+        self.assertEqual(item["net_votes"], 5)
+        self.assertEqual(item["effective_net_votes"], 6)
+        self.assertEqual(item["place"], 1)
+        self.assertNotEqual(item["effective_net_votes"], item["net_votes"])
 
 
 if __name__ == "__main__":

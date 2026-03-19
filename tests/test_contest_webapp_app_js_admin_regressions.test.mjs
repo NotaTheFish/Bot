@@ -287,6 +287,29 @@ function buildAdminHarness({ submissionOpen = false, votingOpen = false } = {}) 
   return factory();
 }
 
+function buildAdminResultsHarness(metricLabels = null) {
+  const appJsPath = resolve(process.cwd(), 'contest_webapp/app.js');
+  const source = readFileSync(appJsPath, 'utf8');
+
+  const safeStringFn = extractFunction(source, 'safeString');
+  const getAdminMetricLabelsFn = extractFunction(source, 'getAdminMetricLabels');
+  const getPrimaryResultVotesFn = extractFunction(source, 'getPrimaryResultVotes');
+  const renderAdminEntryLogFn = extractFunction(source, 'renderAdminEntryLog');
+  const formatAdminEntryDetailFn = extractFunction(source, 'formatAdminEntryDetail');
+
+  const factory = new Function(`
+    const state = { adminMetricLabels: ${JSON.stringify(metricLabels)} };
+    ${safeStringFn}
+    ${getAdminMetricLabelsFn}
+    ${getPrimaryResultVotesFn}
+    ${renderAdminEntryLogFn}
+    ${formatAdminEntryDetailFn}
+    return { renderAdminEntryLog, formatAdminEntryDetail, getPrimaryResultVotes, getAdminMetricLabels };
+  `);
+
+  return factory();
+}
+
 test('applyTheme keeps theme entry points for body, rules button, and action bar stable in light and dark modes', () => {
   const { harness, indexHtml } = buildThemeHarness();
 
@@ -396,4 +419,47 @@ test('busy admin switch ignores repeated clicks until the current request finish
   assert.equal(harness.submissionToggleEl.disabled, false);
   assert.equal(harness.submissionToggleEl.attributes['aria-busy'], 'false');
   assert.equal(harness.getRefreshCount(), 1);
+});
+
+test('renderAdminEntryLog shows effective result votes for results payload instead of raw net votes', () => {
+  const harness = buildAdminResultsHarness({ effective_net_votes: 'Итоговые голоса' });
+  const html = harness.renderAdminEntryLog({
+    id: 41,
+    display_number: 7,
+    owner_user_id: 9001,
+    place: 2,
+    net_votes: 5,
+    effective_net_votes: 6,
+  });
+
+  assert.match(html, /Итоговые голоса: 6/);
+  assert.doesNotMatch(html, /Итоговые голоса: 5/);
+  assert.match(html, /Место: 2/);
+});
+
+test('formatAdminEntryDetail uses effective_net_votes as the primary result label and keeps raw net technical', () => {
+  const harness = buildAdminResultsHarness({
+    confirmed_votes_count: 'Подтверждённые голоса',
+    penalty_votes: 'Штраф',
+    tie_break_bonus: 'Tie-break бонус',
+    effective_net_votes: 'Итоговые голоса',
+    net_votes: 'Базовый net до tie-break',
+  });
+  const html = harness.formatAdminEntryDetail({
+    id: 41,
+    display_number: 7,
+    owner_user_id: 9001,
+    status: 'approved',
+    confirmed_votes_count: 6,
+    penalty_votes: 1,
+    tie_break_bonus: 1,
+    net_votes: 5,
+    effective_net_votes: 6,
+  });
+
+  assert.match(html, /admin-detail-grid__label">Итоговые голоса<\/span><span class="admin-detail-grid__value">6/);
+  assert.match(html, /Итоговые голоса = Подтверждённые голоса − Штраф \+ Tie-break бонус\./);
+  assert.match(html, /Технический блок\./);
+  assert.match(html, /Базовый net до tie-break<\/span><span class="admin-detail-grid__value">5/);
+  assert.doesNotMatch(html, /Базовый net до tie-break =/);
 });

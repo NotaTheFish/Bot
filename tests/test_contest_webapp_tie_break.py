@@ -88,6 +88,21 @@ class ContestResultsTieBreakTests(unittest.TestCase):
         self.assertEqual(items[0]["effective_net_votes"], 3)
         self.assertEqual(items[0]["place"], 1)
 
+    def test_apply_results_tie_break_regression_two_prize_zone_entries_with_same_net_pick_single_winner(self):
+        items = [
+            {"id": 21, "net_votes": 7, "penalty_votes": 0, "submitted_at": datetime(2026, 3, 10, 8, 0, tzinfo=timezone.utc)},
+            {"id": 22, "net_votes": 7, "penalty_votes": 0, "submitted_at": datetime(2026, 3, 10, 8, 5, tzinfo=timezone.utc)},
+            {"id": 23, "net_votes": 6, "penalty_votes": 0, "submitted_at": datetime(2026, 3, 10, 8, 10, tzinfo=timezone.utc)},
+        ]
+
+        contest_api._apply_results_tie_break(items)
+
+        self.assertEqual([item["id"] for item in items], [21, 22, 23])
+        self.assertEqual([item["effective_net_votes"] for item in items], [8, 7, 6])
+        self.assertEqual([item["place"] for item in items], [1, 2, 3])
+        self.assertEqual(items[0]["tie_break_bonus"], 1)
+        self.assertEqual(items[1]["tie_break_bonus"], 0)
+
 
 if __name__ == "__main__":
     unittest.main()
