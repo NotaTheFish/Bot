@@ -20,6 +20,16 @@ from fastapi.responses import JSONResponse, Response
 
 logger = logging.getLogger(__name__)
 
+ADMIN_METRIC_LABELS = {
+    "confirmed_votes_count": "Подтверждённые голоса",
+    "penalty_votes": "Штраф",
+    "tie_break_bonus": "Tie-break бонус",
+    "effective_net_votes": "Итоговые голоса",
+    "suspicious_votes_count": "Подозрительные",
+    "net_votes": "Базовый net до tie-break",
+}
+
+
 
 def _env(name: str, default: str = "") -> str:
     return (os.getenv(name, default) or "").strip()
@@ -1206,6 +1216,7 @@ async def approved_entries(request: Request, x_telegram_init_data: str = Header(
                     "phase": phase,
                     "current_user": {"user_id": current_user_id, "is_admin": _is_admin(current_user_id)},
                     "items": items,
+                    "metric_labels": _admin_metric_labels_payload(),
                 }
             )
         )
@@ -1737,6 +1748,7 @@ async def admin_overview(x_telegram_init_data: str = Header(default="")) -> JSON
             "confirmations_count": int(confirmations_count or 0),
             "items": items,
             "leaders": leaders,
+            "metric_labels": _admin_metric_labels_payload(),
         }
         return JSONResponse(jsonable_encoder(payload))
     except VoteError as exc:
@@ -1821,7 +1833,7 @@ async def admin_entry_detail(entry_id: int, x_telegram_init_data: str = Header(d
                     item["place"] = matched.get("place")
                     item["reward_label"] = matched.get("reward_label")
 
-        return JSONResponse({"ok": True, "item": item})
+        return JSONResponse({"ok": True, "item": item, "metric_labels": _admin_metric_labels_payload()})
     except VoteError as exc:
         return JSONResponse({"ok": False, "error_code": exc.code, "message": exc.message}, status_code=exc.status)
     except Exception:
@@ -1980,6 +1992,10 @@ def _derive_contest_phase(*, submission_open: bool, voting_open: bool, raw_phase
     if submission_open:
         return "submission"
     return "results"
+
+
+def _admin_metric_labels_payload() -> dict[str, str]:
+    return dict(ADMIN_METRIC_LABELS)
 
 
 def _reward_label_for_place(place: int) -> str:

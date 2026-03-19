@@ -63,6 +63,7 @@ const state = {
   isChannelMember: false,
   busy: false,
   adminStageBusyTarget: "",
+  adminMetricLabels: null,
 };
 
 let entriesRenderToken = 0;
@@ -718,10 +719,10 @@ function renderEntries() {
       const reward = entry.reward_label || "—";
       const author = entry.author_label || "—";
       const place = Number(entry.place) > 0 ? entry.place : "—";
-      const resultVotesSource = entry.effective_net_votes ?? entry.net_votes;
-      const votes = Number.isFinite(Number(resultVotesSource)) ? Number(resultVotesSource) : 0;
+      const votes = getPrimaryResultVotes(entry);
       const rewardLine = Number(place) >= 1 && Number(place) <= 3 ? `Награда: ${reward}` : reward;
-      meta.textContent = `Голосов: ${votes}\nМесто: ${place}\n${rewardLine}\nАвтор: ${author}`;
+      const labels = getAdminMetricLabels();
+      meta.textContent = `${labels.effective_net_votes}: ${votes}\nМесто: ${place}\n${rewardLine}\nАвтор: ${author}`;
       if (place === 1) card.classList.add("entry-card--winner-gold");
       if (place === 2) card.classList.add("entry-card--winner-silver");
       if (place === 3) card.classList.add("entry-card--winner-bronze");
@@ -909,6 +910,9 @@ async function loadAdminOverview(options = {}) {
 
   try {
     const payload = await fetchJson("/api/contest/admin/overview");
+    state.adminMetricLabels = payload.metric_labels && typeof payload.metric_labels === "object"
+      ? payload.metric_labels
+      : null;
 
     const leaderItems = Array.isArray(payload.leaders) && payload.leaders.length
       ? payload.leaders
@@ -923,18 +927,38 @@ async function loadAdminOverview(options = {}) {
   }
 }
 
+function getAdminMetricLabels(payloadLabels = null) {
+  const labels = payloadLabels && typeof payloadLabels === "object"
+    ? payloadLabels
+    : (state.adminMetricLabels && typeof state.adminMetricLabels === "object" ? state.adminMetricLabels : {});
+
+  return {
+    confirmed_votes_count: labels.confirmed_votes_count || "Подтверждённые голоса",
+    penalty_votes: labels.penalty_votes || "Штраф",
+    tie_break_bonus: labels.tie_break_bonus || "Tie-break бонус",
+    effective_net_votes: labels.effective_net_votes || "Итоговые голоса",
+    suspicious_votes_count: labels.suspicious_votes_count || "Подозрительные",
+    net_votes: labels.net_votes || "Базовый net до tie-break",
+  };
+}
+
+function getPrimaryResultVotes(entry) {
+  const effectiveNetVotesSource = entry?.effective_net_votes ?? entry?.net_votes;
+  return Number.isFinite(Number(effectiveNetVotesSource)) ? Number(effectiveNetVotesSource) : 0;
+}
+
 function renderAdminEntryLog(entry) {
   const displayNumber = Number(entry.display_number) > 0 ? Number(entry.display_number) : "—";
   const place = Number(entry.place) > 0 ? Number(entry.place) : "—";
-  const effectiveNetVotesSource = entry.effective_net_votes ?? entry.net_votes;
-  const effectiveNetVotes = Number.isFinite(Number(effectiveNetVotesSource)) ? Number(effectiveNetVotesSource) : 0;
+  const effectiveNetVotes = getPrimaryResultVotes(entry);
   const author = Number(entry.owner_user_id) > 0 ? entry.owner_user_id : "—";
+  const labels = getAdminMetricLabels();
 
   return `
   <div class="admin-entry-log">
     <div class="admin-entry-title">Работа #${displayNumber}</div>
     <div class="admin-entry-stats">
-      <div>Голосов: ${effectiveNetVotes}</div>
+      <div>${labels.effective_net_votes}: ${effectiveNetVotes}</div>
       <div>Место: ${place}</div>
       <div>Автор: ${author}</div>
     </div>
@@ -944,32 +968,64 @@ function renderAdminEntryLog(entry) {
 }
 
 
-function formatAdminEntryDetail(item) {
+function formatAdminEntryDetail(item, payloadLabels = null) {
   if (!item || typeof item !== "object") {
     return "<p class=\"status-message\">Данные недоступны.</p>";
   }
 
-  const rows = [
+  const labels = getAdminMetricLabels(payloadLabels);
+  const confirmedVotes = Number(item.confirmed_votes_count) || 0;
+  const penaltyVotes = Number(item.penalty_votes) || 0;
+  const tieBreakBonus = Number(item.tie_break_bonus) || 0;
+  const effectiveNetVotes = getPrimaryResultVotes(item);
+  const suspiciousVotes = Number(item.suspicious_votes_count) || 0;
+  const technicalRows = [];
+
+  if (Object.prototype.hasOwnProperty.call(item, "net_votes")) {
+    technicalRows.push([labels.net_votes, Number(item.net_votes) || 0]);
+  }
+
+  const summaryRows = [
     ["ID", item.id],
     ["Номер", Number(item.display_number) > 0 ? item.display_number : "—"],
     ["Автор (user_id)", item.owner_user_id || "—"],
     ["Статус", safeString(item.status) || "—"],
-    ["Подтвержденные", Number(item.confirmed_votes_count) || 0],
-    ["Штраф", Number(item.penalty_votes) || 0],
-    ["Итог (net)", Number(item.net_votes) || 0],
-    ["Подозрительные", Number(item.suspicious_votes_count) || 0],
-    ["Tie-break бонус", Number(item.tie_break_bonus) || 0],
-    ["Tie-break итог", Number(item.effective_net_votes) || 0],
+  ];
+  const voteRows = [
+    [labels.confirmed_votes_count, confirmedVotes],
+    [labels.penalty_votes, penaltyVotes],
+    [labels.tie_break_bonus, tieBreakBonus],
+    [labels.effective_net_votes, effectiveNetVotes],
   ];
 
+  if (suspiciousVotes > 0) {
+    voteRows.push([labels.suspicious_votes_count, suspiciousVotes]);
+  }
+
+  const renderRows = (rows) => rows
+    .map(
+      ([label, value]) =>
+        `<div class="admin-detail-grid__row"><span class="admin-detail-grid__label">${label}</span><span class="admin-detail-grid__value">${value}</span></div>`
+    )
+    .join("");
+
+  const explanation = `${labels.effective_net_votes} = ${labels.confirmed_votes_count} − ${labels.penalty_votes} + ${labels.tie_break_bonus}.`;
+
   return `
-    <div class="admin-detail-grid">
-      ${rows
-        .map(
-          ([label, value]) =>
-            `<div class="admin-detail-grid__row"><span class="admin-detail-grid__label">${label}</span><span class="admin-detail-grid__value">${value}</span></div>`
-        )
-        .join("")}
+    <div class="admin-detail-sections">
+      <div class="admin-detail-grid">
+        ${renderRows(summaryRows)}
+      </div>
+      <div class="admin-detail-grid">
+        ${renderRows(voteRows)}
+      </div>
+      <p class="admin-detail-note">${explanation}</p>
+      ${technicalRows.length ? `
+        <p class="admin-detail-note">Технический блок.</p>
+        <div class="admin-detail-grid">
+          ${renderRows(technicalRows)}
+        </div>
+      ` : ""}
     </div>
   `;
 }
@@ -987,7 +1043,7 @@ async function openAdminEntryDetail(entryId) {
 
   try {
     const payload = await fetchJson(`/api/contest/admin/entries/${entryId}`);
-    adminEntryDetailContentEl.innerHTML = formatAdminEntryDetail(payload.item);
+    adminEntryDetailContentEl.innerHTML = formatAdminEntryDetail(payload.item, payload.metric_labels);
   } catch (error) {
     adminEntryDetailContentEl.innerHTML = `<p class="status-message">${error.message || "Не удалось загрузить детали."}</p>`;
   }
@@ -995,6 +1051,9 @@ async function openAdminEntryDetail(entryId) {
 
 function applyContestState(statePayload, entriesPayload) {
   state.entries = entriesPayload.items || [];
+  state.adminMetricLabels = entriesPayload.metric_labels && typeof entriesPayload.metric_labels === "object"
+    ? entriesPayload.metric_labels
+    : state.adminMetricLabels;
   cleanupEntryImageLoadResults();
   state.draftEntryIds = new Set(statePayload.draft_entry_ids || []);
   state.confirmedEntryIds = new Set(statePayload.confirmed_entry_ids || []);
