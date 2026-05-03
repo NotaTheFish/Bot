@@ -254,6 +254,67 @@ async def ensure_schema(db: DBOrPool) -> None:
             WHERE peer_id IS NULL
             """
         )
+        await conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS worker_state_by_workspace (
+              workspace_key TEXT PRIMARY KEY,
+              last_outgoing_at TIMESTAMPTZ,
+              last_manual_outgoing_at TIMESTAMPTZ
+            );
+            """
+        )
+        await conn.execute(
+            """
+            INSERT INTO worker_state_by_workspace(workspace_key, last_outgoing_at, last_manual_outgoing_at)
+            SELECT 'main', last_outgoing_at, last_manual_outgoing_at FROM worker_state WHERE id = 1
+            ON CONFLICT (workspace_key) DO NOTHING
+            """
+        )
+        await conn.execute(
+            "ALTER TABLE userbot_targets ADD COLUMN IF NOT EXISTS workspace_key TEXT NOT NULL DEFAULT 'main';"
+        )
+        await conn.execute(
+            """
+            DO $$
+            BEGIN
+              IF EXISTS (
+                SELECT 1
+                FROM information_schema.columns
+                WHERE table_schema = 'public' AND table_name = 'userbot_targets' AND column_name = 'workspace_key'
+              ) AND NOT EXISTS (
+                SELECT 1
+                FROM information_schema.key_column_usage
+                WHERE table_schema = 'public' AND table_name = 'userbot_targets'
+                  AND constraint_name = 'userbot_targets_pkey'
+                  AND column_name = 'workspace_key'
+              ) THEN
+                ALTER TABLE userbot_targets DROP CONSTRAINT userbot_targets_pkey;
+                ALTER TABLE userbot_targets ADD PRIMARY KEY (workspace_key, chat_id);
+              END IF;
+            END
+            $$;
+            """
+        )
+        await conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_userbot_targets_workspace_enabled
+            ON userbot_targets(workspace_key, enabled)
+            WHERE enabled = TRUE
+            """
+        )
+        await conn.execute(
+            """
+            DO $$
+            BEGIN
+              IF to_regclass('public.tenant_profiles') IS NOT NULL THEN
+                ALTER TABLE tenant_profiles ADD COLUMN IF NOT EXISTS mirror_status TEXT NOT NULL DEFAULT 'pending';
+                ALTER TABLE tenant_profiles ADD COLUMN IF NOT EXISTS mirror_status_at TIMESTAMPTZ;
+                ALTER TABLE tenant_profiles ADD COLUMN IF NOT EXISTS mirror_last_error TEXT;
+              END IF;
+            END
+            $$;
+            """
+        )
     finally:
         await _release_conn(db, conn)
 
@@ -469,15 +530,18 @@ class UserbotTargetPeer:
     username: Optional[str]
 
 
-async def get_userbot_target_state(db: DBOrPool, *, chat_id: int) -> Optional[UserbotTargetState]:
+async def get_userbot_target_state(
+    db: DBOrPool, *, workspace_key: str, chat_id: int
+) -> Optional[UserbotTargetState]:
     conn = await _acquire_conn(db)
     try:
         row = await conn.fetchrow(
             """
             SELECT chat_id, enabled, last_success_post_at, last_self_message_id, last_post_fingerprint, last_post_at
             FROM userbot_targets
-            WHERE chat_id = $1
+            WHERE workspace_key = $1 AND chat_id = $2
             """,
+            (workspace_key or "main").strip() or "main",
             int(chat_id),
         )
         if not row:
@@ -494,15 +558,18 @@ async def get_userbot_target_state(db: DBOrPool, *, chat_id: int) -> Optional[Us
         await _release_conn(db, conn)
 
 
-async def set_userbot_target_last_self_message_id(db: DBOrPool, *, chat_id: int, message_id: int) -> None:
+async def set_userbot_target_last_self_message_id(
+    db: DBOrPool, *, workspace_key: str, chat_id: int, message_id: int
+) -> None:
     conn = await _acquire_conn(db)
     try:
         await conn.execute(
             """
             UPDATE userbot_targets
-            SET last_self_message_id = $2
-            WHERE chat_id = $1
+            SET last_self_message_id = $3
+            WHERE workspace_key = $1 AND chat_id = $2
             """,
+            (workspace_key or "main").strip() or "main",
             int(chat_id),
             int(message_id),
         )
@@ -510,17 +577,20 @@ async def set_userbot_target_last_self_message_id(db: DBOrPool, *, chat_id: int,
         await _release_conn(db, conn)
 
 
-async def mark_userbot_target_disabled(db: DBOrPool, *, chat_id: int, error_text: str) -> None:
+async def mark_userbot_target_disabled(
+    db: DBOrPool, *, workspace_key: str, chat_id: int, error_text: str
+) -> None:
     conn = await _acquire_conn(db)
     try:
         await conn.execute(
             """
             UPDATE userbot_targets
             SET enabled = FALSE,
-                last_error = $2,
+                last_error = $3,
                 last_error_at = NOW()
-            WHERE chat_id = $1
+            WHERE workspace_key = $1 AND chat_id = $2
             """,
+            (workspace_key or "main").strip() or "main",
             int(chat_id),
             str(error_text)[:2000],
         )
@@ -531,6 +601,7 @@ async def mark_userbot_target_disabled(db: DBOrPool, *, chat_id: int, error_text
 async def mark_userbot_target_success(
     db: DBOrPool,
     *,
+    workspace_key: str,
     chat_id: int,
     sent_message_id: int,
     fingerprint: str,
@@ -544,11 +615,12 @@ async def mark_userbot_target_success(
                 last_error = NULL,
                 last_error_at = NULL,
                 last_success_post_at = NOW(),
-                last_self_message_id = $2,
-                last_post_fingerprint = $3,
+                last_self_message_id = $3,
+                last_post_fingerprint = $4,
                 last_post_at = NOW()
-            WHERE chat_id = $1
+            WHERE workspace_key = $1 AND chat_id = $2
             """,
+            (workspace_key or "main").strip() or "main",
             int(chat_id),
             int(sent_message_id),
             str(fingerprint)[:200],
@@ -560,6 +632,7 @@ async def mark_userbot_target_success(
 async def upsert_userbot_target(
     db: DBOrPool,
     *,
+    workspace_key: str,
     chat_id: int,
     chat_type: str,
     peer_type: str,
@@ -570,11 +643,12 @@ async def upsert_userbot_target(
 ) -> bool:
     conn = await _acquire_conn(db)
     try:
+        ws = (workspace_key or "main").strip() or "main"
         row = await conn.fetchrow(
             """
-            INSERT INTO userbot_targets(chat_id, chat_type, peer_type, peer_id, access_hash, title, username, enabled, last_seen_at, last_error)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, TRUE, NOW(), NULL)
-            ON CONFLICT(chat_id) DO UPDATE
+            INSERT INTO userbot_targets(workspace_key, chat_id, chat_type, peer_type, peer_id, access_hash, title, username, enabled, last_seen_at, last_error)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, TRUE, NOW(), NULL)
+            ON CONFLICT(workspace_key, chat_id) DO UPDATE
             SET chat_type = EXCLUDED.chat_type,
                 peer_type = EXCLUDED.peer_type,
                 peer_id = EXCLUDED.peer_id,
@@ -586,6 +660,7 @@ async def upsert_userbot_target(
                 last_error = NULL
             RETURNING (xmax = 0) AS inserted
             """,
+            ws,
             int(chat_id),
             str(chat_type),
             str(peer_type),
@@ -602,6 +677,7 @@ async def upsert_userbot_target(
 async def disable_stale_userbot_targets(
     db: DBOrPool,
     *,
+    workspace_key: str,
     grace_days: int,
 ) -> int:
     conn = await _acquire_conn(db)
@@ -611,26 +687,29 @@ async def disable_stale_userbot_targets(
             UPDATE userbot_targets
             SET enabled = FALSE,
                 last_error = COALESCE(last_error, 'Not seen in recent dialogs sync')
-            WHERE enabled = TRUE
+            WHERE workspace_key = $2
+              AND enabled = TRUE
               AND last_seen_at < NOW() - ($1::int * INTERVAL '1 day')
             """,
             max(1, int(grace_days)),
+            (workspace_key or "main").strip() or "main",
         )
         return int(str(result).split()[-1])
     finally:
         await _release_conn(db, conn)
 
 
-async def load_enabled_userbot_targets(db: DBOrPool) -> List[UserbotTargetPeer]:
+async def load_enabled_userbot_targets(db: DBOrPool, *, workspace_key: str) -> List[UserbotTargetPeer]:
     conn = await _acquire_conn(db)
     try:
         rows = await conn.fetch(
             """
             SELECT chat_id, peer_type, peer_id, access_hash, title, username
             FROM userbot_targets
-            WHERE enabled = TRUE
+            WHERE workspace_key = $1 AND enabled = TRUE
             ORDER BY chat_id
-            """
+            """,
+            (workspace_key or "main").strip() or "main",
         )
         return [
             UserbotTargetPeer(
@@ -648,7 +727,9 @@ async def load_enabled_userbot_targets(db: DBOrPool) -> List[UserbotTargetPeer]:
         await _release_conn(db, conn)
 
 
-async def load_userbot_targets_by_chat_ids(db: DBOrPool, *, chat_ids: List[int]) -> List[UserbotTargetPeer]:
+async def load_userbot_targets_by_chat_ids(
+    db: DBOrPool, *, workspace_key: str, chat_ids: List[int]
+) -> List[UserbotTargetPeer]:
     normalized_ids = sorted({int(chat_id) for chat_id in chat_ids})
     if not normalized_ids:
         return []
@@ -659,8 +740,9 @@ async def load_userbot_targets_by_chat_ids(db: DBOrPool, *, chat_ids: List[int])
             """
             SELECT chat_id, peer_type, peer_id, access_hash, title, username
             FROM userbot_targets
-            WHERE chat_id = ANY($1::bigint[])
+            WHERE workspace_key = $1 AND chat_id = ANY($2::bigint[])
             """,
+            (workspace_key or "main").strip() or "main",
             normalized_ids,
         )
         return [
@@ -682,28 +764,31 @@ async def load_userbot_targets_by_chat_ids(db: DBOrPool, *, chat_ids: List[int])
 async def disable_userbot_target(
     db: DBOrPool,
     *,
+    workspace_key: str,
     chat_id: int,
     error_text: str,
 ) -> None:
-    await mark_userbot_target_disabled(db, chat_id=chat_id, error_text=error_text)
+    await mark_userbot_target_disabled(db, workspace_key=workspace_key, chat_id=chat_id, error_text=error_text)
 
 
 async def remap_userbot_target_chat_id(
     db: DBOrPool,
     *,
+    workspace_key: str,
     old_chat_id: int,
     new_chat_id: int,
 ) -> None:
     if int(old_chat_id) == int(new_chat_id):
         return
 
+    ws = (workspace_key or "main").strip() or "main"
     conn = await _acquire_conn(db)
     try:
         async with conn.transaction():
             await conn.execute(
                 """
-                INSERT INTO userbot_targets(chat_id, chat_type, peer_type, peer_id, access_hash, title, username, enabled, last_seen_at, last_error, migrated_to)
-                SELECT $2,
+                INSERT INTO userbot_targets(workspace_key, chat_id, chat_type, peer_type, peer_id, access_hash, title, username, enabled, last_seen_at, last_error, migrated_to)
+                SELECT $1, $3,
                        chat_type,
                        peer_type,
                        peer_id,
@@ -715,8 +800,8 @@ async def remap_userbot_target_chat_id(
                        last_error,
                        migrated_to
                 FROM userbot_targets
-                WHERE chat_id = $1
-                ON CONFLICT(chat_id) DO UPDATE
+                WHERE workspace_key = $1 AND chat_id = $2
+                ON CONFLICT(workspace_key, chat_id) DO UPDATE
                 SET chat_type = EXCLUDED.chat_type,
                     peer_type = EXCLUDED.peer_type,
                     peer_id = EXCLUDED.peer_id,
@@ -728,20 +813,26 @@ async def remap_userbot_target_chat_id(
                     last_error = COALESCE(userbot_targets.last_error, EXCLUDED.last_error),
                     migrated_to = NULL
                 """,
+                ws,
                 int(old_chat_id),
                 int(new_chat_id),
             )
             await conn.execute(
                 """
                 UPDATE userbot_targets
-                SET migrated_to = $2,
+                SET migrated_to = $3,
                     enabled = FALSE
-                WHERE chat_id = $1
+                WHERE workspace_key = $1 AND chat_id = $2
                 """,
+                ws,
                 int(old_chat_id),
                 int(new_chat_id),
             )
-            await conn.execute("DELETE FROM userbot_targets WHERE chat_id = $1", int(old_chat_id))
+            await conn.execute(
+                "DELETE FROM userbot_targets WHERE workspace_key = $1 AND chat_id = $2",
+                ws,
+                int(old_chat_id),
+            )
     finally:
         await _release_conn(db, conn)
 
@@ -788,48 +879,82 @@ async def get_worker_autoreply_settings(db: DBOrPool) -> WorkerAutoreplySettings
         await _release_conn(db, conn)
 
 
-async def get_worker_state_last_outgoing_at(db: DBOrPool) -> Optional[datetime]:
+async def get_worker_state_last_outgoing_at(db: DBOrPool, *, workspace_key: str = "main") -> Optional[datetime]:
+    ws = (workspace_key or "main").strip() or "main"
     conn = await _acquire_conn(db)
     try:
-        value = await conn.fetchval("SELECT last_outgoing_at FROM worker_state WHERE id = 1")
+        value = await conn.fetchval(
+            "SELECT last_outgoing_at FROM worker_state_by_workspace WHERE workspace_key = $1",
+            ws,
+        )
+        if value is None and ws == "main":
+            value = await conn.fetchval("SELECT last_outgoing_at FROM worker_state WHERE id = 1")
         return value
     finally:
         await _release_conn(db, conn)
 
 
-async def get_worker_state_last_manual_outgoing_at(db: DBOrPool) -> Optional[datetime]:
+async def get_worker_state_last_manual_outgoing_at(
+    db: DBOrPool, *, workspace_key: str = "main"
+) -> Optional[datetime]:
+    ws = (workspace_key or "main").strip() or "main"
     conn = await _acquire_conn(db)
     try:
-        value = await conn.fetchval("SELECT last_manual_outgoing_at FROM worker_state WHERE id = 1")
+        value = await conn.fetchval(
+            "SELECT last_manual_outgoing_at FROM worker_state_by_workspace WHERE workspace_key = $1",
+            ws,
+        )
+        if value is None and ws == "main":
+            value = await conn.fetchval("SELECT last_manual_outgoing_at FROM worker_state WHERE id = 1")
         return value
     finally:
         await _release_conn(db, conn)
 
 
-async def touch_worker_last_outgoing_at(db: DBOrPool) -> None:
+async def touch_worker_last_outgoing_at(db: DBOrPool, *, workspace_key: str = "main") -> None:
+    ws = (workspace_key or "main").strip() or "main"
     conn = await _acquire_conn(db)
     try:
         await conn.execute(
             """
-            INSERT INTO worker_state(id, last_outgoing_at)
-            VALUES (1, NOW())
-            ON CONFLICT(id) DO UPDATE SET last_outgoing_at = EXCLUDED.last_outgoing_at
-            """
+            INSERT INTO worker_state_by_workspace(workspace_key, last_outgoing_at)
+            VALUES ($1, NOW())
+            ON CONFLICT(workspace_key) DO UPDATE SET last_outgoing_at = EXCLUDED.last_outgoing_at
+            """,
+            ws,
         )
+        if ws == "main":
+            await conn.execute(
+                """
+                INSERT INTO worker_state(id, last_outgoing_at)
+                VALUES (1, NOW())
+                ON CONFLICT(id) DO UPDATE SET last_outgoing_at = EXCLUDED.last_outgoing_at
+                """
+            )
     finally:
         await _release_conn(db, conn)
 
 
-async def touch_worker_last_manual_outgoing_at(db: DBOrPool) -> None:
+async def touch_worker_last_manual_outgoing_at(db: DBOrPool, *, workspace_key: str = "main") -> None:
+    ws = (workspace_key or "main").strip() or "main"
     conn = await _acquire_conn(db)
     try:
         await conn.execute(
             """
-            INSERT INTO worker_state(id, last_manual_outgoing_at)
-            VALUES (1, NOW())
-            ON CONFLICT(id) DO UPDATE SET last_manual_outgoing_at = EXCLUDED.last_manual_outgoing_at
-            """
+            INSERT INTO worker_state_by_workspace(workspace_key, last_manual_outgoing_at)
+            VALUES ($1, NOW())
+            ON CONFLICT(workspace_key) DO UPDATE SET last_manual_outgoing_at = EXCLUDED.last_manual_outgoing_at
+            """,
+            ws,
         )
+        if ws == "main":
+            await conn.execute(
+                """
+                INSERT INTO worker_state(id, last_manual_outgoing_at)
+                VALUES (1, NOW())
+                ON CONFLICT(id) DO UPDATE SET last_manual_outgoing_at = EXCLUDED.last_manual_outgoing_at
+                """
+            )
     finally:
         await _release_conn(db, conn)
 
@@ -909,5 +1034,59 @@ async def get_task_status(db: DBOrPool, *, task_id: int) -> Optional[str]:
     try:
         value = await conn.fetchval("SELECT status FROM userbot_tasks WHERE id = $1", int(task_id))
         return str(value) if value is not None else None
+    finally:
+        await _release_conn(db, conn)
+
+
+async def list_enabled_tenant_profiles(db: DBOrPool) -> List[dict]:
+    conn = await _acquire_conn(db)
+    try:
+        exists = await conn.fetchval("SELECT to_regclass('public.tenant_profiles')")
+        if not exists:
+            return []
+        rows = await conn.fetch(
+            """
+            SELECT workspace_key, telegram_api_id, telegram_api_hash, telethon_session, storage_chat_id
+            FROM tenant_profiles
+            WHERE enabled = TRUE
+              AND NULLIF(trim(telethon_session), '') IS NOT NULL
+              AND telegram_api_id > 0
+              AND NULLIF(trim(telegram_api_hash), '') IS NOT NULL
+            ORDER BY workspace_key
+            """
+        )
+        return [dict(r) for r in rows]
+    finally:
+        await _release_conn(db, conn)
+
+
+async def update_tenant_mirror_status(
+    db: DBOrPool,
+    *,
+    workspace_key: str,
+    status: str,
+    last_error: Optional[str] = None,
+) -> None:
+    ws = (workspace_key or "main").strip() or "main"
+    conn = await _acquire_conn(db)
+    try:
+        exists = await conn.fetchval("SELECT to_regclass('public.tenant_profiles')")
+        if not exists:
+            return
+        await conn.execute(
+            """
+            UPDATE tenant_profiles
+            SET mirror_status = $2,
+                mirror_status_at = NOW(),
+                mirror_last_error = $3,
+                updated_at = NOW()
+            WHERE workspace_key = $1
+            """,
+            ws,
+            (status or "pending").strip() or "pending",
+            ((last_error or "")[:500] or None),
+        )
+    except asyncpg.exceptions.UndefinedColumnError:
+        return
     finally:
         await _release_conn(db, conn)

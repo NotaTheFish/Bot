@@ -42,9 +42,11 @@ from zoneinfo import ZoneInfo
 try:
     from bot_controller.userbot_tasks_queue import create_userbot_task as insert_userbot_task
     from bot_controller.userbot_tasks_queue import invalidate_column_cache
+    from bot_controller.tenant_mirror_handlers import build_tenant_mirror_dispatcher
 except ImportError:  # noqa: WPS433 — fallback if not run as package
     from userbot_tasks_queue import create_userbot_task as insert_userbot_task
     from userbot_tasks_queue import invalidate_column_cache
+    from tenant_mirror_handlers import build_tenant_mirror_dispatcher
 
 
 def _get_env_str(name: str, default: str = "") -> str:
@@ -704,6 +706,18 @@ CREATE_TABLES_SQL = [
     """
     CREATE INDEX IF NOT EXISTS idx_userbot_tasks_workspace_pending
     ON userbot_tasks(workspace_key, status, run_at)
+    """,
+    """
+    ALTER TABLE tenant_profiles
+    ADD COLUMN IF NOT EXISTS mirror_status TEXT NOT NULL DEFAULT 'pending'
+    """,
+    """
+    ALTER TABLE tenant_profiles
+    ADD COLUMN IF NOT EXISTS mirror_status_at TIMESTAMPTZ
+    """,
+    """
+    ALTER TABLE tenant_profiles
+    ADD COLUMN IF NOT EXISTS mirror_last_error TEXT
     """,
 ]
 
@@ -1738,7 +1752,8 @@ async def get_tenant_profile(owner_user_id: int) -> Optional[dict]:
     row = await pool.fetchrow(
         """
         SELECT owner_user_id, workspace_key, worker_bot_token, telegram_api_hash, telegram_api_id,
-               telethon_session, storage_chat_id, tz_name, enabled, singleton_lock_key
+               telethon_session, storage_chat_id, tz_name, enabled, singleton_lock_key,
+               mirror_status, mirror_status_at, mirror_last_error
         FROM tenant_profiles
         WHERE owner_user_id = $1
         """,
@@ -1757,6 +1772,9 @@ async def get_tenant_profile(owner_user_id: int) -> Optional[dict]:
         "tz_name": str(row["tz_name"] or TZ.key),
         "enabled": bool(row["enabled"]),
         "singleton_lock_key": int(row["singleton_lock_key"]) if row.get("singleton_lock_key") is not None else None,
+        "mirror_status": str(row["mirror_status"]) if row.get("mirror_status") is not None else "pending",
+        "mirror_status_at": row.get("mirror_status_at"),
+        "mirror_last_error": str(row["mirror_last_error"]) if row.get("mirror_last_error") else None,
     }
 
 
@@ -1776,9 +1794,10 @@ async def upsert_tenant_profile(
         """
         INSERT INTO tenant_profiles(
             owner_user_id, workspace_key, worker_bot_token, telegram_api_hash, telegram_api_id,
-            telethon_session, storage_chat_id, tz_name, singleton_lock_key, enabled, updated_at
+            telethon_session, storage_chat_id, tz_name, singleton_lock_key, enabled,
+            mirror_status, mirror_status_at, mirror_last_error, updated_at
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, TRUE, NOW())
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, TRUE, 'created', NOW(), NULL, NOW())
         ON CONFLICT (owner_user_id) DO UPDATE
         SET worker_bot_token = EXCLUDED.worker_bot_token,
             telegram_api_hash = EXCLUDED.telegram_api_hash,
@@ -1788,6 +1807,9 @@ async def upsert_tenant_profile(
             tz_name = EXCLUDED.tz_name,
             singleton_lock_key = COALESCE(tenant_profiles.singleton_lock_key, EXCLUDED.singleton_lock_key),
             enabled = TRUE,
+            mirror_status = 'created',
+            mirror_status_at = NOW(),
+            mirror_last_error = NULL,
             updated_at = NOW()
         """,
         int(owner_user_id),
@@ -1801,42 +1823,6 @@ async def upsert_tenant_profile(
         int(lock_key),
     )
     return await get_tenant_profile(owner_user_id)
-
-
-def build_tenant_deploy_env_blocks(*, database_url: str, profile: dict) -> str:
-    owner_id = int(profile["owner_user_id"])
-
-    ctrl = "\n".join(
-        [
-            "# --- Изолированный контроллер (отдельный процесс на Railway/VPS)",
-            "# Запуск из корня репозитория: python -m bot_controller.tenant_main",
-            f"DATABASE_URL={database_url}",
-            f"BOT_TOKEN={profile['worker_bot_token']}",
-            f"TENANT_OWNER_USER_ID={owner_id}",
-            "",
-        ]
-    )
-    wrk = "\n".join(
-        [
-            "# --- Изолированный userbot worker (ещё один отдельный процесс)",
-            "# Запуск: python -m userbot_worker.main",
-            f"DATABASE_URL={database_url}",
-            f"WORKSPACE_KEY={profile['workspace_key']}",
-            f"TELEGRAM_API_ID={profile['telegram_api_id']}",
-            f"TELEGRAM_API_HASH={profile['telegram_api_hash']}",
-            f"TELETHON_SESSION={profile['telethon_session']}",
-            f"SINGLETON_LOCK_KEY={profile['singleton_lock_key']}",
-            "",
-        ]
-    )
-    return ctrl + wrk + "\n".join(
-        [
-            "# Обычно совпадает с TZ этого онбординга; при желании переопределите:",
-            f"# TZ={profile['tz_name']}",
-            "",
-            "⚠️ Удалите это сообщение после копирования секретов (чат недостаточно приватный для токена).",
-        ]
-    )
 
 
 CONTEST_SETTINGS_FIELDS_SQL = """
@@ -4620,15 +4606,18 @@ async def tenant_onboarding_storage_chat_id(message: Message, state: FSMContext)
     if not profile:
         await message.answer("Не удалось сохранить профиль. Попробуйте заново через /code")
         return
-    env_hint = build_tenant_deploy_env_blocks(database_url=DATABASE_URL, profile=profile)
+    st = (profile.get("mirror_status") or "created").strip().lower()
+    status_ru = {
+        "created": "зеркало создано",
+        "starting": "запускается",
+        "running": "запущено",
+        "error": "ошибка",
+        "pending": "ожидает запуска",
+    }.get(st, "зеркало создано")
     await message.answer(
-        "Профиль клиента сохранён ✅\n\n"
-        "Дальше: поднимите **два отдельных процесса** с тем же кодом из репозитория:\n"
-        "1) изолированный контроллер — `python -m bot_controller.tenant_main`\n"
-        "2) изолированный worker — `python -m userbot_worker.main`\n\n"
-        "Пример переменных окружения (скопируйте и подставьте секреты; затем удалите сообщение):\n\n"
-        f"<pre>{html.escape(env_hint)}</pre>",
-        parse_mode="HTML",
+        "Профиль сохранён ✅\n\n"
+        "Ваше зеркало создано и запускается на нашей инфраструктуре.\n\n"
+        f"Текущий статус: {status_ru}",
     )
 
 
@@ -6766,6 +6755,7 @@ async def restore_scheduler() -> None:
 
 async def main() -> None:
     global BOT_USERNAME, BOT_ID
+    mirror_bots: list[tuple[Bot, Dispatcher]] = []
     try:
         await init_db()
         me = await bot.get_me()
@@ -6778,12 +6768,38 @@ async def main() -> None:
         scheduler.add_job(safe_cleanup_storage_posts, "interval", seconds=STORAGE_CLEANUP_EVERY_SECONDS, id="storage_safe_cleanup", replace_existing=True)
         scheduler.start()
         await restore_scheduler()
-        await dp.start_polling(bot)
+
+        pool = await get_db_pool()
+        mirror_rows = await pool.fetch(
+            """
+            SELECT owner_user_id, workspace_key, worker_bot_token, storage_chat_id, tz_name
+            FROM tenant_profiles
+            WHERE enabled = TRUE
+              AND NULLIF(trim(worker_bot_token), '') IS NOT NULL
+            ORDER BY owner_user_id
+            """
+        )
+        for row in mirror_rows:
+            token = (row["worker_bot_token"] or "").strip()
+            if not token or token == BOT_TOKEN:
+                continue
+            try:
+                mirror_bots.append(build_tenant_mirror_dispatcher(pool, dict(row)))
+            except Exception:
+                logger.exception("tenant mirror bot init failed owner_id=%s", row["owner_user_id"])
+
+        await asyncio.gather(
+            dp.start_polling(bot),
+            *[dp_m.start_polling(bot_m) for bot_m, dp_m in mirror_bots],
+        )
     finally:
         with suppress(Exception):
             scheduler.shutdown(wait=False)
         if db_pool is not None:
             await db_pool.close()
+        for bot_m, _ in mirror_bots:
+            with suppress(Exception):
+                await bot_m.session.close()
         with suppress(Exception):
             await bot.session.close()
 

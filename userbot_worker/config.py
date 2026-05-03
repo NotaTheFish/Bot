@@ -1,5 +1,6 @@
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from typing import Any, Mapping
 
 
 def _getenv(name: str, default: str = "") -> str:
@@ -125,3 +126,14 @@ def load_settings() -> Settings:
         raise RuntimeError("AUTO_TARGETS_MODE must be 'groups_only' or 'groups_and_channels'")
 
     return settings
+
+
+def settings_for_tenant_row(base: Settings, row: Mapping[str, Any]) -> Settings:
+    return replace(
+        base,
+        telegram_api_id=int(row["telegram_api_id"]),
+        telegram_api_hash=str(row["telegram_api_hash"] or "").strip(),
+        telethon_session=str(row["telethon_session"] or "").strip(),
+        storage_chat_id=int(row["storage_chat_id"]),
+        workspace_key=str(row["workspace_key"] or "").strip() or "main",
+    )

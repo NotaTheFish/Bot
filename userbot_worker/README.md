@@ -64,7 +64,11 @@ python -m userbot\_worker.main
 
 
 
-\## Запуск Railway/VPS
+\## Запуск на сервере (оператор)
+
+
+
+Один процесс воркера читает строки из `tenant_profiles` (включая `TELETHON_SESSION` / API id/hash на клиента) и поднимает отдельный Telethon-клиент на каждого включённого арендатора. Для единственного экземпляра на базе задайте `WORKER_MANAGER_LOCK_KEY` (или оставьте `SINGLETON_LOCK_KEY`) — один advisory lock на весь менеджер.
 
 
 
@@ -80,11 +84,7 @@ pip install -r requirements.txt
 
 export DATABASE\_URL=postgresql://...
 
-export TELEGRAM\_API\_ID=123456
-
-export TELEGRAM\_API\_HASH=...
-
-export TELETHON\_SESSION=/data/userbot.session
+\# При пустой tenant_profiles можно задать legacy-переменные TELEGRAM\_* / TELETHON\_SESSION / WORKSPACE\_KEY
 
 export COOLDOWN_MINUTES=10
 export ACTIVITY_GATE_MIN_MESSAGES=5
