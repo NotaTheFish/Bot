@@ -448,7 +448,12 @@ async def run_worker(settings: Settings, pool, client: TelegramClient, stop_even
             last_targets_sync_at = now_utc
 
         try:
-            tasks = await claim_pending_tasks(pool, limit=25, now=now_utc)
+            tasks = await claim_pending_tasks(
+                pool,
+                limit=25,
+                now=now_utc,
+                workspace_key=settings.workspace_key,
+            )
         except Exception:
             logger.exception("DB: failed to claim pending tasks")
             await asyncio.sleep(settings.worker_poll_seconds)

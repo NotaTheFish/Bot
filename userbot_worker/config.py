@@ -75,6 +75,7 @@ class Settings:
     authkey_duplicated_cooldown_seconds: int
     singleton_lock_enabled: bool
     singleton_lock_key: int
+    workspace_key: str
 
 
 def _getbool(name: str, default: bool) -> bool:
@@ -108,6 +109,7 @@ def load_settings() -> Settings:
         authkey_duplicated_cooldown_seconds=max(0, _getint("AUTHKEY_DUPLICATED_COOLDOWN_SECONDS", 120)),
         singleton_lock_enabled=_getbool("SINGLETON_LOCK_ENABLED", True),
         singleton_lock_key=_getint("SINGLETON_LOCK_KEY", 910001),
+        workspace_key=_getenv("WORKSPACE_KEY", "main"),
     )
 
     if settings.max_seconds_between_chats < settings.min_seconds_between_chats:

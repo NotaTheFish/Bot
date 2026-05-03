@@ -50,3 +50,19 @@
 
 3\. Убедитесь, что backend принимает `X-Telegram-Init-Data` и корректно валидирует `Telegram.WebApp.initData`.
 
+
+
+\## Изолированный контроллер (tenant)
+
+
+После успешного онбординга через `/code` в **основном** контроллере приходит сообщение с примерами `DATABASE_URL`, `BOT_TOKEN`, `TENANT_OWNER_USER_ID`, `WORKSPACE_KEY`, `TELETHON_SESSION` и т.д.
+
+
+1\. **Клиентский контроллер** — отдельный процесс с токеном бота клиента: `python -m bot_controller.tenant_main`
+
+
+2\. **Клиентский worker** — второй процесс с тем же `DATABASE_URL`, где `WORKSPACE_KEY` имеет вид `tenant:` плюс числовой id владельца в Telegram, и свой `SINGLETON_LOCK_KEY` (в онбординге и в строке `tenant_profiles`): `python -m userbot_worker.main`
+
+
+Остановка рассылки и служебный cleanup в основном контроллере затрагивают только задачи с `workspace_key=main`, чтобы не отменять задачи арендаторов.
+

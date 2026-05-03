@@ -95,7 +95,8 @@ async def ensure_schema(db: DBOrPool) -> None:
                 storage_message_ids BIGINT[] NOT NULL DEFAULT '{}'::bigint[],
                 sent_count INTEGER NOT NULL DEFAULT 0,
                 error_count INTEGER NOT NULL DEFAULT 0,
-                dedupe_key TEXT
+                dedupe_key TEXT,
+                workspace_key TEXT NOT NULL DEFAULT 'main'
             );
             """
         )
@@ -110,6 +111,7 @@ async def ensure_schema(db: DBOrPool) -> None:
         await conn.execute("ALTER TABLE userbot_tasks ADD COLUMN IF NOT EXISTS sent_count INTEGER NOT NULL DEFAULT 0;")
         await conn.execute("ALTER TABLE userbot_tasks ADD COLUMN IF NOT EXISTS error_count INTEGER NOT NULL DEFAULT 0;")
         await conn.execute("ALTER TABLE userbot_tasks ADD COLUMN IF NOT EXISTS dedupe_key TEXT;")
+        await conn.execute("ALTER TABLE userbot_tasks ADD COLUMN IF NOT EXISTS workspace_key TEXT NOT NULL DEFAULT 'main';")
         await conn.execute("ALTER TABLE userbot_tasks ADD COLUMN IF NOT EXISTS skipped_breakdown JSONB;")
         await conn.execute(
             """
@@ -151,7 +153,7 @@ async def ensure_schema(db: DBOrPool) -> None:
         await conn.execute(
             """
             CREATE INDEX IF NOT EXISTS idx_userbot_tasks_pending
-            ON userbot_tasks(status, run_at);
+            ON userbot_tasks(workspace_key, status, run_at);
             """
         )
 
@@ -292,6 +294,7 @@ async def claim_pending_tasks(
     db: DBOrPool,
     *,
     limit: int,
+    workspace_key: str = "main",
     now: Optional[datetime] = None,
 ) -> List[TaskRow]:
     now = now or datetime.now(timezone.utc)
@@ -304,9 +307,11 @@ async def claim_pending_tasks(
                 WITH picked AS (
                     SELECT id
                     FROM userbot_tasks
-                    WHERE status='pending' AND run_at <= $1
+                    WHERE workspace_key = $1
+                      AND status='pending'
+                      AND run_at <= $2
                     ORDER BY run_at ASC, id ASC
-                    LIMIT $2
+                    LIMIT $3
                     FOR UPDATE SKIP LOCKED
                 )
                 UPDATE userbot_tasks t
@@ -315,6 +320,7 @@ async def claim_pending_tasks(
                 WHERE t.id = picked.id
                 RETURNING t.*
                 """,
+                (workspace_key or "main").strip() or "main",
                 now,
                 int(limit),
             )

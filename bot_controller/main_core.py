@@ -1,14 +1,16 @@
 import asyncio
+import hashlib
 import html
 import json
 import logging
 import os
 import random
 import re
+import secrets
 import uuid
 from contextlib import suppress
 from dataclasses import replace
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 import asyncpg
@@ -36,6 +38,13 @@ from aiogram.types import (
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 from zoneinfo import ZoneInfo
+
+try:
+    from bot_controller.userbot_tasks_queue import create_userbot_task as insert_userbot_task
+    from bot_controller.userbot_tasks_queue import invalidate_column_cache
+except ImportError:  # noqa: WPS433 — fallback if not run as package
+    from userbot_tasks_queue import create_userbot_task as insert_userbot_task
+    from userbot_tasks_queue import invalidate_column_cache
 
 
 def _get_env_str(name: str, default: str = "") -> str:
@@ -120,6 +129,9 @@ DEFAULT_BUYER_REPLY_PRE_TEXT = "Здравствуйте!"
 DEFAULT_BUYER_REPLY_POST_TEXT = "Спасибо! Ваше сообщение отправлено продавцу ✅"
 WORKER_CONTACT_LINK_TEXT = "Написать продавцу"
 DEFAULT_WORKER_CONTACT_BOT_USERNAME = "CoS_Spam_bot"
+INVITE_CODE_SECRET = _get_env_str("INVITE_CODE_SECRET") or BOT_TOKEN
+INVITE_CODE_TTL_MINUTES = max(5, _get_env_int("INVITE_CODE_TTL_MINUTES", 30))
+TENANT_WORKSPACE_PREFIX = "tenant"
 
 def parse_user_ids_csv(raw: str) -> list[int]:
     raw = (raw or "").strip()
@@ -317,6 +329,14 @@ class ContactStates(StatesGroup):
 class ContestStates(StatesGroup):
     waiting_submission_media = State()
     waiting_replace_confirmation = State()
+
+
+class TenantOnboardingStates(StatesGroup):
+    waiting_worker_bot_token = State()
+    waiting_telegram_api_hash = State()
+    waiting_telegram_api_id = State()
+    waiting_telethon_session = State()
+    waiting_storage_chat_id = State()
 
 
 def buyer_contact_keyboard() -> ReplyKeyboardMarkup:
@@ -635,6 +655,55 @@ CREATE_TABLES_SQL = [
     INSERT INTO worker_state (id, last_outgoing_at)
     VALUES (1, NULL)
     ON CONFLICT (id) DO NOTHING
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS invite_codes (
+        id BIGSERIAL PRIMARY KEY,
+        code_hash TEXT NOT NULL UNIQUE,
+        created_by_admin_id BIGINT NOT NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        expires_at TIMESTAMPTZ NOT NULL,
+        used_by_user_id BIGINT,
+        used_at TIMESTAMPTZ
+    )
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_invite_codes_active
+    ON invite_codes(expires_at)
+    WHERE used_at IS NULL
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS tenant_profiles (
+        id BIGSERIAL PRIMARY KEY,
+        owner_user_id BIGINT NOT NULL UNIQUE,
+        workspace_key TEXT NOT NULL UNIQUE,
+        worker_bot_token TEXT NOT NULL,
+        telegram_api_hash TEXT NOT NULL,
+        telegram_api_id BIGINT NOT NULL,
+        telethon_session TEXT NOT NULL,
+        storage_chat_id BIGINT NOT NULL,
+        tz_name TEXT NOT NULL DEFAULT 'Europe/Berlin',
+        enabled BOOLEAN NOT NULL DEFAULT TRUE,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+    """,
+    """
+    ALTER TABLE tenant_profiles
+    ADD COLUMN IF NOT EXISTS singleton_lock_key BIGINT
+    """,
+    """
+    CREATE UNIQUE INDEX IF NOT EXISTS ux_tenant_profiles_singleton_lock_key
+    ON tenant_profiles(singleton_lock_key)
+    WHERE singleton_lock_key IS NOT NULL
+    """,
+    """
+    ALTER TABLE userbot_tasks
+    ADD COLUMN IF NOT EXISTS workspace_key TEXT NOT NULL DEFAULT 'main'
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_userbot_tasks_workspace_pending
+    ON userbot_tasks(workspace_key, status, run_at)
     """,
 ]
 
@@ -1271,7 +1340,7 @@ def admin_menu_keyboard() -> ReplyKeyboardMarkup:
                 KeyboardButton(text="✅ Запустить рассылку"),
                 KeyboardButton(text="⛔ Остановить рассылку"),
             ],
-            [KeyboardButton(text="🏆 Конкурс")],
+            [KeyboardButton(text="🏆 Конкурс"), KeyboardButton(text="🔐 Создать код")],
         ],
         resize_keyboard=True,
     )
@@ -1589,6 +1658,185 @@ async def set_meta(key: str, value: str) -> None:
 async def get_meta(key: str) -> Optional[str]:
     pool = await get_db_pool()
     return await pool.fetchval("SELECT value FROM meta WHERE key = $1", key)
+
+
+def _hash_invite_code(code: str) -> str:
+    payload = f"{INVITE_CODE_SECRET}:{code.strip().upper()}"
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _generate_invite_code() -> str:
+    return secrets.token_hex(4).upper()
+
+
+def _workspace_key_for_user(user_id: int) -> str:
+    return f"{TENANT_WORKSPACE_PREFIX}:{int(user_id)}"
+
+
+def _is_valid_bot_token(value: str) -> bool:
+    token = (value or "").strip()
+    return bool(re.fullmatch(r"\d{6,}:[A-Za-z0-9_-]{20,}", token))
+
+
+async def create_invite_code(admin_user_id: int) -> str:
+    code = _generate_invite_code()
+    code_hash = _hash_invite_code(code)
+    expires_at = datetime.now(timezone.utc) + timedelta(minutes=INVITE_CODE_TTL_MINUTES)
+    pool = await get_db_pool()
+    await pool.execute(
+        """
+        INSERT INTO invite_codes(code_hash, created_by_admin_id, expires_at)
+        VALUES ($1, $2, $3)
+        """,
+        code_hash,
+        int(admin_user_id),
+        expires_at,
+    )
+    return code
+
+
+async def consume_invite_code(code: str, user_id: int) -> bool:
+    code_hash = _hash_invite_code(code)
+    pool = await get_db_pool()
+    updated = await pool.fetchval(
+        """
+        UPDATE invite_codes
+        SET used_by_user_id = $2, used_at = NOW()
+        WHERE code_hash = $1
+          AND used_at IS NULL
+          AND expires_at >= NOW()
+        RETURNING 1
+        """,
+        code_hash,
+        int(user_id),
+    )
+    return bool(updated)
+
+
+async def pick_tenant_singleton_lock_key(pool: asyncpg.Pool, owner_user_id: int) -> int:
+    existing = await pool.fetchval(
+        "SELECT singleton_lock_key FROM tenant_profiles WHERE owner_user_id = $1",
+        int(owner_user_id),
+    )
+    if existing is not None:
+        return int(existing)
+    for _ in range(30):
+        candidate = secrets.randbelow(2_000_000_000) + 1_050_001
+        if candidate == 910001:
+            continue
+        collision = await pool.fetchval(
+            "SELECT 1 FROM tenant_profiles WHERE singleton_lock_key = $1",
+            int(candidate),
+        )
+        if not collision:
+            return int(candidate)
+    return int(1_050_000 + abs(int(owner_user_id)) % 100_000_000)
+
+
+async def get_tenant_profile(owner_user_id: int) -> Optional[dict]:
+    pool = await get_db_pool()
+    row = await pool.fetchrow(
+        """
+        SELECT owner_user_id, workspace_key, worker_bot_token, telegram_api_hash, telegram_api_id,
+               telethon_session, storage_chat_id, tz_name, enabled, singleton_lock_key
+        FROM tenant_profiles
+        WHERE owner_user_id = $1
+        """,
+        int(owner_user_id),
+    )
+    if not row:
+        return None
+    return {
+        "owner_user_id": int(row["owner_user_id"]),
+        "workspace_key": str(row["workspace_key"]),
+        "worker_bot_token": str(row["worker_bot_token"]),
+        "telegram_api_hash": str(row["telegram_api_hash"]),
+        "telegram_api_id": int(row["telegram_api_id"]),
+        "telethon_session": str(row["telethon_session"]),
+        "storage_chat_id": int(row["storage_chat_id"]),
+        "tz_name": str(row["tz_name"] or TZ.key),
+        "enabled": bool(row["enabled"]),
+        "singleton_lock_key": int(row["singleton_lock_key"]) if row.get("singleton_lock_key") is not None else None,
+    }
+
+
+async def upsert_tenant_profile(
+    *,
+    owner_user_id: int,
+    worker_bot_token: str,
+    telegram_api_hash: str,
+    telegram_api_id: int,
+    telethon_session: str,
+    storage_chat_id: int,
+    tz_name: str,
+) -> Optional[dict]:
+    pool = await get_db_pool()
+    lock_key = await pick_tenant_singleton_lock_key(pool, owner_user_id)
+    await pool.execute(
+        """
+        INSERT INTO tenant_profiles(
+            owner_user_id, workspace_key, worker_bot_token, telegram_api_hash, telegram_api_id,
+            telethon_session, storage_chat_id, tz_name, singleton_lock_key, enabled, updated_at
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, TRUE, NOW())
+        ON CONFLICT (owner_user_id) DO UPDATE
+        SET worker_bot_token = EXCLUDED.worker_bot_token,
+            telegram_api_hash = EXCLUDED.telegram_api_hash,
+            telegram_api_id = EXCLUDED.telegram_api_id,
+            telethon_session = EXCLUDED.telethon_session,
+            storage_chat_id = EXCLUDED.storage_chat_id,
+            tz_name = EXCLUDED.tz_name,
+            singleton_lock_key = COALESCE(tenant_profiles.singleton_lock_key, EXCLUDED.singleton_lock_key),
+            enabled = TRUE,
+            updated_at = NOW()
+        """,
+        int(owner_user_id),
+        _workspace_key_for_user(owner_user_id),
+        worker_bot_token.strip(),
+        telegram_api_hash.strip(),
+        int(telegram_api_id),
+        telethon_session.strip(),
+        int(storage_chat_id),
+        tz_name.strip() or TZ.key,
+        int(lock_key),
+    )
+    return await get_tenant_profile(owner_user_id)
+
+
+def build_tenant_deploy_env_blocks(*, database_url: str, profile: dict) -> str:
+    owner_id = int(profile["owner_user_id"])
+
+    ctrl = "\n".join(
+        [
+            "# --- Изолированный контроллер (отдельный процесс на Railway/VPS)",
+            "# Запуск из корня репозитория: python -m bot_controller.tenant_main",
+            f"DATABASE_URL={database_url}",
+            f"BOT_TOKEN={profile['worker_bot_token']}",
+            f"TENANT_OWNER_USER_ID={owner_id}",
+            "",
+        ]
+    )
+    wrk = "\n".join(
+        [
+            "# --- Изолированный userbot worker (ещё один отдельный процесс)",
+            "# Запуск: python -m userbot_worker.main",
+            f"DATABASE_URL={database_url}",
+            f"WORKSPACE_KEY={profile['workspace_key']}",
+            f"TELEGRAM_API_ID={profile['telegram_api_id']}",
+            f"TELEGRAM_API_HASH={profile['telegram_api_hash']}",
+            f"TELETHON_SESSION={profile['telethon_session']}",
+            f"SINGLETON_LOCK_KEY={profile['singleton_lock_key']}",
+            "",
+        ]
+    )
+    return ctrl + wrk + "\n".join(
+        [
+            "# Обычно совпадает с TZ этого онбординга; при желании переопределите:",
+            f"# TZ={profile['tz_name']}",
+            "",
+            "⚠️ Удалите это сообщение после копирования секретов (чат недостаточно приватный для токена).",
+        ]
+    )
 
 
 CONTEST_SETTINGS_FIELDS_SQL = """
@@ -2813,102 +3061,19 @@ async def create_userbot_task(
     storage_message_ids: list[int],
     target_chat_ids: list[int] | None,
     run_at: datetime,
+    workspace_key: str = "main",
 ) -> Optional[int]:
-    # Очередь userbot наполняется на этапе запуска рассылки (broadcast_once),
-    # а /create_post по умолчанию только сохраняет и закрепляет пост в Storage.
-    # Для опциональной автопостановки при сохранении есть флаг
-    # CREATE_POST_AUTO_QUEUE_USERBOT=on.
-    def _logical_schedule_bucket(run_at_value: datetime) -> str:
-        return run_at_value.strftime("%Y%m%d%H%M")
-
-    normalized_target_chat_ids = sorted(set(target_chat_ids or []))
-    normalized_storage_message_ids = sorted(storage_message_ids or [])
-    run_at_utc = run_at if run_at.tzinfo else run_at.replace(tzinfo=timezone.utc)
-    run_at_utc = run_at_utc.astimezone(timezone.utc)
-    schedule_bucket = _logical_schedule_bucket(run_at_utc)
-
-    storage_message_id = normalized_storage_message_ids[0] if normalized_storage_message_ids else None
-    dedupe_key = (
-        f"v2:{storage_chat_id}:"
-        f"{','.join(str(message_id) for message_id in normalized_storage_message_ids)}:"
-        f"{schedule_bucket}"
-    )
-
     pool = await get_db_pool()
     await ensure_userbot_tasks_schema(pool)
-    existing_columns = await get_userbot_tasks_columns(pool)
-
-    insert_columns: list[str] = ["storage_chat_id", "storage_message_ids", "run_at", "status", "target_chat_ids"]
-    insert_values: list[object] = [
+    invalidate_column_cache()
+    return await insert_userbot_task(
+        pool,
         storage_chat_id,
-        normalized_storage_message_ids,
-        run_at_utc,
-        "pending",
-        normalized_target_chat_ids,
-    ]
-
-    if "storage_message_id" in existing_columns:
-        insert_columns.append("storage_message_id")
-        insert_values.append(storage_message_id)
-    if "attempts" in existing_columns:
-        insert_columns.append("attempts")
-        insert_values.append(0)
-    if "last_error" in existing_columns:
-        insert_columns.append("last_error")
-        insert_values.append(None)
-
-    dedupe_enabled = "dedupe_key" in existing_columns and "status" in existing_columns
-    if dedupe_enabled:
-        insert_columns.append("dedupe_key")
-        insert_values.append(dedupe_key)
-
-    placeholders: list[str] = []
-    for index, column in enumerate(insert_columns, start=1):
-        if column in {"storage_message_ids", "target_chat_ids"}:
-            placeholders.append(f"${index}::BIGINT[]")
-        elif column == "run_at":
-            placeholders.append(f"${index}::TIMESTAMPTZ")
-        else:
-            placeholders.append(f"${index}")
-
-    query = (
-        f"INSERT INTO userbot_tasks({', '.join(insert_columns)}) "
-        f"VALUES ({', '.join(placeholders)})"
+        storage_message_ids,
+        target_chat_ids,
+        run_at,
+        workspace_key,
     )
-    if dedupe_enabled:
-        query += " " + (
-            "ON CONFLICT (dedupe_key) "
-            "WHERE dedupe_key IS NOT NULL AND status IN ('pending', 'processing') "
-            "DO NOTHING"
-        )
-    query += " RETURNING id"
-
-    row = await pool.fetchrow(query, *insert_values)
-    if row:
-        return int(row["id"])
-
-    if not dedupe_enabled:
-        return None
-
-    existing_task_id = await pool.fetchval(
-        """
-        SELECT id
-        FROM userbot_tasks
-        WHERE dedupe_key = $1
-          AND status IN ('pending', 'processing')
-        ORDER BY id DESC
-        LIMIT 1
-        """,
-        dedupe_key,
-    )
-    if existing_task_id:
-        logger.info(
-            "Userbot task deduplicated by unique index: existing task id=%s dedupe_key=%s",
-            existing_task_id,
-            dedupe_key,
-        )
-        return int(existing_task_id)
-    return None
 
 
 async def find_schedule(schedule_type: str, time_text: Optional[str], weekday: Optional[int]) -> Optional[int]:
@@ -3316,6 +3481,7 @@ async def _delete_previous_storage_post(
         FROM userbot_tasks
         WHERE status IN ('pending', 'processing')
           AND storage_chat_id = $1
+          AND COALESCE(workspace_key, 'main') = 'main'
         """,
         delete_chat_id,
     )
@@ -3617,6 +3783,7 @@ async def cancel_active_userbot_tasks() -> int:
         SET status = 'canceled',
             last_error = COALESCE(last_error, 'canceled_by_admin')
         WHERE status IN ('pending', 'processing')
+          AND COALESCE(workspace_key, 'main') = 'main'
         """
     )
     try:
@@ -3638,6 +3805,7 @@ async def safe_cleanup_storage_posts() -> None:
         SELECT storage_message_ids
         FROM userbot_tasks
         WHERE status IN ('pending', 'processing')
+          AND COALESCE(workspace_key, 'main') = 'main'
         """
     )
     active_ids: set[int] = set()
@@ -3650,6 +3818,7 @@ async def safe_cleanup_storage_posts() -> None:
         SELECT DISTINCT unnest(storage_message_ids) AS message_id
         FROM userbot_tasks
         WHERE storage_chat_id = $1
+          AND COALESCE(workspace_key, 'main') = 'main'
         """,
         storage_chat_id,
     )
@@ -4333,6 +4502,134 @@ async def on_menu_fallback(message: Message, state: FSMContext):
     if message.chat.type == "private" and message.from_user and is_admin_user(message.from_user.id):
         await state.clear()
         await safe_send_admin_menu(message)
+
+
+@dp.message(Command("create_code"))
+@dp.message(F.text == "🔐 Создать код")
+async def create_code_for_client(message: Message):
+    if message.chat.type != "private" or not ensure_admin(message) or not message.from_user:
+        return
+    code = await create_invite_code(message.from_user.id)
+    await message.answer(
+        "\n".join(
+            [
+                f"Одноразовый код: `{code}`",
+                f"Срок действия: {INVITE_CODE_TTL_MINUTES} мин.",
+                "Передайте код клиенту. Он должен отправить команду: /code XXXXXXXX",
+            ]
+        ),
+        parse_mode="Markdown",
+    )
+
+
+@dp.message(Command("code"))
+async def redeem_code(message: Message, state: FSMContext):
+    if message.chat.type != "private" or not message.from_user:
+        return
+    if is_admin_user(message.from_user.id):
+        await message.answer("Эта команда для клиентского доступа.")
+        return
+    args = (message.text or "").split(maxsplit=1)
+    raw_code = args[1].strip().upper() if len(args) > 1 else ""
+    if not re.fullmatch(r"[A-F0-9]{8}", raw_code):
+        await message.answer("Неверный формат кода. Используйте: /code XXXXXXXX")
+        return
+    consumed = await consume_invite_code(raw_code, message.from_user.id)
+    if not consumed:
+        await message.answer("Код недействителен, уже использован или истёк.")
+        return
+
+    await state.clear()
+    await state.set_state(TenantOnboardingStates.waiting_worker_bot_token)
+    await message.answer("Код принят ✅\nОтправьте токен Telegram-бота клиента (формат 123456:ABC...).")
+
+
+@dp.message(TenantOnboardingStates.waiting_worker_bot_token, F.chat.type == "private")
+async def tenant_onboarding_worker_bot_token(message: Message, state: FSMContext):
+    if not message.from_user:
+        return
+    token = (message.text or "").strip()
+    if not _is_valid_bot_token(token):
+        await message.answer("Неверный формат токена. Повторите ввод.")
+        return
+    await state.update_data(worker_bot_token=token)
+    await state.set_state(TenantOnboardingStates.waiting_telegram_api_hash)
+    await message.answer("Введите TELEGRAM_API_HASH")
+
+
+@dp.message(TenantOnboardingStates.waiting_telegram_api_hash, F.chat.type == "private")
+async def tenant_onboarding_api_hash(message: Message, state: FSMContext):
+    value = (message.text or "").strip()
+    if len(value) < 20:
+        await message.answer("TELEGRAM_API_HASH выглядит некорректно. Попробуйте ещё раз.")
+        return
+    await state.update_data(telegram_api_hash=value)
+    await state.set_state(TenantOnboardingStates.waiting_telegram_api_id)
+    await message.answer("Введите TELEGRAM_API_ID (число)")
+
+
+@dp.message(TenantOnboardingStates.waiting_telegram_api_id, F.chat.type == "private")
+async def tenant_onboarding_api_id(message: Message, state: FSMContext):
+    try:
+        api_id = int((message.text or "").strip())
+    except ValueError:
+        await message.answer("TELEGRAM_API_ID должен быть числом.")
+        return
+    if api_id <= 0:
+        await message.answer("TELEGRAM_API_ID должен быть больше 0.")
+        return
+    await state.update_data(telegram_api_id=api_id)
+    await state.set_state(TenantOnboardingStates.waiting_telethon_session)
+    await message.answer("Введите TELETHON_SESSION (StringSession)")
+
+
+@dp.message(TenantOnboardingStates.waiting_telethon_session, F.chat.type == "private")
+async def tenant_onboarding_session(message: Message, state: FSMContext):
+    session = (message.text or "").strip()
+    if len(session) < 20:
+        await message.answer("TELETHON_SESSION выглядит слишком коротким. Проверьте и отправьте снова.")
+        return
+    await state.update_data(telethon_session=session)
+    await state.set_state(TenantOnboardingStates.waiting_storage_chat_id)
+    await message.answer("Введите STORAGE_CHAT_ID (число, например -100...)")
+
+
+@dp.message(TenantOnboardingStates.waiting_storage_chat_id, F.chat.type == "private")
+async def tenant_onboarding_storage_chat_id(message: Message, state: FSMContext):
+    if not message.from_user:
+        return
+    try:
+        storage_chat_id = int((message.text or "").strip())
+    except ValueError:
+        await message.answer("STORAGE_CHAT_ID должен быть числом.")
+        return
+    if storage_chat_id == 0:
+        await message.answer("STORAGE_CHAT_ID не может быть 0.")
+        return
+    data = await state.get_data()
+    profile = await upsert_tenant_profile(
+        owner_user_id=message.from_user.id,
+        worker_bot_token=str(data.get("worker_bot_token") or ""),
+        telegram_api_hash=str(data.get("telegram_api_hash") or ""),
+        telegram_api_id=int(data.get("telegram_api_id") or 0),
+        telethon_session=str(data.get("telethon_session") or ""),
+        storage_chat_id=storage_chat_id,
+        tz_name=TZ.key,
+    )
+    await state.clear()
+    if not profile:
+        await message.answer("Не удалось сохранить профиль. Попробуйте заново через /code")
+        return
+    env_hint = build_tenant_deploy_env_blocks(database_url=DATABASE_URL, profile=profile)
+    await message.answer(
+        "Профиль клиента сохранён ✅\n\n"
+        "Дальше: поднимите **два отдельных процесса** с тем же кодом из репозитория:\n"
+        "1) изолированный контроллер — `python -m bot_controller.tenant_main`\n"
+        "2) изолированный worker — `python -m userbot_worker.main`\n\n"
+        "Пример переменных окружения (скопируйте и подставьте секреты; затем удалите сообщение):\n\n"
+        f"<pre>{html.escape(env_hint)}</pre>",
+        parse_mode="HTML",
+    )
 
 
 @dp.message(F.chat.type == "private", lambda message: is_buyer_contact_text(message.text))
