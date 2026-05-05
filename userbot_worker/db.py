@@ -1038,7 +1038,8 @@ async def get_task_status(db: DBOrPool, *, task_id: int) -> Optional[str]:
         await _release_conn(db, conn)
 
 
-async def list_enabled_tenant_profiles(db: DBOrPool) -> List[dict]:
+async def list_mirror_tenant_profiles(db: DBOrPool) -> List[dict]:
+    """Mirror SaaS tenants only (workspace_key tenant:*). Not used for main/legacy worker."""
     conn = await _acquire_conn(db)
     try:
         exists = await conn.fetchval("SELECT to_regclass('public.tenant_profiles')")
@@ -1049,6 +1050,7 @@ async def list_enabled_tenant_profiles(db: DBOrPool) -> List[dict]:
             SELECT workspace_key, telegram_api_id, telegram_api_hash, telethon_session, storage_chat_id
             FROM tenant_profiles
             WHERE enabled = TRUE
+              AND workspace_key LIKE 'tenant:%'
               AND NULLIF(trim(telethon_session), '') IS NOT NULL
               AND telegram_api_id > 0
               AND NULLIF(trim(telegram_api_hash), '') IS NOT NULL

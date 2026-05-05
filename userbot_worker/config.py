@@ -129,6 +129,7 @@ def load_settings() -> Settings:
 
 
 def settings_for_tenant_row(base: Settings, row: Mapping[str, Any]) -> Settings:
+    """Telegram credentials and workspace-scoped fields from a tenant_profiles row (mirror tenants)."""
     return replace(
         base,
         telegram_api_id=int(row["telegram_api_id"]),
@@ -137,3 +138,8 @@ def settings_for_tenant_row(base: Settings, row: Mapping[str, Any]) -> Settings:
         storage_chat_id=int(row["storage_chat_id"]),
         workspace_key=str(row["workspace_key"] or "").strip() or "main",
     )
+
+
+def settings_for_legacy_env_worker(base: Settings) -> Settings:
+    """Main/default worker: TELETHON_* only from environment (load_settings); never from tenant_profiles."""
+    return base
