@@ -136,6 +136,32 @@ async def _handle_authkey_duplicated(client: TelegramClient, settings: Settings)
     return _now_utc() + timedelta(seconds=settings.authkey_duplicated_cooldown_seconds)
 
 
+async def ensure_telethon_connected(client: TelegramClient) -> None:
+    """Ensure MTProto sender is usable (idle TCP drops otherwise cause 'disconnected' errors)."""
+    if client.is_connected():
+        return
+    logger.warning("Telethon client not connected; calling connect()")
+    await client.connect()
+
+
+async def reconnect_telethon_client(client: TelegramClient, *, reason: str = "") -> None:
+    """Hard reconnect after broken transport (iter_dialogs / RPC fails while 'connected')."""
+    logger.warning("Telethon hard reconnect reason=%s", reason or "unspecified")
+    try:
+        await client.disconnect()
+    except Exception:
+        logger.debug("disconnect during reconnect failed", exc_info=True)
+    await client.connect()
+
+
+def _is_transport_disconnect(exc: BaseException) -> bool:
+    if isinstance(exc, ConnectionError):
+        return True
+    if isinstance(exc, OSError):
+        return True
+    return _is_disconnect_state_error(exc)
+
+
 def _build_post_fingerprint(storage_chat_id: int, storage_message_ids: list[int]) -> str:
     payload = f"{int(storage_chat_id)}:{','.join(str(int(i)) for i in storage_message_ids)}"
     return hashlib.sha1(payload.encode("utf-8")).hexdigest()
@@ -204,7 +230,7 @@ async def _apply_activity_gate(
     return False, last_self_message_id, activity_count
 
 
-async def sync_userbot_targets(pool, client: TelegramClient, settings: Settings) -> dict:
+async def _sync_userbot_targets_once(pool, client: TelegramClient, settings: Settings) -> dict:
     total_seen = 0
     new_count = 0
     include_channels = settings.auto_targets_mode == "groups_and_channels"
@@ -264,6 +290,19 @@ async def sync_userbot_targets(pool, client: TelegramClient, settings: Settings)
     }
     logger.info("Targets sync done: %s", stats)
     return stats
+
+
+async def sync_userbot_targets(pool, client: TelegramClient, settings: Settings) -> dict:
+    await ensure_telethon_connected(client)
+    try:
+        return await _sync_userbot_targets_once(pool, client, settings)
+    except Exception as e:
+        if not _is_transport_disconnect(e):
+            raise
+        logger.warning("sync_userbot_targets: transport error %s; hard reconnect and retry once", e)
+        await reconnect_telethon_client(client, reason="sync_userbot_targets")
+        await ensure_telethon_connected(client)
+        return await _sync_userbot_targets_once(pool, client, settings)
 
 
 async def _apply_chat_migration(
@@ -391,25 +430,49 @@ async def run_worker(settings: Settings, pool, client: TelegramClient, stop_even
         template_storage_chat_id = getattr(settings_row, "template_storage_chat_id", None)
         template_storage_message_ids = list(getattr(settings_row, "template_storage_message_ids", []) or [])
         sent = None
-        if template_source == "storage" and template_storage_chat_id and template_storage_message_ids:
-            try:
-                sent = await client.forward_messages(
-                    event.chat_id,
-                    template_storage_message_ids,
-                    from_peer=int(template_storage_chat_id),
-                )
-                logger.info("autoreply_sent sender_id=%s method=forward ids=%s", sender_id, template_storage_message_ids)
-            except Exception:
-                logger.exception(
-                    "autoreply forward failed sender_id=%s storage_chat_id=%s ids=%s",
-                    sender_id,
-                    template_storage_chat_id,
-                    template_storage_message_ids,
-                )
 
-        if sent is None:
-            sent = await event.respond(settings_row.reply_text)
-            logger.info("autoreply_sent sender_id=%s method=text_fallback", sender_id)
+        for attempt in range(2):
+            try:
+                await ensure_telethon_connected(client)
+                if template_source == "storage" and template_storage_chat_id and template_storage_message_ids:
+                    try:
+                        sent = await client.forward_messages(
+                            event.chat_id,
+                            template_storage_message_ids,
+                            from_peer=int(template_storage_chat_id),
+                        )
+                        logger.info(
+                            "autoreply_sent sender_id=%s method=forward ids=%s",
+                            sender_id,
+                            template_storage_message_ids,
+                        )
+                    except Exception as forward_exc:
+                        if _is_transport_disconnect(forward_exc):
+                            raise
+                        logger.exception(
+                            "autoreply forward failed sender_id=%s storage_chat_id=%s ids=%s",
+                            sender_id,
+                            template_storage_chat_id,
+                            template_storage_message_ids,
+                        )
+                        sent = None
+
+                if sent is None:
+                    sent = await event.respond(settings_row.reply_text)
+                    logger.info("autoreply_sent sender_id=%s method=text_fallback", sender_id)
+                break
+            except Exception as send_exc:
+                if attempt == 0 and _is_transport_disconnect(send_exc):
+                    logger.warning(
+                        "autoreply transport error (%s); reconnect and retry once sender_id=%s",
+                        send_exc,
+                        sender_id,
+                    )
+                    await reconnect_telethon_client(client, reason="autoreply_send")
+                    sent = None
+                    continue
+                logger.exception("autoreply send failed sender_id=%s", sender_id)
+                return
 
         sent_message = sent[-1] if isinstance(sent, list) and sent else sent
         if sent_message is None:
@@ -454,6 +517,16 @@ async def run_worker(settings: Settings, pool, client: TelegramClient, stop_even
         if authkey_duplicated_cooldown_until and now_utc < authkey_duplicated_cooldown_until:
             await asyncio.sleep(min(settings.worker_poll_seconds, (authkey_duplicated_cooldown_until - now_utc).total_seconds()))
             continue
+
+        if not client.is_connected():
+            try:
+                logger.warning("Worker loop: Telethon disconnected; reconnecting before poll")
+                await reconnect_telethon_client(client, reason="worker_main_loop")
+            except Exception:
+                logger.exception("Worker loop: reconnect failed; sleeping")
+                await asyncio.sleep(settings.worker_poll_seconds)
+                continue
+
         if (now_utc - last_targets_sync_at).total_seconds() >= settings.targets_sync_seconds:
             try:
                 await sync_userbot_targets(pool, client, settings)
