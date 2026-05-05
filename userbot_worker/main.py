@@ -19,6 +19,22 @@ from .db import (
 )
 from .worker import run_worker
 
+logger = logging.getLogger(__name__)
+
+
+async def _connect_authorized_user_client(client: TelegramClient, *, workspace: str) -> None:
+    """
+    Non-interactive login only. Never call client.start() without args on a server — it may read stdin
+    (phone/code) and crash with EOFError.
+    """
+    await client.connect()
+    if not await client.is_user_authorized():
+        raise RuntimeError(
+            f"Telethon session is empty, invalid, or not authorized (workspace={workspace!r}). "
+            "On the server, interactive login is disabled. Export a valid StringSession (Telethon) "
+            "and update tenant_profiles.telethon_session (or TELETHON_SESSION in .env for legacy mode)."
+        )
+
 
 async def _run_one_tenant(
     *,
@@ -37,7 +53,7 @@ async def _run_one_tenant(
     try:
         with suppress(Exception):
             await update_tenant_mirror_status(pool, workspace_key=ws, status="starting")
-        await client.start()
+        await _connect_authorized_user_client(client, workspace=ws)
         with suppress(Exception):
             await update_tenant_mirror_status(pool, workspace_key=ws, status="running")
         await run_worker(settings, pool, client, stop_event)
