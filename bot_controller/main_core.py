@@ -3440,12 +3440,29 @@ async def send_post_preview(message: Message) -> None:
         await message.answer("Текущий пост:\n\n(пусто)")
         return
 
+    # Используем forward вместо copy_message — так сохраняются премиум-эмодзи,
+    # форматирование и весь оригинальный контент без изменений.
     for message_id in storage_message_ids:
-        await bot.copy_message(
-            chat_id=message.chat.id,
-            from_chat_id=storage_chat_id,
-            message_id=message_id,
-        )
+        try:
+            await bot.forward_message(
+                chat_id=message.chat.id,
+                from_chat_id=storage_chat_id,
+                message_id=message_id,
+            )
+        except (TelegramBadRequest, TelegramForbiddenError) as exc:
+            logger.warning(
+                "send_post_preview forward failed chat_id=%s from_chat_id=%s message_id=%s: %s — fallback to copy",
+                message.chat.id,
+                storage_chat_id,
+                message_id,
+                exc,
+            )
+            # Fallback: если форвард недоступен — копируем
+            await bot.copy_message(
+                chat_id=message.chat.id,
+                from_chat_id=storage_chat_id,
+                message_id=message_id,
+            )
 
 
 
@@ -3567,39 +3584,21 @@ async def _publish_post_messages(messages: list[Message], state: FSMContext, med
 
     sorted_messages = sorted(messages, key=lambda msg: msg.message_id)
 
+    # Оригинальное сообщение не редактируем — юзербот форвардит его как есть,
+    # поэтому caption любой длины и премиум-эмодзи сохраняются без изменений.
     caption_trimmed = False
     for msg in sorted_messages:
         caption = msg.caption or ""
-        if len(caption) <= STORAGE_CAPTION_SAFE_LIMIT:
-            continue
-        trimmed_caption = caption[:STORAGE_CAPTION_SAFE_LIMIT].rstrip()
-        try:
-            await bot.edit_message_caption(
-                chat_id=msg.chat.id,
-                message_id=msg.message_id,
-                caption=trimmed_caption,
-                caption_entities=None,
-            )
-            caption_trimmed = True
-            logger.warning(
-                "storage_post caption trimmed chat_id=%s message_id=%s from=%s to=%s",
+        if len(caption) > STORAGE_CAPTION_SAFE_LIMIT:
+            logger.info(
+                "storage_post caption length=%s exceeds safe limit=%s, "
+                "skipping trim — userbot will forward original intact "
+                "chat_id=%s message_id=%s",
+                len(caption),
+                STORAGE_CAPTION_SAFE_LIMIT,
                 msg.chat.id,
                 msg.message_id,
-                len(caption),
-                len(trimmed_caption),
             )
-        except Exception as exc:
-            logger.exception(
-                "Failed to trim long caption chat_id=%s message_id=%s len=%s",
-                msg.chat.id,
-                msg.message_id,
-                len(caption),
-            )
-            await messages[-1].answer(
-                "❌ Подпись (caption) слишком длинная, и не удалось безопасно сократить её автоматически. "
-                "Сократите подпись медиа и отправьте пост заново."
-            )
-            return
 
     storage_message_ids = [int(msg.message_id) for msg in sorted_messages]
 
