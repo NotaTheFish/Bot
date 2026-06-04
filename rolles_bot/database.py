@@ -58,14 +58,16 @@ class Database:
         return dict(row) if row else None
 
     # ── Кланы ─────────────────────────────────────────────────
-    async def create_clan(self, chat_id: int, name: str, triggers: list[str]) -> dict:
+    async def create_clan(self, chat_id: int, name: str, triggers: list[str]) -> dict | None:
         async with self.pool.acquire() as conn:
             row = await conn.fetchrow(
                 "INSERT INTO shimm_clans(chat_id, name) VALUES($1,$2) "
-                "ON CONFLICT(chat_id, name) DO UPDATE SET name=EXCLUDED.name "
+                "ON CONFLICT(chat_id, name) DO NOTHING "
                 "RETURNING id",
                 chat_id, name
             )
+            if row is None:
+                return None  # клан с таким именем уже существует
             clan_id = row["id"]
             for t in triggers:
                 await conn.execute(

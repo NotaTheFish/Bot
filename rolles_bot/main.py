@@ -375,8 +375,11 @@ async def chat_clan_command(message: Message):
 
     if not rest:
         # Создать клан без триггеров (редкий кейс)
-        await db.create_clan(chat_id, clan_name, [])
-        await message.reply(f"✅ Клан *{clan_name}* создан.", parse_mode="Markdown")
+        result = await db.create_clan(chat_id, clan_name, [])
+        if result is None:
+            await message.reply(f"❌ Клан *{clan_name}* уже существует.", parse_mode="Markdown")
+        else:
+            await message.reply(f"✅ Клан *{clan_name}* создан.", parse_mode="Markdown")
         return
 
     # Удалить триггер: .шк клан -триггер
@@ -410,9 +413,12 @@ async def chat_clan_command(message: Message):
 
     # Создать клан с триггерами: .шк клан триггер1, триггер2
     triggers = [t.strip().lower() for t in rest.split(",") if t.strip()]
-    await db.create_clan(chat_id, clan_name, triggers)
-    t_str = ", ".join(triggers)
-    await message.reply(f"✅ Клан *{clan_name}* создан. Триггеры: {t_str}", parse_mode="Markdown")
+    result = await db.create_clan(chat_id, clan_name, triggers)
+    if result is None:
+        await message.reply(f"❌ Клан *{clan_name}* уже существует.", parse_mode="Markdown")
+    else:
+        t_str = ", ".join(triggers)
+        await message.reply(f"✅ Клан *{clan_name}* создан. Триггеры: {t_str}", parse_mode="Markdown")
 
 
 # ─────────────────────────────────────────
