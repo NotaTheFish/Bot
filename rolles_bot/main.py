@@ -480,24 +480,37 @@ async def trigger_summon(message: Message):
     trigger = text[1:].lower()
     chat_id = message.chat.id
 
-    clan = await db.get_clan_by_trigger(chat_id, trigger)
-    if not clan:
+    clans = await db.get_clans_by_trigger(chat_id, trigger)
+    if not clans:
         return  # не наш триггер — молчим
 
-    members = await db.get_clan_members(chat_id, clan["name"])
-    if not members:
-        await message.reply(f"👥 Клан *{clan['name']}* пуст.", parse_mode="Markdown")
+    # Собираем участников из всех кланов, дедуплицируем по user_id
+    seen_ids: set[int] = set()
+    clan_members: dict[str, list] = {}  # clan_name -> members
+
+    for clan in clans:
+        members = await db.get_clan_members(chat_id, clan["name"])
+        unique = [m for m in members if m["user_id"] not in seen_ids]
+        if unique:
+            clan_members[clan["name"]] = unique
+            seen_ids.update(m["user_id"] for m in unique)
+
+    if not clan_members:
+        names = ", ".join(f"*{c['name']}*" for c in clans)
+        await message.reply(f"👥 Кланы {names} пусты.", parse_mode="Markdown")
         return
 
-    mentions = " ".join(
-        f"@{m['username']}" if m.get("username") else f"[id{m['user_id']}](tg://user?id={m['user_id']})"
-        for m in members
-    )
     caller = message.from_user.username or message.from_user.full_name
-    await message.reply(
-        f"📣 *{clan['name']}*, сбор! (позвал @{caller})\n{mentions}",
-        parse_mode="Markdown"
-    )
+
+    lines = [f"📣 Сбор! (позвал @{caller})"]
+    for clan_name, members in clan_members.items():
+        mentions = " ".join(
+            f"@{m['username']}" if m.get("username") else f"[﹫](tg://user?id={m['user_id']}){m['user_id']}"
+            for m in members
+        )
+        lines.append(f"*{clan_name}*: {mentions}")
+
+    await message.reply("\n".join(lines), parse_mode="Markdown")
 
 
 # ─────────────────────────────────────────

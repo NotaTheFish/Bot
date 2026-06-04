@@ -159,9 +159,10 @@ class Database:
             )
         return result.split()[-1] != "0"
 
-    async def get_clan_by_trigger(self, chat_id: int, trigger: str) -> dict | None:
+    async def get_clans_by_trigger(self, chat_id: int, trigger: str) -> list[dict]:
+        """Все кланы, у которых есть данный триггер."""
         async with self.pool.acquire() as conn:
-            row = await conn.fetchrow(
+            rows = await conn.fetch(
                 """
                 SELECT c.id, c.name
                 FROM shimm_triggers t
@@ -170,7 +171,7 @@ class Database:
                 """,
                 chat_id, trigger
             )
-        return {"id": row["id"], "name": row["name"]} if row else None
+        return [{"id": r["id"], "name": r["name"]} for r in rows]
 
     # ── Участники ─────────────────────────────────────────────
     async def add_member(self, chat_id: int, clan_name: str, user_id: int, username: str) -> bool:
