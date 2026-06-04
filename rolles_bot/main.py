@@ -36,9 +36,17 @@ class AdminStates(StatesGroup):
 # Helpers
 # ─────────────────────────────────────────
 def main_menu_kb():
+    """Стартовое меню — только выбор чата."""
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📋 Выбрать чат", callback_data="select_chat")],
+    ])
+
+
+def chat_menu_kb():
+    """Меню после выбора чата."""
+    return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="👥 Кланы", callback_data="clans_menu")],
+        [InlineKeyboardButton(text="🔄 Сменить чат", callback_data="select_chat")],
     ])
 
 
@@ -126,8 +134,15 @@ async def cmd_start(message: Message, state: FSMContext):
 async def cb_main_menu(call: CallbackQuery, state: FSMContext):
     if not await is_admin(call.from_user.id):
         return await call.answer("⛔", show_alert=True)
-    await state.clear()
-    await call.message.edit_text("👋 Главное меню:", reply_markup=main_menu_kb())
+    data = await state.get_data()
+    chat_id = data.get("active_chat_id")
+    await state.set_state(None)
+    if chat_id:
+        chat = await db.get_chat(chat_id)
+        title = chat["title"] if chat else str(chat_id)
+        await call.message.edit_text(f"✅ Активный чат: *{title}*\n\nВыбери действие:", parse_mode="Markdown", reply_markup=chat_menu_kb())
+    else:
+        await call.message.edit_text("👋 Выбери чат:", reply_markup=main_menu_kb())
 
 
 # ─────────────────────────────────────────
@@ -151,7 +166,7 @@ async def cb_chat_selected(call: CallbackQuery, state: FSMContext):
     await state.update_data(active_chat_id=chat_id)
     chat = await db.get_chat(chat_id)
     title = chat["title"] if chat else str(chat_id)
-    await call.message.edit_text(f"✅ Активный чат: *{title}*\n\nВыбери действие:", parse_mode="Markdown", reply_markup=main_menu_kb())
+    await call.message.edit_text(f"✅ Активный чат: *{title}*\n\nВыбери действие:", parse_mode="Markdown", reply_markup=chat_menu_kb())
 
 
 # ─────────────────────────────────────────
@@ -209,7 +224,7 @@ async def process_new_clan_name(message: Message, state: FSMContext):
     await db.rename_clan(chat_id, old_name, new_name)
     await state.clear()
     await state.update_data(active_chat_id=chat_id)
-    await message.answer(f"✅ Клан переименован: *{old_name}* → *{new_name}*", parse_mode="Markdown", reply_markup=main_menu_kb())
+    await message.answer(f"✅ Клан переименован: *{old_name}* → *{new_name}*", parse_mode="Markdown", reply_markup=chat_menu_kb())
 
 
 # ─────────────────────────────────────────
@@ -235,7 +250,7 @@ async def process_trigger_name(message: Message, state: FSMContext):
     await db.add_trigger(chat_id, clan_name, trigger)
     await state.clear()
     await state.update_data(active_chat_id=chat_id)
-    await message.answer(f"✅ Триггер *{trigger}* добавлен в клан *{clan_name}*", parse_mode="Markdown", reply_markup=main_menu_kb())
+    await message.answer(f"✅ Триггер *{trigger}* добавлен в клан *{clan_name}*", parse_mode="Markdown", reply_markup=chat_menu_kb())
 
 
 # ─────────────────────────────────────────
@@ -306,7 +321,7 @@ async def process_new_trigger_name(message: Message, state: FSMContext):
     await db.rename_trigger(chat_id, clan_name, old_trigger, new_trigger)
     await state.clear()
     await state.update_data(active_chat_id=chat_id)
-    await message.answer(f"✅ Триггер переименован: *{old_trigger}* → *{new_trigger}*", parse_mode="Markdown", reply_markup=main_menu_kb())
+    await message.answer(f"✅ Триггер переименован: *{old_trigger}* → *{new_trigger}*", parse_mode="Markdown", reply_markup=chat_menu_kb())
 
 
 # ─────────────────────────────────────────────────────────────
