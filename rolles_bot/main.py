@@ -453,6 +453,25 @@ async def join_leave_clan(message: Message):
 
 
 # ─────────────────────────────────────────
+# Список кланов: !шк
+# ─────────────────────────────────────────
+@dp.message(F.chat.type.in_({"group", "supergroup"}), F.text.regexp(r"(?i)^!шк$"))
+async def list_clans(message: Message):
+    chat_id = message.chat.id
+    clans = await db.get_clans(chat_id)
+    if not clans:
+        await message.reply("В этом чате пока нет кланов.")
+        return
+
+    lines = ["📋 *Кланы этого чата:*\n"]
+    for clan in clans:
+        triggers = ", ".join(f"`.{t}`" for t in clan["triggers"]) if clan["triggers"] else "_триггеров нет_"
+        count = await db.get_clan_member_count(chat_id, clan["name"])
+        lines.append(f"👥 *{clan['name']}* ({count} уч.) — {triggers}")
+    await message.reply("\n".join(lines), parse_mode="Markdown")
+
+
+# ─────────────────────────────────────────
 # Созыв клана по триггеру: .триггер
 # ─────────────────────────────────────────
 @dp.message(F.chat.type.in_({"group", "supergroup"}), F.text.regexp(r"(?i)^\.[а-яёa-z0-9_-]+$"))
