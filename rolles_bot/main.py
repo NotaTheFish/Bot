@@ -321,7 +321,7 @@ async def user_is_chat_admin(chat_id: int, user_id: int) -> bool:
         return False
 
 
-@dp.message(F.chat.type.in_({"group", "supergroup"}), F.text.regexp(r"^\.шк\s+.+", re.IGNORECASE))
+@dp.message(F.chat.type.in_({"group", "supergroup"}), F.text.regexp(r"(?i)^\.шк\s+.+"))
 async def chat_clan_command(message: Message):
     if not await user_is_chat_admin(message.chat.id, message.from_user.id):
         return
@@ -403,7 +403,7 @@ async def chat_clan_command(message: Message):
 # ─────────────────────────────────────────
 # Вступить / выйти из клана
 # ─────────────────────────────────────────
-@dp.message(F.chat.type.in_({"group", "supergroup"}), F.text.regexp(r"^[+\-]шк\s+.+", re.IGNORECASE))
+@dp.message(F.chat.type.in_({"group", "supergroup"}), F.text.regexp(r"(?i)^[+\-]шк\s+.+"))
 async def join_leave_clan(message: Message):
     text = message.text.strip()
     action = text[0]  # + или -
@@ -434,7 +434,7 @@ async def join_leave_clan(message: Message):
 # ─────────────────────────────────────────
 # Созыв клана по триггеру: .триггер
 # ─────────────────────────────────────────
-@dp.message(F.chat.type.in_({"group", "supergroup"}), F.text.regexp(r"^\.[а-яёa-z0-9_-]+$", re.IGNORECASE))
+@dp.message(F.chat.type.in_({"group", "supergroup"}), F.text.regexp(r"(?i)^\.[а-яёa-z0-9_-]+$"))
 async def trigger_summon(message: Message):
     text = message.text.strip()
     trigger = text[1:].lower()
