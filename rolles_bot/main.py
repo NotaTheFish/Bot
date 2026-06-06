@@ -224,7 +224,7 @@ async def process_new_clan_name(message: Message, state: FSMContext):
     await db.rename_clan(chat_id, old_name, new_name)
     await state.clear()
     await state.update_data(active_chat_id=chat_id)
-    await message.answer(f"✅ Клан переименован: *{old_name}* → *{new_name}*", parse_mode="Markdown", reply_markup=chat_menu_kb())
+    await message.answer(f"✅ Клан переименован: *{old_name}<b> → </b>{new_name}*", parse_mode="HTML", reply_markup=chat_menu_kb())
 
 
 # ─────────────────────────────────────────
@@ -250,7 +250,7 @@ async def process_trigger_name(message: Message, state: FSMContext):
     await db.add_trigger(chat_id, clan_name, trigger)
     await state.clear()
     await state.update_data(active_chat_id=chat_id)
-    await message.answer(f"✅ Триггер *{trigger}* добавлен в клан *{clan_name}*", parse_mode="Markdown", reply_markup=chat_menu_kb())
+    await message.answer(f"✅ Триггер *{trigger}<b> добавлен в клан </b>{clan_name}*", parse_mode="HTML", reply_markup=chat_menu_kb())
 
 
 # ─────────────────────────────────────────
@@ -321,7 +321,7 @@ async def process_new_trigger_name(message: Message, state: FSMContext):
     await db.rename_trigger(chat_id, clan_name, old_trigger, new_trigger)
     await state.clear()
     await state.update_data(active_chat_id=chat_id)
-    await message.answer(f"✅ Триггер переименован: *{old_trigger}* → *{new_trigger}*", parse_mode="Markdown", reply_markup=chat_menu_kb())
+    await message.answer(f"✅ Триггер переименован: *{old_trigger}<b> → </b>{new_trigger}*", parse_mode="HTML", reply_markup=chat_menu_kb())
 
 
 # ─────────────────────────────────────────────────────────────
@@ -351,9 +351,9 @@ async def chat_clan_command(message: Message):
         clan_name = args[1:].strip()
         deleted = await db.delete_clan(chat_id, clan_name)
         if deleted:
-            await message.reply(f"🗑 Клан *{clan_name}* удалён.", parse_mode="Markdown")
+            await message.reply(f"🗑 Клан *{clan_name}* удалён.", parse_mode="HTML")
         else:
-            await message.reply(f"❌ Клан *{clan_name}* не найден.", parse_mode="Markdown")
+            await message.reply(f"❌ Клан *{clan_name}* не найден.", parse_mode="HTML")
         return
 
     # Переименовать клан: .шк !старое новое
@@ -363,9 +363,9 @@ async def chat_clan_command(message: Message):
             old_name, new_name = parts
             ok = await db.rename_clan(chat_id, old_name.strip(), new_name.strip())
             if ok:
-                await message.reply(f"✏️ Клан *{old_name}* → *{new_name}*", parse_mode="Markdown")
+                await message.reply(f"✏️ Клан *{old_name}<b> → </b>{new_name}*", parse_mode="HTML")
             else:
-                await message.reply(f"❌ Клан *{old_name}* не найден.", parse_mode="Markdown")
+                await message.reply(f"❌ Клан *{old_name}* не найден.", parse_mode="HTML")
         return
 
     # Остальные команды: первый токен = название клана
@@ -377,9 +377,9 @@ async def chat_clan_command(message: Message):
         # Создать клан без триггеров (редкий кейс)
         result = await db.create_clan(chat_id, clan_name, [])
         if result is None:
-            await message.reply(f"❌ Клан *{clan_name}* уже существует.", parse_mode="Markdown")
+            await message.reply(f"❌ Клан *{clan_name}* уже существует.", parse_mode="HTML")
         else:
-            await message.reply(f"✅ Клан *{clan_name}* создан.", parse_mode="Markdown")
+            await message.reply(f"✅ Клан *{clan_name}* создан.", parse_mode="HTML")
         return
 
     # Удалить триггер: .шк клан -триггер
@@ -387,16 +387,16 @@ async def chat_clan_command(message: Message):
         trigger = rest[1:].strip().lower()
         ok = await db.remove_trigger(chat_id, clan_name, trigger)
         if ok:
-            await message.reply(f"🗑 Триггер *{trigger}* удалён из клана *{clan_name}*.", parse_mode="Markdown")
+            await message.reply(f"🗑 Триггер *{trigger}<b> удалён из клана </b>{clan_name}*.", parse_mode="HTML")
         else:
-            await message.reply(f"❌ Триггер не найден.", parse_mode="Markdown")
+            await message.reply(f"❌ Триггер не найден.", parse_mode="HTML")
         return
 
     # Добавить триггер: .шк клан +триггер
     if rest.startswith("+"):
         trigger = rest[1:].strip().lower()
         await db.add_trigger(chat_id, clan_name, trigger)
-        await message.reply(f"➕ Триггер *{trigger}* добавлен в клан *{clan_name}*.", parse_mode="Markdown")
+        await message.reply(f"➕ Триггер *{trigger}<b> добавлен в клан </b>{clan_name}*.", parse_mode="HTML")
         return
 
     # Переименовать триггер: .шк клан !старый новый
@@ -406,19 +406,19 @@ async def chat_clan_command(message: Message):
             old_t, new_t = t_parts[0].strip().lower(), t_parts[1].strip().lower()
             ok = await db.rename_trigger(chat_id, clan_name, old_t, new_t)
             if ok:
-                await message.reply(f"✏️ Триггер *{old_t}* → *{new_t}*", parse_mode="Markdown")
+                await message.reply(f"✏️ Триггер *{old_t}<b> → </b>{new_t}*", parse_mode="HTML")
             else:
-                await message.reply(f"❌ Триггер *{old_t}* не найден.", parse_mode="Markdown")
+                await message.reply(f"❌ Триггер *{old_t}* не найден.", parse_mode="HTML")
         return
 
     # Создать клан с триггерами: .шк клан триггер1, триггер2
     triggers = [t.strip().lower() for t in rest.split(",") if t.strip()]
     result = await db.create_clan(chat_id, clan_name, triggers)
     if result is None:
-        await message.reply(f"❌ Клан *{clan_name}* уже существует.", parse_mode="Markdown")
+        await message.reply(f"❌ Клан *{clan_name}* уже существует.", parse_mode="HTML")
     else:
         t_str = ", ".join(triggers)
-        await message.reply(f"✅ Клан *{clan_name}* создан. Триггеры: {t_str}", parse_mode="Markdown")
+        await message.reply(f"✅ Клан *{clan_name}* создан. Триггеры: {t_str}", parse_mode="HTML")
 
 
 # ─────────────────────────────────────────
@@ -435,21 +435,21 @@ async def join_leave_clan(message: Message):
 
     clan = await db.get_clan(chat_id, clan_name)
     if not clan:
-        await message.reply(f"❌ Клан *{clan_name}* не найден.", parse_mode="Markdown")
+        await message.reply(f"❌ Клан *{clan_name}* не найден.", parse_mode="HTML")
         return
 
     if action == "+":
         added = await db.add_member(chat_id, clan_name, user_id, username)
         if added:
-            await message.reply(f"✅ @{username} вступил в клан *{clan_name}*!", parse_mode="Markdown")
+            await message.reply(f"✅ @{username} вступил в клан *{clan_name}*!", parse_mode="HTML")
         else:
-            await message.reply(f"ℹ️ Ты уже в клане *{clan_name}*.", parse_mode="Markdown")
+            await message.reply(f"ℹ️ Ты уже в клане *{clan_name}*.", parse_mode="HTML")
     else:
         removed = await db.remove_member(chat_id, clan_name, user_id)
         if removed:
-            await message.reply(f"👋 @{username} покинул клан *{clan_name}*.", parse_mode="Markdown")
+            await message.reply(f"👋 @{username} покинул клан *{clan_name}*.", parse_mode="HTML")
         else:
-            await message.reply(f"ℹ️ Ты не состоишь в клане *{clan_name}*.", parse_mode="Markdown")
+            await message.reply(f"ℹ️ Ты не состоишь в клане *{clan_name}*.", parse_mode="HTML")
 
 
 # ─────────────────────────────────────────
@@ -463,12 +463,12 @@ async def list_clans(message: Message):
         await message.reply("В этом чате пока нет кланов.")
         return
 
-    lines = ["📋 *Кланы этого чата:*\n"]
+    lines = ["📋 <b>Кланы этого чата:</b>\n"]
     for clan in clans:
-        triggers = ", ".join(f"`.{t}`" for t in clan["triggers"]) if clan["triggers"] else "_триггеров нет_"
+        triggers = ", ".join(f"<code>.{t}</code>" for t in clan["triggers"]) if clan["triggers"] else "<i>триггеров нет</i>"
         count = await db.get_clan_member_count(chat_id, clan["name"])
-        lines.append(f"👥 *{clan['name']}* ({count} уч.) — {triggers}")
-    await message.reply("\n".join(lines), parse_mode="Markdown")
+        lines.append(f"👥 <b>{clan['name']}</b> ({count} уч.) — {triggers}")
+    await message.reply("\n".join(lines), parse_mode="HTML")
 
 
 # ─────────────────────────────────────────
@@ -497,20 +497,21 @@ async def trigger_summon(message: Message):
 
     if not clan_members:
         names = ", ".join(f"*{c['name']}*" for c in clans)
-        await message.reply(f"👥 Кланы {names} пусты.", parse_mode="Markdown")
+        await message.reply(f"👥 Кланы {names} пусты.", parse_mode="HTML")
         return
 
-    caller = message.from_user.username or message.from_user.full_name
+    caller = f"@{message.from_user.username}" if message.from_user.username else message.from_user.full_name
 
-    lines = [f"📣 Сбор! (позвал @{caller})"]
+    lines = [f"📣 Сбор! (позвал {caller})"]
     for clan_name, members in clan_members.items():
         mentions = " ".join(
-            f"@{m['username']}" if m.get("username") else f"[﹫](tg://user?id={m['user_id']}){m['user_id']}"
+            f"@{m['username']}" if m.get("username")
+            else f'<a href="tg://user?id={m["user_id"]}">участник</a>'
             for m in members
         )
-        lines.append(f"*{clan_name}*: {mentions}")
+        lines.append(f"<b>{clan_name}</b>: {mentions}")
 
-    await message.reply("\n".join(lines), parse_mode="Markdown")
+    await message.reply("\n".join(lines), parse_mode="HTML")
 
 
 # ─────────────────────────────────────────
