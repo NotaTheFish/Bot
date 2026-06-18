@@ -36,6 +36,16 @@ class Database:
                     username TEXT,
                     UNIQUE(clan_id, user_id)
                 );
+                CREATE TABLE IF NOT EXISTS shimm_chat_admins (
+                    chat_id BIGINT NOT NULL,
+                    user_id BIGINT NOT NULL,
+                    PRIMARY KEY(chat_id, user_id)
+                );
+                CREATE TABLE IF NOT EXISTS shimm_keys (
+                    key     TEXT PRIMARY KEY,
+                    chat_id BIGINT NOT NULL,
+                    used    BOOLEAN NOT NULL DEFAULT FALSE
+                );
             """)
 
     # ── Чаты ──────────────────────────────────────────────────
@@ -208,6 +218,70 @@ class Database:
                 chat_id, clan_name
             )
         return [dict(r) for r in rows]
+
+    async def get_all_chat_members_tg(self, chat_id: int) -> list[dict]:
+        """Для !все — все уникальные участники кланов этого чата."""
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT DISTINCT m.user_id, m.username
+                FROM shimm_members m
+                JOIN shimm_clans c ON m.clan_id = c.id
+                WHERE c.chat_id=$1
+                """,
+                chat_id
+            )
+        return [dict(r) for r in rows]
+
+    # ── Бот-админы чата ───────────────────────────────────────
+    async def is_bot_admin(self, chat_id: int, user_id: int) -> bool:
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT 1 FROM shimm_chat_admins WHERE chat_id=$1 AND user_id=$2",
+                chat_id, user_id
+            )
+        return row is not None
+
+    async def add_bot_admin(self, chat_id: int, user_id: int):
+        async with self.pool.acquire() as conn:
+            await conn.execute(
+                "INSERT INTO shimm_chat_admins(chat_id, user_id) VALUES($1,$2) ON CONFLICT DO NOTHING",
+                chat_id, user_id
+            )
+
+    async def remove_bot_admin(self, chat_id: int, user_id: int):
+        async with self.pool.acquire() as conn:
+            await conn.execute(
+                "DELETE FROM shimm_chat_admins WHERE chat_id=$1 AND user_id=$2",
+                chat_id, user_id
+            )
+
+    # ── Ключи доступа ─────────────────────────────────────────
+    async def create_key(self, chat_id: int) -> str:
+        import secrets
+        key = secrets.token_hex(4).upper()  # напр. A1B2C3D4
+        async with self.pool.acquire() as conn:
+            await conn.execute(
+                "INSERT INTO shimm_keys(key, chat_id) VALUES($1,$2) "
+                "ON CONFLICT(key) DO UPDATE SET chat_id=EXCLUDED.chat_id, used=FALSE",
+                key, chat_id
+            )
+        return key
+
+    async def use_key(self, key: str, chat_id: int) -> bool:
+        """Активировать ключ. True если ключ валиден, привязан к этому чату и не использован."""
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT chat_id, used FROM shimm_keys WHERE key=$1",
+                key.upper()
+            )
+            if not row or row["used"] or row["chat_id"] != chat_id:
+                return False
+            await conn.execute(
+                "UPDATE shimm_keys SET used=TRUE WHERE key=$1",
+                key.upper()
+            )
+        return True
 
 
 db = Database()
