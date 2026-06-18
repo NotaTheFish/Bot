@@ -30,6 +30,7 @@ class AdminStates(StatesGroup):
     waiting_trigger_name = State()
     waiting_trigger_rename_old = State()
     waiting_new_trigger_name = State()
+    waiting_key_chat_select = State()
 
 
 # ─────────────────────────────────────────
@@ -46,6 +47,7 @@ def chat_menu_kb():
     """Меню после выбора чата."""
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="👥 Кланы", callback_data="clans_menu")],
+        [InlineKeyboardButton(text="🔑 Создать ключ доступа", callback_data="gen_key")],
         [InlineKeyboardButton(text="🔄 Сменить чат", callback_data="select_chat")],
     ])
 
@@ -93,6 +95,13 @@ def trigger_actions_kb(chat_id: int, clan_name: str, trigger: str):
 
 async def is_admin(user_id: int) -> bool:
     return user_id == settings.ADMIN_ID
+
+
+async def is_chat_bot_admin(chat_id: int, user_id: int) -> bool:
+    """Главный админ ИЛИ бот-админ конкретного чата."""
+    if user_id == settings.ADMIN_ID:
+        return True
+    return await db.is_bot_admin(chat_id, user_id)
 
 
 async def get_active_chat_id(user_id: int, state: FSMContext) -> int | None:
@@ -512,6 +521,77 @@ async def trigger_summon(message: Message):
         lines.append(f"<b>{clan_name}</b>: {mentions}")
 
     await message.reply("\n".join(lines), parse_mode="HTML")
+
+
+# ─────────────────────────────────────────
+# Созыв всех: !все (только бот-админы)
+# ─────────────────────────────────────────
+@dp.message(F.chat.type.in_({"group", "supergroup"}), F.text.regexp(r"(?i)^!все$"))
+async def summon_all(message: Message):
+    chat_id = message.chat.id
+    user_id = message.from_user.id
+
+    if not await is_chat_bot_admin(chat_id, user_id):
+        return
+
+    members = await db.get_all_chat_members_tg(chat_id)
+    caller = f"@{message.from_user.username}" if message.from_user.username else message.from_user.full_name
+
+    if not members:
+        await message.reply("👥 В базе нет участников кланов.")
+        return
+
+    mentions = " ".join(
+        f"@{m['username']}" if m.get("username")
+        else f'<a href="tg://user?id={m["user_id"]}">участник</a>'
+        for m in members
+    )
+    await message.reply(f"📣 Всеобщий сбор! (позвал {caller})\n{mentions}", parse_mode="HTML")
+
+
+# ─────────────────────────────────────────
+# Активация ключа в чате: !XXXXXXXX
+# ─────────────────────────────────────────
+@dp.message(F.chat.type.in_({"group", "supergroup"}), F.text.regexp(r"(?i)^![A-F0-9]{8}$"))
+async def activate_key(message: Message):
+    chat_id = message.chat.id
+    user_id = message.from_user.id
+    key = message.text.strip()[1:].upper()
+
+    used = await db.use_key(key, chat_id)
+    if not used:
+        return  # неверный ключ — молчим
+
+    await db.add_bot_admin(chat_id, user_id)
+    username = message.from_user.username or message.from_user.full_name
+    await message.reply(f"✅ @{username} получил права бот-админа в этом чате!", parse_mode="HTML")
+
+
+# ─────────────────────────────────────────
+# Генерация ключа в личке (главный админ)
+# ─────────────────────────────────────────
+@dp.callback_query(F.data == "gen_key")
+async def cb_gen_key(call: CallbackQuery, state: FSMContext):
+    if not await is_admin(call.from_user.id):
+        return await call.answer("⛔", show_alert=True)
+    data = await state.get_data()
+    chat_id = data.get("active_chat_id")
+    if not chat_id:
+        return await call.answer("Сначала выбери чат!", show_alert=True)
+
+    key = await db.create_key(chat_id)
+    chat = await db.get_chat(chat_id)
+    title = chat["title"] if chat else str(chat_id)
+
+    await call.message.edit_text(
+        f"🔑 Ключ для чата <b>{title}</b>:\n\n"
+        f"<code>!{key}</code>\n\n"
+        f"Одноразовый. Отправь его нужному человеку — он введёт это в чат и получит права бот-админа.",
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="◀️ Назад", callback_data="main_menu")]
+        ])
+    )
 
 
 # ─────────────────────────────────────────
