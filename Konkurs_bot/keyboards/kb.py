@@ -34,9 +34,10 @@ def channels_kb(channels: list[dict], giveaway_id: int) -> InlineKeyboardMarkup:
     """Subscribe buttons + participate button for announcement message."""
     builder = InlineKeyboardBuilder()
     for ch in channels:
+        title = ch.get('chat_title') or str(ch['chat_id'])
         builder.row(
             InlineKeyboardButton(
-                text=f"📌 {ch['chat_title']}",
+                text=f"✅ Подписаться → {title}",
                 url=ch['invite_link']
             )
         )
