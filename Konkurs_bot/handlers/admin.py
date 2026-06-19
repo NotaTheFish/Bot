@@ -326,10 +326,11 @@ async def process_channels(message: Message, state: FSMContext, bot: Bot):
             numeric = str(chat_id).replace("-100", "").lstrip("-")
             invite_link = f"https://t.me/c/{numeric}"
     except Exception as e:
+        from html import escape
         logger.error(f"get_chat({chat_id}) failed: {e}")
         await message.answer(
             f"❌ Не могу получить информацию о чате <code>{chat_id}</code>\n\n"
-            f"Причина: <code>{e}</code>\n\n"
+            f"Причина: <code>{escape(str(e))}</code>\n\n"
             "Убедись что:\n"
             "• Бот добавлен в чат/канал с правами администратора\n"
             "• ID верный (для каналов начинается с <code>-100</code>)"
