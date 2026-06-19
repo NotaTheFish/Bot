@@ -314,28 +314,38 @@ async def process_channels(message: Message, state: FSMContext, bot: Bot):
         )
         return
 
-    # Verify bot is in that chat and get info
+    # Get invite link (don't use get_chat — it crashes on new Telegram reaction types)
+    # Instead use export_chat_invite_link directly to verify bot is admin
     try:
-        chat = await bot.get_chat(chat_id)
-        chat_title = chat_title or chat.title or str(chat_id)
+        invite_link_fresh = await bot.export_chat_invite_link(chat_id)
+        invite_link = invite_link_fresh
+    except Exception as e:
+        logger.warning(f"export_chat_invite_link({chat_id}) failed: {e}")
+        # Bot may not be admin or not in chat
+        # Try to verify membership via get_chat_member of the bot itself
         try:
-            invite_link = chat.invite_link
-            if not invite_link:
-                invite_link = await bot.export_chat_invite_link(chat_id)
-        except Exception:
+            bot_info = await bot.get_me()
+            member = await bot.get_chat_member(chat_id, bot_info.id)
+            if member.status not in ('administrator', 'creator'):
+                await message.answer(
+                    f"❌ Бот не является администратором в чате <code>{chat_id}</code>\n"
+                    "Выдай боту права администратора и попробуй снова."
+                )
+                return
+            # Bot is in chat but can't create invite link — use fallback
             numeric = str(chat_id).replace("-100", "").lstrip("-")
             invite_link = f"https://t.me/c/{numeric}"
-    except Exception as e:
-        from html import escape
-        logger.error(f"get_chat({chat_id}) failed: {e}")
-        await message.answer(
-            f"❌ Не могу получить информацию о чате <code>{chat_id}</code>\n\n"
-            f"Причина: <code>{escape(str(e))}</code>\n\n"
-            "Убедись что:\n"
-            "• Бот добавлен в чат/канал с правами администратора\n"
-            "• ID верный (для каналов начинается с <code>-100</code>)"
-        )
-        return
+        except Exception as e2:
+            logger.error(f"get_chat_member({chat_id}) failed: {e2}")
+            await message.answer(
+                f"❌ Бот не найден в чате <code>{chat_id}</code>\n"
+                "Убедись что бот добавлен в канал/чат с правами администратора."
+            )
+            return
+
+    # If chat_title not set from forwarded message — use ID as fallback
+    if not chat_title:
+        chat_title = str(chat_id)
 
     # Check for duplicates
     if any(ch['chat_id'] == chat_id for ch in channels_collected):
