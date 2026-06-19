@@ -287,12 +287,19 @@ async def process_channels(message: Message, state: FSMContext, bot: Bot):
     chat_title = None
     invite_link = None
 
+    # Case 1: forwarded from channel (standard)
     if message.forward_from_chat:
         chat_id = message.forward_from_chat.id
         chat_title = message.forward_from_chat.title
+    # Case 2: sender_chat — channel post forwarded with hidden origin
+    elif message.sender_chat:
+        chat_id = message.sender_chat.id
+        chat_title = message.sender_chat.title
+    # Case 3: manual numeric ID
     elif message.text:
+        raw = message.text.strip()
         try:
-            chat_id = int(message.text.strip())
+            chat_id = int(raw)
         except ValueError:
             await message.answer(
                 "❌ Не понял. Перешли сообщение из канала или введи числовой ID.\n"
@@ -301,24 +308,31 @@ async def process_channels(message: Message, state: FSMContext, bot: Bot):
             return
 
     if chat_id is None:
-        await message.answer("❌ Не удалось определить чат. Попробуй ещё раз.")
+        await message.answer(
+            "❌ Не удалось определить чат.\n"
+            "Попробуй переслать сообщение или ввести ID вручную."
+        )
         return
 
-    # Verify bot is in that chat
+    # Verify bot is in that chat and get info
     try:
         chat = await bot.get_chat(chat_id)
-        chat_title = chat.title or str(chat_id)
-        # Try to get invite link
+        chat_title = chat_title or chat.title or str(chat_id)
         try:
             invite_link = chat.invite_link
             if not invite_link:
                 invite_link = await bot.export_chat_invite_link(chat_id)
         except Exception:
-            invite_link = f"https://t.me/c/{str(chat_id).replace('-100', '')}"
+            numeric = str(chat_id).replace("-100", "").lstrip("-")
+            invite_link = f"https://t.me/c/{numeric}"
     except Exception as e:
+        logger.error(f"get_chat({chat_id}) failed: {e}")
         await message.answer(
-            f"❌ Не могу получить информацию о чате <code>{chat_id}</code>.\n"
-            "Убедись, что бот добавлен в этот чат с правами администратора."
+            f"❌ Не могу получить информацию о чате <code>{chat_id}</code>\n\n"
+            f"Причина: <code>{e}</code>\n\n"
+            "Убедись что:\n"
+            "• Бот добавлен в чат/канал с правами администратора\n"
+            "• ID верный (для каналов начинается с <code>-100</code>)"
         )
         return
 
