@@ -7,7 +7,7 @@ from aiogram.fsm.storage.memory import MemoryStorage
 
 from config import Config
 from db import Database
-from handlers import start, setup, review, inline
+from handlers import start, setup, review, inline, client_setup
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -31,6 +31,7 @@ async def main():
     dp.include_router(setup.router)
     dp.include_router(review.router)
     dp.include_router(inline.router)
+    dp.include_router(client_setup.router)
 
     logger.info("ReviewBot starting...")
     await bot.delete_webhook(drop_pending_updates=True)

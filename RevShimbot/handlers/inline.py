@@ -127,8 +127,39 @@ async def inline_review(query: InlineQuery, db: Database, bot, config):
             )
             return
 
-    # Фолбэк — текстовый отзыв если нет seller или CACHE_CHAT_ID
+    # Фолбэк — пробуем клиентский шаблон если есть
     buyer_name = query.from_user.full_name or "Трейдер"
+    client_tpl = await db.get_client_template(query.from_user.id)
+
+    if client_tpl and config.CACHE_CHAT_ID and review_text:
+        fake_seller = {
+            "shop_name": buyer_name,
+            "username": query.from_user.username,
+            "id": query.from_user.id,
+            "template_id": client_tpl["template_id"],
+            "stars_mode": "buyer_choice",
+            "stars_value": 5,
+            "item_mode": "free",
+            "item_value": "",
+        }
+        file_id = await get_or_generate_card(query, fake_seller, review_text, bot, config)
+        if file_id:
+            await query.answer(
+                results=[
+                    InlineQueryResultCachedPhoto(
+                        id=result_id,
+                        photo_file_id=file_id,
+                        caption=f"<i>«{review_text}»</i>\n\n— {buyer_name}",
+                        parse_mode="HTML",
+                        title="⭐️ Отправить карточку отзыва",
+                        description=review_text[:100],
+                    )
+                ],
+                cache_time=30,
+            )
+            return
+
+    # Последний фолбэк — текстовый отзыв
     await query.answer(
         results=[
             InlineQueryResultArticle(
@@ -145,7 +176,7 @@ async def inline_review(query: InlineQuery, db: Database, bot, config):
                 ),
             )
         ],
-        switch_pm_text="🎨 Получить красивую карточку",
+        switch_pm_text="🎨 Настроить клиентский шаблон",
         switch_pm_parameter="inline_card",
         cache_time=1,
     )

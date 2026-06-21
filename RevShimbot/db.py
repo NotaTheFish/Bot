@@ -20,6 +20,14 @@ CREATE TABLE IF NOT EXISTS rvb_sellers (
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+CREATE TABLE IF NOT EXISTS rvb_client_templates (
+    id BIGINT PRIMARY KEY,
+    username TEXT,
+    template_id TEXT NOT NULL DEFAULT 'classic_gold',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
 CREATE TABLE IF NOT EXISTS rvb_reviews (
     id SERIAL PRIMARY KEY,
     seller_id BIGINT NOT NULL REFERENCES rvb_sellers(id) ON DELETE CASCADE,
@@ -52,6 +60,28 @@ class Database:
     async def close(self):
         if self.pool:
             await self.pool.close()
+
+    # ── Client Templates ───────────────────────────────────────────────────
+
+    async def get_client_template(self, user_id: int):
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT * FROM rvb_client_templates WHERE id = $1", user_id
+            )
+            return dict(row) if row else None
+
+    async def save_client_template(self, user_id: int, username, template_id: str) -> dict:
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow("""
+                INSERT INTO rvb_client_templates (id, username, template_id)
+                VALUES ($1, $2, $3)
+                ON CONFLICT (id) DO UPDATE SET
+                    username = EXCLUDED.username,
+                    template_id = $3,
+                    updated_at = NOW()
+                RETURNING *
+            """, user_id, username, template_id)
+            return dict(row)
 
     # ── Sellers ────────────────────────────────────────────────────────────
 

@@ -5,43 +5,59 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 
 from db import Database
-from keyboards import kb_seller_menu, kb_buyer_stars, kb_templates, kb_template_view
+from keyboards import kb_seller_menu, kb_templates, kb_template_view
 from utils.helpers import get_ref_link, get_inline_button_str
+from constants import TEMPLATES
 
 router = Router()
 
+TEMPLATE_NAMES = {
+    "classic_gold": "✦ Classic Gold",
+    "retro_paper":  "📜 Retro Paper",
+    "dark_slate":   "🖥 Dark Slate",
+    "clean_white":  "🤍 Clean White",
+    "sketch_paper": "✏️ Sketch Paper",
+}
+STARS_LABELS = {
+    "fixed":        "🔒 Фиксированные",
+    "buyer_choice": "⭐️ Покупатель выбирает",
+    "disabled":     "🚫 Отключены",
+}
+ITEM_LABELS = {
+    "fixed": "🔒 Фиксировано",
+    "hint":  "💬 Подсказка",
+    "free":  "✏️ Свободное",
+}
 
-def kb_start_menu() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(inline_keyboard=[
+
+def kb_start_menu(has_seller: bool = False, has_client: bool = False) -> InlineKeyboardMarkup:
+    rows = [
         [InlineKeyboardButton(text="🏪 Создать шаблон магазина", callback_data="start:seller")],
-        [InlineKeyboardButton(text="⭐️ Оставить отзыв продавцу", callback_data="start:buyer")],
+        [InlineKeyboardButton(text="🎨 Создать клиентский шаблон", callback_data="start:client")],
         [InlineKeyboardButton(text="⚡️ Быстрый отзыв", callback_data="start:quick")],
-    ])
-
-
-def kb_quick_template() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="✦ Classic Gold", callback_data="quick_tpl:classic_gold")],
-        [InlineKeyboardButton(text="📜 Retro Paper", callback_data="quick_tpl:retro_paper")],
-        [InlineKeyboardButton(text="🖥 Dark Slate", callback_data="quick_tpl:dark_slate")],
-        [InlineKeyboardButton(text="🤍 Clean White", callback_data="quick_tpl:clean_white")],
-        [InlineKeyboardButton(text="✏️ Sketch Paper", callback_data="quick_tpl:sketch_paper")],
-    ])
+    ]
+    if has_seller:
+        rows.append([InlineKeyboardButton(text="📋 Мой торговый шаблон", callback_data="menu:mytemplate")])
+    if has_client:
+        rows.append([InlineKeyboardButton(text="🎨 Мой клиентский шаблон", callback_data="menu:myclienttemplate")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 class QuickReviewSG(StatesGroup):
     choose_template = State()
     enter_seller = State()
     enter_item = State()
+    choose_stars = State()
     enter_text = State()
 
 
 @router.message(CommandStart())
-async def cmd_start(message: Message, db: Database, bot, state: FSMContext, command=None):
+async def cmd_start(message: Message, db: Database, bot, state: FSMContext):
     await state.clear()
     args = message.text.split()
     deep_link = args[1] if len(args) > 1 else None
 
+    # Покупатель пришёл по реф-ссылке продавца
     if deep_link and deep_link.startswith("seller_"):
         try:
             seller_id = int(deep_link.replace("seller_", ""))
@@ -58,14 +74,19 @@ async def cmd_start(message: Message, db: Database, bot, state: FSMContext, comm
         return
 
     name = message.from_user.first_name or "трейдер"
+    has_seller = bool(await db.get_seller(message.from_user.id))
+    has_client = bool(await db.get_client_template(message.from_user.id))
+
     await message.answer(
         f"👋 Привет, <b>{name}</b>!\n\n"
         f"Я <b>RevShimBot</b> — создаю красивые карточки отзывов для трейдеров "
         f"Creatures of Sonaria и Dragon Adventures.\n\n"
         f"Что хочешь сделать?",
-        reply_markup=kb_start_menu()
+        reply_markup=kb_start_menu(has_seller, has_client)
     )
 
+
+# ── Кнопки главного меню ──────────────────────────────────────────────────
 
 @router.callback_query(F.data == "start:seller")
 async def cb_start_seller(call: CallbackQuery, db: Database, state: FSMContext):
@@ -75,18 +96,12 @@ async def cb_start_seller(call: CallbackQuery, db: Database, state: FSMContext):
     await cmd_setup(call.message, db, state)
 
 
-@router.callback_query(F.data == "start:buyer")
-async def cb_start_buyer(call: CallbackQuery, state: FSMContext):
+@router.callback_query(F.data == "start:client")
+async def cb_start_client(call: CallbackQuery, state: FSMContext):
     await call.answer()
     await call.message.edit_reply_markup(reply_markup=None)
-    await call.message.answer(
-        "🔗 Попроси продавца скинуть тебе его реферальную ссылку — "
-        "бот автоматически загрузит его шаблон.\n\n"
-        "Или используй <b>⚡️ Быстрый отзыв</b> чтобы создать карточку самому.",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="⚡️ Быстрый отзыв", callback_data="start:quick")]
-        ])
-    )
+    from handlers.client_setup import start_client_setup
+    await start_client_setup(call.message, state)
 
 
 @router.callback_query(F.data == "start:quick")
@@ -94,16 +109,20 @@ async def cb_start_quick(call: CallbackQuery, state: FSMContext):
     await call.answer()
     await call.message.edit_reply_markup(reply_markup=None)
     await state.set_state(QuickReviewSG.choose_template)
+    rows = [[InlineKeyboardButton(text=label, callback_data=f"quick_tpl:{tid}")]
+            for tid, label in TEMPLATE_NAMES.items()]
     await call.message.answer(
         "⚡️ <b>Быстрый отзыв</b> — выбери стиль карточки:",
-        reply_markup=kb_quick_template()
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=rows)
     )
 
+
+# ── Быстрый отзыв ─────────────────────────────────────────────────────────
 
 @router.callback_query(QuickReviewSG.choose_template, F.data.startswith("quick_tpl:"))
 async def cb_quick_template(call: CallbackQuery, state: FSMContext):
     tpl = call.data.split(":")[1]
-    await state.update_data(template_id=tpl, stars_mode="buyer_choice")
+    await state.update_data(template_id=tpl)
     await call.answer()
     await call.message.edit_reply_markup(reply_markup=None)
     await state.set_state(QuickReviewSG.enter_seller)
@@ -115,11 +134,10 @@ async def cb_quick_template(call: CallbackQuery, state: FSMContext):
 
 @router.message(QuickReviewSG.enter_seller)
 async def cb_quick_seller(message: Message, state: FSMContext):
-    seller = message.text.strip()
-    await state.update_data(seller_tag=seller, shop_name=seller)
+    await state.update_data(seller_tag=message.text.strip(), shop_name=message.text.strip())
     await state.set_state(QuickReviewSG.enter_item)
     await message.answer(
-        "🎮 Что купил у продавца?\n"
+        "🎮 Что купил?\n"
         "<i>Например: Грибы, Токены, Коины, Существа</i>"
     )
 
@@ -127,24 +145,25 @@ async def cb_quick_seller(message: Message, state: FSMContext):
 @router.message(QuickReviewSG.enter_item)
 async def cb_quick_item(message: Message, state: FSMContext):
     await state.update_data(item_bought=message.text.strip())
-    await state.set_state(QuickReviewSG.enter_text)
+    await state.set_state(QuickReviewSG.choose_stars)
+    await message.answer(
+        "⭐️ Поставь оценку продавцу:",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+            InlineKeyboardButton(text="★"*i, callback_data=f"quick_stars:{i}") for i in range(1, 6)
+        ]])
+    )
 
-    stars_kb = InlineKeyboardMarkup(inline_keyboard=[[
-        InlineKeyboardButton(text="★"*i, callback_data=f"quick_stars:{i}") for i in range(1, 6)
-    ]])
-    await message.answer("⭐️ Поставь оценку продавцу:", reply_markup=stars_kb)
 
-
-@router.callback_query(QuickReviewSG.enter_text, F.data.startswith("quick_stars:"))
+@router.callback_query(QuickReviewSG.choose_stars, F.data.startswith("quick_stars:"))
 async def cb_quick_stars(call: CallbackQuery, state: FSMContext):
     stars = int(call.data.split(":")[1])
     await state.update_data(stars=stars)
     await call.answer(f"{'★'*stars} принято!")
     await call.message.edit_reply_markup(reply_markup=None)
+    await state.set_state(QuickReviewSG.enter_text)
     await call.message.answer(
         "✏️ Напиши свой отзыв!\n"
-        "<i>Расскажи о сделке — скорость ответа, честность, всё ли пришло. "
-        "Хороший отзыв помогает другим трейдерам.</i>"
+        "<i>Расскажи о сделке — скорость, честность, всё ли пришло.</i>"
     )
 
 
@@ -173,7 +192,6 @@ async def cb_quick_text(message: Message, state: FSMContext, bot, db: Database):
         pass
 
     await message.answer("⏳ Генерирую карточку...")
-
     card_data = {
         "shop_name": data.get("shop_name", "Shop"),
         "seller_tag": data.get("seller_tag", ""),
@@ -186,30 +204,29 @@ async def cb_quick_text(message: Message, state: FSMContext, bot, db: Database):
         "template_id": data.get("template_id", "classic_gold"),
         "avatar_bytes": avatar_bytes,
     }
-
     try:
-        img_bytes = await generate_card(card_data)
+        img = await generate_card(card_data)
+        await message.answer_photo(
+            BufferedInputFile(img, filename="review.png"),
+            caption="✅ Вот твоя карточка! Отправь её продавцу в личные сообщения."
+        )
     except Exception as e:
         await message.answer(f"❌ Ошибка генерации: {e}")
-        return
-
-    await message.answer_photo(
-        BufferedInputFile(img_bytes, filename="review.png"),
-        caption="✅ Вот твоя карточка! Отправь её продавцу в личные сообщения."
-    )
     await state.clear()
 
+
+# ── Меню продавца ─────────────────────────────────────────────────────────
 
 @router.message(Command("menu"))
 async def cmd_menu(message: Message, db: Database):
     seller = await db.get_seller(message.from_user.id)
     if seller:
-        await message.answer(
-            f"🏪 <b>{seller['shop_name']}</b> — меню продавца",
-            reply_markup=kb_seller_menu()
-        )
+        await message.answer(f"🏪 <b>{seller['shop_name']}</b> — меню продавца",
+                             reply_markup=kb_seller_menu())
     else:
-        await message.answer("Выбери действие:", reply_markup=kb_start_menu())
+        has_client = bool(await db.get_client_template(message.from_user.id))
+        await message.answer("Выбери действие:",
+                             reply_markup=kb_start_menu(False, has_client))
 
 
 @router.callback_query(F.data == "menu:mylink")
@@ -222,14 +239,13 @@ async def cb_mylink(call: CallbackQuery, db: Database, config):
     inline_btn = get_inline_button_str(config.BOT_USERNAME, call.from_user.id)
     await call.message.answer(
         f"🔗 <b>Реферальная ссылка</b>\n"
-        f"Скинь покупателю в лс — он откроет бот и оставит отзыв:\n"
+        f"Скинь покупателю — он откроет бот и оставит отзыв:\n"
         f"<code>{link}</code>\n\n"
-        f"⭐️ <b>Inline-кнопка для закрепа/канала</b>\n"
-        f"Вставь кнопку в закреп своего магазина. Покупатель нажмёт — "
-        f"и сразу откроется поле ввода для отзыва прямо в чате:\n\n"
+        f"⭐️ <b>Inline-кнопка для закрепа</b>\n"
+        f"Вставь в закреп канала/чата магазина. Покупатель нажмёт — "
+        f"бот сразу запустит flow отзыва:\n\n"
         f"Текст: <code>⭐️ Оставить отзыв</code>\n"
-        f"URL: <code>{inline_btn}</code>\n\n"
-        f"<i>В редакторе поста нажми «Добавить кнопку» → вставь URL выше.</i>"
+        f"URL: <code>{inline_btn}</code>"
     )
     await call.answer()
 
@@ -271,8 +287,8 @@ async def cb_preview(call: CallbackQuery, db: Database, bot):
         "seller_tag": f"@{seller['username']}" if seller.get("username") else f"ID:{seller['id']}",
         "buyer_name": "Трейдер",
         "buyer_initials": "ТР",
-        "review_text": "Отличная сделка! Мифик пришёл быстро, продавец вежливый. Рекомендую всем трейдерам CoS 🔥",
-        "item_bought": "Токены",
+        "review_text": "Отличная сделка! Токены пришли быстро, продавец вежливый. Рекомендую! 🔥",
+        "item_bought": "Токены" if seller["item_mode"] != "fixed" else seller["item_value"],
         "stars": 5,
         "stars_mode": seller["stars_mode"],
         "template_id": seller["template_id"],
@@ -288,57 +304,57 @@ async def cb_preview(call: CallbackQuery, db: Database, bot):
         await call.message.answer(f"❌ Ошибка: {e}")
 
 
-
-TEMPLATE_NAMES = {
-    "classic_gold": "✦ Classic Gold",
-    "retro_paper":  "📜 Retro Paper",
-    "dark_slate":   "🖥 Dark Slate",
-    "clean_white":  "🤍 Clean White",
-    "sketch_paper": "✏️ Sketch Paper",
-}
-STARS_LABELS = {
-    "fixed":        "🔒 Фиксированные",
-    "buyer_choice": "⭐️ Покупатель выбирает",
-    "disabled":     "🚫 Отключены",
-}
-ITEM_LABELS = {
-    "fixed": "🔒 Фиксировано",
-    "hint":  "💬 Подсказка",
-    "free":  "✏️ Свободное",
-}
-
+# ── Просмотр шаблонов ─────────────────────────────────────────────────────
 
 @router.callback_query(F.data == "menu:mytemplate")
 async def cb_mytemplate(call: CallbackQuery, db: Database, config):
     seller = await db.get_seller(call.from_user.id)
     if not seller:
-        await call.answer("Сначала создай шаблон", show_alert=True)
+        await call.answer("Торговый шаблон не настроен", show_alert=True)
         return
     await call.answer()
 
     stars_info = STARS_LABELS.get(seller["stars_mode"], seller["stars_mode"])
     if seller["stars_mode"] == "fixed":
         stars_info += f" ({seller['stars_value']}★)"
-
     item_info = ITEM_LABELS.get(seller["item_mode"], seller["item_mode"])
     if seller["item_mode"] in ("fixed", "hint") and seller["item_value"]:
         item_info += f": «{seller['item_value']}»"
-
     allow = "✅ Да" if seller["allow_template_choice"] else "❌ Нет"
     tpl = TEMPLATE_NAMES.get(seller["template_id"], seller["template_id"])
     link = get_ref_link(config.BOT_USERNAME, call.from_user.id)
     inline_btn = get_inline_button_str(config.BOT_USERNAME, call.from_user.id)
 
     await call.message.answer(
-        f"📋 <b>Текущий шаблон — {seller['shop_name']}</b>\n\n"
+        f"📋 <b>Торговый шаблон — {seller['shop_name']}</b>\n\n"
         f"🎨 Стиль: <b>{tpl}</b>\n"
         f"⭐️ Звёзды: <b>{stars_info}</b>\n"
         f"📦 Что купил: <b>{item_info}</b>\n"
         f"🎨 Выбор стиля покупателем: <b>{allow}</b>\n\n"
         f"🔗 Ссылка: <code>{link}</code>\n"
-        f"⭐️ Inline-кнопка: <code>{inline_btn}</code>\n\n"
-        f"Нажми что хочешь изменить:",
+        f"⭐️ Inline URL: <code>{inline_btn}</code>\n\n"
+        f"Что изменить?",
         reply_markup=kb_template_view(seller)
+    )
+
+
+@router.callback_query(F.data == "menu:myclienttemplate")
+async def cb_myclienttemplate(call: CallbackQuery, db: Database):
+    client = await db.get_client_template(call.from_user.id)
+    if not client:
+        await call.answer("Клиентский шаблон не настроен", show_alert=True)
+        return
+    await call.answer()
+    tpl = TEMPLATE_NAMES.get(client["template_id"], client["template_id"])
+    await call.message.answer(
+        f"🎨 <b>Клиентский шаблон</b>\n\n"
+        f"Стиль карточки: <b>{tpl}</b>\n\n"
+        f"Используется когда ты пишешь <code>@RevShimbot текст</code> в чате.\n\n"
+        f"Изменить стиль?",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🎨 Изменить стиль", callback_data="start:client")],
+            [InlineKeyboardButton(text="« Назад", callback_data="menu:back")],
+        ])
     )
 
 
@@ -346,9 +362,7 @@ async def cb_mytemplate(call: CallbackQuery, db: Database, config):
 async def cb_edit_field(call: CallbackQuery, db: Database, state: FSMContext):
     field = call.data.split(":")[1]
     await call.answer()
-    from handlers.setup import (
-        SetupSG, go_to_item_mode, go_to_template_choice
-    )
+    from handlers.setup import SetupSG
     from keyboards import kb_templates, kb_stars_mode, kb_stars_value, kb_item_mode, kb_allow_template_choice
 
     seller = await db.get_seller(call.from_user.id)
@@ -369,31 +383,36 @@ async def cb_edit_field(call: CallbackQuery, db: Database, state: FSMContext):
     elif field == "template":
         await state.set_state(SetupSG.template)
         data = await state.get_data()
-        await call.message.answer("🎨 Выбери стиль карточки:", reply_markup=kb_templates(data.get("template_id")))
+        await call.message.answer("🎨 Выбери стиль:", reply_markup=kb_templates(data.get("template_id")))
     elif field == "stars":
         await state.set_state(SetupSG.stars_mode)
         data = await state.get_data()
-        await call.message.answer("⭐️ Как работают звёзды?", reply_markup=kb_stars_mode(data.get("stars_mode")))
+        await call.message.answer("⭐️ Режим звёзд:", reply_markup=kb_stars_mode(data.get("stars_mode")))
     elif field == "item":
         await state.set_state(SetupSG.item_mode)
         data = await state.get_data()
-        await call.message.answer("📦 Режим поля «Что купил»:", reply_markup=kb_item_mode(data.get("item_mode")))
+        await call.message.answer("📦 Режим «Что купил»:", reply_markup=kb_item_mode(data.get("item_mode")))
     elif field == "tpl_choice":
         await state.set_state(SetupSG.template_choice)
         data = await state.get_data()
         await call.message.answer(
-            "🎨 Разрешить покупателю выбирать стиль карточки?",
+            "🎨 Разрешить покупателю выбирать стиль?",
             reply_markup=kb_allow_template_choice(data.get("allow_template_choice", False))
         )
 
 
 @router.callback_query(F.data == "menu:back")
-async def cb_back(call: CallbackQuery):
+async def cb_back(call: CallbackQuery, db: Database):
     await call.answer()
-    await call.message.answer("Меню продавца:", reply_markup=kb_seller_menu())
+    has_seller = bool(await db.get_seller(call.from_user.id))
+    has_client = bool(await db.get_client_template(call.from_user.id))
+    await call.message.answer("Выбери действие:", reply_markup=kb_start_menu(has_seller, has_client))
+
 
 @router.callback_query(F.data == "cancel")
-async def cb_cancel(call: CallbackQuery, state: FSMContext):
+async def cb_cancel(call: CallbackQuery, state: FSMContext, db: Database):
     await state.clear()
-    await call.message.answer("❌ Отменено.", reply_markup=kb_start_menu())
+    has_seller = bool(await db.get_seller(call.from_user.id))
+    has_client = bool(await db.get_client_template(call.from_user.id))
+    await call.message.answer("❌ Отменено.", reply_markup=kb_start_menu(has_seller, has_client))
     await call.answer()
