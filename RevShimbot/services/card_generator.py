@@ -156,7 +156,7 @@ def html_classic_gold(d: dict) -> str:
 <style>
 *{{margin:0;padding:0;box-sizing:border-box;}}
 body{{width:800px;background:transparent;}}
-.card{{background:#1a1a2e;border-radius:20px;padding:44px 56px 36px;position:relative;overflow:hidden;}}
+.card{{background:#1a1a2e;border-radius:0;padding:44px 56px 36px;position:relative;overflow:hidden;}}
 .bar{{position:absolute;top:0;left:56px;right:56px;height:3px;background:linear-gradient(90deg,transparent,#c9a84c,#e8cc7a,#c9a84c,transparent);}}
 .corner{{position:absolute;width:20px;height:20px;border-color:#c9a84c;border-style:solid;opacity:.7;}}
 .c-tl{{top:12px;left:12px;border-width:1.5px 0 0 1.5px;}}
@@ -213,7 +213,7 @@ def html_retro_paper(d: dict) -> str:
 <style>
 *{{margin:0;padding:0;box-sizing:border-box;}}
 body{{width:800px;background:transparent;}}
-.card{{background:#f4ead0;border-radius:18px;padding:44px 56px 36px;position:relative;
+.card{{background:#f4ead0;border-radius:0;padding:44px 56px 36px;position:relative;
   background-image:repeating-linear-gradient(transparent,transparent 31px,rgba(150,120,64,.1) 31px,rgba(150,120,64,.1) 32px);}}
 .frame{{position:absolute;inset:10px;border:1.5px solid #c8a96e;border-radius:12px;pointer-events:none;}}
 .frame::before{{content:'';position:absolute;inset:4px;border:.5px solid #c8a96e;border-radius:8px;opacity:.4;}}
@@ -268,7 +268,7 @@ def html_dark_slate(d: dict) -> str:
 <style>
 *{{margin:0;padding:0;box-sizing:border-box;}}
 body{{width:800px;background:transparent;}}
-.card{{background:#161b22;border-radius:20px;padding:0;overflow:hidden;border:1px solid #30363d;}}
+.card{{background:#161b22;border-radius:0;padding:0;overflow:hidden;border:1px solid #30363d;}}
 .accent{{height:3px;background:#58a6ff;}}
 .inner{{padding:36px 52px 32px;}}
 .header{{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:6px;}}
@@ -325,7 +325,7 @@ def html_clean_white(d: dict) -> str:
 <style>
 *{{margin:0;padding:0;box-sizing:border-box;}}
 body{{width:800px;background:transparent;}}
-.card{{background:#fff;border-radius:20px;padding:0;overflow:hidden;border:1px solid #e8e8e8;}}
+.card{{background:#fff;border-radius:0;padding:0;overflow:hidden;border:1px solid #e8e8e8;}}
 .bar{{height:3px;background:#111;}}
 .inner{{padding:36px 56px 32px;}}
 .header{{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:8px;}}
@@ -385,7 +385,7 @@ def html_sketch_paper(d: dict) -> str:
 body{{width:800px;background:transparent;}}
 .card{{
   background:#f0ebe0;
-  border-radius:18px;
+  border-radius:0;
   padding:44px 64px 36px;
   position:relative;
   overflow:hidden;
