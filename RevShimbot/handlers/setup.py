@@ -8,7 +8,7 @@ from keyboards import (
     kb_templates, kb_stars_mode, kb_stars_value,
     kb_item_mode, kb_allow_template_choice, kb_setup_done
 )
-from utils.helpers import get_ref_link
+from utils.helpers import get_ref_link, get_inline_button_str
 
 router = Router()
 
@@ -39,7 +39,7 @@ async def cmd_setup(message: Message, db: Database, state: FSMContext):
     await message.answer(
         "🏪 <b>Шаг 1 из 5 — Название магазина</b>\n\n"
         "Введи название своего магазина или канала.\n"
-        "<i>Например: ShimShop, Лавка грибов, @mystore</i>"
+        "<i>Например: ShimShop, CoS Trades, @sonaria_market</i>"
     )
 
 
@@ -115,13 +115,13 @@ async def step_item_mode(call: CallbackQuery, state: FSMContext):
         await state.set_state(SetupSG.item_value)
         await call.message.answer(
             "📦 Введи фиксированное значение для поля «Что купил».\n"
-            "<i>Например: Грибы, Услуга, Handmade украшение</i>"
+            "<i>Например: Грибы, Токены, Коины, Существа, Услуги</i>"
         )
     elif mode == "hint":
         await state.set_state(SetupSG.item_value)
         await call.message.answer(
             "📦 Введи подсказку для покупателя.\n"
-            "<i>Например: Укажи название товара, Что именно брал?</i>"
+            "<i>Например: Что именно купил? (Грибы, Токены, Существа...)</i>"
         )
     else:
         await state.update_data(item_value="")
@@ -170,11 +170,17 @@ async def step_template_choice(call: CallbackQuery, state: FSMContext, db: Datab
     await state.clear()
 
     link = get_ref_link(config.BOT_USERNAME, call.from_user.id)
+    inline_btn = get_inline_button_str(config.BOT_USERNAME, call.from_user.id)
+    from keyboards import kb_seller_menu
     await call.message.answer(
         f"✅ <b>Шаблон сохранён!</b>\n\n"
         f"🏪 Магазин: <b>{data['shop_name']}</b>\n\n"
-        f"🔗 Твоя реферальная ссылка:\n"
+        f"🔗 <b>Реферальная ссылка</b> (поделись с покупателями):\n"
         f"<code>{link}</code>\n\n"
-        f"Поделись ею с покупателями — они откроют её и оставят красивый отзыв.",
-        reply_markup=None
+        f"⭐️ <b>Inline-кнопка для закрепа</b>\n"
+        f"Вставь в описание канала или закреп — покупатель нажмёт и сразу напишет отзыв:\n\n"
+        f"Текст кнопки: <code>⭐️ Оставить отзыв</code>\n"
+        f"Ссылка кнопки: <code>{inline_btn}</code>\n\n"
+        f"<i>В @BotFather или редакторе поста выбери «Inline кнопка» и вставь эту ссылку.</i>",
+        reply_markup=kb_seller_menu()
     )

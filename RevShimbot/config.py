@@ -7,3 +7,4 @@ class Config:
     BOT_TOKEN: str = os.getenv("BOT_TOKEN", "")
     DATABASE_URL: str = os.getenv("DATABASE_URL", "")
     BOT_USERNAME: str = os.getenv("BOT_USERNAME", "reviewbot")
+    CACHE_CHAT_ID: int = int(os.getenv("CACHE_CHAT_ID", "0"))

@@ -48,10 +48,22 @@ def kb_setup_done() -> InlineKeyboardMarkup:
 
 def kb_seller_menu() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🔗 Моя реферальная ссылка", callback_data="menu:mylink")],
-        [InlineKeyboardButton(text="👁 Предпросмотр шаблона", callback_data="menu:preview")],
-        [InlineKeyboardButton(text="✏️ Изменить шаблон", callback_data="menu:edit")],
+        [InlineKeyboardButton(text="📋 Мой шаблон", callback_data="menu:mytemplate")],
+        [InlineKeyboardButton(text="🔗 Ссылка + Inline-кнопка", callback_data="menu:mylink")],
+        [InlineKeyboardButton(text="👁 Предпросмотр карточки", callback_data="menu:preview")],
         [InlineKeyboardButton(text="📊 Статистика", callback_data="menu:stats")],
+    ])
+
+
+def kb_template_view(seller: dict) -> InlineKeyboardMarkup:
+    """Кнопки редактирования конкретных полей шаблона."""
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✏️ Название магазина", callback_data="edit:shop_name")],
+        [InlineKeyboardButton(text="🎨 Стиль карточки", callback_data="edit:template")],
+        [InlineKeyboardButton(text="⭐️ Звёзды", callback_data="edit:stars")],
+        [InlineKeyboardButton(text="📦 Поле «Что купил»", callback_data="edit:item")],
+        [InlineKeyboardButton(text="🎨 Выбор шаблона покупателем", callback_data="edit:tpl_choice")],
+        [InlineKeyboardButton(text="« Назад", callback_data="menu:back")],
     ])
 
 

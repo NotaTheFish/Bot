@@ -1,5 +1,6 @@
 from aiogram import Router, F
 from aiogram.types import Message, CallbackQuery
+from aiogram.types import BufferedInputFile
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 
@@ -81,10 +82,10 @@ async def ask_item(message: Message, seller: dict, state: FSMContext):
     elif item_mode == "hint":
         hint = seller["item_value"] or "Что именно купил?"
         await state.set_state(ReviewSG.enter_item)
-        await message.answer(f"📦 {hint}")
+        await message.answer(f"🎮 {hint}")
     else:
         await state.set_state(ReviewSG.enter_item)
-        await message.answer("📦 Что ты купил? Укажи название товара или услуги:")
+        await message.answer("🎮 Что именно купил? Укажи название\n<i>Например: Мифик Кариос, Улучшенный Мистик DA, 1000 Sonaria Tokens</i>")
 
 
 @router.message(ReviewSG.enter_item)
@@ -100,9 +101,9 @@ async def step_enter_item(message: Message, state: FSMContext):
 async def ask_text(message: Message, state: FSMContext):
     await state.set_state(ReviewSG.enter_text)
     await message.answer(
-        f"✏️ Теперь напиши свой отзыв!\n\n"
-        f"<i>Максимум {REVIEW_MAX_LEN} символов. Пиши от души — "
-        f"хороший отзыв помогает другим покупателям.</i>"
+        f"✏️ Напиши свой отзыв о продавце!\n\n"
+        f"<i>Расскажи о сделке — быстро ли ответил, честная ли цена, всё ли пришло. "
+        f"Максимум {REVIEW_MAX_LEN} символов.</i>"
     )
 
 
@@ -160,7 +161,7 @@ async def step_enter_text(message: Message, state: FSMContext, db: Database, bot
         return
 
     sent = await message.answer_photo(
-        img_bytes,
+        BufferedInputFile(img_bytes, filename="review.png"),
         caption=(
             f"✅ Вот твоя карточка отзыва!\n\n"
             f"Отправь это фото продавцу <b>{seller['shop_name']}</b> в личные сообщения."
