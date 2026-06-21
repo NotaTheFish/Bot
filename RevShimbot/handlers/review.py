@@ -162,12 +162,25 @@ async def step_enter_text(message: Message, state: FSMContext, db: Database, bot
         await message.answer(f"❌ Ошибка генерации карточки: {e}")
         return
 
+    # Сначала отдельным сообщением — подсказка
+    await message.answer(
+        f"✅ Вот твоя карточка отзыва!\n\n"
+        f"Отправь её продавцу <b>{seller['shop_name']}</b> в личные сообщения. "
+        f"При пересылке можешь скрыть «переслано от...»"
+    )
+
+    # Затем карточка с дубликатом отзыва в подписи (для красивой пересылки)
+    stars_line = "★" * data.get("stars", 0) if data.get("stars", 0) > 0 else ""
+    caption_parts = [f"<b>{seller['shop_name']}</b>"]
+    if stars_line:
+        caption_parts.append(stars_line)
+    caption_parts.append(f"\n<i>«{text}»</i>")
+    caption_parts.append(f"\n— {buyer_name}")
+    review_caption = "\n".join(caption_parts)
+
     sent = await message.answer_photo(
         BufferedInputFile(img_bytes, filename="review.png"),
-        caption=(
-            f"✅ Вот твоя карточка отзыва!\n\n"
-            f"Отправь это фото продавцу <b>{seller['shop_name']}</b> в личные сообщения."
-        )
+        caption=review_caption
     )
 
     # Сохраняем отзыв в БД

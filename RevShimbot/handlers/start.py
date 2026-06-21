@@ -208,9 +208,21 @@ async def cb_quick_text(message: Message, state: FSMContext, bot, db: Database):
     }
     try:
         img = await generate_card(card_data)
+        # Сначала подсказка отдельным сообщением
+        await message.answer(
+            "✅ Вот твоя карточка! Отправь её продавцу в личные сообщения. "
+            "При пересылке можешь скрыть «переслано от...»"
+        )
+        # Затем карточка с дубликатом отзыва в подписи
+        stars_line = "★" * data.get("stars", 0) if data.get("stars", 0) > 0 else ""
+        cap_parts = [f"<b>{data.get('shop_name', 'Shop')}</b>"]
+        if stars_line:
+            cap_parts.append(stars_line)
+        cap_parts.append(f"\n<i>«{text}»</i>")
+        cap_parts.append(f"\n— {buyer_name}")
         await message.answer_photo(
             BufferedInputFile(img, filename="review.png"),
-            caption="✅ Вот твоя карточка! Отправь её продавцу в личные сообщения."
+            caption="\n".join(cap_parts)
         )
     except Exception as e:
         await message.answer(f"❌ Ошибка генерации: {e}")
