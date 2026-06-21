@@ -236,16 +236,18 @@ async def cb_mylink(call: CallbackQuery, db: Database, config):
         await call.answer("Сначала настрой шаблон", show_alert=True)
         return
     link = get_ref_link(config.BOT_USERNAME, call.from_user.id)
-    inline_btn = get_inline_button_str(config.BOT_USERNAME, call.from_user.id)
+    seller_id = call.from_user.id
     await call.message.answer(
         f"🔗 <b>Реферальная ссылка</b>\n"
         f"Скинь покупателю — он откроет бот и оставит отзыв:\n"
         f"<code>{link}</code>\n\n"
-        f"⭐️ <b>Inline-кнопка для закрепа</b>\n"
-        f"Вставь в закреп канала/чата магазина. Покупатель нажмёт — "
-        f"бот сразу запустит flow отзыва:\n\n"
-        f"Текст: <code>⭐️ Оставить отзыв</code>\n"
-        f"URL: <code>{inline_btn}</code>"
+        f"⭐️ <b>Отзыв прямо в чате</b>\n"
+        f"Покупатель может оставить карточку-отзыв прямо в любом чате "
+        f"не заходя в бот. Для этого ему нужно написать:\n\n"
+        f"<code>@{config.BOT_USERNAME} {seller_id} текст отзыва</code>\n\n"
+        f"Твой ID: <code>{seller_id}</code>\n"
+        f"Скинь покупателю этот ID вместе с инструкцией — "
+        f"и он сможет отправить красивую карточку прямо в вашем чате."
     )
     await call.answer()
 
@@ -323,7 +325,7 @@ async def cb_mytemplate(call: CallbackQuery, db: Database, config):
     allow = "✅ Да" if seller["allow_template_choice"] else "❌ Нет"
     tpl = TEMPLATE_NAMES.get(seller["template_id"], seller["template_id"])
     link = get_ref_link(config.BOT_USERNAME, call.from_user.id)
-    inline_btn = get_inline_button_str(config.BOT_USERNAME, call.from_user.id)
+    seller_id = call.from_user.id
 
     await call.message.answer(
         f"📋 <b>Торговый шаблон — {seller['shop_name']}</b>\n\n"
@@ -331,8 +333,9 @@ async def cb_mytemplate(call: CallbackQuery, db: Database, config):
         f"⭐️ Звёзды: <b>{stars_info}</b>\n"
         f"📦 Что купил: <b>{item_info}</b>\n"
         f"🎨 Выбор стиля покупателем: <b>{allow}</b>\n\n"
-        f"🔗 Ссылка: <code>{link}</code>\n"
-        f"⭐️ Inline URL: <code>{inline_btn}</code>\n\n"
+        f"🔗 Реф-ссылка: <code>{link}</code>\n\n"
+        f"💬 Фраза для покупателей (отзыв прямо в чате):\n"
+        f"<code>@{config.BOT_USERNAME} {seller_id} текст отзыва</code>\n\n"
         f"Что изменить?",
         reply_markup=kb_template_view(seller)
     )
