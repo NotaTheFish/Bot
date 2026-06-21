@@ -178,9 +178,8 @@ body{{width:800px;background:transparent;}}
 .badge{{font-family:'Montserrat',sans-serif;font-size:12px;padding:5px 14px;border-radius:20px;white-space:nowrap;}}
 .wm{{text-align:right;font-family:'Montserrat',sans-serif;font-size:10px;color:#2e2e50;margin-top:14px;letter-spacing:.05em;}}
 <style>
-@font-face{{font-family:"NotoEmoji";
-src:url("https://fonts.gstatic.com/s/notocoloremoji/v25/Yq6P-KqIXTD0t4D9z1ESnKM3-HpFab5s79iz64w.woff2") format("woff2");
-unicode-range:U+00A9,U+00AE,U+203C,U+2049,U+2122,U+2139,U+2194-2199,U+21A9-21AA,U+231A-231B,U+2328,U+23CF,U+23E9-23F3,U+23F8-23FA,U+24C2,U+25AA-25AB,U+25B6,U+25C0,U+25FB-25FE,U+2600-2604,U+260E,U+2611,U+2614-2615,U+2618,U+261D,U+2620,U+2622-2623,U+2626,U+262A,U+262E-262F,U+2638-263A,U+2640,U+2642,U+2648-2653,U+265F-2660,U+2663,U+2665-2666,U+2668,U+267B,U+267E-267F,U+2692-2697,U+2699,U+269B-269C,U+26A0-26A1,U+26AA-26AB,U+26B0-26B1,U+26BD-26BE,U+26C4-26C5,U+26CE-26CF,U+26D1,U+26D3-26D4,U+26E9-26EA,U+26F0-26F5,U+26F7-26FA,U+26FD,U+2702,U+2705,U+2708-270D,U+270F,U+2712,U+2714,U+2716,U+271D,U+2721,U+2728,U+2733-2734,U+2744,U+2747,U+274C,U+274E,U+2753-2755,U+2757,U+2763-2764,U+2795-2797,U+27A1,U+27B0,U+27BF,U+2934-2935,U+2B05-2B07,U+2B1B-2B1C,U+2B50,U+2B55,U+3030,U+303D,U+3297,U+3299,U+1F000-1FFFF;}}
+/* Системный Noto Color Emoji для обычных эмодзи */
+* {{ font-family: inherit, "Noto Color Emoji", sans-serif; }}
 </style></style></head><body>
 <div class="card">
   <div class="bar"></div>
@@ -235,9 +234,8 @@ body{{width:800px;background:transparent;}}
 .badge{{font-family:'IM Fell English',serif;font-size:11px;color:#3a2a10;background:#e8d5b0;border:1px solid #c8a96e;padding:5px 12px;border-radius:2px;white-space:nowrap;}}
 .wm{{text-align:right;font-family:'IM Fell English',serif;font-size:10px;color:#c8a96e;margin-top:14px;opacity:.6;}}
 <style>
-@font-face{{font-family:"NotoEmoji";
-src:url("https://fonts.gstatic.com/s/notocoloremoji/v25/Yq6P-KqIXTD0t4D9z1ESnKM3-HpFab5s79iz64w.woff2") format("woff2");
-unicode-range:U+00A9,U+00AE,U+203C,U+2049,U+2122,U+2139,U+2194-2199,U+21A9-21AA,U+231A-231B,U+2328,U+23CF,U+23E9-23F3,U+23F8-23FA,U+24C2,U+25AA-25AB,U+25B6,U+25C0,U+25FB-25FE,U+2600-2604,U+260E,U+2611,U+2614-2615,U+2618,U+261D,U+2620,U+2622-2623,U+2626,U+262A,U+262E-262F,U+2638-263A,U+2640,U+2642,U+2648-2653,U+265F-2660,U+2663,U+2665-2666,U+2668,U+267B,U+267E-267F,U+2692-2697,U+2699,U+269B-269C,U+26A0-26A1,U+26AA-26AB,U+26B0-26B1,U+26BD-26BE,U+26C4-26C5,U+26CE-26CF,U+26D1,U+26D3-26D4,U+26E9-26EA,U+26F0-26F5,U+26F7-26FA,U+26FD,U+2702,U+2705,U+2708-270D,U+270F,U+2712,U+2714,U+2716,U+271D,U+2721,U+2728,U+2733-2734,U+2744,U+2747,U+274C,U+274E,U+2753-2755,U+2757,U+2763-2764,U+2795-2797,U+27A1,U+27B0,U+27BF,U+2934-2935,U+2B05-2B07,U+2B1B-2B1C,U+2B50,U+2B55,U+3030,U+303D,U+3297,U+3299,U+1F000-1FFFF;}}
+/* Системный Noto Color Emoji для обычных эмодзи */
+* {{ font-family: inherit, "Noto Color Emoji", sans-serif; }}
 </style></style></head><body>
 <div class="card">
   <div class="frame"></div>
@@ -289,9 +287,8 @@ body{{width:800px;background:transparent;}}
 .badge{{font-family:'Inter',sans-serif;font-size:11px;color:#58a6ff;background:#1c2128;border:1px solid #30363d;padding:4px 12px;border-radius:20px;white-space:nowrap;}}
 .wm{{text-align:right;font-family:'Inter',sans-serif;font-size:10px;color:#21262d;margin-top:12px;letter-spacing:.05em;}}
 <style>
-@font-face{{font-family:"NotoEmoji";
-src:url("https://fonts.gstatic.com/s/notocoloremoji/v25/Yq6P-KqIXTD0t4D9z1ESnKM3-HpFab5s79iz64w.woff2") format("woff2");
-unicode-range:U+00A9,U+00AE,U+203C,U+2049,U+2122,U+2139,U+2194-2199,U+21A9-21AA,U+231A-231B,U+2328,U+23CF,U+23E9-23F3,U+23F8-23FA,U+24C2,U+25AA-25AB,U+25B6,U+25C0,U+25FB-25FE,U+2600-2604,U+260E,U+2611,U+2614-2615,U+2618,U+261D,U+2620,U+2622-2623,U+2626,U+262A,U+262E-262F,U+2638-263A,U+2640,U+2642,U+2648-2653,U+265F-2660,U+2663,U+2665-2666,U+2668,U+267B,U+267E-267F,U+2692-2697,U+2699,U+269B-269C,U+26A0-26A1,U+26AA-26AB,U+26B0-26B1,U+26BD-26BE,U+26C4-26C5,U+26CE-26CF,U+26D1,U+26D3-26D4,U+26E9-26EA,U+26F0-26F5,U+26F7-26FA,U+26FD,U+2702,U+2705,U+2708-270D,U+270F,U+2712,U+2714,U+2716,U+271D,U+2721,U+2728,U+2733-2734,U+2744,U+2747,U+274C,U+274E,U+2753-2755,U+2757,U+2763-2764,U+2795-2797,U+27A1,U+27B0,U+27BF,U+2934-2935,U+2B05-2B07,U+2B1B-2B1C,U+2B50,U+2B55,U+3030,U+303D,U+3297,U+3299,U+1F000-1FFFF;}}
+/* Системный Noto Color Emoji для обычных эмодзи */
+* {{ font-family: inherit, "Noto Color Emoji", sans-serif; }}
 </style></style></head><body>
 <div class="card">
   <div class="accent"></div>
@@ -347,9 +344,8 @@ body{{width:800px;background:transparent;}}
 .badge{{font-family:'DM Sans',sans-serif;font-size:11px;color:#444;background:#f5f5f5;border:1px solid #e8e8e8;padding:5px 14px;border-radius:20px;white-space:nowrap;}}
 .wm{{text-align:right;font-family:'DM Sans',sans-serif;font-size:10px;color:#ddd;margin-top:14px;letter-spacing:.08em;}}
 <style>
-@font-face{{font-family:"NotoEmoji";
-src:url("https://fonts.gstatic.com/s/notocoloremoji/v25/Yq6P-KqIXTD0t4D9z1ESnKM3-HpFab5s79iz64w.woff2") format("woff2");
-unicode-range:U+00A9,U+00AE,U+203C,U+2049,U+2122,U+2139,U+2194-2199,U+21A9-21AA,U+231A-231B,U+2328,U+23CF,U+23E9-23F3,U+23F8-23FA,U+24C2,U+25AA-25AB,U+25B6,U+25C0,U+25FB-25FE,U+2600-2604,U+260E,U+2611,U+2614-2615,U+2618,U+261D,U+2620,U+2622-2623,U+2626,U+262A,U+262E-262F,U+2638-263A,U+2640,U+2642,U+2648-2653,U+265F-2660,U+2663,U+2665-2666,U+2668,U+267B,U+267E-267F,U+2692-2697,U+2699,U+269B-269C,U+26A0-26A1,U+26AA-26AB,U+26B0-26B1,U+26BD-26BE,U+26C4-26C5,U+26CE-26CF,U+26D1,U+26D3-26D4,U+26E9-26EA,U+26F0-26F5,U+26F7-26FA,U+26FD,U+2702,U+2705,U+2708-270D,U+270F,U+2712,U+2714,U+2716,U+271D,U+2721,U+2728,U+2733-2734,U+2744,U+2747,U+274C,U+274E,U+2753-2755,U+2757,U+2763-2764,U+2795-2797,U+27A1,U+27B0,U+27BF,U+2934-2935,U+2B05-2B07,U+2B1B-2B1C,U+2B50,U+2B55,U+3030,U+303D,U+3297,U+3299,U+1F000-1FFFF;}}
+/* Системный Noto Color Emoji для обычных эмодзи */
+* {{ font-family: inherit, "Noto Color Emoji", sans-serif; }}
 </style></style></head><body>
 <div class="card">
   <div class="bar"></div>
@@ -415,9 +411,8 @@ body{{width:800px;background:transparent;}}
 .badge{{font-family:'Montserrat',sans-serif;font-size:11px;color:#3a2a10;background:#dfd0a8;border:1px solid #a07840;padding:5px 12px;border-radius:12px;white-space:nowrap;}}
 .wm{{text-align:right;font-family:'Montserrat',sans-serif;font-size:10px;color:#c0a070;margin-top:14px;opacity:.55;}}
 <style>
-@font-face{{font-family:"NotoEmoji";
-src:url("https://fonts.gstatic.com/s/notocoloremoji/v25/Yq6P-KqIXTD0t4D9z1ESnKM3-HpFab5s79iz64w.woff2") format("woff2");
-unicode-range:U+00A9,U+00AE,U+203C,U+2049,U+2122,U+2139,U+2194-2199,U+21A9-21AA,U+231A-231B,U+2328,U+23CF,U+23E9-23F3,U+23F8-23FA,U+24C2,U+25AA-25AB,U+25B6,U+25C0,U+25FB-25FE,U+2600-2604,U+260E,U+2611,U+2614-2615,U+2618,U+261D,U+2620,U+2622-2623,U+2626,U+262A,U+262E-262F,U+2638-263A,U+2640,U+2642,U+2648-2653,U+265F-2660,U+2663,U+2665-2666,U+2668,U+267B,U+267E-267F,U+2692-2697,U+2699,U+269B-269C,U+26A0-26A1,U+26AA-26AB,U+26B0-26B1,U+26BD-26BE,U+26C4-26C5,U+26CE-26CF,U+26D1,U+26D3-26D4,U+26E9-26EA,U+26F0-26F5,U+26F7-26FA,U+26FD,U+2702,U+2705,U+2708-270D,U+270F,U+2712,U+2714,U+2716,U+271D,U+2721,U+2728,U+2733-2734,U+2744,U+2747,U+274C,U+274E,U+2753-2755,U+2757,U+2763-2764,U+2795-2797,U+27A1,U+27B0,U+27BF,U+2934-2935,U+2B05-2B07,U+2B1B-2B1C,U+2B50,U+2B55,U+3030,U+303D,U+3297,U+3299,U+1F000-1FFFF;}}
+/* Системный Noto Color Emoji для обычных эмодзи */
+* {{ font-family: inherit, "Noto Color Emoji", sans-serif; }}
 </style></style></head><body>
 <div class="card">
   <svg class="thread-left" viewBox="0 0 36 400" preserveAspectRatio="none" xmlns="http://www.w3.org/2000/svg">
@@ -464,58 +459,28 @@ HTML_BUILDERS = {
 
 def _render_html(html: str) -> bytes:
     from playwright.sync_api import sync_playwright
-    from PIL import Image, ImageDraw
     import io as _io
 
     with sync_playwright() as p:
-        browser = p.chromium.launch(args=["--font-render-hinting=none"])
+        browser = p.chromium.launch()
         page = browser.new_page(
             viewport={"width": 900, "height": 600},
             device_scale_factor=2
         )
         page.set_content(html, wait_until="networkidle")
-
-        # Ждём загрузки шрифтов
         try:
             page.evaluate("document.fonts.ready")
         except Exception:
             pass
-
         card = page.query_selector(".card")
         box = card.bounding_box()
-
-        # Получаем border-radius правильно — parseFloat убирает "px"
-        r = page.evaluate(
-            "el => parseFloat(getComputedStyle(el).borderRadius) || 0",
-            card
-        )
-
         png = page.screenshot(
             type="png",
             clip={"x": box["x"], "y": box["y"],
-                  "width": box["width"], "height": box["height"]},
-            omit_background=True
+                  "width": box["width"], "height": box["height"]}
         )
         browser.close()
-
-    # Накладываем маску скругления через Pillow
-    img = Image.open(_io.BytesIO(png)).convert("RGBA")
-    W, H = img.size
-
-    if r > 0:
-        # device_scale_factor=2 — радиус тоже умножаем на 2
-        radius = int(r * 2)
-        mask = Image.new("L", (W, H), 0)
-        ImageDraw.Draw(mask).rounded_rectangle([(0, 0), (W, H)], radius=radius, fill=255)
-        result = Image.new("RGBA", (W, H), (0, 0, 0, 0))
-        result.paste(img, mask=mask)
-    else:
-        result = img
-
-    buf = _io.BytesIO()
-    result.save(buf, "PNG", optimize=True)
-    buf.seek(0)
-    return buf.read()
+    return png
 
 
 async def generate_card(data: dict) -> bytes:
