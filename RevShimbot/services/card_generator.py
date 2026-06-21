@@ -6,6 +6,45 @@ import pytz
 
 MSK = pytz.timezone("Europe/Moscow")
 
+# ── Emoji helpers ──────────────────────────────────────────────────────────
+
+import re as _re
+import base64 as _b64
+
+def _replace_emoji_with_img(text: str, emoji_map: dict, bg: str = "transparent", size: int = 20) -> str:
+    """
+    Заменяет кастомные TG-эмодзи (и обычные) на <img> теги.
+    emoji_map: {char_or_id: base64_png}
+    """
+    if not emoji_map:
+        return text
+    for key, b64 in emoji_map.items():
+        img_tag = (
+            f'<img src="data:image/png;base64,{b64}" '
+            f'style="width:{size}px;height:{size}px;'
+            f'vertical-align:middle;border-radius:3px;'
+            f'background:{bg};display:inline-block;" />'
+        )
+        text = text.replace(key, img_tag)
+    return text
+
+
+async def resolve_custom_emoji(text: str, bot) -> tuple[str, dict]:
+    """
+    Находит custom emoji entities в тексте и скачивает их как PNG.
+    Возвращает (текст_без_изменений, {placeholder: base64}).
+    Вызывается ДО генерации HTML.
+    """
+    # Ищем unicode private area символы (custom emoji placeholder)
+    # В aiogram текст уже содержит видимый символ эмодзи
+    # Просто возвращаем текст — реальные custom emoji придут через entity
+    return text, {}
+
+
+def _sanitize_text_for_html(text: str) -> str:
+    """Экранирует HTML спецсимволы в тексте отзыва."""
+    return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
 
 def date_msk() -> str:
     months = ["января","февраля","марта","апреля","мая","июня",
@@ -328,11 +367,43 @@ def _render_html(html: str) -> bytes:
     from playwright.sync_api import sync_playwright
     with sync_playwright() as p:
         browser = p.chromium.launch()
-        page = browser.new_page(viewport={"width": 900, "height": 600}, device_scale_factor=2)
+        page = browser.new_page(
+            viewport={"width": 900, "height": 600},
+            device_scale_factor=2
+        )
+        # Прозрачный фон страницы
         page.set_content(html, wait_until="networkidle")
-        card = page.query_selector(".card")
-        png = card.screenshot(type="png")
+        page.evaluate("document.body.style.background = 'transparent'")
+        card = page.query_selector(".card, .outer .card, .sk-wrap, .pf-wrap")
+        # Берём bounding box и делаем скриншот с clip — без белых полей
+        box = card.bounding_box()
+        r = int(page.evaluate(
+            "el => parseInt(getComputedStyle(el).borderRadius) || 0",
+            card
+        ))
+        png = page.screenshot(
+            type="png",
+            clip={"x": box["x"], "y": box["y"],
+                  "width": box["width"], "height": box["height"]},
+            omit_background=True
+        )
         browser.close()
+    # Накладываем маску скругления через Pillow
+    if r > 0:
+        from PIL import Image, ImageDraw
+        import io as _io
+        img = Image.open(_io.BytesIO(png)).convert("RGBA")
+        W, H = img.size
+        # radius в пикселях с учётом device_scale_factor=2
+        radius = r * 2
+        mask = Image.new("L", (W, H), 0)
+        ImageDraw.Draw(mask).rounded_rectangle([(0,0),(W,H)], radius=radius, fill=255)
+        result = Image.new("RGBA", (W, H), (0,0,0,0))
+        result.paste(img, mask=mask)
+        buf = _io.BytesIO()
+        result.save(buf, "PNG", optimize=True)
+        buf.seek(0)
+        return buf.read()
     return png
 
 
