@@ -328,7 +328,7 @@ def _render_html(html: str) -> bytes:
     from playwright.sync_api import sync_playwright
     with sync_playwright() as p:
         browser = p.chromium.launch()
-        page = browser.new_page(viewport={"width": 900, "height": 600})
+        page = browser.new_page(viewport={"width": 900, "height": 600}, device_scale_factor=2)
         page.set_content(html, wait_until="networkidle")
         card = page.query_selector(".card")
         png = card.screenshot(type="png")

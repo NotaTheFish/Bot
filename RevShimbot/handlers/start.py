@@ -6,7 +6,7 @@ from aiogram.fsm.state import State, StatesGroup
 
 from db import Database
 from keyboards import kb_seller_menu, kb_templates, kb_template_view
-from utils.helpers import get_ref_link, get_inline_button_str
+from utils.helpers import get_ref_link
 from constants import TEMPLATES
 
 router = Router()
@@ -289,7 +289,7 @@ async def cb_preview(call: CallbackQuery, db: Database, bot):
         "seller_tag": f"@{seller['username']}" if seller.get("username") else f"ID:{seller['id']}",
         "buyer_name": "Трейдер",
         "buyer_initials": "ТР",
-        "review_text": "Отличная сделка! Токены пришли быстро, продавец вежливый. Рекомендую! 🔥",
+        "review_text": "Грибы пришли быстро, продавец вежливый. Рекомендую всем трейдерам!",
         "item_bought": "Токены" if seller["item_mode"] != "fixed" else seller["item_value"],
         "stars": 5,
         "stars_mode": seller["stars_mode"],
@@ -380,24 +380,24 @@ async def cb_edit_field(call: CallbackQuery, db: Database, state: FSMContext):
             allow_template_choice=seller["allow_template_choice"],
         )
 
+    # edit_mode=True — после изменения одного поля сразу сохраняем
+    await state.update_data(edit_mode=True)
+    data = await state.get_data()
+
     if field == "shop_name":
         await state.set_state(SetupSG.shop_name)
         await call.message.answer("🏪 Введи новое название магазина:")
     elif field == "template":
         await state.set_state(SetupSG.template)
-        data = await state.get_data()
         await call.message.answer("🎨 Выбери стиль:", reply_markup=kb_templates(data.get("template_id")))
     elif field == "stars":
         await state.set_state(SetupSG.stars_mode)
-        data = await state.get_data()
         await call.message.answer("⭐️ Режим звёзд:", reply_markup=kb_stars_mode(data.get("stars_mode")))
     elif field == "item":
         await state.set_state(SetupSG.item_mode)
-        data = await state.get_data()
         await call.message.answer("📦 Режим «Что купил»:", reply_markup=kb_item_mode(data.get("item_mode")))
     elif field == "tpl_choice":
         await state.set_state(SetupSG.template_choice)
-        data = await state.get_data()
         await call.message.answer(
             "🎨 Разрешить покупателю выбирать стиль?",
             reply_markup=kb_allow_template_choice(data.get("allow_template_choice", False))

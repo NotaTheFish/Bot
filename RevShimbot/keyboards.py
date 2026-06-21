@@ -49,7 +49,7 @@ def kb_setup_done() -> InlineKeyboardMarkup:
 def kb_seller_menu() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📋 Мой шаблон", callback_data="menu:mytemplate")],
-        [InlineKeyboardButton(text="🔗 Ссылка + Inline-кнопка", callback_data="menu:mylink")],
+        [InlineKeyboardButton(text="🔗 Реф-ссылка и фраза для чата", callback_data="menu:mylink")],
         [InlineKeyboardButton(text="👁 Предпросмотр карточки", callback_data="menu:preview")],
         [InlineKeyboardButton(text="📊 Статистика", callback_data="menu:stats")],
     ])
