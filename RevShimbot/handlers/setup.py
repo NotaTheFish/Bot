@@ -42,7 +42,7 @@ async def cmd_setup(message: Message, db: Database, state: FSMContext):
     await message.answer(
         "🏪 <b>Шаг 1 из 5 — Название магазина</b>\n\n"
         "Введи название своего магазина или канала.\n"
-        "<i>Например: ShimShop, CoS Trades, @sonaria_market</i>"
+        "<i>Например: ShimShop, Лавка трейдера, @my_shop</i>"
     )
 
 

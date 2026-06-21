@@ -85,7 +85,7 @@ async def ask_item(message: Message, seller: dict, state: FSMContext):
         await message.answer(f"🎮 {hint}")
     else:
         await state.set_state(ReviewSG.enter_item)
-        await message.answer("🎮 Что именно купил? Укажи название\n<i>Например: Мифик Кариос, Улучшенный Мистик DA, 1000 Sonaria Tokens</i>")
+        await message.answer("🎮 Что именно купил? Укажи название\n<i>Например: Грибы, Токены, Коины, Существа, Услуги</i>")
 
 
 @router.message(ReviewSG.enter_item)
