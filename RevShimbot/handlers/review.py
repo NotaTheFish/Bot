@@ -152,6 +152,8 @@ async def step_enter_text(message: Message, state: FSMContext, db: Database, bot
         "stars_mode": seller["stars_mode"],
         "template_id": data.get("template_id", seller["template_id"]),
         "avatar_bytes": avatar_bytes,
+        "entities": message.entities or [],
+        "bot": bot,
     }
 
     try:

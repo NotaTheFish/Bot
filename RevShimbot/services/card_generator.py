@@ -29,16 +29,95 @@ def _replace_emoji_with_img(text: str, emoji_map: dict, bg: str = "transparent",
     return text
 
 
-async def resolve_custom_emoji(text: str, bot) -> tuple[str, dict]:
+async def resolve_custom_emoji(
+    text: str,
+    entities: list,
+    bot
+) -> str:
     """
-    Находит custom emoji entities в тексте и скачивает их как PNG.
-    Возвращает (текст_без_изменений, {placeholder: base64}).
-    Вызывается ДО генерации HTML.
+    Принимает текст и MessageEntity список.
+    Для каждого custom_emoji entity:
+      - скачивает стикер через getCustomEmojiStickers
+      - конвертирует в PNG base64
+      - заменяет символ в тексте на <img> тег
+    Возвращает HTML-строку с встроенными эмодзи.
     """
-    # Ищем unicode private area символы (custom emoji placeholder)
-    # В aiogram текст уже содержит видимый символ эмодзи
-    # Просто возвращаем текст — реальные custom emoji придут через entity
-    return text, {}
+    import base64 as _b64
+    import io as _io
+
+    if not entities:
+        return _sanitize_text_for_html(text)
+
+    # Собираем все custom_emoji_id
+    custom_ids = []
+    emoji_positions = []  # (offset, length, emoji_id)
+    for entity in entities:
+        if hasattr(entity, 'type') and entity.type == 'custom_emoji':
+            cid = entity.custom_emoji_id
+            custom_ids.append(cid)
+            emoji_positions.append((entity.offset, entity.length, cid))
+
+    if not custom_ids:
+        return _sanitize_text_for_html(text)
+
+    # Скачиваем все стикеры одним запросом (до 200 за раз)
+    emoji_b64 = {}
+    try:
+        unique_ids = list(dict.fromkeys(custom_ids))  # убираем дубли, сохраняем порядок
+        stickers = await bot.get_custom_emoji_stickers(unique_ids)
+        for sticker in stickers:
+            try:
+                file = await bot.get_file(sticker.file_id)
+                buf = await bot.download_file(file.file_path)
+                raw = buf.read() if hasattr(buf, 'read') else bytes(buf)
+                # Конвертируем WebP/TGS в PNG через Pillow
+                from PIL import Image
+                img = Image.open(_io.BytesIO(raw)).convert("RGBA")
+                out = _io.BytesIO()
+                img.save(out, "PNG")
+                emoji_b64[sticker.custom_emoji_id] = _b64.b64encode(out.getvalue()).decode()
+            except Exception:
+                pass
+    except Exception:
+        return _sanitize_text_for_html(text)
+
+    if not emoji_b64:
+        return _sanitize_text_for_html(text)
+
+    # Строим результирующий HTML посимвольно
+    # text — unicode строка, offset/length в UTF-16 code units (Telegram считает так)
+    # Конвертируем в UTF-16 для правильного маппинга
+    text_utf16 = text.encode('utf-16-le')
+    result_parts = []
+    prev_end = 0  # в UTF-16 code units
+
+    # Сортируем по offset
+    sorted_pos = sorted(emoji_positions, key=lambda x: x[0])
+
+    for offset, length, emoji_id in sorted_pos:
+        # Текст до эмодзи
+        before_bytes = text_utf16[prev_end*2 : offset*2]
+        before_text = before_bytes.decode('utf-16-le')
+        result_parts.append(_sanitize_text_for_html(before_text))
+
+        # Сам эмодзи
+        if emoji_id in emoji_b64:
+            b64 = emoji_b64[emoji_id]
+            result_parts.append(
+                f'<img src="data:image/png;base64,{b64}" '                f'style="width:22px;height:22px;vertical-align:middle;'                f'display:inline-block;margin:0 1px;" />' 
+            )
+        else:
+            # Фолбэк — оставляем оригинальный символ
+            emoji_bytes = text_utf16[offset*2 : (offset+length)*2]
+            result_parts.append(_sanitize_text_for_html(emoji_bytes.decode('utf-16-le')))
+
+        prev_end = offset + length
+
+    # Остаток текста после последнего эмодзи
+    tail_bytes = text_utf16[prev_end*2:]
+    result_parts.append(_sanitize_text_for_html(tail_bytes.decode('utf-16-le')))
+
+    return "".join(result_parts)
 
 
 def _sanitize_text_for_html(text: str) -> str:
@@ -98,7 +177,11 @@ body{{width:800px;background:transparent;}}
 .date{{font-family:'Montserrat',sans-serif;font-size:12px;color:#666688;margin-top:2px;}}
 .badge{{font-family:'Montserrat',sans-serif;font-size:12px;padding:5px 14px;border-radius:20px;white-space:nowrap;}}
 .wm{{text-align:right;font-family:'Montserrat',sans-serif;font-size:10px;color:#2e2e50;margin-top:14px;letter-spacing:.05em;}}
-</style></head><body>
+<style>
+@font-face{{font-family:"NotoEmoji";
+src:url("https://fonts.gstatic.com/s/notocoloremoji/v25/Yq6P-KqIXTD0t4D9z1ESnKM3-HpFab5s79iz64w.woff2") format("woff2");
+unicode-range:U+00A9,U+00AE,U+203C,U+2049,U+2122,U+2139,U+2194-2199,U+21A9-21AA,U+231A-231B,U+2328,U+23CF,U+23E9-23F3,U+23F8-23FA,U+24C2,U+25AA-25AB,U+25B6,U+25C0,U+25FB-25FE,U+2600-2604,U+260E,U+2611,U+2614-2615,U+2618,U+261D,U+2620,U+2622-2623,U+2626,U+262A,U+262E-262F,U+2638-263A,U+2640,U+2642,U+2648-2653,U+265F-2660,U+2663,U+2665-2666,U+2668,U+267B,U+267E-267F,U+2692-2697,U+2699,U+269B-269C,U+26A0-26A1,U+26AA-26AB,U+26B0-26B1,U+26BD-26BE,U+26C4-26C5,U+26CE-26CF,U+26D1,U+26D3-26D4,U+26E9-26EA,U+26F0-26F5,U+26F7-26FA,U+26FD,U+2702,U+2705,U+2708-270D,U+270F,U+2712,U+2714,U+2716,U+271D,U+2721,U+2728,U+2733-2734,U+2744,U+2747,U+274C,U+274E,U+2753-2755,U+2757,U+2763-2764,U+2795-2797,U+27A1,U+27B0,U+27BF,U+2934-2935,U+2B05-2B07,U+2B1B-2B1C,U+2B50,U+2B55,U+3030,U+303D,U+3297,U+3299,U+1F000-1FFFF;}}
+</style></style></head><body>
 <div class="card">
   <div class="bar"></div>
   <div class="corner c-tl"></div><div class="corner c-tr"></div>
@@ -108,7 +191,7 @@ body{{width:800px;background:transparent;}}
   <div class="divider"></div>
   {"<div class='stars'>"+stars+"</div>" if stars else ""}
   <div class="quote">"</div>
-  <div class="review">{d["review_text"]}</div>
+  <div class="review">{d.get("review_text_html", d["review_text"])}</div>
   <div class="divider2"></div>
   <div class="meta">
     {av}
@@ -151,7 +234,11 @@ body{{width:800px;background:transparent;}}
 .date{{font-family:'IM Fell English',serif;font-size:11px;color:#8b6030;margin-top:2px;}}
 .badge{{font-family:'IM Fell English',serif;font-size:11px;color:#3a2a10;background:#e8d5b0;border:1px solid #c8a96e;padding:5px 12px;border-radius:2px;white-space:nowrap;}}
 .wm{{text-align:right;font-family:'IM Fell English',serif;font-size:10px;color:#c8a96e;margin-top:14px;opacity:.6;}}
-</style></head><body>
+<style>
+@font-face{{font-family:"NotoEmoji";
+src:url("https://fonts.gstatic.com/s/notocoloremoji/v25/Yq6P-KqIXTD0t4D9z1ESnKM3-HpFab5s79iz64w.woff2") format("woff2");
+unicode-range:U+00A9,U+00AE,U+203C,U+2049,U+2122,U+2139,U+2194-2199,U+21A9-21AA,U+231A-231B,U+2328,U+23CF,U+23E9-23F3,U+23F8-23FA,U+24C2,U+25AA-25AB,U+25B6,U+25C0,U+25FB-25FE,U+2600-2604,U+260E,U+2611,U+2614-2615,U+2618,U+261D,U+2620,U+2622-2623,U+2626,U+262A,U+262E-262F,U+2638-263A,U+2640,U+2642,U+2648-2653,U+265F-2660,U+2663,U+2665-2666,U+2668,U+267B,U+267E-267F,U+2692-2697,U+2699,U+269B-269C,U+26A0-26A1,U+26AA-26AB,U+26B0-26B1,U+26BD-26BE,U+26C4-26C5,U+26CE-26CF,U+26D1,U+26D3-26D4,U+26E9-26EA,U+26F0-26F5,U+26F7-26FA,U+26FD,U+2702,U+2705,U+2708-270D,U+270F,U+2712,U+2714,U+2716,U+271D,U+2721,U+2728,U+2733-2734,U+2744,U+2747,U+274C,U+274E,U+2753-2755,U+2757,U+2763-2764,U+2795-2797,U+27A1,U+27B0,U+27BF,U+2934-2935,U+2B05-2B07,U+2B1B-2B1C,U+2B50,U+2B55,U+3030,U+303D,U+3297,U+3299,U+1F000-1FFFF;}}
+</style></style></head><body>
 <div class="card">
   <div class="frame"></div>
   <div class="orn">— ✦ —</div>
@@ -160,7 +247,7 @@ body{{width:800px;background:transparent;}}
   <div class="divider"><div class="dline"></div><span class="dmark">◆</span><div class="dline"></div></div>
   {"<div class='stars'>"+stars+"</div>" if stars else ""}
   <div class="quote">"</div>
-  <div class="review">{d["review_text"]}</div>
+  <div class="review">{d.get("review_text_html", d["review_text"])}</div>
   <div class="divider"><div class="dline"></div><span class="dmark">◆</span><div class="dline"></div></div>
   <div class="meta">
     {av}
@@ -201,7 +288,11 @@ body{{width:800px;background:transparent;}}
 .date{{font-family:'Inter',sans-serif;font-size:11px;color:#6e7681;margin-top:2px;}}
 .badge{{font-family:'Inter',sans-serif;font-size:11px;color:#58a6ff;background:#1c2128;border:1px solid #30363d;padding:4px 12px;border-radius:20px;white-space:nowrap;}}
 .wm{{text-align:right;font-family:'Inter',sans-serif;font-size:10px;color:#21262d;margin-top:12px;letter-spacing:.05em;}}
-</style></head><body>
+<style>
+@font-face{{font-family:"NotoEmoji";
+src:url("https://fonts.gstatic.com/s/notocoloremoji/v25/Yq6P-KqIXTD0t4D9z1ESnKM3-HpFab5s79iz64w.woff2") format("woff2");
+unicode-range:U+00A9,U+00AE,U+203C,U+2049,U+2122,U+2139,U+2194-2199,U+21A9-21AA,U+231A-231B,U+2328,U+23CF,U+23E9-23F3,U+23F8-23FA,U+24C2,U+25AA-25AB,U+25B6,U+25C0,U+25FB-25FE,U+2600-2604,U+260E,U+2611,U+2614-2615,U+2618,U+261D,U+2620,U+2622-2623,U+2626,U+262A,U+262E-262F,U+2638-263A,U+2640,U+2642,U+2648-2653,U+265F-2660,U+2663,U+2665-2666,U+2668,U+267B,U+267E-267F,U+2692-2697,U+2699,U+269B-269C,U+26A0-26A1,U+26AA-26AB,U+26B0-26B1,U+26BD-26BE,U+26C4-26C5,U+26CE-26CF,U+26D1,U+26D3-26D4,U+26E9-26EA,U+26F0-26F5,U+26F7-26FA,U+26FD,U+2702,U+2705,U+2708-270D,U+270F,U+2712,U+2714,U+2716,U+271D,U+2721,U+2728,U+2733-2734,U+2744,U+2747,U+274C,U+274E,U+2753-2755,U+2757,U+2763-2764,U+2795-2797,U+27A1,U+27B0,U+27BF,U+2934-2935,U+2B05-2B07,U+2B1B-2B1C,U+2B50,U+2B55,U+3030,U+303D,U+3297,U+3299,U+1F000-1FFFF;}}
+</style></style></head><body>
 <div class="card">
   <div class="accent"></div>
   <div class="inner">
@@ -214,7 +305,7 @@ body{{width:800px;background:transparent;}}
     </div>
     <div class="divider"></div>
     <div class="comment">// отзыв покупателя</div>
-    <div class="review-wrap"><div class="review">{d["review_text"]}</div></div>
+    <div class="review-wrap"><div class="review">{d.get("review_text_html", d["review_text"])}</div></div>
     <div class="meta">
       {av}
       <div class="meta-info">
@@ -255,7 +346,11 @@ body{{width:800px;background:transparent;}}
 .date{{font-family:'DM Sans',sans-serif;font-size:11px;color:#aaa;margin-top:2px;}}
 .badge{{font-family:'DM Sans',sans-serif;font-size:11px;color:#444;background:#f5f5f5;border:1px solid #e8e8e8;padding:5px 14px;border-radius:20px;white-space:nowrap;}}
 .wm{{text-align:right;font-family:'DM Sans',sans-serif;font-size:10px;color:#ddd;margin-top:14px;letter-spacing:.08em;}}
-</style></head><body>
+<style>
+@font-face{{font-family:"NotoEmoji";
+src:url("https://fonts.gstatic.com/s/notocoloremoji/v25/Yq6P-KqIXTD0t4D9z1ESnKM3-HpFab5s79iz64w.woff2") format("woff2");
+unicode-range:U+00A9,U+00AE,U+203C,U+2049,U+2122,U+2139,U+2194-2199,U+21A9-21AA,U+231A-231B,U+2328,U+23CF,U+23E9-23F3,U+23F8-23FA,U+24C2,U+25AA-25AB,U+25B6,U+25C0,U+25FB-25FE,U+2600-2604,U+260E,U+2611,U+2614-2615,U+2618,U+261D,U+2620,U+2622-2623,U+2626,U+262A,U+262E-262F,U+2638-263A,U+2640,U+2642,U+2648-2653,U+265F-2660,U+2663,U+2665-2666,U+2668,U+267B,U+267E-267F,U+2692-2697,U+2699,U+269B-269C,U+26A0-26A1,U+26AA-26AB,U+26B0-26B1,U+26BD-26BE,U+26C4-26C5,U+26CE-26CF,U+26D1,U+26D3-26D4,U+26E9-26EA,U+26F0-26F5,U+26F7-26FA,U+26FD,U+2702,U+2705,U+2708-270D,U+270F,U+2712,U+2714,U+2716,U+271D,U+2721,U+2728,U+2733-2734,U+2744,U+2747,U+274C,U+274E,U+2753-2755,U+2757,U+2763-2764,U+2795-2797,U+27A1,U+27B0,U+27BF,U+2934-2935,U+2B05-2B07,U+2B1B-2B1C,U+2B50,U+2B55,U+3030,U+303D,U+3297,U+3299,U+1F000-1FFFF;}}
+</style></style></head><body>
 <div class="card">
   <div class="bar"></div>
   <div class="inner">
@@ -268,7 +363,7 @@ body{{width:800px;background:transparent;}}
     </div>
     <div class="divider"></div>
     <div class="quote">"</div>
-    <div class="review">{d["review_text"]}</div>
+    <div class="review">{d.get("review_text_html", d["review_text"])}</div>
     <div class="divider2"></div>
     <div class="meta">
       {av}
@@ -319,7 +414,11 @@ body{{width:800px;background:transparent;}}
 .date{{font-family:'Montserrat',sans-serif;font-size:11px;color:#8b6030;margin-top:2px;}}
 .badge{{font-family:'Montserrat',sans-serif;font-size:11px;color:#3a2a10;background:#dfd0a8;border:1px solid #a07840;padding:5px 12px;border-radius:12px;white-space:nowrap;}}
 .wm{{text-align:right;font-family:'Montserrat',sans-serif;font-size:10px;color:#c0a070;margin-top:14px;opacity:.55;}}
-</style></head><body>
+<style>
+@font-face{{font-family:"NotoEmoji";
+src:url("https://fonts.gstatic.com/s/notocoloremoji/v25/Yq6P-KqIXTD0t4D9z1ESnKM3-HpFab5s79iz64w.woff2") format("woff2");
+unicode-range:U+00A9,U+00AE,U+203C,U+2049,U+2122,U+2139,U+2194-2199,U+21A9-21AA,U+231A-231B,U+2328,U+23CF,U+23E9-23F3,U+23F8-23FA,U+24C2,U+25AA-25AB,U+25B6,U+25C0,U+25FB-25FE,U+2600-2604,U+260E,U+2611,U+2614-2615,U+2618,U+261D,U+2620,U+2622-2623,U+2626,U+262A,U+262E-262F,U+2638-263A,U+2640,U+2642,U+2648-2653,U+265F-2660,U+2663,U+2665-2666,U+2668,U+267B,U+267E-267F,U+2692-2697,U+2699,U+269B-269C,U+26A0-26A1,U+26AA-26AB,U+26B0-26B1,U+26BD-26BE,U+26C4-26C5,U+26CE-26CF,U+26D1,U+26D3-26D4,U+26E9-26EA,U+26F0-26F5,U+26F7-26FA,U+26FD,U+2702,U+2705,U+2708-270D,U+270F,U+2712,U+2714,U+2716,U+271D,U+2721,U+2728,U+2733-2734,U+2744,U+2747,U+274C,U+274E,U+2753-2755,U+2757,U+2763-2764,U+2795-2797,U+27A1,U+27B0,U+27BF,U+2934-2935,U+2B05-2B07,U+2B1B-2B1C,U+2B50,U+2B55,U+3030,U+303D,U+3297,U+3299,U+1F000-1FFFF;}}
+</style></style></head><body>
 <div class="card">
   <svg class="thread-left" viewBox="0 0 36 400" preserveAspectRatio="none" xmlns="http://www.w3.org/2000/svg">
     <path d="M18,0 Q6,20 18,40 Q30,60 18,80 Q6,100 18,120 Q30,140 18,160 Q6,180 18,200 Q30,220 18,240 Q6,260 18,280 Q30,300 18,320 Q6,340 18,360 Q30,380 18,400" fill="none" stroke="rgba(30,18,8,.5)" stroke-width="2" stroke-linecap="round"/>
@@ -336,7 +435,7 @@ body{{width:800px;background:transparent;}}
   <div class="divider"></div>
   {"<div class='stars'>"+stars+"</div>" if stars else ""}
   <div class="quote">"</div>
-  <div class="review">{d["review_text"]}</div>
+  <div class="review">{d.get("review_text_html", d["review_text"])}</div>
   <div class="divrow"><div class="dline"></div><span class="dmark">✦</span><div class="dline"></div></div>
   <div class="meta">
     {av}
@@ -365,22 +464,32 @@ HTML_BUILDERS = {
 
 def _render_html(html: str) -> bytes:
     from playwright.sync_api import sync_playwright
+    from PIL import Image, ImageDraw
+    import io as _io
+
     with sync_playwright() as p:
-        browser = p.chromium.launch()
+        browser = p.chromium.launch(args=["--font-render-hinting=none"])
         page = browser.new_page(
             viewport={"width": 900, "height": 600},
             device_scale_factor=2
         )
-        # Прозрачный фон страницы
         page.set_content(html, wait_until="networkidle")
-        page.evaluate("document.body.style.background = 'transparent'")
-        card = page.query_selector(".card, .outer .card, .sk-wrap, .pf-wrap")
-        # Берём bounding box и делаем скриншот с clip — без белых полей
+
+        # Ждём загрузки шрифтов
+        try:
+            page.evaluate("document.fonts.ready")
+        except Exception:
+            pass
+
+        card = page.query_selector(".card")
         box = card.bounding_box()
-        r = int(page.evaluate(
-            "el => parseInt(getComputedStyle(el).borderRadius) || 0",
+
+        # Получаем border-radius правильно — parseFloat убирает "px"
+        r = page.evaluate(
+            "el => parseFloat(getComputedStyle(el).borderRadius) || 0",
             card
-        ))
+        )
+
         png = page.screenshot(
             type="png",
             clip={"x": box["x"], "y": box["y"],
@@ -388,23 +497,25 @@ def _render_html(html: str) -> bytes:
             omit_background=True
         )
         browser.close()
+
     # Накладываем маску скругления через Pillow
+    img = Image.open(_io.BytesIO(png)).convert("RGBA")
+    W, H = img.size
+
     if r > 0:
-        from PIL import Image, ImageDraw
-        import io as _io
-        img = Image.open(_io.BytesIO(png)).convert("RGBA")
-        W, H = img.size
-        # radius в пикселях с учётом device_scale_factor=2
-        radius = r * 2
+        # device_scale_factor=2 — радиус тоже умножаем на 2
+        radius = int(r * 2)
         mask = Image.new("L", (W, H), 0)
-        ImageDraw.Draw(mask).rounded_rectangle([(0,0),(W,H)], radius=radius, fill=255)
-        result = Image.new("RGBA", (W, H), (0,0,0,0))
+        ImageDraw.Draw(mask).rounded_rectangle([(0, 0), (W, H)], radius=radius, fill=255)
+        result = Image.new("RGBA", (W, H), (0, 0, 0, 0))
         result.paste(img, mask=mask)
-        buf = _io.BytesIO()
-        result.save(buf, "PNG", optimize=True)
-        buf.seek(0)
-        return buf.read()
-    return png
+    else:
+        result = img
+
+    buf = _io.BytesIO()
+    result.save(buf, "PNG", optimize=True)
+    buf.seek(0)
+    return buf.read()
 
 
 async def generate_card(data: dict) -> bytes:
@@ -413,6 +524,17 @@ async def generate_card(data: dict) -> bytes:
         data["avatar_b64"] = base64.b64encode(data["avatar_bytes"]).decode()
     else:
         data["avatar_b64"] = None
+
+    # Обрабатываем премиум и обычные эмодзи в тексте отзыва
+    bot = data.get("bot")
+    entities = data.get("entities")
+    if bot and entities:
+        data["review_text_html"] = await resolve_custom_emoji(
+            data["review_text"], entities, bot
+        )
+    else:
+        data["review_text_html"] = _sanitize_text_for_html(data.get("review_text", ""))
+
     template_id = data.get("template_id", "classic_gold")
     builder = HTML_BUILDERS.get(template_id, html_classic_gold)
     html = builder(data)

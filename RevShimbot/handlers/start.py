@@ -203,6 +203,8 @@ async def cb_quick_text(message: Message, state: FSMContext, bot, db: Database):
         "stars_mode": "buyer_choice",
         "template_id": data.get("template_id", "classic_gold"),
         "avatar_bytes": avatar_bytes,
+        "entities": message.entities or [],
+        "bot": bot,
     }
     try:
         img = await generate_card(card_data)
