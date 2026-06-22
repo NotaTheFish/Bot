@@ -35,6 +35,7 @@ def kb_start_menu(has_seller: bool = False, has_client: bool = False) -> InlineK
         [InlineKeyboardButton(text="🏪 Создать шаблон магазина", callback_data="start:seller")],
         [InlineKeyboardButton(text="🎨 Создать клиентский шаблон", callback_data="start:client")],
         [InlineKeyboardButton(text="⚡️ Быстрый отзыв", callback_data="start:quick")],
+        [InlineKeyboardButton(text="🎨 Мои шаблоны (конструктор)", callback_data="start:mytemplates")],
     ]
     if has_seller:
         rows.append([InlineKeyboardButton(text="📋 Мой торговый шаблон", callback_data="menu:mytemplate")])
@@ -56,6 +57,17 @@ async def cmd_start(message: Message, db: Database, bot, state: FSMContext):
     await state.clear()
     args = message.text.split()
     deep_link = args[1] if len(args) > 1 else None
+
+    # Получение шаблона по реф-ссылке (одноразовый ключ)
+    if deep_link and deep_link.startswith("tpl_"):
+        key = "!" + deep_link.replace("tpl_", "")
+        from handlers.my_templates import claim_template
+        ok, msg = await claim_template(message.from_user.id, message.from_user.username, key, db)
+        await message.answer(msg)
+        if ok:
+            from handlers.my_templates import show_templates_list
+            await show_templates_list(message, db)
+        return
 
     # Покупатель пришёл по реф-ссылке продавца
     if deep_link and deep_link.startswith("seller_"):
@@ -168,7 +180,7 @@ async def cb_quick_stars(call: CallbackQuery, state: FSMContext):
 
 
 @router.message(QuickReviewSG.enter_text)
-async def cb_quick_text(message: Message, state: FSMContext, bot, db: Database):
+async def cb_quick_text(message: Message, state: FSMContext, bot, db: Database, config):
     from aiogram.types import BufferedInputFile
     from services.card_generator import generate_card
     from constants import REVIEW_MAX_LEN
@@ -205,6 +217,7 @@ async def cb_quick_text(message: Message, state: FSMContext, bot, db: Database):
         "avatar_bytes": avatar_bytes,
         "entities": message.entities or [],
         "bot": bot,
+        "bot_username": config.BOT_USERNAME,
     }
     try:
         img = await generate_card(card_data)
@@ -230,6 +243,14 @@ async def cb_quick_text(message: Message, state: FSMContext, bot, db: Database):
 
 
 # ── Меню продавца ─────────────────────────────────────────────────────────
+
+@router.callback_query(F.data == "start:mytemplates")
+async def cb_start_mytemplates(call: CallbackQuery, db: Database):
+    await call.answer()
+    await call.message.edit_reply_markup(reply_markup=None)
+    from handlers.my_templates import show_templates_list
+    await show_templates_list(call.message, db)
+
 
 @router.message(Command("menu"))
 async def cmd_menu(message: Message, db: Database):
@@ -289,7 +310,7 @@ async def cb_edit(call: CallbackQuery, db: Database, state: FSMContext):
 
 
 @router.callback_query(F.data == "menu:preview")
-async def cb_preview(call: CallbackQuery, db: Database, bot):
+async def cb_preview(call: CallbackQuery, db: Database, bot, config):
     from aiogram.types import BufferedInputFile
     from services.card_generator import generate_card
     seller = await db.get_seller(call.from_user.id)
@@ -309,6 +330,7 @@ async def cb_preview(call: CallbackQuery, db: Database, bot):
         "stars_mode": seller["stars_mode"],
         "template_id": seller["template_id"],
         "avatar_bytes": None,
+        "bot_username": config.BOT_USERNAME,
     }
     try:
         img = await generate_card(card_data)

@@ -108,7 +108,7 @@ async def ask_text(message: Message, state: FSMContext):
 
 
 @router.message(ReviewSG.enter_text)
-async def step_enter_text(message: Message, state: FSMContext, db: Database, bot):
+async def step_enter_text(message: Message, state: FSMContext, db: Database, bot, config):
     text = message.text.strip()
 
     if len(text) > REVIEW_MAX_LEN:
@@ -154,6 +154,7 @@ async def step_enter_text(message: Message, state: FSMContext, db: Database, bot
         "avatar_bytes": avatar_bytes,
         "entities": message.entities or [],
         "bot": bot,
+        "bot_username": config.BOT_USERNAME,
     }
 
     try:

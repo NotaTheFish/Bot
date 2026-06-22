@@ -46,6 +46,7 @@ async def get_or_generate_card(
         "stars_mode": seller["stars_mode"],
         "template_id": seller["template_id"],
         "avatar_bytes": None,
+        "bot_username": config.BOT_USERNAME,
     }
 
     try:

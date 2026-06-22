@@ -200,7 +200,7 @@ body{{width:800px;background:transparent;}}
     </div>
     {badge}
   </div>
-  <div class="wm">@reviewbot</div>
+  <div class="wm">@{d.get("bot_username", "reviewbot")}</div>
 </div></body></html>"""
 
 
@@ -255,7 +255,7 @@ body{{width:800px;background:transparent;}}
     </div>
     {badge}
   </div>
-  <div class="wm">@reviewbot</div>
+  <div class="wm">@{d.get("bot_username", "reviewbot")}</div>
 </div></body></html>"""
 
 
@@ -311,7 +311,7 @@ body{{width:800px;background:transparent;}}
       </div>
       {badge}
     </div>
-    <div class="wm">@reviewbot</div>
+    <div class="wm">@{d.get("bot_username", "reviewbot")}</div>
   </div>
 </div></body></html>"""
 
@@ -369,7 +369,7 @@ body{{width:800px;background:transparent;}}
       </div>
       {badge}
     </div>
-    <div class="wm">@reviewbot</div>
+    <div class="wm">@{d.get("bot_username", "reviewbot")}</div>
   </div>
 </div></body></html>"""
 
@@ -440,7 +440,7 @@ body{{width:800px;background:transparent;}}
     </div>
     {badge}
   </div>
-  <div class="wm">@reviewbot</div>
+  <div class="wm">@{d.get("bot_username", "reviewbot")}</div>
 </div></body></html>"""
 
 
