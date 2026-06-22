@@ -2,11 +2,23 @@ from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeybo
 from constants import TEMPLATES, STARS_MODES, ITEM_MODES
 
 
-def kb_templates(selected: str = None) -> InlineKeyboardMarkup:
+def kb_templates(selected: str = None, custom_templates: list = None) -> InlineKeyboardMarkup:
     buttons = []
     for tid, label in TEMPLATES.items():
         text = f"✅ {label}" if tid == selected else label
         buttons.append([InlineKeyboardButton(text=text, callback_data=f"tpl:{tid}")])
+
+    # Кастомные шаблоны из конструктора (свои и полученные)
+    if custom_templates:
+        for tpl in custom_templates:
+            own = "👑" if tpl["owner_id"] == tpl["creator_id"] else "🎁"
+            cid = f"custom_{tpl['id']}"
+            mark = "✅ " if selected == cid else ""
+            buttons.append([InlineKeyboardButton(
+                text=f"{mark}{own} {tpl['name']}",
+                callback_data=f"tpl:{cid}"
+            )])
+
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 

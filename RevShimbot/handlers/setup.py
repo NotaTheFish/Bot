@@ -89,9 +89,10 @@ async def step_shop_name(message: Message, state: FSMContext, db: Database, conf
         return
 
     await state.set_state(SetupSG.template)
+    customs = await db.list_custom_templates(message.from_user.id)
     await message.answer(
         "🎨 <b>Шаг 2 из 5 — Стиль карточки</b>",
-        reply_markup=kb_templates(data.get("template_id"))
+        reply_markup=kb_templates(data.get("template_id"), customs)
     )
 
 

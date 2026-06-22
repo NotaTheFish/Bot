@@ -501,6 +501,34 @@ async def generate_card(data: dict) -> bytes:
         data["review_text_html"] = _sanitize_text_for_html(data.get("review_text", ""))
 
     template_id = data.get("template_id", "classic_gold")
+
+    # Кастомный шаблон из конструктора — рендерим через constructor
+    if isinstance(template_id, str) and template_id.startswith("custom_"):
+        db = data.get("db")
+        if db:
+            tpl_db_id = int(template_id.replace("custom_", ""))
+            ctpl = await db.get_custom_template(tpl_db_id)
+            if ctpl:
+                from services.constructor import render_with_data
+                cfg = {
+                    "layout": ctpl["layout"], "font": ctpl["font"],
+                    "text_color": ctpl["text_color"], "accent_color": ctpl["accent_color"],
+                    "bg_color": ctpl["bg_color"], "bg_image": ctpl["bg_image"],
+                    "creator_username": ctpl["creator_username"], "is_edited": ctpl["is_edited"],
+                }
+                cdata = {
+                    "shop_name": data["shop_name"],
+                    "seller_tag": data.get("seller_tag", ""),
+                    "buyer_name": data["buyer_name"],
+                    "buyer_initials": data["buyer_initials"],
+                    "review_text": data.get("review_text_html") or data["review_text"],
+                    "item_bought": data.get("item_bought", ""),
+                    "stars": data.get("stars", 0),
+                    "avatar_bytes": data.get("avatar_bytes"),
+                    "bot_username": data.get("bot_username", "reviewbot"),
+                }
+                return await render_with_data(cfg, cdata)
+
     builder = HTML_BUILDERS.get(template_id, html_classic_gold)
     html = builder(data)
     loop = asyncio.get_event_loop()

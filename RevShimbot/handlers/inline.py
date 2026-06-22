@@ -22,6 +22,7 @@ async def get_or_generate_card(
     review_text: str,
     bot,
     config,
+    db,
 ) -> str | None:
     """
     Генерирует карточку, загружает в CACHE_CHAT_ID и возвращает file_id.
@@ -47,6 +48,7 @@ async def get_or_generate_card(
         "template_id": seller["template_id"],
         "avatar_bytes": None,
         "bot_username": config.BOT_USERNAME,
+        "db": db,
     }
 
     try:
@@ -102,7 +104,7 @@ async def inline_review(query: InlineQuery, db: Database, bot, config):
 
     if seller and config.CACHE_CHAT_ID and review_text:
         # Генерируем красивую карточку
-        file_id = await get_or_generate_card(query, seller, review_text, bot, config)
+        file_id = await get_or_generate_card(query, seller, review_text, bot, config, db)
 
         if file_id:
             buyer_name = query.from_user.full_name or "Трейдер"
@@ -143,7 +145,7 @@ async def inline_review(query: InlineQuery, db: Database, bot, config):
             "item_mode": "free",
             "item_value": "",
         }
-        file_id = await get_or_generate_card(query, fake_seller, review_text, bot, config)
+        file_id = await get_or_generate_card(query, fake_seller, review_text, bot, config, db)
         if file_id:
             await query.answer(
                 results=[

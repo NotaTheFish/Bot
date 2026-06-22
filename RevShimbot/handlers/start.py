@@ -126,11 +126,11 @@ async def cb_start_seller(call: CallbackQuery, db: Database, state: FSMContext):
 
 
 @router.callback_query(F.data == "start:client")
-async def cb_start_client(call: CallbackQuery, state: FSMContext):
+async def cb_start_client(call: CallbackQuery, state: FSMContext, db: Database):
     await call.answer()
     await call.message.edit_reply_markup(reply_markup=None)
     from handlers.client_setup import start_client_setup
-    await start_client_setup(call.message, state)
+    await start_client_setup(call.message, state, db, call.from_user.id)
 
 
 @router.callback_query(F.data == "start:quick")
@@ -235,6 +235,7 @@ async def cb_quick_text(message: Message, state: FSMContext, bot, db: Database, 
         "entities": message.entities or [],
         "bot": bot,
         "bot_username": config.BOT_USERNAME,
+        "db": db,
     }
     try:
         img = await generate_card(card_data)
@@ -348,6 +349,7 @@ async def cb_preview(call: CallbackQuery, db: Database, bot, config):
         "template_id": seller["template_id"],
         "avatar_bytes": None,
         "bot_username": config.BOT_USERNAME,
+        "db": db,
     }
     try:
         img = await generate_card(card_data)
@@ -442,7 +444,8 @@ async def cb_edit_field(call: CallbackQuery, db: Database, state: FSMContext):
         await call.message.answer("🏪 Введи новое название магазина:")
     elif field == "template":
         await state.set_state(SetupSG.template)
-        await call.message.answer("🎨 Выбери стиль:", reply_markup=kb_templates(data.get("template_id")))
+        customs = await db.list_custom_templates(call.from_user.id)
+        await call.message.answer("🎨 Выбери стиль:", reply_markup=kb_templates(data.get("template_id"), customs))
     elif field == "stars":
         await state.set_state(SetupSG.stars_mode)
         await call.message.answer("⭐️ Режим звёзд:", reply_markup=kb_stars_mode(data.get("stars_mode")))
