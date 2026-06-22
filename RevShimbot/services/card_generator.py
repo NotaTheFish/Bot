@@ -168,12 +168,12 @@ body{{width:800px;background:transparent;}}
 .divider{{height:1px;background:linear-gradient(90deg,transparent,#c9a84c55,transparent);margin:0 40px 18px;}}
 .stars{{font-size:19px;color:#c9a84c;text-align:center;letter-spacing:4px;margin-bottom:16px;}}
 .quote{{font-family:'Playfair Display',serif;font-size:64px;color:#c9a84c;line-height:.5;opacity:.4;margin-bottom:10px;}}
-.review{{font-family:'Montserrat',sans-serif;font-size:16px;color:#d0d0e8;line-height:1.8;margin-bottom:24px;}}
+.review{{font-family:'Montserrat','Noto Sans','Noto Sans CJK SC','Noto Sans Arabic','Noto Sans Coptic','Noto Sans Symbols 2','Noto Color Emoji','Symbola',sans-serif;font-size:16px;color:#d0d0e8;line-height:1.8;margin-bottom:24px;}}
 .divider2{{height:1px;background:#2e2e50;margin-bottom:20px;}}
 .meta{{display:flex;align-items:center;gap:14px;}}
 .av{{width:44px;height:44px;border-radius:50%;flex-shrink:0;display:flex;align-items:center;justify-content:center;font-family:'Montserrat',sans-serif;font-weight:600;font-size:14px;}}
 .meta-info{{flex:1;}}
-.name{{font-family:'Montserrat','Noto Sans','Noto Sans CJK SC','Noto Sans Arabic',sans-serif;font-weight:600;font-size:15px;color:#e0e0f0;}}
+.name{{font-family:'Montserrat','Noto Sans','Noto Sans CJK SC','Noto Sans Arabic','Noto Sans Coptic','Noto Sans Gothic','Noto Sans Symbols 2','Noto Color Emoji','Symbola',sans-serif;font-weight:600;font-size:15px;color:#e0e0f0;}}
 .date{{font-family:'Montserrat',sans-serif;font-size:12px;color:#666688;margin-top:2px;}}
 .badge{{font-family:'Montserrat',sans-serif;font-size:12px;padding:5px 14px;border-radius:20px;white-space:nowrap;}}
 .wm{{text-align:right;font-family:'Montserrat',sans-serif;font-size:10px;color:#2e2e50;margin-top:14px;letter-spacing:.05em;}}
@@ -225,11 +225,11 @@ body{{width:800px;background:transparent;}}
 .dmark{{color:#a07840;font-size:12px;}}
 .stars{{font-size:20px;color:#3a2a10;text-align:center;letter-spacing:4px;margin-bottom:16px;}}
 .quote{{font-family:'Playfair Display',serif;font-size:60px;color:#c8a87a;line-height:.5;opacity:.45;margin-bottom:12px;}}
-.review{{font-family:'IM Fell English',serif;font-style:italic;font-size:16px;color:#1e1408;line-height:1.9;margin-bottom:22px;}}
+.review{{font-family:'IM Fell English','Noto Sans','Noto Sans CJK SC','Noto Sans Arabic','Noto Sans Coptic','Noto Sans Symbols 2','Noto Color Emoji','Symbola',serif;font-style:italic;font-size:16px;color:#1e1408;line-height:1.9;margin-bottom:22px;}}
 .meta{{display:flex;align-items:center;gap:14px;}}
 .av{{width:42px;height:42px;border-radius:50%;flex-shrink:0;display:flex;align-items:center;justify-content:center;font-family:'Playfair Display',serif;font-weight:700;font-size:14px;border:1.5px solid #c8a96e;}}
 .meta-info{{flex:1;}}
-.name{{font-family:'Playfair Display','Noto Sans','Noto Sans CJK SC','Noto Sans Arabic',serif;font-weight:700;font-size:15px;color:#1e1408;}}
+.name{{font-family:'Playfair Display','Noto Sans','Noto Sans CJK SC','Noto Sans Arabic','Noto Sans Coptic','Noto Sans Gothic','Noto Sans Symbols 2','Noto Color Emoji','Symbola',serif;font-weight:700;font-size:15px;color:#1e1408;}}
 .date{{font-family:'IM Fell English',serif;font-size:11px;color:#8b6030;margin-top:2px;}}
 .badge{{font-family:'IM Fell English',serif;font-size:11px;color:#3a2a10;background:#e8d5b0;border:1px solid #c8a96e;padding:5px 12px;border-radius:2px;white-space:nowrap;}}
 .wm{{text-align:right;font-family:'IM Fell English',serif;font-size:10px;color:#c8a96e;margin-top:14px;opacity:.6;}}
@@ -278,11 +278,11 @@ body{{width:800px;background:transparent;}}
 .divider{{height:1px;background:#21262d;margin-bottom:18px;}}
 .comment{{font-family:'Inter',sans-serif;font-size:11px;color:#6e7681;margin-bottom:10px;letter-spacing:.03em;}}
 .review-wrap{{border-left:2px solid #21262d;padding-left:16px;margin-bottom:22px;}}
-.review{{font-family:'Inter',sans-serif;font-weight:300;font-size:15px;color:#c9d1d9;line-height:1.8;}}
+.review{{font-family:'Inter','Noto Sans','Noto Sans CJK SC','Noto Sans Arabic','Noto Sans Coptic','Noto Sans Symbols 2','Noto Color Emoji','Symbola',sans-serif;font-weight:300;font-size:15px;color:#c9d1d9;line-height:1.8;}}
 .meta{{background:#0d1117;border:1px solid #21262d;border-radius:10px;padding:14px 18px;display:flex;align-items:center;gap:14px;}}
 .av{{width:38px;height:38px;border-radius:50%;flex-shrink:0;display:flex;align-items:center;justify-content:center;font-family:'Space Grotesk',sans-serif;font-weight:600;font-size:13px;border:1px solid #30363d;}}
 .meta-info{{flex:1;}}
-.name{{font-family:'Space Grotesk','Noto Sans','Noto Sans CJK SC','Noto Sans Arabic',sans-serif;font-weight:500;font-size:14px;color:#e6edf3;}}
+.name{{font-family:'Space Grotesk','Noto Sans','Noto Sans CJK SC','Noto Sans Arabic','Noto Sans Coptic','Noto Sans Gothic','Noto Sans Symbols 2','Noto Color Emoji','Symbola',sans-serif;font-weight:500;font-size:14px;color:#e6edf3;}}
 .date{{font-family:'Inter',sans-serif;font-size:11px;color:#6e7681;margin-top:2px;}}
 .badge{{font-family:'Inter',sans-serif;font-size:11px;color:#58a6ff;background:#1c2128;border:1px solid #30363d;padding:4px 12px;border-radius:20px;white-space:nowrap;}}
 .wm{{text-align:right;font-family:'Inter',sans-serif;font-size:10px;color:#21262d;margin-top:12px;letter-spacing:.05em;}}
@@ -334,12 +334,12 @@ body{{width:800px;background:transparent;}}
 .seller{{font-family:'DM Sans',sans-serif;font-size:12px;color:#aaa;margin-bottom:22px;}}
 .divider{{height:1px;background:#f0f0f0;margin-bottom:20px;}}
 .quote{{font-family:'DM Serif Display',serif;font-style:italic;font-size:56px;color:#eee;line-height:.5;margin-bottom:12px;}}
-.review{{font-family:'DM Sans',sans-serif;font-weight:300;font-style:italic;font-size:15px;color:#333;line-height:1.85;margin-bottom:24px;}}
+.review{{font-family:'DM Sans','Noto Sans','Noto Sans CJK SC','Noto Sans Arabic','Noto Sans Coptic','Noto Sans Symbols 2','Noto Color Emoji','Symbola',sans-serif;font-weight:300;font-style:italic;font-size:15px;color:#333;line-height:1.85;margin-bottom:24px;}}
 .divider2{{height:1px;background:#f0f0f0;margin-bottom:20px;}}
 .meta{{display:flex;align-items:center;gap:14px;}}
 .av{{width:42px;height:42px;border-radius:50%;flex-shrink:0;display:flex;align-items:center;justify-content:center;font-family:'DM Sans',sans-serif;font-weight:500;font-size:14px;border:1px solid #e8e8e8;}}
 .meta-info{{flex:1;}}
-.name{{font-family:'DM Sans','Noto Sans','Noto Sans CJK SC','Noto Sans Arabic',sans-serif;font-weight:500;font-size:14px;color:#111;}}
+.name{{font-family:'DM Sans','Noto Sans','Noto Sans CJK SC','Noto Sans Arabic','Noto Sans Coptic','Noto Sans Gothic','Noto Sans Symbols 2','Noto Color Emoji','Symbola',sans-serif;font-weight:500;font-size:14px;color:#111;}}
 .date{{font-family:'DM Sans',sans-serif;font-size:11px;color:#aaa;margin-top:2px;}}
 .badge{{font-family:'DM Sans',sans-serif;font-size:11px;color:#444;background:#f5f5f5;border:1px solid #e8e8e8;padding:5px 14px;border-radius:20px;white-space:nowrap;}}
 .wm{{text-align:right;font-family:'DM Sans',sans-serif;font-size:10px;color:#ddd;margin-top:14px;letter-spacing:.08em;}}
@@ -399,14 +399,14 @@ body{{width:800px;background:transparent;}}
 .divider{{height:1px;background:#a07840;opacity:.4;margin:0 40px 16px;}}
 .stars{{font-size:20px;color:#3a2a10;text-align:center;letter-spacing:4px;margin-bottom:14px;}}
 .quote{{font-family:'Caveat',cursive;font-size:58px;color:#b09070;line-height:.5;opacity:.38;margin-bottom:12px;}}
-.review{{font-family:'Montserrat',sans-serif;font-weight:400;font-size:15px;color:#1a1005;line-height:1.8;margin-bottom:20px;}}
+.review{{font-family:'Montserrat','Noto Sans','Noto Sans CJK SC','Noto Sans Arabic','Noto Sans Coptic','Noto Sans Symbols 2','Noto Color Emoji','Symbola',sans-serif;font-weight:400;font-size:15px;color:#1a1005;line-height:1.8;margin-bottom:20px;}}
 .divrow{{display:flex;align-items:center;gap:10px;margin:0 40px 18px;opacity:.4;}}
 .dline{{flex:1;height:1px;background:#8b6030;}}
 .dmark{{font-family:'Caveat',cursive;font-size:14px;color:#8b6030;}}
 .meta{{display:flex;align-items:center;gap:14px;}}
 .av{{width:42px;height:42px;border-radius:50%;flex-shrink:0;display:flex;align-items:center;justify-content:center;font-family:'Caveat',cursive;font-weight:700;font-size:15px;border:1.5px solid #a07840;}}
 .meta-info{{flex:1;}}
-.name{{font-family:'Caveat','Noto Sans','Noto Sans CJK SC','Noto Sans Arabic',cursive;font-weight:700;font-size:17px;color:#1a1005;}}
+.name{{font-family:'Caveat','Noto Sans','Noto Sans CJK SC','Noto Sans Arabic','Noto Sans Coptic','Noto Sans Gothic','Noto Sans Symbols 2','Noto Color Emoji','Symbola',cursive;font-weight:700;font-size:17px;color:#1a1005;}}
 .date{{font-family:'Montserrat',sans-serif;font-size:11px;color:#8b6030;margin-top:2px;}}
 .badge{{font-family:'Montserrat',sans-serif;font-size:11px;color:#3a2a10;background:#dfd0a8;border:1px solid #a07840;padding:5px 12px;border-radius:12px;white-space:nowrap;}}
 .wm{{text-align:right;font-family:'Montserrat',sans-serif;font-size:10px;color:#c0a070;margin-top:14px;opacity:.55;}}

@@ -194,10 +194,10 @@ def build_html(cfg: dict, data: dict) -> str:
     return f"""<!DOCTYPE html><html><head><meta charset="utf-8">
 <link href="{FONT_LINKS}" rel="stylesheet">
 <style>
-*{{margin:0;padding:0;box-sizing:border-box;font-family:{font_css},"Noto Sans","Noto Sans CJK SC","Noto Sans Arabic","Noto Color Emoji",sans-serif;}}
+*{{margin:0;padding:0;box-sizing:border-box;font-family:{font_css},"Noto Sans","Noto Sans CJK SC","Noto Sans Arabic","Noto Sans Coptic","Noto Sans Gothic","Noto Sans Symbols","Noto Sans Symbols 2","Noto Color Emoji","Symbola",sans-serif;}}
 body{{width:800px;background:transparent;}}
 .card{{width:800px;{bg_style}padding:44px 56px 36px;position:relative;overflow:hidden;}}
-.shop{{font-family:{title_font_css},"Noto Sans","Noto Sans CJK SC","Noto Sans Arabic",sans-serif;font-weight:700;font-size:30px;color:{accent};text-align:center;margin-bottom:6px;text-shadow:0 2px 6px rgba(0,0,0,0.5);}}
+.shop{{font-family:{title_font_css},"Noto Sans","Noto Sans CJK SC","Noto Sans Arabic","Noto Sans Coptic","Noto Sans Symbols 2",sans-serif;font-weight:700;font-size:30px;color:{accent};text-align:center;margin-bottom:6px;text-shadow:0 2px 6px rgba(0,0,0,0.5);}}
 .seller{{font-size:13px;color:{text_color};opacity:0.6;text-align:center;margin-bottom:16px;}}
 .divider{{height:1px;background:{accent};opacity:0.4;margin:16px 40px;}}
 .stars{{font-size:20px;color:{accent};text-align:center;letter-spacing:4px;margin-bottom:14px;text-shadow:0 1px 4px rgba(0,0,0,0.5);}}
