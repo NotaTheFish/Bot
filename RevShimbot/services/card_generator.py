@@ -173,7 +173,7 @@ body{{width:800px;background:transparent;}}
 .meta{{display:flex;align-items:center;gap:14px;}}
 .av{{width:44px;height:44px;border-radius:50%;flex-shrink:0;display:flex;align-items:center;justify-content:center;font-family:'Montserrat',sans-serif;font-weight:600;font-size:14px;}}
 .meta-info{{flex:1;}}
-.name{{font-family:'Montserrat',sans-serif;font-weight:600;font-size:15px;color:#e0e0f0;}}
+.name{{font-family:'Montserrat','Noto Sans','Noto Sans CJK SC','Noto Sans Arabic',sans-serif;font-weight:600;font-size:15px;color:#e0e0f0;}}
 .date{{font-family:'Montserrat',sans-serif;font-size:12px;color:#666688;margin-top:2px;}}
 .badge{{font-family:'Montserrat',sans-serif;font-size:12px;padding:5px 14px;border-radius:20px;white-space:nowrap;}}
 .wm{{text-align:right;font-family:'Montserrat',sans-serif;font-size:10px;color:#2e2e50;margin-top:14px;letter-spacing:.05em;}}
@@ -229,7 +229,7 @@ body{{width:800px;background:transparent;}}
 .meta{{display:flex;align-items:center;gap:14px;}}
 .av{{width:42px;height:42px;border-radius:50%;flex-shrink:0;display:flex;align-items:center;justify-content:center;font-family:'Playfair Display',serif;font-weight:700;font-size:14px;border:1.5px solid #c8a96e;}}
 .meta-info{{flex:1;}}
-.name{{font-family:'Playfair Display',serif;font-weight:700;font-size:15px;color:#1e1408;}}
+.name{{font-family:'Playfair Display','Noto Sans','Noto Sans CJK SC','Noto Sans Arabic',serif;font-weight:700;font-size:15px;color:#1e1408;}}
 .date{{font-family:'IM Fell English',serif;font-size:11px;color:#8b6030;margin-top:2px;}}
 .badge{{font-family:'IM Fell English',serif;font-size:11px;color:#3a2a10;background:#e8d5b0;border:1px solid #c8a96e;padding:5px 12px;border-radius:2px;white-space:nowrap;}}
 .wm{{text-align:right;font-family:'IM Fell English',serif;font-size:10px;color:#c8a96e;margin-top:14px;opacity:.6;}}
@@ -282,7 +282,7 @@ body{{width:800px;background:transparent;}}
 .meta{{background:#0d1117;border:1px solid #21262d;border-radius:10px;padding:14px 18px;display:flex;align-items:center;gap:14px;}}
 .av{{width:38px;height:38px;border-radius:50%;flex-shrink:0;display:flex;align-items:center;justify-content:center;font-family:'Space Grotesk',sans-serif;font-weight:600;font-size:13px;border:1px solid #30363d;}}
 .meta-info{{flex:1;}}
-.name{{font-family:'Space Grotesk',sans-serif;font-weight:500;font-size:14px;color:#e6edf3;}}
+.name{{font-family:'Space Grotesk','Noto Sans','Noto Sans CJK SC','Noto Sans Arabic',sans-serif;font-weight:500;font-size:14px;color:#e6edf3;}}
 .date{{font-family:'Inter',sans-serif;font-size:11px;color:#6e7681;margin-top:2px;}}
 .badge{{font-family:'Inter',sans-serif;font-size:11px;color:#58a6ff;background:#1c2128;border:1px solid #30363d;padding:4px 12px;border-radius:20px;white-space:nowrap;}}
 .wm{{text-align:right;font-family:'Inter',sans-serif;font-size:10px;color:#21262d;margin-top:12px;letter-spacing:.05em;}}
@@ -339,7 +339,7 @@ body{{width:800px;background:transparent;}}
 .meta{{display:flex;align-items:center;gap:14px;}}
 .av{{width:42px;height:42px;border-radius:50%;flex-shrink:0;display:flex;align-items:center;justify-content:center;font-family:'DM Sans',sans-serif;font-weight:500;font-size:14px;border:1px solid #e8e8e8;}}
 .meta-info{{flex:1;}}
-.name{{font-family:'DM Sans',sans-serif;font-weight:500;font-size:14px;color:#111;}}
+.name{{font-family:'DM Sans','Noto Sans','Noto Sans CJK SC','Noto Sans Arabic',sans-serif;font-weight:500;font-size:14px;color:#111;}}
 .date{{font-family:'DM Sans',sans-serif;font-size:11px;color:#aaa;margin-top:2px;}}
 .badge{{font-family:'DM Sans',sans-serif;font-size:11px;color:#444;background:#f5f5f5;border:1px solid #e8e8e8;padding:5px 14px;border-radius:20px;white-space:nowrap;}}
 .wm{{text-align:right;font-family:'DM Sans',sans-serif;font-size:10px;color:#ddd;margin-top:14px;letter-spacing:.08em;}}
@@ -406,7 +406,7 @@ body{{width:800px;background:transparent;}}
 .meta{{display:flex;align-items:center;gap:14px;}}
 .av{{width:42px;height:42px;border-radius:50%;flex-shrink:0;display:flex;align-items:center;justify-content:center;font-family:'Caveat',cursive;font-weight:700;font-size:15px;border:1.5px solid #a07840;}}
 .meta-info{{flex:1;}}
-.name{{font-family:'Caveat',cursive;font-weight:700;font-size:17px;color:#1a1005;}}
+.name{{font-family:'Caveat','Noto Sans','Noto Sans CJK SC','Noto Sans Arabic',cursive;font-weight:700;font-size:17px;color:#1a1005;}}
 .date{{font-family:'Montserrat',sans-serif;font-size:11px;color:#8b6030;margin-top:2px;}}
 .badge{{font-family:'Montserrat',sans-serif;font-size:11px;color:#3a2a10;background:#dfd0a8;border:1px solid #a07840;padding:5px 12px;border-radius:12px;white-space:nowrap;}}
 .wm{{text-align:right;font-family:'Montserrat',sans-serif;font-size:10px;color:#c0a070;margin-top:14px;opacity:.55;}}

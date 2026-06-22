@@ -162,7 +162,39 @@ async def inline_review(query: InlineQuery, db: Database, bot, config):
             )
             return
 
-    # Последний фолбэк — текстовый отзыв
+    # Фолбэк — рандомная (но стабильная) стандартная карточка
+    # Стиль детерминирован по user_id, чтобы не менялся при дописывании текста
+    if config.CACHE_CHAT_ID and review_text:
+        STANDARD = ["classic_gold", "retro_paper", "dark_slate", "clean_white", "sketch_paper"]
+        chosen = STANDARD[query.from_user.id % len(STANDARD)]
+        fake_seller = {
+            "shop_name": buyer_name,
+            "username": query.from_user.username,
+            "id": query.from_user.id,
+            "template_id": chosen,
+            "stars_mode": "buyer_choice",
+            "stars_value": 5,
+            "item_mode": "free",
+            "item_value": "",
+        }
+        file_id = await get_or_generate_card(query, fake_seller, review_text, bot, config, db)
+        if file_id:
+            await query.answer(
+                results=[
+                    InlineQueryResultCachedPhoto(
+                        id=result_id,
+                        photo_file_id=file_id,
+                        caption=f"<i>«{review_text}»</i>\n\n— {buyer_name}",
+                        parse_mode="HTML",
+                        title="⭐️ Отправить карточку отзыва",
+                        description=review_text[:100],
+                    )
+                ],
+                cache_time=30,
+            )
+            return
+
+    # Самый последний фолбэк — текстовый отзыв (если нет CACHE_CHAT_ID)
     await query.answer(
         results=[
             InlineQueryResultArticle(

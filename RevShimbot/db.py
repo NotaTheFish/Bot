@@ -215,6 +215,7 @@ class Database:
                 VALUES ($1, $2, $3)
                 ON CONFLICT (id) DO UPDATE SET
                     username = EXCLUDED.username,
+                    shop_name = EXCLUDED.shop_name,
                     updated_at = NOW()
                 RETURNING *
             """, user_id, username, shop_name)

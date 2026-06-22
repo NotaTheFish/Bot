@@ -134,12 +134,20 @@ async def cb_start_client(call: CallbackQuery, state: FSMContext, db: Database):
 
 
 @router.callback_query(F.data == "start:quick")
-async def cb_start_quick(call: CallbackQuery, state: FSMContext):
+async def cb_start_quick(call: CallbackQuery, state: FSMContext, db: Database):
     await call.answer()
     await call.message.edit_reply_markup(reply_markup=None)
     await state.set_state(QuickReviewSG.choose_template)
     rows = [[InlineKeyboardButton(text=label, callback_data=f"quick_tpl:{tid}")]
             for tid, label in TEMPLATE_NAMES.items()]
+    # Добавляем кастомные шаблоны пользователя
+    customs = await db.list_custom_templates(call.from_user.id)
+    for tpl in customs:
+        own = "👑" if tpl["owner_id"] == tpl["creator_id"] else "🎁"
+        rows.append([InlineKeyboardButton(
+            text=f"{own} {tpl['name']}",
+            callback_data=f"quick_tpl:custom_{tpl['id']}"
+        )])
     await call.message.answer(
         "⚡️ <b>Быстрый отзыв</b> — выбери стиль карточки:",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=rows)
