@@ -81,14 +81,27 @@ def kb_seller_menu(pub_id: str = None) -> InlineKeyboardMarkup:
 
 def kb_template_view(seller: dict) -> InlineKeyboardMarkup:
     """Кнопки редактирования конкретных полей шаблона."""
-    return InlineKeyboardMarkup(inline_keyboard=[
+    rows = [
         [InlineKeyboardButton(text="✏️ Название магазина", callback_data="edit:shop_name")],
         [InlineKeyboardButton(text="🎨 Стиль карточки", callback_data="edit:template")],
         [InlineKeyboardButton(text="⭐️ Звёзды", callback_data="edit:stars")],
         [InlineKeyboardButton(text="📦 Поле «Что купил»", callback_data="edit:item")],
         [InlineKeyboardButton(text="🎨 Выбор шаблона покупателем", callback_data="edit:tpl_choice")],
-        [InlineKeyboardButton(text="« Назад", callback_data="menu:back")],
-    ])
+    ]
+    pub_id = seller.get("pub_id")
+    if pub_id:
+        from aiogram.types import SwitchInlineQueryChosenChat
+        rows.append([InlineKeyboardButton(
+            text="📨 Поделиться (отправить приглашение)",
+            switch_inline_query_chosen_chat=SwitchInlineQueryChosenChat(
+                query=pub_id,
+                allow_user_chats=True,
+                allow_group_chats=True,
+                allow_channel_chats=True,
+            )
+        )])
+    rows.append([InlineKeyboardButton(text="« Назад", callback_data="menu:back")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def kb_buyer_stars() -> InlineKeyboardMarkup:

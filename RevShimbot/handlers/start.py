@@ -31,12 +31,17 @@ ITEM_LABELS = {
 
 
 def kb_start_menu(has_seller: bool = False, has_client: bool = False) -> InlineKeyboardMarkup:
-    rows = [
-        [InlineKeyboardButton(text="🏪 Создать шаблон магазина", callback_data="start:seller")],
-        [InlineKeyboardButton(text="🎨 Создать клиентский шаблон", callback_data="start:client")],
-        [InlineKeyboardButton(text="⚡️ Быстрый отзыв", callback_data="start:quick")],
-        [InlineKeyboardButton(text="🎨 Мои шаблоны (конструктор)", callback_data="start:mytemplates")],
-    ]
+    rows = []
+    # «Создать» показываем только если шаблона ещё нет
+    if not has_seller:
+        rows.append([InlineKeyboardButton(text="🏪 Создать шаблон магазина", callback_data="start:seller")])
+    if not has_client:
+        rows.append([InlineKeyboardButton(text="🎨 Создать клиентский шаблон", callback_data="start:client")])
+
+    rows.append([InlineKeyboardButton(text="⚡️ Быстрый отзыв", callback_data="start:quick")])
+    rows.append([InlineKeyboardButton(text="🎨 Мои шаблоны (конструктор)", callback_data="start:mytemplates")])
+
+    # «Мой шаблон» показываем когда он уже создан
     if has_seller:
         rows.append([InlineKeyboardButton(text="📋 Мой торговый шаблон", callback_data="menu:mytemplate")])
     if has_client:
@@ -389,6 +394,7 @@ async def cb_mytemplate(call: CallbackQuery, db: Database, config):
     allow = "✅ Да" if seller["allow_template_choice"] else "❌ Нет"
     tpl = TEMPLATE_NAMES.get(seller["template_id"], seller["template_id"])
     pub_id = seller.get("pub_id") or await db.ensure_pub_id(call.from_user.id)
+    seller["pub_id"] = pub_id  # чтобы клавиатура с кнопкой «Поделиться» увидела ID
     link = f"https://t.me/{config.BOT_USERNAME}?start=seller_{pub_id}"
 
     await call.message.answer(
