@@ -29,32 +29,6 @@ CREATE TABLE IF NOT EXISTS rvb_client_templates (
 );
 
 CREATE TABLE IF NOT EXISTS rvb_custom_templates (
-    id TEXT PRIMARY KEY,
-    owner_id BIGINT NOT NULL,
-    name TEXT NOT NULL DEFAULT 'Мой шаблон',
-    layout TEXT NOT NULL DEFAULT 'centered',
-    font TEXT NOT NULL DEFAULT 'montserrat',
-    text_color TEXT NOT NULL DEFAULT '#e8cc7a',
-    border_color TEXT NOT NULL DEFAULT '#c9a84c',
-    bg_color TEXT NOT NULL DEFAULT '#1a1a2e',
-    bg_image_b64 TEXT,
-    watermark TEXT,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-
-CREATE INDEX IF NOT EXISTS rvb_custom_owner_idx ON rvb_custom_templates(owner_id);
-
-CREATE TABLE IF NOT EXISTS rvb_share_keys (
-    key TEXT PRIMARY KEY,
-    template_id TEXT NOT NULL REFERENCES rvb_custom_templates(id) ON DELETE CASCADE,
-    creator_id BIGINT NOT NULL,
-    used BOOLEAN NOT NULL DEFAULT FALSE,
-    used_by BIGINT,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-
-CREATE TABLE IF NOT EXISTS rvb_custom_templates (
     id SERIAL PRIMARY KEY,
     owner_id BIGINT NOT NULL,
     creator_id BIGINT NOT NULL,
@@ -252,88 +226,6 @@ class Database:
         async with self.pool.acquire() as conn:
             row = await conn.fetchrow(query, *values)
             return dict(row) if row else None
-
-    # ── Reviews ────────────────────────────────────────────────────────────
-
-    # ── Custom Templates (конструктор) ─────────────────────────────────────
-
-    async def create_custom_template(self, tpl_id: str, owner_id: int, **fields) -> dict:
-        async with self.pool.acquire() as conn:
-            row = await conn.fetchrow("""
-                INSERT INTO rvb_custom_templates
-                    (id, owner_id, name, layout, font, text_color,
-                     border_color, bg_color, bg_image_b64, watermark)
-                VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
-                RETURNING *
-            """, tpl_id, owner_id,
-                fields.get("name", "Мой шаблон"),
-                fields.get("layout", "centered"),
-                fields.get("font", "montserrat"),
-                fields.get("text_color", "#e8cc7a"),
-                fields.get("border_color", "#c9a84c"),
-                fields.get("bg_color", "#1a1a2e"),
-                fields.get("bg_image_b64"),
-                fields.get("watermark"))
-            return dict(row)
-
-    async def get_custom_template(self, tpl_id: str):
-        async with self.pool.acquire() as conn:
-            row = await conn.fetchrow(
-                "SELECT * FROM rvb_custom_templates WHERE id = $1", tpl_id)
-            return dict(row) if row else None
-
-    async def list_custom_templates(self, owner_id: int) -> list:
-        async with self.pool.acquire() as conn:
-            rows = await conn.fetch(
-                "SELECT * FROM rvb_custom_templates WHERE owner_id = $1 ORDER BY created_at DESC",
-                owner_id)
-            return [dict(r) for r in rows]
-
-    async def count_custom_templates(self, owner_id: int) -> int:
-        async with self.pool.acquire() as conn:
-            return await conn.fetchval(
-                "SELECT COUNT(*) FROM rvb_custom_templates WHERE owner_id = $1", owner_id)
-
-    async def update_custom_template(self, tpl_id: str, **fields):
-        if not fields:
-            return await self.get_custom_template(tpl_id)
-        set_parts, values = [], []
-        for i, (k, v) in enumerate(fields.items(), start=1):
-            set_parts.append(f"{k} = ${i}")
-            values.append(v)
-        values.append(tpl_id)
-        q = f"UPDATE rvb_custom_templates SET {', '.join(set_parts)}, updated_at=NOW() WHERE id=${len(values)} RETURNING *"
-        async with self.pool.acquire() as conn:
-            row = await conn.fetchrow(q, *values)
-            return dict(row) if row else None
-
-    async def delete_custom_template(self, tpl_id: str, owner_id: int) -> bool:
-        async with self.pool.acquire() as conn:
-            result = await conn.execute(
-                "DELETE FROM rvb_custom_templates WHERE id = $1 AND owner_id = $2",
-                tpl_id, owner_id)
-            return result.split()[-1] != "0"
-
-    # ── Share Keys ─────────────────────────────────────────────────────────
-
-    async def create_share_key(self, key: str, template_id: str, creator_id: int):
-        async with self.pool.acquire() as conn:
-            await conn.execute("""
-                INSERT INTO rvb_share_keys (key, template_id, creator_id)
-                VALUES ($1, $2, $3)
-            """, key, template_id, creator_id)
-
-    async def get_share_key(self, key: str):
-        async with self.pool.acquire() as conn:
-            row = await conn.fetchrow(
-                "SELECT * FROM rvb_share_keys WHERE key = $1", key)
-            return dict(row) if row else None
-
-    async def mark_share_key_used(self, key: str, used_by: int):
-        async with self.pool.acquire() as conn:
-            await conn.execute(
-                "UPDATE rvb_share_keys SET used = TRUE, used_by = $1 WHERE key = $2",
-                used_by, key)
 
     async def save_review(
         self, seller_id: int, buyer_id: int, buyer_name: str,
