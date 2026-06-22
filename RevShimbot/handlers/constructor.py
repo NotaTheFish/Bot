@@ -33,6 +33,7 @@ def _default_cfg() -> dict:
     return {
         "layout": "classic",
         "font": "montserrat",
+        "title_font": "caveat",
         "text_color": "#f0f0f0",
         "accent_color": "#c9a84c",
         "bg_color": "#1a1a2e",
@@ -46,8 +47,9 @@ def _default_cfg() -> dict:
 
 def kb_constructor_main() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📐 Раскладка", callback_data="con:menu:layout"),
-         InlineKeyboardButton(text="🔤 Шрифт", callback_data="con:menu:font")],
+        [InlineKeyboardButton(text="📐 Раскладка", callback_data="con:menu:layout")],
+        [InlineKeyboardButton(text="🔤 Шрифт названия", callback_data="con:menu:title_font"),
+         InlineKeyboardButton(text="🔡 Шрифт текста", callback_data="con:menu:font")],
         [InlineKeyboardButton(text="🎨 Цвет текста", callback_data="con:menu:text_color"),
          InlineKeyboardButton(text="✨ Акцент", callback_data="con:menu:accent_color")],
         [InlineKeyboardButton(text="🌌 Фон (цвет)", callback_data="con:menu:bg_color"),
@@ -81,6 +83,30 @@ async def start_constructor(message: Message, state: FSMContext, db: Database, b
     cfg = _default_cfg()
     await state.set_state(ConstructorSG.building)
     await state.update_data(cfg=cfg, preview_msg_id=None, bot_username=bot_username)
+    await _send_or_update_preview(message, state, db, first=True)
+
+
+async def start_constructor_edit(message: Message, state: FSMContext, db: Database,
+                                  tpl: dict, bot_username: str = "reviewbot"):
+    """Запускает конструктор с загруженным существующим шаблоном для редактирования."""
+    cfg = {
+        "layout": tpl["layout"],
+        "font": tpl["font"],
+        "title_font": tpl.get("title_font", "caveat"),
+        "text_color": tpl["text_color"],
+        "accent_color": tpl["accent_color"],
+        "bg_color": tpl["bg_color"],
+        "bg_image": tpl["bg_image"],
+        "creator_username": tpl["creator_username"],
+        "is_edited": tpl["is_edited"],
+    }
+    await state.set_state(ConstructorSG.building)
+    await state.update_data(
+        cfg=cfg, preview_msg_id=None, bot_username=bot_username,
+        edit_template_id=tpl["id"],          # id редактируемого шаблона
+        edit_template_name=tpl["name"],
+        is_received=(tpl["owner_id"] != tpl["creator_id"]),  # чужой ли шаблон
+    )
     await _send_or_update_preview(message, state, db, first=True)
 
 
@@ -126,7 +152,8 @@ async def _send_or_update_preview(message_or_call, state: FSMContext, db: Databa
 
 MENU_MAP = {
     "layout": ("📐 Выбери раскладку:", LAYOUTS),
-    "font": ("🔤 Выбери шрифт:", FONTS),
+    "font": ("🔡 Шрифт основного текста:", FONTS),
+    "title_font": ("🔤 Шрифт названия магазина:", FONTS),
     "text_color": ("🎨 Цвет текста:", TEXT_COLORS),
     "accent_color": ("✨ Цвет акцента (рамки, звёзды):", ACCENT_COLORS),
     "bg_color": ("🌌 Цвет фона:", BG_COLORS),
@@ -177,6 +204,9 @@ async def cb_set_option(call: CallbackQuery, state: FSMContext, db: Database):
     elif field == "font":
         changed = cfg.get("font") != value
         cfg["font"] = value
+    elif field == "title_font":
+        changed = cfg.get("title_font") != value
+        cfg["title_font"] = value
     else:
         changed = False
 
@@ -230,8 +260,42 @@ async def cb_bg_skip(message: Message, state: FSMContext, db: Database):
 # ── Сохранение ─────────────────────────────────────────────────────────────
 
 @router.callback_query(ConstructorSG.building, F.data == "con:save")
-async def cb_save(call: CallbackQuery, state: FSMContext):
+async def cb_save(call: CallbackQuery, state: FSMContext, db: Database):
     await call.answer()
+    data = await state.get_data()
+
+    # Режим редактирования существующего шаблона
+    if data.get("edit_template_id"):
+        cfg = data["cfg"]
+        tpl_id = data["edit_template_id"]
+        is_received = data.get("is_received", False)
+
+        update_fields = {
+            "layout": cfg["layout"],
+            "font": cfg["font"],
+            "title_font": cfg.get("title_font", "caveat"),
+            "text_color": cfg["text_color"],
+            "accent_color": cfg["accent_color"],
+            "bg_color": cfg["bg_color"],
+            "bg_image": cfg.get("bg_image"),
+        }
+        # Если редактируем полученный чужой шаблон — становимся владельцем
+        if is_received:
+            update_fields["is_edited"] = True
+
+        await db.update_custom_template(tpl_id, **update_fields)
+        await state.clear()
+
+        note = ""
+        if is_received:
+            note = "\n\n👑 Ты отредактировал полученный шаблон — теперь ты его владелец, " \
+                   "водяной знак создателя убран, можешь делиться им дальше."
+        await call.message.answer(
+            f"✅ Шаблон <b>«{data.get('edit_template_name', '')}»</b> обновлён!{note}"
+        )
+        return
+
+    # Режим создания нового — спрашиваем название
     await state.set_state(ConstructorSG.enter_name)
     await call.message.answer("💾 Придумай название для шаблона:\n<i>Например: Мой золотой, Тёмная тема</i>")
 
@@ -249,6 +313,7 @@ async def cb_save_name(message: Message, state: FSMContext, db: Database):
         name=name,
         layout=cfg["layout"],
         font=cfg["font"],
+        title_font=cfg.get("title_font", "caveat"),
         text_color=cfg["text_color"],
         accent_color=cfg["accent_color"],
         bg_color=cfg["bg_color"],

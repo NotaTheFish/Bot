@@ -94,6 +94,8 @@ def build_html(cfg: dict, data: dict) -> str:
     layout = cfg.get("layout", "classic")
     font_key = cfg.get("font", "montserrat")
     _, font_css = FONTS.get(font_key, FONTS["montserrat"])
+    title_font_key = cfg.get("title_font", "caveat")
+    _, title_font_css = FONTS.get(title_font_key, FONTS["caveat"])
     text_color = cfg.get("text_color", "#e0e0e0")
     accent = cfg.get("accent_color", "#c9a84c")
     bg_color = cfg.get("bg_color", "#1a1a2e")
@@ -195,7 +197,7 @@ def build_html(cfg: dict, data: dict) -> str:
 *{{margin:0;padding:0;box-sizing:border-box;font-family:{font_css};}}
 body{{width:800px;background:transparent;}}
 .card{{width:800px;{bg_style}padding:44px 56px 36px;position:relative;overflow:hidden;}}
-.shop{{font-weight:700;font-size:28px;color:{accent};text-align:center;margin-bottom:6px;text-shadow:0 2px 6px rgba(0,0,0,0.5);}}
+.shop{{font-family:{title_font_css};font-weight:700;font-size:30px;color:{accent};text-align:center;margin-bottom:6px;text-shadow:0 2px 6px rgba(0,0,0,0.5);}}
 .seller{{font-size:13px;color:{text_color};opacity:0.6;text-align:center;margin-bottom:16px;}}
 .divider{{height:1px;background:{accent};opacity:0.4;margin:16px 40px;}}
 .stars{{font-size:20px;color:{accent};text-align:center;letter-spacing:4px;margin-bottom:14px;text-shadow:0 1px 4px rgba(0,0,0,0.5);}}

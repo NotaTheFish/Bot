@@ -43,6 +43,7 @@ def kb_templates_list(templates: list) -> InlineKeyboardMarkup:
 def kb_template_actions(tpl: dict) -> InlineKeyboardMarkup:
     rows = [
         [InlineKeyboardButton(text="👁 Показать карточку", callback_data=f"mytpl:show:{tpl['id']}")],
+        [InlineKeyboardButton(text="✏️ Редактировать", callback_data=f"mytpl:edit:{tpl['id']}")],
     ]
     if _can_share(tpl):
         rows.append([InlineKeyboardButton(text="🔗 Поделиться", callback_data=f"mytpl:share:{tpl['id']}")])
@@ -110,6 +111,19 @@ async def cb_view(call: CallbackQuery, db: Database):
     )
 
 
+
+
+@router.callback_query(F.data.startswith("mytpl:edit:"))
+async def cb_edit(call: CallbackQuery, state: FSMContext, db: Database, config):
+    tpl_id = int(call.data.split(":")[2])
+    tpl = await db.get_custom_template(tpl_id)
+    if not tpl or tpl["owner_id"] != call.from_user.id:
+        await call.answer("Не найдено", show_alert=True)
+        return
+    await call.answer()
+    from handlers.constructor import start_constructor_edit
+    await start_constructor_edit(call.message, state, db, tpl, config.BOT_USERNAME)
+
 @router.callback_query(F.data.startswith("mytpl:show:"))
 async def cb_show(call: CallbackQuery, db: Database, config):
     tpl_id = int(call.data.split(":")[2])
@@ -120,6 +134,7 @@ async def cb_show(call: CallbackQuery, db: Database, config):
     await call.answer()
     cfg = {
         "layout": tpl["layout"], "font": tpl["font"],
+        "title_font": tpl.get("title_font", "caveat"),
         "text_color": tpl["text_color"], "accent_color": tpl["accent_color"],
         "bg_color": tpl["bg_color"], "bg_image": tpl["bg_image"],
         "creator_username": tpl["creator_username"], "is_edited": tpl["is_edited"],
@@ -208,6 +223,7 @@ async def claim_template(user_id: int, username, key: str, db: Database) -> tupl
         name=src["name"],
         layout=src["layout"],
         font=src["font"],
+        title_font=src.get("title_font", "caveat"),
         text_color=src["text_color"],
         accent_color=src["accent_color"],
         bg_color=src["bg_color"],

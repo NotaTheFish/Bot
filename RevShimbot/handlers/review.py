@@ -32,7 +32,8 @@ async def start_review_flow(message: Message, seller: dict, state: FSMContext, d
 
     if seller["allow_template_choice"]:
         await state.set_state(ReviewSG.choose_template)
-        customs = await db.list_custom_templates(message.from_user.id)
+        # Показываем кастомные шаблоны ПРОДАВЦА — ведь отзыв для его магазина
+        customs = await db.list_custom_templates(seller["id"])
         await message.answer(
             "🎨 Выбери стиль карточки:",
             reply_markup=kb_templates(seller["template_id"], customs)

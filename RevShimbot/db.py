@@ -36,6 +36,7 @@ CREATE TABLE IF NOT EXISTS rvb_custom_templates (
     name TEXT NOT NULL DEFAULT 'Мой шаблон',
     layout TEXT NOT NULL DEFAULT 'classic',
     font TEXT NOT NULL DEFAULT 'montserrat',
+    title_font TEXT NOT NULL DEFAULT 'caveat',
     text_color TEXT NOT NULL DEFAULT '#e0e0e0',
     accent_color TEXT NOT NULL DEFAULT '#c9a84c',
     bg_color TEXT NOT NULL DEFAULT '#1a1a2e',
@@ -82,6 +83,11 @@ class Database:
         self.pool = await asyncpg.create_pool(self.url, min_size=2, max_size=10)
         async with self.pool.acquire() as conn:
             await conn.execute(CREATE_TABLES)
+            # Авто-миграция: добавляем title_font если таблица уже существовала без неё
+            await conn.execute("""
+                ALTER TABLE rvb_custom_templates
+                ADD COLUMN IF NOT EXISTS title_font TEXT NOT NULL DEFAULT 'caveat'
+            """)
         logger.info("Database initialized")
 
     async def close(self):
@@ -96,13 +102,14 @@ class Database:
             row = await conn.fetchrow("""
                 INSERT INTO rvb_custom_templates
                     (owner_id, creator_id, creator_username, name, layout, font,
-                     text_color, accent_color, bg_color, bg_image, is_edited)
-                VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+                     title_font, text_color, accent_color, bg_color, bg_image, is_edited)
+                VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
                 RETURNING *
             """, owner_id, creator_id, creator_username,
                 fields.get("name", "Мой шаблон"),
                 fields.get("layout", "classic"),
                 fields.get("font", "montserrat"),
+                fields.get("title_font", "caveat"),
                 fields.get("text_color", "#e0e0e0"),
                 fields.get("accent_color", "#c9a84c"),
                 fields.get("bg_color", "#1a1a2e"),
