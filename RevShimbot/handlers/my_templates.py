@@ -51,8 +51,8 @@ def kb_template_actions(tpl: dict) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-async def show_templates_list(message: Message, db: Database):
-    templates = await db.list_custom_templates(message.from_user.id)
+async def show_templates_list(message: Message, db: Database, user_id: int):
+    templates = await db.list_custom_templates(user_id)
     if not templates:
         await message.answer(
             "🎨 У тебя пока нет кастомных шаблонов.\n\n"
@@ -73,7 +73,7 @@ async def show_templates_list(message: Message, db: Database):
 @router.callback_query(F.data == "mytpl:list")
 async def cb_list(call: CallbackQuery, db: Database):
     await call.answer()
-    await show_templates_list(call.message, db)
+    await show_templates_list(call.message, db, call.from_user.id)
 
 
 @router.callback_query(F.data == "mytpl:new")
@@ -166,7 +166,7 @@ async def cb_delete(call: CallbackQuery, db: Database):
             "🗑 Шаблон удалён.\n"
             "<i>Если ты им делился — у получателей он остаётся.</i>"
         )
-        await show_templates_list(call.message, db)
+        await show_templates_list(call.message, db, call.from_user.id)
     else:
         await call.answer("Не удалось удалить", show_alert=True)
 
@@ -225,4 +225,4 @@ async def cb_text_key(message: Message, db: Database):
     ok, msg = await claim_template(message.from_user.id, message.from_user.username, key, db)
     await message.answer(msg)
     if ok:
-        await show_templates_list(message, db)
+        await show_templates_list(message, db, message.from_user.id)

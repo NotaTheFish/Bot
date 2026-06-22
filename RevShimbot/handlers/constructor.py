@@ -157,17 +157,33 @@ async def cb_set_option(call: CallbackQuery, state: FSMContext, db: Database):
     data = await state.get_data()
     cfg = data["cfg"]
 
-    if field in ("text_color",):
-        cfg["text_color"] = TEXT_COLORS[value][1]
+    # Вычисляем новое значение и сравниваем с текущим
+    if field == "text_color":
+        new_val = TEXT_COLORS[value][1]
+        changed = cfg.get("text_color") != new_val
+        cfg["text_color"] = new_val
     elif field == "accent_color":
-        cfg["accent_color"] = ACCENT_COLORS[value][1]
+        new_val = ACCENT_COLORS[value][1]
+        changed = cfg.get("accent_color") != new_val
+        cfg["accent_color"] = new_val
     elif field == "bg_color":
-        cfg["bg_color"] = BG_COLORS[value][1]
+        new_val = BG_COLORS[value][1]
+        changed = cfg.get("bg_color") != new_val or cfg.get("bg_image") is not None
+        cfg["bg_color"] = new_val
         cfg["bg_image"] = None  # цвет отменяет картинку
     elif field == "layout":
+        changed = cfg.get("layout") != value
         cfg["layout"] = value
     elif field == "font":
+        changed = cfg.get("font") != value
         cfg["font"] = value
+    else:
+        changed = False
+
+    # Если ничего не изменилось — просто всплывающий тост, превью не трогаем
+    if not changed:
+        await call.answer("Уже выбрано ✓")
+        return
 
     await state.update_data(cfg=cfg)
     await call.answer("✅ Применено")

@@ -5,7 +5,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 
 from db import Database
-from keyboards import kb_seller_menu, kb_templates, kb_template_view
+from keyboards import kb_seller_menu, kb_templates, kb_template_view, kb_main_reply
 from utils.helpers import get_ref_link
 from constants import TEMPLATES
 
@@ -66,7 +66,7 @@ async def cmd_start(message: Message, db: Database, bot, state: FSMContext):
         await message.answer(msg)
         if ok:
             from handlers.my_templates import show_templates_list
-            await show_templates_list(message, db)
+            await show_templates_list(message, db, message.from_user.id)
         return
 
     # Покупатель пришёл по реф-ссылке продавца
@@ -85,20 +85,37 @@ async def cmd_start(message: Message, db: Database, bot, state: FSMContext):
         await start_review_flow(message, seller, state, db)
         return
 
-    name = message.from_user.first_name or "трейдер"
-    has_seller = bool(await db.get_seller(message.from_user.id))
-    has_client = bool(await db.get_client_template(message.from_user.id))
+    await show_main_menu(message, db, message.from_user.id, message.from_user.first_name)
 
+
+async def show_main_menu(message: Message, db: Database, user_id: int, first_name: str = None):
+    """Показывает главное меню — используется и в /start, и в кнопке Главное меню."""
+    name = first_name or "трейдер"
+    has_seller = bool(await db.get_seller(user_id))
+    has_client = bool(await db.get_client_template(user_id))
+
+    # Сначала ставим постоянную reply-клавиатуру
     await message.answer(
         f"👋 Привет, <b>{name}</b>!\n\n"
         f"Я <b>RevShimBot</b> — создаю красивые карточки отзывов для трейдеров "
         f"Creatures of Sonaria и Dragon Adventures.\n\n"
         f"Что хочешь сделать?",
+        reply_markup=kb_main_reply()
+    )
+    # Затем инлайн-меню действий
+    await message.answer(
+        "Выбери действие 👇",
         reply_markup=kb_start_menu(has_seller, has_client)
     )
 
 
 # ── Кнопки главного меню ──────────────────────────────────────────────────
+
+@router.message(F.text == "🏠 Главное меню")
+async def cb_main_menu_button(message: Message, db: Database, state: FSMContext):
+    await state.clear()
+    await show_main_menu(message, db, message.from_user.id, message.from_user.first_name)
+
 
 @router.callback_query(F.data == "start:seller")
 async def cb_start_seller(call: CallbackQuery, db: Database, state: FSMContext):
@@ -249,7 +266,7 @@ async def cb_start_mytemplates(call: CallbackQuery, db: Database):
     await call.answer()
     await call.message.edit_reply_markup(reply_markup=None)
     from handlers.my_templates import show_templates_list
-    await show_templates_list(call.message, db)
+    await show_templates_list(call.message, db, call.from_user.id)
 
 
 @router.message(Command("menu"))
