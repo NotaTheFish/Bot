@@ -8,6 +8,7 @@ logger = logging.getLogger(__name__)
 CREATE_TABLES = """
 CREATE TABLE IF NOT EXISTS rvb_sellers (
     id BIGINT PRIMARY KEY,
+    pub_id TEXT UNIQUE,
     username TEXT,
     shop_name TEXT NOT NULL DEFAULT '',
     template_id TEXT NOT NULL DEFAULT 'classic_gold',
@@ -87,6 +88,11 @@ class Database:
             await conn.execute("""
                 ALTER TABLE rvb_custom_templates
                 ADD COLUMN IF NOT EXISTS title_font TEXT NOT NULL DEFAULT 'caveat'
+            """)
+            # Авто-миграция: pub_id для продавцов
+            await conn.execute("""
+                ALTER TABLE rvb_sellers
+                ADD COLUMN IF NOT EXISTS pub_id TEXT UNIQUE
             """)
         logger.info("Database initialized")
 
@@ -207,6 +213,39 @@ class Database:
                 "SELECT * FROM rvb_sellers WHERE id = $1", user_id
             )
             return dict(row) if row else None
+
+    async def get_seller_by_pubid(self, pub_id: str) -> Optional[dict]:
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT * FROM rvb_sellers WHERE pub_id = $1", pub_id
+            )
+            return dict(row) if row else None
+
+    async def ensure_pub_id(self, user_id: int) -> str:
+        """Возвращает pub_id продавца, генерируя уникальный если ещё нет."""
+        import secrets
+        import string
+        async with self.pool.acquire() as conn:
+            existing = await conn.fetchval(
+                "SELECT pub_id FROM rvb_sellers WHERE id = $1", user_id)
+            if existing:
+                return existing
+            # Генерируем уникальный 4-значный код
+            alphabet = string.ascii_uppercase + string.digits
+            for _ in range(50):
+                code = "".join(secrets.choice(alphabet) for _ in range(4))
+                taken = await conn.fetchval(
+                    "SELECT 1 FROM rvb_sellers WHERE pub_id = $1", code)
+                if not taken:
+                    await conn.execute(
+                        "UPDATE rvb_sellers SET pub_id = $1 WHERE id = $2",
+                        code, user_id)
+                    return code
+            # Крайне маловероятно — фолбэк на 5 символов
+            code = "".join(secrets.choice(alphabet) for _ in range(5))
+            await conn.execute(
+                "UPDATE rvb_sellers SET pub_id = $1 WHERE id = $2", code, user_id)
+            return code
 
     async def upsert_seller(self, user_id: int, username: Optional[str], shop_name: str) -> dict:
         async with self.pool.acquire() as conn:

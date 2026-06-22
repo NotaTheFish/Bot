@@ -71,16 +71,17 @@ async def cmd_start(message: Message, db: Database, bot, state: FSMContext):
 
     # Покупатель пришёл по реф-ссылке продавца
     if deep_link and deep_link.startswith("seller_"):
-        try:
-            seller_id = int(deep_link.replace("seller_", ""))
-        except ValueError:
-            await message.answer("❌ Неверная ссылка.")
-            return
-        seller = await db.get_seller(seller_id)
+        raw = deep_link.replace("seller_", "")
+        seller = None
+        # Сначала пробуем как pub_id (GTEF), потом как числовой (обратная совместимость)
+        if raw.isdigit():
+            seller = await db.get_seller(int(raw))
+        else:
+            seller = await db.get_seller_by_pubid(raw.upper())
         if not seller:
             await message.answer("❌ Магазин не найден.")
             return
-        await state.set_data({"seller_id": seller_id, "mode": "buyer"})
+        await state.set_data({"seller_id": seller["id"], "mode": "buyer"})
         from handlers.review import start_review_flow
         await start_review_flow(message, seller, state, db)
         return
@@ -282,8 +283,9 @@ async def cb_start_mytemplates(call: CallbackQuery, db: Database):
 async def cmd_menu(message: Message, db: Database):
     seller = await db.get_seller(message.from_user.id)
     if seller:
-        await message.answer(f"🏪 <b>{seller['shop_name']}</b> — меню продавца",
-                             reply_markup=kb_seller_menu())
+        pub_id = seller.get("pub_id") or await db.ensure_pub_id(message.from_user.id)
+        await message.answer(f"🏪 <b>{seller['shop_name']}</b> — меню продавца\n🆔 ID: <code>{pub_id}</code>",
+                             reply_markup=kb_seller_menu(pub_id))
     else:
         has_client = bool(await db.get_client_template(message.from_user.id))
         await message.answer("Выбери действие:",
@@ -296,8 +298,8 @@ async def cb_mylink(call: CallbackQuery, db: Database, config):
     if not seller:
         await call.answer("Сначала настрой шаблон", show_alert=True)
         return
-    link = get_ref_link(config.BOT_USERNAME, call.from_user.id)
-    seller_id = call.from_user.id
+    pub_id = seller.get("pub_id") or await db.ensure_pub_id(call.from_user.id)
+    link = f"https://t.me/{config.BOT_USERNAME}?start=seller_{pub_id}"
     await call.message.answer(
         f"🔗 <b>Реферальная ссылка</b>\n"
         f"Скинь покупателю — он откроет бот и оставит отзыв:\n"
@@ -305,10 +307,9 @@ async def cb_mylink(call: CallbackQuery, db: Database, config):
         f"⭐️ <b>Отзыв прямо в чате</b>\n"
         f"Покупатель может оставить карточку-отзыв прямо в любом чате "
         f"не заходя в бот. Для этого ему нужно написать:\n\n"
-        f"<code>@{config.BOT_USERNAME} {seller_id} текст отзыва</code>\n\n"
-        f"Твой ID: <code>{seller_id}</code>\n"
-        f"Скинь покупателю этот ID вместе с инструкцией — "
-        f"и он сможет отправить красивую карточку прямо в вашем чате."
+        f"<code>@{config.BOT_USERNAME} {pub_id} текст отзыва</code>\n\n"
+        f"🆔 Твой ID: <code>{pub_id}</code>\n"
+        f"Скинь покупателю этот ID — и он отправит красивую карточку прямо в вашем чате."
     )
     await call.answer()
 
@@ -387,18 +388,18 @@ async def cb_mytemplate(call: CallbackQuery, db: Database, config):
         item_info += f": «{seller['item_value']}»"
     allow = "✅ Да" if seller["allow_template_choice"] else "❌ Нет"
     tpl = TEMPLATE_NAMES.get(seller["template_id"], seller["template_id"])
-    link = get_ref_link(config.BOT_USERNAME, call.from_user.id)
-    seller_id = call.from_user.id
+    pub_id = seller.get("pub_id") or await db.ensure_pub_id(call.from_user.id)
+    link = f"https://t.me/{config.BOT_USERNAME}?start=seller_{pub_id}"
 
     await call.message.answer(
         f"📋 <b>Торговый шаблон — {seller['shop_name']}</b>\n\n"
+        f"🆔 Твой ID: <code>{pub_id}</code>\n"
         f"🎨 Стиль: <b>{tpl}</b>\n"
         f"⭐️ Звёзды: <b>{stars_info}</b>\n"
         f"📦 Что купил: <b>{item_info}</b>\n"
         f"🎨 Выбор стиля покупателем: <b>{allow}</b>\n\n"
         f"🔗 Реф-ссылка: <code>{link}</code>\n\n"
-        f"💬 Фраза для покупателей (отзыв прямо в чате):\n"
-        f"<code>@{config.BOT_USERNAME} {seller_id} текст отзыва</code>\n\n"
+        f"💬 Отзыв в чате: <code>@{config.BOT_USERNAME} {pub_id} текст</code>\n\n"
         f"Что изменить?",
         reply_markup=kb_template_view(seller)
     )

@@ -58,13 +58,25 @@ def kb_setup_done() -> InlineKeyboardMarkup:
     ]])
 
 
-def kb_seller_menu() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(inline_keyboard=[
+def kb_seller_menu(pub_id: str = None) -> InlineKeyboardMarkup:
+    rows = [
         [InlineKeyboardButton(text="📋 Мой шаблон", callback_data="menu:mytemplate")],
-        [InlineKeyboardButton(text="🔗 Реф-ссылка и фраза для чата", callback_data="menu:mylink")],
-        [InlineKeyboardButton(text="👁 Предпросмотр карточки", callback_data="menu:preview")],
-        [InlineKeyboardButton(text="📊 Статистика", callback_data="menu:stats")],
-    ])
+    ]
+    if pub_id:
+        from aiogram.types import SwitchInlineQueryChosenChat
+        rows.append([InlineKeyboardButton(
+            text="📨 Поделиться (отправить приглашение)",
+            switch_inline_query_chosen_chat=SwitchInlineQueryChosenChat(
+                query=pub_id,
+                allow_user_chats=True,
+                allow_group_chats=True,
+                allow_channel_chats=True,
+            )
+        )])
+    rows.append([InlineKeyboardButton(text="🔗 Реф-ссылка и фраза для чата", callback_data="menu:mylink")])
+    rows.append([InlineKeyboardButton(text="👁 Предпросмотр карточки", callback_data="menu:preview")])
+    rows.append([InlineKeyboardButton(text="📊 Статистика", callback_data="menu:stats")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def kb_template_view(seller: dict) -> InlineKeyboardMarkup:

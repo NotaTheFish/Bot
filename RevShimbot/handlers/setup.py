@@ -60,15 +60,18 @@ async def _save_and_finish(user_id: int, username, state: FSMContext,
         item_value=data.get("item_value", ""),
         allow_template_choice=data.get("allow_template_choice", False),
     )
+    pub_id = await db.ensure_pub_id(user_id)
     await state.clear()
-    link = get_ref_link(config.BOT_USERNAME, user_id)
+    link = f"https://t.me/{config.BOT_USERNAME}?start=seller_{pub_id}"
     await message.answer(
         f"✅ <b>Шаблон сохранён!</b>\n\n"
-        f"🏪 Магазин: <b>{data.get('shop_name', '')}</b>\n\n"
-        f"🔗 Реф-ссылка:\n<code>{link}</code>\n\n"
-        f"💬 Фраза для покупателей (отзыв прямо в чате):\n"
-        f"<code>@{config.BOT_USERNAME} {user_id} текст отзыва</code>",
-        reply_markup=kb_seller_menu()
+        f"🏪 Магазин: <b>{data.get('shop_name', '')}</b>\n"
+        f"🆔 Твой ID: <code>{pub_id}</code>\n\n"
+        f"🔗 Реф-ссылка (скинь покупателю):\n<code>{link}</code>\n\n"
+        f"💬 Отзыв прямо в чате:\n"
+        f"<code>@{config.BOT_USERNAME} {pub_id} текст отзыва</code>\n\n"
+        f"📨 Или нажми «Поделиться» в меню — отправь приглашение в любой чат.",
+        reply_markup=kb_seller_menu(pub_id)
     )
 
 
