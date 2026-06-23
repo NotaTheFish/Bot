@@ -409,6 +409,8 @@ async def cb_mytemplate(call: CallbackQuery, db: Database, config):
     tpl = TEMPLATE_NAMES.get(seller["template_id"], seller["template_id"])
     pub_id = seller.get("pub_id") or await db.ensure_pub_id(call.from_user.id)
     seller["pub_id"] = pub_id  # чтобы клавиатура с кнопкой «Поделиться» увидела ID
+    ch = await db.get_seller_channel(call.from_user.id)
+    seller["channel_verified"] = ch and ch["verified"]
     link = f"https://t.me/{config.BOT_USERNAME}?start=seller_{pub_id}"
 
     await call.message.answer(

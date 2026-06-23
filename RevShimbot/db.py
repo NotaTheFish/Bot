@@ -73,6 +73,15 @@ CREATE TABLE IF NOT EXISTS rvb_reviews (
 );
 
 CREATE INDEX IF NOT EXISTS rvb_reviews_seller_idx ON rvb_reviews(seller_id);
+
+CREATE TABLE IF NOT EXISTS rvb_seller_channels (
+    seller_id BIGINT PRIMARY KEY REFERENCES rvb_sellers(id) ON DELETE CASCADE,
+    channel_id BIGINT NOT NULL UNIQUE,
+    channel_title TEXT NOT NULL DEFAULT '',
+    verified BOOLEAN NOT NULL DEFAULT FALSE,
+    verify_key TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
 """
 
 
@@ -98,6 +107,17 @@ class Database:
             await conn.execute("""
                 ALTER TABLE rvb_sellers
                 ADD COLUMN IF NOT EXISTS pub_id_changed_at TIMESTAMPTZ
+            """)
+            # Авто-миграция: таблица каналов продавцов
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS rvb_seller_channels (
+                    seller_id BIGINT PRIMARY KEY REFERENCES rvb_sellers(id) ON DELETE CASCADE,
+                    channel_id BIGINT NOT NULL UNIQUE,
+                    channel_title TEXT NOT NULL DEFAULT \'\',
+                    verified BOOLEAN NOT NULL DEFAULT FALSE,
+                    verify_key TEXT,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                )
             """)
         logger.info("Database initialized")
 
@@ -350,6 +370,56 @@ class Database:
                 "UPDATE rvb_reviews SET card_file_id = $1 WHERE id = $2",
                 file_id, review_id
             )
+
+    # ── Seller Channels ──────────────────────────────────────────────────
+
+    async def set_seller_channel(self, seller_id: int, channel_id: int, channel_title: str, verify_key: str):
+        async with self.pool.acquire() as conn:
+            await conn.execute("""
+                INSERT INTO rvb_seller_channels (seller_id, channel_id, channel_title, verified, verify_key)
+                VALUES ($1, $2, $3, FALSE, $4)
+                ON CONFLICT (seller_id) DO UPDATE
+                    SET channel_id = EXCLUDED.channel_id,
+                        channel_title = EXCLUDED.channel_title,
+                        verified = FALSE,
+                        verify_key = EXCLUDED.verify_key,
+                        created_at = NOW()
+            """, seller_id, channel_id, channel_title, verify_key)
+
+    async def get_seller_channel(self, seller_id: int) -> Optional[dict]:
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT * FROM rvb_seller_channels WHERE seller_id = $1", seller_id
+            )
+            return dict(row) if row else None
+
+    async def get_seller_by_channel(self, channel_id: int) -> Optional[dict]:
+        """Найти продавца по channel_id (для my_chat_member апдейта)."""
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT * FROM rvb_seller_channels WHERE channel_id = $1", channel_id
+            )
+            return dict(row) if row else None
+
+    async def verify_seller_channel(self, channel_id: int):
+        async with self.pool.acquire() as conn:
+            await conn.execute(
+                "UPDATE rvb_seller_channels SET verified = TRUE, verify_key = NULL WHERE channel_id = $1",
+                channel_id
+            )
+
+    async def delete_seller_channel(self, seller_id: int):
+        async with self.pool.acquire() as conn:
+            await conn.execute(
+                "DELETE FROM rvb_seller_channels WHERE seller_id = $1", seller_id
+            )
+
+    async def get_pending_channel_by_key(self, key: str) -> Optional[dict]:
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT * FROM rvb_seller_channels WHERE verify_key = $1 AND verified = FALSE", key
+            )
+            return dict(row) if row else None
 
     async def get_global_stats(self) -> dict:
         async with self.pool.acquire() as conn:

@@ -204,9 +204,22 @@ async def step_enter_text(message: Message, state: FSMContext, db: Database, bot
 
     # Отправляем карточку продавцу автоматически
     buyer_url = f"https://t.me/{buyer_username}" if buyer_username else f"tg://user?id={message.from_user.id}"
-    seller_kb = InlineKeyboardMarkup(inline_keyboard=[[
-        InlineKeyboardButton(text=f"👤 {buyer_name}", url=buyer_url)
-    ]])
+
+    ch = await db.get_seller_channel(seller["id"])
+    channel_verified = ch and ch["verified"]
+
+    buyer_btn = InlineKeyboardButton(text=f"👤 {buyer_name}", url=buyer_url)
+    if channel_verified:
+        seller_kb = InlineKeyboardMarkup(inline_keyboard=[
+            [buyer_btn],
+            [
+                InlineKeyboardButton(text="✅ Принять", callback_data=f"review:accept:{file_id}"),
+                InlineKeyboardButton(text="❌ Отклонить", callback_data="review:reject"),
+            ]
+        ])
+    else:
+        seller_kb = InlineKeyboardMarkup(inline_keyboard=[[buyer_btn]])
+
     try:
         await bot.send_photo(
             chat_id=seller["id"],
@@ -220,3 +233,49 @@ async def step_enter_text(message: Message, state: FSMContext, db: Database, bot
         )
     except Exception:
         pass  # продавец мог не запустить бота — молча игнорируем
+
+
+# ── Принять / Отклонить отзыв (публикация в канал) ────────────────────────
+
+@router.callback_query(F.data.startswith("review:accept:"))
+async def cb_review_accept(call: CallbackQuery, bot: Bot, db: Database):
+    file_id = call.data.split(":", 2)[2]
+    seller_id = call.from_user.id
+
+    ch = await db.get_seller_channel(seller_id)
+    if not ch or not ch["verified"]:
+        await call.answer("Канал не подключён", show_alert=True)
+        return
+
+    # Восстанавливаем кнопку покупателя из текущей клавиатуры
+    buyer_btn = None
+    if call.message.reply_markup and call.message.reply_markup.inline_keyboard:
+        buyer_btn = call.message.reply_markup.inline_keyboard[0][0]
+
+    channel_kb = InlineKeyboardMarkup(inline_keyboard=[[buyer_btn]]) if buyer_btn else None
+
+    try:
+        await bot.send_photo(
+            chat_id=ch["channel_id"],
+            photo=file_id,
+            caption=call.message.caption or "",
+            reply_markup=channel_kb,
+            parse_mode="HTML",
+        )
+    except Exception as e:
+        await call.answer(f"Ошибка публикации: {e}", show_alert=True)
+        return
+
+    # Убираем кнопки Принять/Отклонить, оставляем только кнопку покупателя
+    new_kb = InlineKeyboardMarkup(inline_keyboard=[[buyer_btn]]) if buyer_btn else None
+    await call.message.edit_reply_markup(reply_markup=new_kb)
+    await call.answer("✅ Опубликовано в канале!")
+
+
+@router.callback_query(F.data == "review:reject")
+async def cb_review_reject(call: CallbackQuery, bot: Bot):
+    try:
+        await bot.delete_message(call.from_user.id, call.message.message_id)
+    except Exception:
+        pass
+    await call.answer("Отзыв отклонён")
