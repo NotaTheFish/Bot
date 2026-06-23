@@ -434,6 +434,10 @@ async def cb_myclienttemplate(call: CallbackQuery, db: Database):
 @router.callback_query(F.data.startswith("edit:"))
 async def cb_edit_field(call: CallbackQuery, db: Database, state: FSMContext):
     field = call.data.split(":")[1]
+
+    from handlers.setup import SetupSG
+    from keyboards import kb_templates, kb_stars_mode, kb_stars_value, kb_item_mode, kb_allow_template_choice
+
     # ID меняется отдельно — проверяем кулдаун сразу при нажатии
     if field == "pubid":
         seller = await db.get_seller(call.from_user.id)
@@ -464,9 +468,6 @@ async def cb_edit_field(call: CallbackQuery, db: Database, state: FSMContext):
         return
 
     await call.answer()
-    from handlers.setup import SetupSG
-    from keyboards import kb_templates, kb_stars_mode, kb_stars_value, kb_item_mode, kb_allow_template_choice
-
     seller = await db.get_seller(call.from_user.id)
     if seller:
         await state.update_data(
