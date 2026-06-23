@@ -69,40 +69,39 @@ async def cb_channel_manage(call: CallbackQuery, db: Database, config):
     ChatMemberUpdatedFilter(member_status_changed=IS_NOT_MEMBER >> ADMINISTRATOR)
 )
 async def on_bot_added_to_channel(event: ChatMemberUpdated, bot: Bot, db: Database, config):
+    logger.info(f"my_chat_member сработал: chat.type={event.chat.type}, chat.id={event.chat.id}")
+
     if event.chat.type != "channel":
+        logger.info(f"Пропуск: не канал (type={event.chat.type})")
         return
 
     channel_id = event.chat.id
     channel_title = event.chat.title or "Без названия"
+    logger.info(f"Бот добавлен в канал: {channel_id} ({channel_title})")
 
-    # Определяем продавца через deep_link параметр (startchannel=addchannel_SELLER_ID)
-    # Этот апдейт не несёт invite_link параметра — ищем pending по самому факту добавления.
-    # Стратегия: берём seller_id из стейта через startchannel deep link.
-    # Поскольку aiogram не даёт его напрямую в my_chat_member, ищем продавца
-    # который последним нажал «добавить в канал» — через таблицу pending.
-    # Надёжнее: seller — тот, кто является creator этого канала среди наших продавцов.
-
-    # Получаем список админов канала
     try:
         admins = await bot.get_chat_administrators(channel_id)
+        logger.info(f"Админы канала: {[(a.user.id, a.status) for a in admins]}")
     except Exception as e:
         logger.warning(f"Не удалось получить админов канала {channel_id}: {e}")
         return
 
     creator = next((a for a in admins if a.status == "creator"), None)
+    logger.info(f"Creator: {creator.user.id if creator else None}")
     if not creator:
         logger.info(f"Канал {channel_id}: создатель не найден среди админов")
         return
 
     seller_id = creator.user.id
     seller = await db.get_seller(seller_id)
+    logger.info(f"Seller найден: {seller is not None}, seller_id={seller_id}")
     if not seller:
         logger.info(f"Канал {channel_id}: создатель {seller_id} не является продавцом бота")
         return
 
-    # Генерируем ключ и сохраняем канал как неверифицированный
     key = _gen_key()
     await db.set_seller_channel(seller_id, channel_id, channel_title, key)
+    logger.info(f"Канал сохранён, ключ={key}, отправляю продавцу {seller_id}")
 
     try:
         await bot.send_message(
@@ -113,6 +112,7 @@ async def on_bot_added_to_channel(event: ChatMemberUpdated, bot: Bot, db: Databa
             f"<code>{key}</code>\n\n"
             f"⚠️ Бот автоматически удалит это сообщение после проверки."
         )
+        logger.info(f"Ключ отправлен продавцу {seller_id}")
     except Exception as e:
         logger.warning(f"Не удалось написать продавцу {seller_id}: {e}")
 
