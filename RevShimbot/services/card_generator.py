@@ -472,6 +472,10 @@ def _render_html(html: str) -> bytes:
             page.evaluate("document.fonts.ready")
         except Exception:
             pass
+        # Расширяем viewport под полную высоту контента (иначе высокие пруфы обрезаются)
+        full_height = page.evaluate("document.body.scrollHeight")
+        page.set_viewport_size({"width": 900, "height": int(full_height) + 40})
+        page.wait_for_timeout(100)
         card = page.query_selector(".card")
         box = card.bounding_box()
         png = page.screenshot(
