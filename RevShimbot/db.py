@@ -81,6 +81,7 @@ CREATE TABLE IF NOT EXISTS rvb_seller_channels (
     channel_title TEXT NOT NULL DEFAULT '',
     verified BOOLEAN NOT NULL DEFAULT FALSE,
     verify_key TEXT,
+    verified_at TIMESTAMPTZ,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 """
@@ -108,6 +109,11 @@ class Database:
             await conn.execute("""
                 ALTER TABLE rvb_sellers
                 ADD COLUMN IF NOT EXISTS pub_id_changed_at TIMESTAMPTZ
+            """)
+            # Авто-миграция: verified_at для каналов
+            await conn.execute("""
+                ALTER TABLE rvb_seller_channels
+                ADD COLUMN IF NOT EXISTS verified_at TIMESTAMPTZ
             """)
             # Авто-миграция: статус отзыва
             await conn.execute("""
@@ -373,10 +379,14 @@ class Database:
     async def get_pending_reviews(self, seller_id: int) -> list:
         async with self.pool.acquire() as conn:
             rows = await conn.fetch("""
-                SELECT id, buyer_name, buyer_username, review_text, stars, created_at
-                FROM rvb_reviews
-                WHERE seller_id = $1 AND status = 'pending'
-                ORDER BY created_at DESC
+                SELECT r.id, r.buyer_name, r.buyer_username, r.review_text, r.stars, r.created_at, r.card_file_id
+                FROM rvb_reviews r
+                JOIN rvb_seller_channels c ON c.seller_id = r.seller_id
+                WHERE r.seller_id = $1
+                  AND r.status = 'pending'
+                  AND c.verified = TRUE
+                  AND r.created_at > c.verified_at
+                ORDER BY r.created_at DESC
             """, seller_id)
             return [dict(r) for r in rows]
 
@@ -433,7 +443,7 @@ class Database:
     async def verify_seller_channel(self, channel_id: int):
         async with self.pool.acquire() as conn:
             await conn.execute(
-                "UPDATE rvb_seller_channels SET verified = TRUE, verify_key = NULL WHERE channel_id = $1",
+                "UPDATE rvb_seller_channels SET verified = TRUE, verify_key = NULL, verified_at = NOW() WHERE channel_id = $1",
                 channel_id
             )
 

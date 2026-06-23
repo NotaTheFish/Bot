@@ -119,9 +119,8 @@ def kb_main_reply() -> ReplyKeyboardMarkup:
     """Постоянная reply-клавиатура снизу."""
     return ReplyKeyboardMarkup(
         keyboard=[
-            [KeyboardButton(text="⚡️ Быстрый отзыв")],
             [KeyboardButton(text="🏠 Главное меню")],
         ],
         resize_keyboard=True,
-        is_persistent=True,
+        is_persistent=False,
     )

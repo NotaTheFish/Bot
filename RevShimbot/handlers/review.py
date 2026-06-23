@@ -251,26 +251,34 @@ async def cb_review_accept(call: CallbackQuery, bot: Bot, db: Database):
         await call.answer("Канал не подключён", show_alert=True)
         return
 
-    # Достаём file_id из БД
+    # Достаём данные отзыва из БД
     async with db.pool.acquire() as conn:
-        row = await conn.fetchrow("SELECT card_file_id FROM rvb_reviews WHERE id = $1", review_id)
+        row = await conn.fetchrow(
+            "SELECT card_file_id, buyer_name, buyer_username, buyer_id FROM rvb_reviews WHERE id = $1",
+            review_id
+        )
     if not row or not row["card_file_id"]:
         await call.answer("Файл карточки не найден", show_alert=True)
         return
+
     file_id = row["card_file_id"]
+    buyer_name = row["buyer_name"]
+    buyer_username = row["buyer_username"]
+    buyer_id = row["buyer_id"]
+    buyer_url = f"https://t.me/{buyer_username}" if buyer_username else f"tg://user?id={buyer_id}"
+    buyer_btn = InlineKeyboardButton(text=f"👤 {buyer_name}", url=buyer_url)
+    channel_kb = InlineKeyboardMarkup(inline_keyboard=[[buyer_btn]])
 
-    # Восстанавливаем кнопку покупателя из текущей клавиатуры
-    buyer_btn = None
-    if call.message.reply_markup and call.message.reply_markup.inline_keyboard:
-        buyer_btn = call.message.reply_markup.inline_keyboard[0][0]
-
-    channel_kb = InlineKeyboardMarkup(inline_keyboard=[[buyer_btn]]) if buyer_btn else None
-
-    try:
-        # Убираем первую строку "⭐ Новый отзыв!\n\n" из подписи для канала
+    # Берём caption — если это фото сообщение, берём из него; иначе строим сами
+    if call.message.photo:
         caption = call.message.caption or ""
         if caption.startswith("⭐ Новый отзыв!\n\n"):
             caption = caption[len("⭐ Новый отзыв!\n\n"):]
+    else:
+        # Вызов из "Мои заявки" — caption уже без лишнего заголовка
+        caption = call.message.caption or call.message.text or ""
+
+    try:
         await bot.send_photo(
             chat_id=ch["channel_id"],
             photo=file_id,
@@ -284,16 +292,15 @@ async def cb_review_accept(call: CallbackQuery, bot: Bot, db: Database):
 
     await db.set_review_status(review_id, "accepted")
 
-    # Если это сообщение с фото (из ЛС продавца) — убираем кнопки
-    if call.message.photo:
-        new_kb = InlineKeyboardMarkup(inline_keyboard=[[buyer_btn]]) if buyer_btn else None
-        await call.message.edit_reply_markup(reply_markup=new_kb)
-    else:
-        # Из списка заявок — удаляем сообщение
-        try:
+    # Убираем кнопки из текущего сообщения или удаляем его
+    try:
+        if call.message.photo:
+            new_kb = InlineKeyboardMarkup(inline_keyboard=[[buyer_btn]])
+            await call.message.edit_reply_markup(reply_markup=new_kb)
+        else:
             await call.message.delete()
-        except Exception:
-            pass
+    except Exception:
+        pass
 
     await call.answer("✅ Опубликовано в канале!")
 

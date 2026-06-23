@@ -37,6 +37,7 @@ def kb_start_menu(has_seller: bool = False, has_client: bool = False) -> InlineK
     if not has_client:
         rows.append([InlineKeyboardButton(text="🎨 Создать клиентский шаблон", callback_data="start:client")])
 
+    rows.append([InlineKeyboardButton(text="⚡️ Быстрый отзыв", callback_data="start:quick")])
     rows.append([InlineKeyboardButton(text="🎨 Конструктор", callback_data="start:mytemplates")])
 
     if has_seller:
@@ -120,19 +121,6 @@ async def show_main_menu(message: Message, db: Database, user_id: int, first_nam
 async def cb_main_menu_button(message: Message, db: Database, state: FSMContext):
     await state.clear()
     await show_main_menu(message, db, message.from_user.id, message.from_user.first_name)
-
-
-@router.message(F.text == "⚡️ Быстрый отзыв")
-async def cb_quick_review_reply(message: Message, state: FSMContext, db: Database):
-    await state.clear()
-    # Запускаем тот же флоу что и инлайн-кнопка
-    await state.set_state(QuickReviewSG.choose_template)
-    customs = await db.list_custom_templates(message.from_user.id)
-    from keyboards import kb_templates
-    await message.answer(
-        "⚡️ <b>Быстрый отзыв</b>\n\nВыбери стиль карточки:",
-        reply_markup=kb_templates("classic_gold", customs)
-    )
 
 
 @router.callback_query(F.data == "start:seller")
@@ -373,21 +361,27 @@ async def cb_pending_reviews(call: CallbackQuery, db: Database):
         await call.message.answer("📭 Нет необработанных заявок.")
         return
 
-    await call.message.answer(f"📬 <b>Необработанные заявки ({len(pending)})</b>\n\nНажми на заявку чтобы обработать:")
+    await call.message.answer(f"📬 <b>Необработанные заявки ({len(pending)})</b>")
 
     for r in pending:
         stars_line = "★" * r["stars"] if r["stars"] > 0 else ""
-        username = f"@{r['buyer_username']}" if r["buyer_username"] else "без username"
-        text = (
-            f"<b>{r['buyer_name']}</b> ({username})\n"
+        caption = (
+            f"<b>{r['buyer_name']}</b>\n"
             f"{stars_line}\n"
-            f"<i>«{r['review_text'][:100]}{'...' if len(r['review_text']) > 100 else ''}»</i>"
+            f"<i>«{r['review_text'][:200]}{'...' if len(r['review_text']) > 200 else ''}»</i>"
         )
         kb = InlineKeyboardMarkup(inline_keyboard=[[
             InlineKeyboardButton(text="✅ Принять", callback_data=f"review:accept:{r['id']}"),
             InlineKeyboardButton(text="❌ Отклонить", callback_data=f"review:reject:{r['id']}"),
         ]])
-        await call.message.answer(text, reply_markup=kb)
+        if r.get("card_file_id"):
+            await call.message.answer_photo(
+                photo=r["card_file_id"],
+                caption=caption,
+                reply_markup=kb
+            )
+        else:
+            await call.message.answer(caption, reply_markup=kb)
 
 
 @router.callback_query(F.data == "menu:mylink")
