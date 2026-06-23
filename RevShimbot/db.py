@@ -178,6 +178,14 @@ class Database:
             return await conn.fetchval(
                 "SELECT COUNT(*) FROM rvb_custom_templates WHERE owner_id = $1", owner_id)
 
+    async def count_own_custom_templates(self, owner_id: int) -> int:
+        """Шаблоны созданные самим продавцом (не полученные от других)."""
+        async with self.pool.acquire() as conn:
+            return await conn.fetchval(
+                "SELECT COUNT(*) FROM rvb_custom_templates WHERE owner_id = $1 AND creator_id = $1",
+                owner_id
+            ) or 0
+
     async def update_custom_template(self, template_id: int, **fields):
         if not fields:
             return

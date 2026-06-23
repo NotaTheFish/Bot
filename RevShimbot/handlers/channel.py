@@ -5,7 +5,6 @@ from aiogram.types import (
     CallbackQuery, Message, ChatMemberUpdated,
     InlineKeyboardMarkup, InlineKeyboardButton,
 )
-from aiogram.filters import ChatMemberUpdatedFilter, IS_NOT_MEMBER, ADMINISTRATOR
 from aiogram.fsm.context import FSMContext
 
 from db import Database
@@ -65,14 +64,18 @@ async def cb_channel_manage(call: CallbackQuery, db: Database, config):
 
 # ── 2. Бот добавлен в канал (my_chat_member апдейт) ───────────────────────
 
-@router.my_chat_member(
-    ChatMemberUpdatedFilter(member_status_changed=IS_NOT_MEMBER >> ADMINISTRATOR)
-)
+@router.my_chat_member()
 async def on_bot_added_to_channel(event: ChatMemberUpdated, bot: Bot, db: Database, config):
-    logger.info(f"my_chat_member сработал: chat.type={event.chat.type}, chat.id={event.chat.id}")
+    logger.info(f"my_chat_member сработал: chat.type={event.chat.type}, chat.id={event.chat.id}, new_status={event.new_chat_member.status}")
 
     if event.chat.type != "channel":
         logger.info(f"Пропуск: не канал (type={event.chat.type})")
+        return
+
+    # Реагируем только когда бот СТАЛ админом (из любого предыдущего статуса)
+    new_status = event.new_chat_member.status
+    if new_status != "administrator":
+        logger.info(f"Пропуск: бот не стал админом (status={new_status})")
         return
 
     channel_id = event.chat.id
@@ -97,6 +100,12 @@ async def on_bot_added_to_channel(event: ChatMemberUpdated, bot: Bot, db: Databa
     logger.info(f"Seller найден: {seller is not None}, seller_id={seller_id}")
     if not seller:
         logger.info(f"Канал {channel_id}: создатель {seller_id} не является продавцом бота")
+        return
+
+    # Если этот канал уже верифицирован этим же продавцом — не дублируем
+    existing = await db.get_seller_channel(seller_id)
+    if existing and existing["channel_id"] == channel_id and existing["verified"]:
+        logger.info(f"Канал {channel_id} уже верифицирован, пропуск")
         return
 
     key = _gen_key()

@@ -320,7 +320,7 @@ async def cb_profile(call: CallbackQuery, db: Database, config):
     await call.answer()
 
     pub_id = seller.get("pub_id") or await db.ensure_pub_id(call.from_user.id)
-    total_cards = await db.get_total_cards(call.from_user.id)
+    own_templates = await db.count_own_custom_templates(call.from_user.id)
     ch = await db.get_seller_channel(call.from_user.id)
     channel_verified = ch and ch["verified"]
     channel_info = f"✅ {ch['channel_title']}" if channel_verified else "❌ не подключён"
@@ -346,7 +346,7 @@ async def cb_profile(call: CallbackQuery, db: Database, config):
     await call.message.answer(
         f"👤 <b>Профиль</b>\n\n"
         f"🆔 Твой ID: <code>{pub_id}</code>\n"
-        f"🖼 Карточек создано: <b>{total_cards}</b>\n"
+        f"🎨 Шаблонов в конструкторе: <b>{own_templates}</b>\n"
         f"📢 Канал отзывов: <b>{channel_info}</b>",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=profile_kb_rows)
     )
@@ -479,7 +479,15 @@ async def cb_mytemplate(call: CallbackQuery, db: Database, config):
     if seller["item_mode"] in ("fixed", "hint") and seller["item_value"]:
         item_info += f": «{seller['item_value']}»"
     allow = "✅ Да" if seller["allow_template_choice"] else "❌ Нет"
-    tpl = TEMPLATE_NAMES.get(seller["template_id"], seller["template_id"])
+    tid = seller["template_id"]
+    if tid.startswith("custom_"):
+        try:
+            ct = await db.get_custom_template(int(tid.split("_")[1]))
+            tpl = ct["name"] if ct else tid
+        except Exception:
+            tpl = tid
+    else:
+        tpl = TEMPLATE_NAMES.get(tid, tid)
     pub_id = seller.get("pub_id") or await db.ensure_pub_id(call.from_user.id)
     seller["pub_id"] = pub_id  # чтобы клавиатура с кнопкой «Поделиться» увидела ID
     ch = await db.get_seller_channel(call.from_user.id)

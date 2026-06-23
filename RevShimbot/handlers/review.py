@@ -254,7 +254,7 @@ async def cb_review_accept(call: CallbackQuery, bot: Bot, db: Database):
     # Достаём данные отзыва из БД
     async with db.pool.acquire() as conn:
         row = await conn.fetchrow(
-            "SELECT card_file_id, buyer_name, buyer_username, buyer_id FROM rvb_reviews WHERE id = $1",
+            "SELECT card_file_id, buyer_name, buyer_username, buyer_id, review_text, stars FROM rvb_reviews WHERE id = $1",
             review_id
         )
     if not row or not row["card_file_id"]:
@@ -269,14 +269,18 @@ async def cb_review_accept(call: CallbackQuery, bot: Bot, db: Database):
     buyer_btn = InlineKeyboardButton(text=f"👤 {buyer_name}", url=buyer_url)
     channel_kb = InlineKeyboardMarkup(inline_keyboard=[[buyer_btn]])
 
-    # Берём caption — если это фото сообщение, берём из него; иначе строим сами
-    if call.message.photo:
-        caption = call.message.caption or ""
-        if caption.startswith("⭐ Новый отзыв!\n\n"):
-            caption = caption[len("⭐ Новый отзыв!\n\n"):]
-    else:
-        # Вызов из "Мои заявки" — caption уже без лишнего заголовка
-        caption = call.message.caption or call.message.text or ""
+    # Получаем название магазина продавца
+    seller = await db.get_seller(seller_id)
+    shop_name = seller["shop_name"] if seller else ""
+
+    # Строим подпись идентично основному флоу
+    stars_line = "★" * row["stars"] if row["stars"] > 0 else ""
+    caption_parts = [f"<b>{shop_name}</b>"]
+    if stars_line:
+        caption_parts.append(stars_line)
+    caption_parts.append(f"\n<i>«{row['review_text']}»</i>")
+    caption_parts.append(f"\n— {buyer_name}")
+    caption = "\n".join(caption_parts)
 
     try:
         await bot.send_photo(
