@@ -191,7 +191,7 @@ async def step_enter_text(message: Message, state: FSMContext, db: Database, bot
 
     # Сохраняем отзыв в БД
     file_id = sent.photo[-1].file_id if sent.photo else None
-    await db.save_review(
+    review_row = await db.save_review(
         seller_id=seller["id"],
         buyer_id=message.from_user.id,
         buyer_name=buyer_name,
@@ -202,6 +202,7 @@ async def step_enter_text(message: Message, state: FSMContext, db: Database, bot
         template_used=data.get("template_id", seller["template_id"]),
         card_file_id=file_id,
     )
+    review_id = review_row["id"]
     await state.clear()
 
     # Отправляем карточку продавцу автоматически
@@ -215,7 +216,7 @@ async def step_enter_text(message: Message, state: FSMContext, db: Database, bot
         seller_kb = InlineKeyboardMarkup(inline_keyboard=[
             [buyer_btn],
             [
-                InlineKeyboardButton(text="✅ Принять", callback_data=f"review:accept:{file_id}"),
+                InlineKeyboardButton(text="✅ Принять", callback_data=f"review:accept:{review_id}"),
                 InlineKeyboardButton(text="❌ Отклонить", callback_data="review:reject"),
             ]
         ])
@@ -242,13 +243,21 @@ async def step_enter_text(message: Message, state: FSMContext, db: Database, bot
 
 @router.callback_query(F.data.startswith("review:accept:"))
 async def cb_review_accept(call: CallbackQuery, bot: Bot, db: Database):
-    file_id = call.data.split(":", 2)[2]
+    review_id = int(call.data.split(":", 2)[2])
     seller_id = call.from_user.id
 
     ch = await db.get_seller_channel(seller_id)
     if not ch or not ch["verified"]:
         await call.answer("Канал не подключён", show_alert=True)
         return
+
+    # Достаём file_id из БД
+    async with db.pool.acquire() as conn:
+        row = await conn.fetchrow("SELECT card_file_id FROM rvb_reviews WHERE id = $1", review_id)
+    if not row or not row["card_file_id"]:
+        await call.answer("Файл карточки не найден", show_alert=True)
+        return
+    file_id = row["card_file_id"]
 
     # Восстанавливаем кнопку покупателя из текущей клавиатуры
     buyer_btn = None
