@@ -267,10 +267,14 @@ async def cb_review_accept(call: CallbackQuery, bot: Bot, db: Database):
     channel_kb = InlineKeyboardMarkup(inline_keyboard=[[buyer_btn]]) if buyer_btn else None
 
     try:
+        # Убираем первую строку "⭐ Новый отзыв!\n\n" из подписи для канала
+        caption = call.message.caption or ""
+        if caption.startswith("⭐ Новый отзыв!\n\n"):
+            caption = caption[len("⭐ Новый отзыв!\n\n"):]
         await bot.send_photo(
             chat_id=ch["channel_id"],
             photo=file_id,
-            caption=call.message.caption or "",
+            caption=caption,
             reply_markup=channel_kb,
             parse_mode="HTML",
         )
