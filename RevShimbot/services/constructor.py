@@ -264,5 +264,21 @@ async def render_with_data(cfg: dict, data: dict) -> bytes:
         data["avatar_b64"] = base64.b64encode(data["avatar_bytes"]).decode()
     data.setdefault("bot_username", "reviewbot")
     html = build_html(cfg, data)
+    proof_b64 = data.get("proof_b64")
+    if proof_b64:
+        accent = data.get("accent_color_for_proof", cfg.get("accent_color", "#c9a84c"))
+        proof_block = f"""<div style="margin-top:4px;">
+  <div style="font-size:12px;color:{accent};letter-spacing:.08em;text-transform:uppercase;margin:18px 0 12px;display:flex;align-items:center;gap:8px;">
+    <span style="flex:1;height:1px;background:{accent}33;"></span>
+    📸 Доказательство сделки
+    <span style="flex:1;height:1px;background:{accent}33;"></span>
+  </div>
+  <img src="data:image/png;base64,{proof_b64}" style="width:100%;border-radius:10px;border:1px solid {accent}44;display:block;">
+</div>"""
+        if '<div class="wm"' in html:
+            idx = html.find('<div class="wm"')
+            html = html[:idx] + proof_block + html[idx:]
+        else:
+            html = html.replace("</body>", proof_block + "</body>", 1)
     loop = asyncio.get_event_loop()
     return await loop.run_in_executor(None, _render, html)

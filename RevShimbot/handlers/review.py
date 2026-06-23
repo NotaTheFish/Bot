@@ -19,6 +19,7 @@ class ReviewSG(StatesGroup):
     choose_stars = State()
     enter_item = State()
     enter_text = State()
+    enter_proof = State()
 
 
 async def start_review_flow(message: Message, seller: dict, state: FSMContext, db: Database):
@@ -111,39 +112,41 @@ async def ask_text(message: Message, state: FSMContext):
     )
 
 
-@router.message(ReviewSG.enter_text)
-async def step_enter_text(message: Message, state: FSMContext, db: Database, bot, config):
-    text = message.text.strip()
+async def _get_avatar_bytes(bot, user_id: int):
+    try:
+        photos = await bot.get_user_profile_photos(user_id, limit=1)
+        if photos.total_count > 0:
+            file = await bot.get_file(photos.photos[0][-1].file_id)
+            buf = await bot.download_file(file.file_path)
+            return buf.read()
+    except Exception:
+        pass
+    return None
 
-    if len(text) > REVIEW_MAX_LEN:
-        await message.answer(
-            f"❌ Отзыв слишком длинный ({len(text)} симв.). Максимум {REVIEW_MAX_LEN}."
-        )
-        return
 
-    if len(text) > REVIEW_SOFT_LEN:
-        await message.answer(
-            f"⚠️ Отзыв немного длинноват ({len(text)} симв.) — карточка подстроится, но лучше покороче 😊"
-        )
+async def finalize_review(event, state: FSMContext, db: Database, bot, config,
+                          text: str, entities, proof_bytes=None):
+    """Общая финализация: генерит карточку, шлёт покупателю и продавцу.
+    event может быть Message или CallbackQuery."""
+    from aiogram.types import CallbackQuery as _CQ
+    if isinstance(event, _CQ):
+        user = event.from_user
+        answer = event.message.answer
+        answer_photo = event.message.answer_photo
+    else:
+        user = event.from_user
+        answer = event.answer
+        answer_photo = event.answer_photo
 
     data = await state.get_data()
     seller = data["seller"]
 
-    buyer_name = message.from_user.full_name or message.from_user.first_name or "Покупатель"
-    buyer_username = message.from_user.username
+    buyer_name = user.full_name or user.first_name or "Покупатель"
+    buyer_username = user.username
 
-    # Пробуем получить аватарку
-    avatar_bytes = None
-    try:
-        photos = await bot.get_user_profile_photos(message.from_user.id, limit=1)
-        if photos.total_count > 0:
-            file = await bot.get_file(photos.photos[0][-1].file_id)
-            buf = await bot.download_file(file.file_path)
-            avatar_bytes = buf.read()
-    except Exception:
-        pass
+    avatar_bytes = await _get_avatar_bytes(bot, user.id)
 
-    await message.answer("⏳ Генерирую карточку...")
+    await answer("⏳ Генерирую карточку...")
 
     card_data = {
         "shop_name": seller["shop_name"],
@@ -156,26 +159,25 @@ async def step_enter_text(message: Message, state: FSMContext, db: Database, bot
         "stars_mode": seller["stars_mode"],
         "template_id": data.get("template_id", seller["template_id"]),
         "avatar_bytes": avatar_bytes,
-        "entities": message.entities or [],
+        "entities": entities or [],
         "bot": bot,
         "bot_username": config.BOT_USERNAME,
         "db": db,
+        "proof_bytes": proof_bytes,
     }
 
     try:
         img_bytes = await generate_card(card_data)
     except Exception as e:
-        await message.answer(f"❌ Ошибка генерации карточки: {e}")
+        await answer(f"❌ Ошибка генерации карточки: {e}")
         return
 
-    # Сначала отдельным сообщением — подсказка
-    await message.answer(
+    await answer(
         f"✅ Вот твоя карточка отзыва!\n\n"
         f"Отправь её продавцу <b>{seller['shop_name']}</b> в личные сообщения. "
         f"При пересылке можешь скрыть «переслано от...»"
     )
 
-    # Затем карточка с дубликатом отзыва в подписи (для красивой пересылки)
     stars_line = "★" * data.get("stars", 0) if data.get("stars", 0) > 0 else ""
     caption_parts = [f"<b>{seller['shop_name']}</b>"]
     if stars_line:
@@ -184,16 +186,15 @@ async def step_enter_text(message: Message, state: FSMContext, db: Database, bot
     caption_parts.append(f"\n— {buyer_name}")
     review_caption = "\n".join(caption_parts)
 
-    sent = await message.answer_photo(
+    sent = await answer_photo(
         BufferedInputFile(img_bytes, filename="review.png"),
         caption=review_caption
     )
 
-    # Сохраняем отзыв в БД
     file_id = sent.photo[-1].file_id if sent.photo else None
     review_row = await db.save_review(
         seller_id=seller["id"],
-        buyer_id=message.from_user.id,
+        buyer_id=user.id,
         buyer_name=buyer_name,
         buyer_username=buyer_username,
         review_text=text,
@@ -205,8 +206,7 @@ async def step_enter_text(message: Message, state: FSMContext, db: Database, bot
     review_id = review_row["id"]
     await state.clear()
 
-    # Отправляем карточку продавцу автоматически
-    buyer_url = f"https://t.me/{buyer_username}" if buyer_username else f"tg://user?id={message.from_user.id}"
+    buyer_url = f"https://t.me/{buyer_username}" if buyer_username else f"tg://user?id={user.id}"
 
     ch = await db.get_seller_channel(seller["id"])
     channel_verified = ch and ch["verified"]
@@ -227,16 +227,111 @@ async def step_enter_text(message: Message, state: FSMContext, db: Database, bot
         await bot.send_photo(
             chat_id=seller["id"],
             photo=BufferedInputFile(img_bytes, filename="review.png"),
-            caption=(
-                f"⭐ Новый отзыв!\n\n"
-                f"{review_caption}"
-            ),
+            caption=(f"⭐ Новый отзыв!\n\n{review_caption}"),
             reply_markup=seller_kb,
             parse_mode="HTML",
         )
         logger.info(f"Карточка отправлена продавцу {seller['id']}")
     except Exception as e:
         logger.error(f"Ошибка отправки карточки продавцу {seller['id']}: {e}")
+
+
+def _kb_skip_proof():
+    return InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="⏭ Пропустить", callback_data="review:skip_proof")
+    ]])
+
+
+@router.message(ReviewSG.enter_text, F.photo)
+async def step_enter_text_with_photo(message: Message, state: FSMContext, db: Database, bot, config):
+    """Покупатель прислал фото с подписью — подпись=отзыв, фото=пруф."""
+    text = (message.caption or "").strip()
+    if not text:
+        await message.answer("✏️ Добавь текст отзыва в подпись к фото, либо отправь сначала текст.")
+        return
+    if len(text) > REVIEW_MAX_LEN:
+        await message.answer(f"❌ Отзыв слишком длинный ({len(text)} симв.). Максимум {REVIEW_MAX_LEN}.")
+        return
+
+    # Скачиваем фото-пруф (самое большое)
+    proof_bytes = None
+    try:
+        file = await bot.get_file(message.photo[-1].file_id)
+        buf = await bot.download_file(file.file_path)
+        proof_bytes = buf.read()
+    except Exception as e:
+        logger.error(f"Не удалось скачать пруф: {e}")
+
+    await finalize_review(message, state, db, bot, config,
+                          text=text, entities=message.caption_entities, proof_bytes=proof_bytes)
+
+
+@router.message(ReviewSG.enter_text)
+async def step_enter_text(message: Message, state: FSMContext, db: Database, bot, config):
+    text = (message.text or "").strip()
+
+    if not text:
+        await message.answer("✏️ Напиши текст отзыва.")
+        return
+    if len(text) > REVIEW_MAX_LEN:
+        await message.answer(f"❌ Отзыв слишком длинный ({len(text)} симв.). Максимум {REVIEW_MAX_LEN}.")
+        return
+    if len(text) > REVIEW_SOFT_LEN:
+        await message.answer(f"⚠️ Отзыв немного длинноват ({len(text)} симв.) — карточка подстроится, но лучше покороче 😊")
+
+    # Сохраняем текст и переходим к шагу пруфа
+    await state.update_data(review_text=text, review_entities=[e.model_dump() for e in (message.entities or [])])
+    await state.set_state(ReviewSG.enter_proof)
+    await message.answer(
+        "📸 Хочешь приложить <b>фото-доказательство сделки</b>?\n\n"
+        "Отправь фото — оно появится прямо в карточке отзыва. "
+        "Или нажми «Пропустить».",
+        reply_markup=_kb_skip_proof()
+    )
+
+
+@router.message(ReviewSG.enter_proof, F.photo)
+async def step_enter_proof(message: Message, state: FSMContext, db: Database, bot, config):
+    data = await state.get_data()
+    text = data.get("review_text", "")
+
+    proof_bytes = None
+    try:
+        file = await bot.get_file(message.photo[-1].file_id)
+        buf = await bot.download_file(file.file_path)
+        proof_bytes = buf.read()
+    except Exception as e:
+        logger.error(f"Не удалось скачать пруф: {e}")
+
+    # Восстанавливаем entities
+    from aiogram.types import MessageEntity
+    raw_entities = data.get("review_entities", [])
+    entities = [MessageEntity(**e) for e in raw_entities] if raw_entities else []
+
+    await finalize_review(message, state, db, bot, config,
+                          text=text, entities=entities, proof_bytes=proof_bytes)
+
+
+@router.message(ReviewSG.enter_proof)
+async def step_enter_proof_wrong(message: Message, state: FSMContext):
+    await message.answer("📸 Отправь именно фото, либо нажми «Пропустить».", reply_markup=_kb_skip_proof())
+
+
+@router.callback_query(ReviewSG.enter_proof, F.data == "review:skip_proof")
+async def cb_skip_proof(call: CallbackQuery, state: FSMContext, db: Database, bot, config):
+    await call.answer()
+    try:
+        await call.message.edit_reply_markup(reply_markup=None)
+    except Exception:
+        pass
+    data = await state.get_data()
+    text = data.get("review_text", "")
+    from aiogram.types import MessageEntity
+    raw_entities = data.get("review_entities", [])
+    entities = [MessageEntity(**e) for e in raw_entities] if raw_entities else []
+    # Используем call (не call.message) — нужен реальный from_user покупателя
+    await finalize_review(call, state, db, bot, config,
+                          text=text, entities=entities, proof_bytes=None)
 
 
 # ── Принять / Отклонить отзыв (публикация в канал) ────────────────────────

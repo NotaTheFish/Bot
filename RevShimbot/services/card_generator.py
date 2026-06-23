@@ -483,6 +483,24 @@ def _render_html(html: str) -> bytes:
     return png
 
 
+def _inject_proof(html: str, proof_b64: str, accent: str = "#c9a84c") -> str:
+    """Встраивает блок с фото-пруфом перед watermark/закрытием карточки."""
+    proof_block = f"""<div style="margin-top:4px;">
+  <div style="font-family:'Montserrat',sans-serif;font-size:12px;color:{accent};letter-spacing:.08em;text-transform:uppercase;margin:18px 0 12px;display:flex;align-items:center;gap:8px;">
+    <span style="flex:1;height:1px;background:{accent}33;"></span>
+    📸 Доказательство сделки
+    <span style="flex:1;height:1px;background:{accent}33;"></span>
+  </div>
+  <img src="data:image/png;base64,{proof_b64}" style="width:100%;border-radius:10px;border:1px solid {accent}44;display:block;">
+</div>"""
+    # Вставляем перед watermark если есть, иначе перед последним </div> карточки
+    if '<div class="wm"' in html:
+        idx = html.find('<div class="wm"')
+        return html[:idx] + proof_block + html[idx:]
+    # fallback — перед закрытием body
+    return html.replace("</body>", proof_block + "</body>", 1)
+
+
 async def generate_card(data: dict) -> bytes:
     import asyncio, base64
     if data.get("avatar_bytes"):
@@ -499,6 +517,11 @@ async def generate_card(data: dict) -> bytes:
         )
     else:
         data["review_text_html"] = _sanitize_text_for_html(data.get("review_text", ""))
+
+    # Пруф-фото (если есть) — base64
+    proof_b64 = None
+    if data.get("proof_bytes"):
+        proof_b64 = base64.b64encode(data["proof_bytes"]).decode()
 
     template_id = data.get("template_id", "classic_gold")
 
@@ -527,10 +550,20 @@ async def generate_card(data: dict) -> bytes:
                     "stars": data.get("stars", 0),
                     "avatar_bytes": data.get("avatar_bytes"),
                     "bot_username": data.get("bot_username", "reviewbot"),
+                    "proof_b64": proof_b64,
+                    "accent_color_for_proof": ctpl["accent_color"],
                 }
                 return await render_with_data(cfg, cdata)
 
     builder = HTML_BUILDERS.get(template_id, html_classic_gold)
     html = builder(data)
+    if proof_b64:
+        # Подбираем акцент под шаблон
+        accents = {
+            "classic_gold": "#c9a84c", "retro_paper": "#c8a96e",
+            "dark_slate": "#58a6ff", "clean_white": "#444",
+            "sketch_paper": "#a07840",
+        }
+        html = _inject_proof(html, proof_b64, accents.get(template_id, "#c9a84c"))
     loop = asyncio.get_event_loop()
     return await loop.run_in_executor(None, _render_html, html)
