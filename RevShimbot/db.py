@@ -9,6 +9,7 @@ CREATE_TABLES = """
 CREATE TABLE IF NOT EXISTS rvb_sellers (
     id BIGINT PRIMARY KEY,
     pub_id TEXT UNIQUE,
+    pub_id_changed_at TIMESTAMPTZ,
     username TEXT,
     shop_name TEXT NOT NULL DEFAULT '',
     template_id TEXT NOT NULL DEFAULT 'classic_gold',
@@ -93,6 +94,10 @@ class Database:
             await conn.execute("""
                 ALTER TABLE rvb_sellers
                 ADD COLUMN IF NOT EXISTS pub_id TEXT UNIQUE
+            """)
+            await conn.execute("""
+                ALTER TABLE rvb_sellers
+                ADD COLUMN IF NOT EXISTS pub_id_changed_at TIMESTAMPTZ
             """)
         logger.info("Database initialized")
 
@@ -246,6 +251,54 @@ class Database:
             await conn.execute(
                 "UPDATE rvb_sellers SET pub_id = $1 WHERE id = $2", code, user_id)
             return code
+
+    async def change_pub_id(self, user_id: int, new_id: str) -> tuple[bool, str]:
+        """
+        Меняет pub_id продавца с проверками:
+        - кулдаун 24 часа
+        - уникальность
+        Возвращает (успех, сообщение/код_ошибки).
+        Коды ошибок: 'cooldown:<секунды>', 'taken', 'ok'
+        """
+        import re
+        from datetime import datetime, timezone, timedelta
+
+        new_id = new_id.strip().upper()
+        # Валидация формата — ровно 1-4 латинских буквы/цифры
+        if not re.fullmatch(r"[A-Z0-9]{1,4}", new_id):
+            return False, "format"
+
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT pub_id, pub_id_changed_at FROM rvb_sellers WHERE id = $1", user_id)
+            if not row:
+                return False, "no_seller"
+
+            # Если новый ID совпадает с текущим — ничего не делаем
+            if row["pub_id"] == new_id:
+                return False, "same"
+
+            # Проверка кулдауна (24 часа)
+            changed_at = row["pub_id_changed_at"]
+            if changed_at:
+                now = datetime.now(timezone.utc)
+                elapsed = now - changed_at
+                cooldown = timedelta(hours=24)
+                if elapsed < cooldown:
+                    remaining = int((cooldown - elapsed).total_seconds())
+                    return False, f"cooldown:{remaining}"
+
+            # Проверка уникальности
+            taken = await conn.fetchval(
+                "SELECT 1 FROM rvb_sellers WHERE pub_id = $1 AND id != $2", new_id, user_id)
+            if taken:
+                return False, "taken"
+
+            # Меняем — старый ID освобождается автоматически (он был в этой же строке)
+            await conn.execute(
+                "UPDATE rvb_sellers SET pub_id = $1, pub_id_changed_at = NOW() WHERE id = $2",
+                new_id, user_id)
+            return True, "ok"
 
     async def upsert_seller(self, user_id: int, username: Optional[str], shop_name: str) -> dict:
         async with self.pool.acquire() as conn:

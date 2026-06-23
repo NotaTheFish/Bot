@@ -87,6 +87,7 @@ def kb_template_view(seller: dict) -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text="⭐️ Звёзды", callback_data="edit:stars")],
         [InlineKeyboardButton(text="📦 Поле «Что купил»", callback_data="edit:item")],
         [InlineKeyboardButton(text="🎨 Выбор шаблона покупателем", callback_data="edit:tpl_choice")],
+        [InlineKeyboardButton(text="🆔 Изменить ID", callback_data="edit:pubid")],
     ]
     pub_id = seller.get("pub_id")
     if pub_id:

@@ -434,6 +434,35 @@ async def cb_myclienttemplate(call: CallbackQuery, db: Database):
 @router.callback_query(F.data.startswith("edit:"))
 async def cb_edit_field(call: CallbackQuery, db: Database, state: FSMContext):
     field = call.data.split(":")[1]
+    # ID меняется отдельно — проверяем кулдаун сразу при нажатии
+    if field == "pubid":
+        seller = await db.get_seller(call.from_user.id)
+        if not seller:
+            await call.answer("Сначала настрой шаблон", show_alert=True)
+            return
+        # Проверяем кулдаун заранее, чтобы не заставлять вводить впустую
+        changed_at = seller.get("pub_id_changed_at")
+        if changed_at:
+            from datetime import datetime, timezone, timedelta
+            elapsed = datetime.now(timezone.utc) - changed_at
+            cooldown = timedelta(hours=24)
+            if elapsed < cooldown:
+                remaining = int((cooldown - elapsed).total_seconds())
+                h = remaining // 3600
+                m = (remaining % 3600) // 60
+                await call.answer(f"⏳ Изменить ID можно через {h} ч {m} мин", show_alert=False)
+                return
+        await call.answer()
+        await state.set_state(SetupSG.pub_id)
+        cur = seller.get("pub_id", "—")
+        await call.message.answer(
+            f"🆔 Текущий ID: <code>{cur}</code>\n\n"
+            f"Введи новый ID:\n"
+            f"<i>Только латинские буквы и цифры, до 4 символов, без пробелов. "
+            f"Регистр не важен — всё станет заглавным (shim → SHIM).</i>"
+        )
+        return
+
     await call.answer()
     from handlers.setup import SetupSG
     from keyboards import kb_templates, kb_stars_mode, kb_stars_value, kb_item_mode, kb_allow_template_choice

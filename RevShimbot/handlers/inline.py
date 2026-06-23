@@ -86,7 +86,12 @@ async def inline_review(query: InlineQuery, db: Database, bot, config):
 
     if pub_id_match:
         seller = await db.get_seller_by_pubid(first)
-        review_text = parts[1].strip() if len(parts) > 1 else ""
+        if seller:
+            review_text = parts[1].strip() if len(parts) > 1 else ""
+        else:
+            # ID не существует (например продавец его сменил) —
+            # всё слово становится частью отзыва: "SHIM спасибо" → отзыв целиком
+            review_text = text
     elif first.startswith("seller_"):
         # Обратная совместимость со старыми ссылками
         raw = first[7:]
@@ -94,7 +99,10 @@ async def inline_review(query: InlineQuery, db: Database, bot, config):
             seller = await db.get_seller(int(raw))
         else:
             seller = await db.get_seller_by_pubid(raw.upper())
-        review_text = parts[1].strip() if len(parts) > 1 else ""
+        if seller:
+            review_text = parts[1].strip() if len(parts) > 1 else ""
+        else:
+            review_text = text
     else:
         review_text = text
 

@@ -21,6 +21,7 @@ class SetupSG(StatesGroup):
     item_mode = State()
     item_value = State()
     template_choice = State()
+    pub_id = State()
 
 
 async def cmd_setup(message: Message, db: Database, state: FSMContext):
@@ -234,3 +235,54 @@ async def step_template_choice(call: CallbackQuery, state: FSMContext, db: Datab
     await call.message.edit_reply_markup(reply_markup=None)
     await _save_and_finish(call.from_user.id, call.from_user.username,
                            state, db, config, call.message)
+
+
+# ── Смена публичного ID ──────────────────────────────────────────────────
+
+@router.message(SetupSG.pub_id)
+async def step_change_pub_id(message: Message, state: FSMContext, db: Database, config):
+    import re
+    new_id = message.text.strip().upper()
+
+    # Валидация формата
+    if not re.fullmatch(r"[A-Z0-9]{1,4}", new_id):
+        await message.answer(
+            "❌ Неверный формат. Только латинские буквы и цифры, до 4 символов, "
+            "без пробелов и спецсимволов. Попробуй ещё раз:"
+        )
+        return
+
+    ok, code = await db.change_pub_id(message.from_user.id, new_id)
+
+    if ok:
+        await state.clear()
+        await message.answer(
+            f"✅ Твой новый ID: <code>{new_id}</code>\n\n"
+            f"🔗 Ссылка: <code>https://t.me/{config.BOT_USERNAME}?start=seller_{new_id}</code>\n"
+            f"💬 Отзыв в чате: <code>@{config.BOT_USERNAME} {new_id} текст</code>\n\n"
+            f"<i>Старый ID освобождён. Следующая смена — через 24 часа.</i>"
+        )
+        return
+
+    # Обработка ошибок
+    if code == "taken":
+        await message.answer(
+            f"❌ ID <code>{new_id}</code> уже занят другим продавцом. "
+            f"Придумай другой:"
+        )
+    elif code == "same":
+        await state.clear()
+        await message.answer("Это твой текущий ID — ничего не изменилось.")
+    elif code.startswith("cooldown:"):
+        remaining = int(code.split(":")[1])
+        h = remaining // 3600
+        m = (remaining % 3600) // 60
+        await state.clear()
+        await message.answer(f"⏳ Изменить ID можно через {h} ч {m} мин.")
+    elif code == "format":
+        await message.answer(
+            "❌ Неверный формат. Только латиница и цифры, до 4 символов. Попробуй ещё раз:"
+        )
+    else:
+        await state.clear()
+        await message.answer("❌ Не удалось изменить ID. Попробуй позже.")
