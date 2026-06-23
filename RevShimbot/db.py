@@ -358,7 +358,7 @@ class Database:
             reviews_7d = await conn.fetchval(
                 "SELECT COUNT(*) FROM rvb_reviews WHERE created_at > NOW() - INTERVAL '7 days'"
             )
-            buyers = await conn.fetchval("SELECT COUNT(DISTINCT buyer_tg_id) FROM rvb_reviews")
+            buyers = await conn.fetchval("SELECT COUNT(DISTINCT buyer_id) FROM rvb_reviews")
             return {
                 "sellers": sellers or 0,
                 "reviews": reviews or 0,
