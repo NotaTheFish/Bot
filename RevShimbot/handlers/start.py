@@ -284,6 +284,20 @@ async def cb_start_mytemplates(call: CallbackQuery, db: Database):
     await show_templates_list(call.message, db, call.from_user.id)
 
 
+@router.message(Command("stats"))
+async def cmd_admin_stats(message: Message, db: Database, config):
+    if message.from_user.id != config.ADMIN_TG_ID:
+        return
+    stats = await db.get_global_stats()
+    await message.answer(
+        f"📊 <b>Статистика бота</b>\n\n"
+        f"🏪 Продавцов: <b>{stats['sellers']}</b>\n"
+        f"💬 Отзывов всего: <b>{stats['reviews']}</b>\n"
+        f"📅 За 7 дней: <b>{stats['reviews_7d']}</b>\n"
+        f"👥 Уникальных покупателей: <b>{stats['buyers']}</b>"
+    )
+
+
 @router.message(Command("menu"))
 async def cmd_menu(message: Message, db: Database):
     seller = await db.get_seller(message.from_user.id)

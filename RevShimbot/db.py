@@ -351,6 +351,21 @@ class Database:
                 file_id, review_id
             )
 
+    async def get_global_stats(self) -> dict:
+        async with self.pool.acquire() as conn:
+            sellers = await conn.fetchval("SELECT COUNT(*) FROM rvb_sellers")
+            reviews = await conn.fetchval("SELECT COUNT(*) FROM rvb_reviews")
+            reviews_7d = await conn.fetchval(
+                "SELECT COUNT(*) FROM rvb_reviews WHERE created_at > NOW() - INTERVAL '7 days'"
+            )
+            buyers = await conn.fetchval("SELECT COUNT(DISTINCT buyer_tg_id) FROM rvb_reviews")
+            return {
+                "sellers": sellers or 0,
+                "reviews": reviews or 0,
+                "reviews_7d": reviews_7d or 0,
+                "buyers": buyers or 0,
+            }
+
     async def get_seller_stats(self, seller_id: int) -> dict:
         async with self.pool.acquire() as conn:
             row = await conn.fetchrow("""
