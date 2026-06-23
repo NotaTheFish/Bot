@@ -3,12 +3,14 @@ from aiogram.types import Message, CallbackQuery
 from aiogram.types import BufferedInputFile, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
+import logging
 
 from db import Database
 from keyboards import kb_buyer_stars, kb_templates, kb_cancel
 from constants import REVIEW_MAX_LEN, REVIEW_SOFT_LEN
 from services.card_generator import generate_card
 
+logger = logging.getLogger(__name__)
 router = Router()
 
 
@@ -231,8 +233,9 @@ async def step_enter_text(message: Message, state: FSMContext, db: Database, bot
             reply_markup=seller_kb,
             parse_mode="HTML",
         )
-    except Exception:
-        pass  # продавец мог не запустить бота — молча игнорируем
+        logger.info(f"Карточка отправлена продавцу {seller['id']}")
+    except Exception as e:
+        logger.error(f"Ошибка отправки карточки продавцу {seller['id']}: {e}")
 
 
 # ── Принять / Отклонить отзыв (публикация в канал) ────────────────────────
