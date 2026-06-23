@@ -217,7 +217,7 @@ async def step_enter_text(message: Message, state: FSMContext, db: Database, bot
             [buyer_btn],
             [
                 InlineKeyboardButton(text="✅ Принять", callback_data=f"review:accept:{review_id}"),
-                InlineKeyboardButton(text="❌ Отклонить", callback_data="review:reject"),
+                InlineKeyboardButton(text="❌ Отклонить", callback_data=f"review:reject:{review_id}"),
             ]
         ])
     else:
@@ -282,16 +282,32 @@ async def cb_review_accept(call: CallbackQuery, bot: Bot, db: Database):
         await call.answer(f"Ошибка публикации: {e}", show_alert=True)
         return
 
-    # Убираем кнопки Принять/Отклонить, оставляем только кнопку покупателя
-    new_kb = InlineKeyboardMarkup(inline_keyboard=[[buyer_btn]]) if buyer_btn else None
-    await call.message.edit_reply_markup(reply_markup=new_kb)
+    await db.set_review_status(review_id, "accepted")
+
+    # Если это сообщение с фото (из ЛС продавца) — убираем кнопки
+    if call.message.photo:
+        new_kb = InlineKeyboardMarkup(inline_keyboard=[[buyer_btn]]) if buyer_btn else None
+        await call.message.edit_reply_markup(reply_markup=new_kb)
+    else:
+        # Из списка заявок — удаляем сообщение
+        try:
+            await call.message.delete()
+        except Exception:
+            pass
+
     await call.answer("✅ Опубликовано в канале!")
 
 
-@router.callback_query(F.data == "review:reject")
-async def cb_review_reject(call: CallbackQuery, bot: Bot):
+@router.callback_query(F.data.startswith("review:reject"))
+async def cb_review_reject(call: CallbackQuery, bot: Bot, db: Database):
+    parts = call.data.split(":", 2)
+    review_id = int(parts[2]) if len(parts) > 2 else None
+
+    if review_id:
+        await db.set_review_status(review_id, "rejected")
+
     try:
-        await bot.delete_message(call.from_user.id, call.message.message_id)
+        await call.message.delete()
     except Exception:
         pass
     await call.answer("Отзыв отклонён")

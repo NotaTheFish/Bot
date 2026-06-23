@@ -32,20 +32,19 @@ ITEM_LABELS = {
 
 def kb_start_menu(has_seller: bool = False, has_client: bool = False) -> InlineKeyboardMarkup:
     rows = []
-    # «Создать» показываем только если шаблона ещё нет
     if not has_seller:
         rows.append([InlineKeyboardButton(text="🏪 Создать шаблон магазина", callback_data="start:seller")])
     if not has_client:
         rows.append([InlineKeyboardButton(text="🎨 Создать клиентский шаблон", callback_data="start:client")])
 
-    rows.append([InlineKeyboardButton(text="⚡️ Быстрый отзыв", callback_data="start:quick")])
-    rows.append([InlineKeyboardButton(text="🎨 Мои шаблоны (конструктор)", callback_data="start:mytemplates")])
+    rows.append([InlineKeyboardButton(text="🎨 Конструктор", callback_data="start:mytemplates")])
 
-    # «Мой шаблон» показываем когда он уже создан
     if has_seller:
         rows.append([InlineKeyboardButton(text="📋 Мой торговый шаблон", callback_data="menu:mytemplate")])
     if has_client:
         rows.append([InlineKeyboardButton(text="🎨 Мой клиентский шаблон", callback_data="menu:myclienttemplate")])
+
+    rows.append([InlineKeyboardButton(text="👤 Профиль", callback_data="menu:profile")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -121,6 +120,19 @@ async def show_main_menu(message: Message, db: Database, user_id: int, first_nam
 async def cb_main_menu_button(message: Message, db: Database, state: FSMContext):
     await state.clear()
     await show_main_menu(message, db, message.from_user.id, message.from_user.first_name)
+
+
+@router.message(F.text == "⚡️ Быстрый отзыв")
+async def cb_quick_review_reply(message: Message, state: FSMContext, db: Database):
+    await state.clear()
+    # Запускаем тот же флоу что и инлайн-кнопка
+    await state.set_state(QuickReviewSG.choose_template)
+    customs = await db.list_custom_templates(message.from_user.id)
+    from keyboards import kb_templates
+    await message.answer(
+        "⚡️ <b>Быстрый отзыв</b>\n\nВыбери стиль карточки:",
+        reply_markup=kb_templates("classic_gold", customs)
+    )
 
 
 @router.callback_query(F.data == "start:seller")
@@ -309,6 +321,73 @@ async def cmd_menu(message: Message, db: Database):
         has_client = bool(await db.get_client_template(message.from_user.id))
         await message.answer("Выбери действие:",
                              reply_markup=kb_start_menu(False, has_client))
+
+
+@router.callback_query(F.data == "menu:profile")
+async def cb_profile(call: CallbackQuery, db: Database, config):
+    seller = await db.get_seller(call.from_user.id)
+    if not seller:
+        await call.answer("Сначала создай торговый шаблон", show_alert=True)
+        return
+    await call.answer()
+
+    pub_id = seller.get("pub_id") or await db.ensure_pub_id(call.from_user.id)
+    total_cards = await db.get_total_cards(call.from_user.id)
+    ch = await db.get_seller_channel(call.from_user.id)
+    channel_verified = ch and ch["verified"]
+    channel_info = f"✅ {ch['channel_title']}" if channel_verified else "❌ не подключён"
+    pending = await db.get_pending_reviews(call.from_user.id)
+    has_channel = bool(channel_verified)
+
+    profile_kb_rows = [
+        [InlineKeyboardButton(text="🆔 Изменить ID", callback_data="edit:pubid")],
+        [InlineKeyboardButton(
+            text="📢 Канал отзывов: " + ("✅ подключён" if channel_verified else "➕ добавить"),
+            callback_data="channel:manage"
+        )],
+    ]
+    if has_channel:
+        profile_kb_rows.append([
+            InlineKeyboardButton(
+                text=f"📬 Мои заявки ({len(pending)})" if pending else "📬 Мои заявки",
+                callback_data="menu:pending"
+            )
+        ])
+    profile_kb_rows.append([InlineKeyboardButton(text="« Назад", callback_data="menu:back")])
+
+    await call.message.answer(
+        f"👤 <b>Профиль</b>\n\n"
+        f"🆔 Твой ID: <code>{pub_id}</code>\n"
+        f"🖼 Карточек создано: <b>{total_cards}</b>\n"
+        f"📢 Канал отзывов: <b>{channel_info}</b>",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=profile_kb_rows)
+    )
+
+
+@router.callback_query(F.data == "menu:pending")
+async def cb_pending_reviews(call: CallbackQuery, db: Database):
+    pending = await db.get_pending_reviews(call.from_user.id)
+    await call.answer()
+
+    if not pending:
+        await call.message.answer("📭 Нет необработанных заявок.")
+        return
+
+    await call.message.answer(f"📬 <b>Необработанные заявки ({len(pending)})</b>\n\nНажми на заявку чтобы обработать:")
+
+    for r in pending:
+        stars_line = "★" * r["stars"] if r["stars"] > 0 else ""
+        username = f"@{r['buyer_username']}" if r["buyer_username"] else "без username"
+        text = (
+            f"<b>{r['buyer_name']}</b> ({username})\n"
+            f"{stars_line}\n"
+            f"<i>«{r['review_text'][:100]}{'...' if len(r['review_text']) > 100 else ''}»</i>"
+        )
+        kb = InlineKeyboardMarkup(inline_keyboard=[[
+            InlineKeyboardButton(text="✅ Принять", callback_data=f"review:accept:{r['id']}"),
+            InlineKeyboardButton(text="❌ Отклонить", callback_data=f"review:reject:{r['id']}"),
+        ]])
+        await call.message.answer(text, reply_markup=kb)
 
 
 @router.callback_query(F.data == "menu:mylink")

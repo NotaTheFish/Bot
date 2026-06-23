@@ -87,11 +87,6 @@ def kb_template_view(seller: dict) -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text="⭐️ Звёзды", callback_data="edit:stars")],
         [InlineKeyboardButton(text="📦 Поле «Что купил»", callback_data="edit:item")],
         [InlineKeyboardButton(text="🎨 Выбор шаблона покупателем", callback_data="edit:tpl_choice")],
-        [InlineKeyboardButton(text="🆔 Изменить ID", callback_data="edit:pubid")],
-        [InlineKeyboardButton(
-            text="📢 Канал отзывов: " + ("✅ подключён" if seller.get("channel_verified") else "➕ добавить"),
-            callback_data="channel:manage"
-        )],
     ]
     pub_id = seller.get("pub_id")
     if pub_id:
@@ -121,9 +116,12 @@ def kb_cancel() -> InlineKeyboardMarkup:
 
 
 def kb_main_reply() -> ReplyKeyboardMarkup:
-    """Постоянная кнопка снизу для возврата в главное меню."""
+    """Постоянная reply-клавиатура снизу."""
     return ReplyKeyboardMarkup(
-        keyboard=[[KeyboardButton(text="🏠 Главное меню")]],
+        keyboard=[
+            [KeyboardButton(text="⚡️ Быстрый отзыв")],
+            [KeyboardButton(text="🏠 Главное меню")],
+        ],
         resize_keyboard=True,
         is_persistent=True,
     )

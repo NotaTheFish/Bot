@@ -69,6 +69,7 @@ CREATE TABLE IF NOT EXISTS rvb_reviews (
     stars INT NOT NULL DEFAULT 5,
     template_used TEXT NOT NULL DEFAULT 'classic_gold',
     card_file_id TEXT,
+    status TEXT NOT NULL DEFAULT 'pending',
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
@@ -107,6 +108,11 @@ class Database:
             await conn.execute("""
                 ALTER TABLE rvb_sellers
                 ADD COLUMN IF NOT EXISTS pub_id_changed_at TIMESTAMPTZ
+            """)
+            # Авто-миграция: статус отзыва
+            await conn.execute("""
+                ALTER TABLE rvb_reviews
+                ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'pending'
             """)
             # Авто-миграция: таблица каналов продавцов
             await conn.execute("""
@@ -363,6 +369,29 @@ class Database:
             """, seller_id, buyer_id, buyer_name, buyer_username,
                 review_text, item_bought, stars, template_used, card_file_id)
             return dict(row)
+
+    async def get_pending_reviews(self, seller_id: int) -> list:
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch("""
+                SELECT id, buyer_name, buyer_username, review_text, stars, created_at
+                FROM rvb_reviews
+                WHERE seller_id = $1 AND status = 'pending'
+                ORDER BY created_at DESC
+            """, seller_id)
+            return [dict(r) for r in rows]
+
+    async def set_review_status(self, review_id: int, status: str):
+        async with self.pool.acquire() as conn:
+            await conn.execute(
+                "UPDATE rvb_reviews SET status = $1 WHERE id = $2",
+                status, review_id
+            )
+
+    async def get_total_cards(self, seller_id: int) -> int:
+        async with self.pool.acquire() as conn:
+            return await conn.fetchval(
+                "SELECT COUNT(*) FROM rvb_reviews WHERE seller_id = $1", seller_id
+            ) or 0
 
     async def update_review_file_id(self, review_id: int, file_id: str):
         async with self.pool.acquire() as conn:
