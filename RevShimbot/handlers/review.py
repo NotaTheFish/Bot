@@ -1,6 +1,6 @@
 from aiogram import Router, F
 from aiogram.types import Message, CallbackQuery
-from aiogram.types import BufferedInputFile
+from aiogram.types import BufferedInputFile, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 
@@ -201,3 +201,22 @@ async def step_enter_text(message: Message, state: FSMContext, db: Database, bot
         card_file_id=file_id,
     )
     await state.clear()
+
+    # Отправляем карточку продавцу автоматически
+    buyer_url = f"https://t.me/{buyer_username}" if buyer_username else f"tg://user?id={message.from_user.id}"
+    seller_kb = InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text=f"👤 {buyer_name}", url=buyer_url)
+    ]])
+    try:
+        await bot.send_photo(
+            chat_id=seller["id"],
+            photo=BufferedInputFile(img_bytes, filename="review.png"),
+            caption=(
+                f"⭐ Новый отзыв!\n\n"
+                f"{review_caption}"
+            ),
+            reply_markup=seller_kb,
+            parse_mode="HTML",
+        )
+    except Exception:
+        pass  # продавец мог не запустить бота — молча игнорируем
