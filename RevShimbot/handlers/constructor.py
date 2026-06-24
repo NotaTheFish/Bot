@@ -16,7 +16,7 @@ from services.constructor import (
     LAYOUTS, FONTS, TEXT_COLORS, ACCENT_COLORS, BG_COLORS,
     BG_GRADIENTS, CARD_BORDERS, CARD_RADIUS, CARD_SHADOW, TEXT_SIZES,
     CORNER_FILL, VISIBILITY_DEFAULTS,
-    TITLE_EFFECTS, BG_TEXTURES,
+    TITLE_EFFECTS, BG_TEXTURES, PRESETS,
     render_preview
 )
 
@@ -51,6 +51,7 @@ def _default_cfg() -> dict:
 
 def kb_constructor_main() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✨ Готовые стили (пресеты)", callback_data="con:menu:presets")],
         [InlineKeyboardButton(text="📐 Раскладка", callback_data="con:menu:layout")],
         [InlineKeyboardButton(text="🔤 Шрифт названия", callback_data="con:menu:title_font"),
          InlineKeyboardButton(text="🔡 Шрифт текста", callback_data="con:menu:font")],
@@ -89,6 +90,14 @@ VIS_LABELS = {
     "show_seller_tag": "🏷 Тег продавца",
     "show_quote": "❝ Кавычки",
 }
+
+
+def _kb_presets() -> InlineKeyboardMarkup:
+    rows = []
+    for key, preset in PRESETS.items():
+        rows.append([InlineKeyboardButton(text=preset["label"], callback_data=f"con:preset:{key}")])
+    rows.append([InlineKeyboardButton(text="« Назад", callback_data="con:back")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def _kb_visibility(cfg: dict) -> InlineKeyboardMarkup:
@@ -251,6 +260,20 @@ async def cb_open_menu(call: CallbackQuery, state: FSMContext):
         )
         return
 
+    if field == "presets":
+        data = await state.get_data()
+        preview_id = data.get("preview_msg_id")
+        kb = _kb_presets()
+        if preview_id:
+            try:
+                await call.bot.edit_message_reply_markup(
+                    chat_id=call.message.chat.id, message_id=preview_id, reply_markup=kb)
+                return
+            except Exception:
+                pass
+        await call.message.answer("✨ <b>Готовые стили</b>", reply_markup=kb)
+        return
+
     if field == "visibility":
         data = await state.get_data()
         cfg = data["cfg"]
@@ -364,6 +387,31 @@ async def cb_toggle_visibility(call: CallbackQuery, state: FSMContext, db: Datab
             await call.message.edit_reply_markup(reply_markup=_kb_visibility(cfg))
         except Exception:
             pass
+
+
+@router.callback_query(ConstructorSG.building, F.data.startswith("con:preset:"))
+async def cb_apply_preset(call: CallbackQuery, state: FSMContext, db: Database):
+    key = call.data.split(":")[2]
+    preset = PRESETS.get(key)
+    if not preset:
+        await call.answer("Стиль не найден", show_alert=True)
+        return
+    data = await state.get_data()
+    cfg = data["cfg"]
+    # Применяем базовые поля
+    for k, v in preset["base"].items():
+        cfg[k] = v
+    # Картинка-фон отменяется пресетом
+    cfg["bg_image"] = None
+    # Применяем extra_cfg (сохраняя тумблеры видимости пользователя)
+    ex = cfg.setdefault("extra_cfg", {})
+    vis_keys = set(VISIBILITY_DEFAULTS.keys())
+    saved_vis = {k: ex[k] for k in vis_keys if k in ex}
+    ex.update(preset["extra"])
+    ex.update(saved_vis)  # видимость блоков не трогаем
+    await state.update_data(cfg=cfg)
+    await call.answer(f"✅ Применён стиль: {preset['label']}")
+    await _refresh_preview_in_place(call, state, db)
 
 
 @router.callback_query(ConstructorSG.building, F.data == "con:back")

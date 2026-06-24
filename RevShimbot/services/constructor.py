@@ -152,6 +152,77 @@ BG_TEXTURES = {
 }
 
 
+# ── Этап 3: пресеты-скины (готовые стили в один тап) ───────────────────────
+# Каждый пресет — полный рецепт: базовые поля + extra_cfg.
+PRESETS = {
+    "cyberpunk": {
+        "label": "🌃 Киберпанк",
+        "base": {"layout": "classic", "font": "jetbrains", "title_font": "vt323",
+                 "text_color": "#7ee787", "accent_color": "#ff2e97", "bg_color": "#0d0117"},
+        "extra": {"bg_gradient": "royal", "card_border": "glow", "card_radius": "soft",
+                  "card_shadow": "glowacc", "text_size": "medium", "corner_fill": "match",
+                  "title_effect": "neon", "bg_texture": "grid"},
+    },
+    "premium_gold": {
+        "label": "👑 Премиум золото",
+        "base": {"layout": "classic", "font": "playfair", "title_font": "cinzel",
+                 "text_color": "#f5e9c8", "accent_color": "#d4af37", "bg_color": "#15110a"},
+        "extra": {"bg_gradient": "ember", "card_border": "double", "card_radius": "soft",
+                  "card_shadow": "soft", "text_size": "medium", "corner_fill": "black",
+                  "title_effect": "gradient", "bg_texture": "topglow"},
+    },
+    "roblox": {
+        "label": "🎮 Roblox",
+        "base": {"layout": "compact", "font": "montserrat", "title_font": "vt323",
+                 "text_color": "#ffffff", "accent_color": "#00a2ff", "bg_color": "#0a1929"},
+        "extra": {"bg_gradient": "ocean", "card_border": "medium", "card_radius": "rounded",
+                  "card_shadow": "hard", "text_size": "medium", "corner_fill": "match",
+                  "title_effect": "outline", "bg_texture": "dots"},
+    },
+    "minimal_white": {
+        "label": "⬜️ Минимал-светлый",
+        "base": {"layout": "left_align", "font": "inter", "title_font": "spacegrotesk",
+                 "text_color": "#1a1a2e", "accent_color": "#2d6cdf", "bg_color": "#f4f5f7"},
+        "extra": {"bg_gradient": "none", "card_border": "thin", "card_radius": "soft",
+                  "card_shadow": "soft", "text_size": "medium", "corner_fill": "white",
+                  "title_effect": "none", "bg_texture": "none"},
+    },
+    "neon_night": {
+        "label": "💜 Неоновая ночь",
+        "base": {"layout": "classic", "font": "spacegrotesk", "title_font": "bebas",
+                 "text_color": "#e0d6ff", "accent_color": "#b14dff", "bg_color": "#0f0a1e"},
+        "extra": {"bg_gradient": "royal", "card_border": "glow", "card_radius": "rounded",
+                  "card_shadow": "glowacc", "text_size": "large", "corner_fill": "match",
+                  "title_effect": "neon", "bg_texture": "none"},
+    },
+    "retro_terminal": {
+        "label": "💻 Ретро-терминал",
+        "base": {"layout": "left_align", "font": "jetbrains", "title_font": "vt323",
+                 "text_color": "#33ff66", "accent_color": "#33ff66", "bg_color": "#020a02"},
+        "extra": {"bg_gradient": "none", "card_border": "medium", "card_radius": "sharp",
+                  "card_shadow": "none", "text_size": "medium", "corner_fill": "match",
+                  "title_effect": "glow_soft", "bg_texture": "grid"},
+    },
+    "elegant_dark": {
+        "label": "🖤 Элегантный тёмный",
+        "base": {"layout": "magazine", "font": "playfair", "title_font": "playfair",
+                 "text_color": "#e8e8ec", "accent_color": "#c9a84c", "bg_color": "#121214"},
+        "extra": {"bg_gradient": "steel", "card_border": "thin", "card_radius": "soft",
+                  "card_shadow": "soft", "text_size": "medium", "corner_fill": "dark",
+                  "title_effect": "engrave", "bg_texture": "vignette"},
+    },
+    "ice_frost": {
+        "label": "❄️ Ледяной",
+        "base": {"layout": "classic", "font": "comfortaa", "title_font": "comfortaa",
+                 "text_color": "#dff3ff", "accent_color": "#5fd4ff", "bg_color": "#0a1822"},
+        "extra": {"bg_gradient": "ocean", "card_border": "glow", "card_radius": "rounded",
+                  "card_shadow": "glowacc", "text_size": "medium", "corner_fill": "match",
+                  "title_effect": "glow_soft", "bg_texture": "topglow"},
+    },
+}
+
+
+
 
 FONT_LINKS = (
     '<link href="https://fonts.googleapis.com/css2?'
