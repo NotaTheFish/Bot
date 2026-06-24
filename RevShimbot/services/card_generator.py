@@ -543,6 +543,7 @@ async def generate_card(data: dict) -> bytes:
                     "text_color": ctpl["text_color"], "accent_color": ctpl["accent_color"],
                     "bg_color": ctpl["bg_color"], "bg_image": ctpl["bg_image"],
                     "creator_username": ctpl["creator_username"], "is_edited": ctpl["is_edited"],
+                    "extra_cfg": ctpl.get("extra_cfg") or {},
                 }
                 cdata = {
                     "shop_name": data["shop_name"],

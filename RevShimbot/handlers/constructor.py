@@ -14,6 +14,8 @@ from aiogram.fsm.state import State, StatesGroup
 from db import Database
 from services.constructor import (
     LAYOUTS, FONTS, TEXT_COLORS, ACCENT_COLORS, BG_COLORS,
+    BG_GRADIENTS, CARD_BORDERS, CARD_RADIUS, CARD_SHADOW, TEXT_SIZES,
+    VISIBILITY_DEFAULTS,
     render_preview
 )
 
@@ -40,6 +42,7 @@ def _default_cfg() -> dict:
         "bg_image": None,
         "creator_username": None,
         "is_edited": False,
+        "extra_cfg": {},
     }
 
 
@@ -53,7 +56,13 @@ def kb_constructor_main() -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text="🎨 Цвет текста", callback_data="con:menu:text_color"),
          InlineKeyboardButton(text="✨ Акцент", callback_data="con:menu:accent_color")],
         [InlineKeyboardButton(text="🌌 Фон (цвет)", callback_data="con:menu:bg_color"),
-         InlineKeyboardButton(text="🖼 Фон (картинка)", callback_data="con:menu:bg_image")],
+         InlineKeyboardButton(text="🌈 Градиент", callback_data="con:menu:bg_gradient")],
+        [InlineKeyboardButton(text="🖼 Фон (картинка)", callback_data="con:menu:bg_image")],
+        [InlineKeyboardButton(text="🔲 Рамка", callback_data="con:menu:card_border"),
+         InlineKeyboardButton(text="⬜️ Углы", callback_data="con:menu:card_radius")],
+        [InlineKeyboardButton(text="🌫 Тень", callback_data="con:menu:card_shadow"),
+         InlineKeyboardButton(text="🔠 Размер текста", callback_data="con:menu:text_size")],
+        [InlineKeyboardButton(text="👁 Показать/скрыть блоки", callback_data="con:menu:visibility")],
         [InlineKeyboardButton(text="💾 Сохранить шаблон", callback_data="con:save")],
         [InlineKeyboardButton(text="❌ Отмена", callback_data="con:cancel")],
     ])
@@ -66,6 +75,28 @@ def _kb_options(prefix: str, options: dict, back="con:back") -> InlineKeyboardMa
         label = val[0] if isinstance(val, tuple) else val
         rows.append([InlineKeyboardButton(text=label, callback_data=f"con:set:{prefix}:{key}")])
     rows.append([InlineKeyboardButton(text="« Назад", callback_data=back)])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+VIS_LABELS = {
+    "show_date": "📅 Дата",
+    "show_item": "📦 Товар",
+    "show_avatar": "👤 Аватар",
+    "show_seller_tag": "🏷 Тег продавца",
+    "show_quote": "❝ Кавычки",
+}
+
+
+def _kb_visibility(cfg: dict) -> InlineKeyboardMarkup:
+    ex = cfg.get("extra_cfg") or {}
+    rows = []
+    for key, label in VIS_LABELS.items():
+        cur = ex.get(key, VISIBILITY_DEFAULTS[key])
+        mark = "✅" if cur else "❌"
+        rows.append([InlineKeyboardButton(
+            text=f"{mark} {label}", callback_data=f"con:toggle:{key}"
+        )])
+    rows.append([InlineKeyboardButton(text="« Назад", callback_data="con:back")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -99,6 +130,7 @@ async def start_constructor_edit(message: Message, state: FSMContext, db: Databa
         "bg_image": tpl["bg_image"],
         "creator_username": tpl["creator_username"],
         "is_edited": tpl["is_edited"],
+        "extra_cfg": tpl.get("extra_cfg") or {},
     }
     await state.set_state(ConstructorSG.building)
     await state.update_data(
@@ -157,6 +189,11 @@ MENU_MAP = {
     "text_color": ("🎨 Цвет текста:", TEXT_COLORS),
     "accent_color": ("✨ Цвет акцента (рамки, звёзды):", ACCENT_COLORS),
     "bg_color": ("🌌 Цвет фона:", BG_COLORS),
+    "bg_gradient": ("🌈 Градиентный фон:", BG_GRADIENTS),
+    "card_border": ("🔲 Рамка карточки:", CARD_BORDERS),
+    "card_radius": ("⬜️ Скругление углов:", CARD_RADIUS),
+    "card_shadow": ("🌫 Тень карточки:", CARD_SHADOW),
+    "text_size": ("🔠 Размер текста отзыва:", TEXT_SIZES),
 }
 
 
@@ -171,6 +208,15 @@ async def cb_open_menu(call: CallbackQuery, state: FSMContext):
             "🖼 Пришли картинку которая станет фоном карточки.\n"
             "<i>Текст автоматически затемнится для читаемости. "
             "Отправь /skip чтобы вернуться без картинки.</i>"
+        )
+        return
+
+    if field == "visibility":
+        data = await state.get_data()
+        cfg = data["cfg"]
+        await call.message.answer(
+            "👁 <b>Показать / скрыть блоки</b>\n\nНажми чтобы переключить:",
+            reply_markup=_kb_visibility(cfg)
         )
         return
 
@@ -207,6 +253,13 @@ async def cb_set_option(call: CallbackQuery, state: FSMContext, db: Database):
     elif field == "title_font":
         changed = cfg.get("title_font") != value
         cfg["title_font"] = value
+    elif field in ("bg_gradient", "card_border", "card_radius", "card_shadow", "text_size"):
+        ex = cfg.setdefault("extra_cfg", {})
+        changed = ex.get(field) != value
+        ex[field] = value
+        # Градиент отменяет картинку-фон
+        if field == "bg_gradient" and value != "none":
+            cfg["bg_image"] = None
     else:
         changed = False
 
@@ -222,6 +275,26 @@ async def cb_set_option(call: CallbackQuery, state: FSMContext, db: Database):
     except Exception:
         pass
     await _send_or_update_preview(call, state, db)
+
+
+@router.callback_query(ConstructorSG.building, F.data.startswith("con:toggle:"))
+async def cb_toggle_visibility(call: CallbackQuery, state: FSMContext, db: Database):
+    key = call.data.split(":")[2]
+    if key not in VISIBILITY_DEFAULTS:
+        await call.answer()
+        return
+    data = await state.get_data()
+    cfg = data["cfg"]
+    ex = cfg.setdefault("extra_cfg", {})
+    cur = ex.get(key, VISIBILITY_DEFAULTS[key])
+    ex[key] = not cur
+    await state.update_data(cfg=cfg)
+    await call.answer("Переключено")
+    # Обновляем клавиатуру тумблеров на месте
+    try:
+        await call.message.edit_reply_markup(reply_markup=_kb_visibility(cfg))
+    except Exception:
+        pass
 
 
 @router.callback_query(ConstructorSG.building, F.data == "con:back")
@@ -278,6 +351,7 @@ async def cb_save(call: CallbackQuery, state: FSMContext, db: Database):
             "accent_color": cfg["accent_color"],
             "bg_color": cfg["bg_color"],
             "bg_image": cfg.get("bg_image"),
+            "extra_cfg": cfg.get("extra_cfg", {}),
         }
         # Если редактируем полученный чужой шаблон — становимся владельцем
         if is_received:
@@ -318,6 +392,7 @@ async def cb_save_name(message: Message, state: FSMContext, db: Database):
         accent_color=cfg["accent_color"],
         bg_color=cfg["bg_color"],
         bg_image=cfg.get("bg_image"),
+        extra_cfg=cfg.get("extra_cfg", {}),
         is_edited=False,
     )
     await state.clear()

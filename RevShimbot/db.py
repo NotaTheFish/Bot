@@ -44,6 +44,7 @@ CREATE TABLE IF NOT EXISTS rvb_custom_templates (
     bg_color TEXT NOT NULL DEFAULT '#1a1a2e',
     bg_image TEXT,
     is_edited BOOLEAN NOT NULL DEFAULT FALSE,
+    extra_cfg JSONB NOT NULL DEFAULT '{}',
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
@@ -101,6 +102,11 @@ class Database:
                 ALTER TABLE rvb_custom_templates
                 ADD COLUMN IF NOT EXISTS title_font TEXT NOT NULL DEFAULT 'caveat'
             """)
+            # Авто-миграция: extra_cfg (JSON со всеми расширенными настройками)
+            await conn.execute("""
+                ALTER TABLE rvb_custom_templates
+                ADD COLUMN IF NOT EXISTS extra_cfg JSONB NOT NULL DEFAULT '{}'
+            """)
             # Авто-миграция: pub_id для продавцов
             await conn.execute("""
                 ALTER TABLE rvb_sellers
@@ -141,12 +147,13 @@ class Database:
 
     async def create_custom_template(self, owner_id: int, creator_id: int,
                                        creator_username, **fields) -> dict:
+        import json as _json
         async with self.pool.acquire() as conn:
             row = await conn.fetchrow("""
                 INSERT INTO rvb_custom_templates
                     (owner_id, creator_id, creator_username, name, layout, font,
-                     title_font, text_color, accent_color, bg_color, bg_image, is_edited)
-                VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+                     title_font, text_color, accent_color, bg_color, bg_image, is_edited, extra_cfg)
+                VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
                 RETURNING *
             """, owner_id, creator_id, creator_username,
                 fields.get("name", "Мой шаблон"),
@@ -157,14 +164,26 @@ class Database:
                 fields.get("accent_color", "#c9a84c"),
                 fields.get("bg_color", "#1a1a2e"),
                 fields.get("bg_image"),
-                fields.get("is_edited", False))
+                fields.get("is_edited", False),
+                _json.dumps(fields.get("extra_cfg", {})))
             return dict(row)
 
     async def get_custom_template(self, template_id: int):
+        import json as _json
         async with self.pool.acquire() as conn:
             row = await conn.fetchrow(
                 "SELECT * FROM rvb_custom_templates WHERE id = $1", template_id)
-            return dict(row) if row else None
+            if not row:
+                return None
+            d = dict(row)
+            if isinstance(d.get("extra_cfg"), str):
+                try:
+                    d["extra_cfg"] = _json.loads(d["extra_cfg"])
+                except Exception:
+                    d["extra_cfg"] = {}
+            elif d.get("extra_cfg") is None:
+                d["extra_cfg"] = {}
+            return d
 
     async def list_custom_templates(self, owner_id: int) -> list:
         async with self.pool.acquire() as conn:
@@ -187,10 +206,13 @@ class Database:
             ) or 0
 
     async def update_custom_template(self, template_id: int, **fields):
+        import json as _json
         if not fields:
             return
         sets, vals = [], []
         for i, (k, v) in enumerate(fields.items(), start=1):
+            if k == "extra_cfg" and not isinstance(v, str):
+                v = _json.dumps(v)
             sets.append(f"{k} = ${i}")
             vals.append(v)
         vals.append(template_id)
