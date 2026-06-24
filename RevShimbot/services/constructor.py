@@ -222,6 +222,29 @@ PRESETS = {
 }
 
 
+# ── Этап 4: декоративные элементы ──────────────────────────────────────────
+
+# Бейдж «Проверенный продавец» — варианты вида
+VERIFIED_BADGES = {
+    "none":     ("⬜️ Без бейджа", ""),
+    "check":    ("✅ Галочка", "✓ Проверенный продавец"),
+    "shield":   ("🛡 Щит", "🛡 Verified Seller"),
+    "star":     ("⭐️ Звезда", "★ Trusted"),
+    "crown":    ("👑 Корона", "👑 Premium"),
+    "diamond":  ("💎 Алмаз", "💎 VIP"),
+}
+
+# Угловые орнаменты карточки
+CORNER_ORNAMENTS = {
+    "none":     ("⬜️ Без орнамента", ""),
+    "lines":    ("📐 Уголки-линии", "lines"),
+    "brackets": ("⌜ Скобки", "brackets"),
+    "dots":     ("⠿ Точки", "dots"),
+    "double":   ("⌟ Двойные", "double"),
+}
+
+
+
 
 
 FONT_LINKS = (
@@ -259,6 +282,43 @@ def _watermark_html(creator_username, is_edited: bool) -> str:
 
 
 # ── Генератор HTML по конфигу ──────────────────────────────────────────────
+
+def _build_ornament(style: str, accent: str) -> str:
+    """Генерирует HTML угловых орнаментов карточки."""
+    if not style:
+        return ""
+    base = ("position:absolute;width:28px;height:28px;pointer-events:none;")
+    if style == "lines":
+        css = {
+            "tl": f"top:14px;left:14px;border-top:2px solid {accent};border-left:2px solid {accent};",
+            "tr": f"top:14px;right:14px;border-top:2px solid {accent};border-right:2px solid {accent};",
+            "bl": f"bottom:14px;left:14px;border-bottom:2px solid {accent};border-left:2px solid {accent};",
+            "br": f"bottom:14px;right:14px;border-bottom:2px solid {accent};border-right:2px solid {accent};",
+        }
+    elif style == "brackets":
+        css = {
+            "tl": f"top:12px;left:12px;border-top:3px solid {accent};border-left:3px solid {accent};border-top-left-radius:6px;",
+            "tr": f"top:12px;right:12px;border-top:3px solid {accent};border-right:3px solid {accent};border-top-right-radius:6px;",
+            "bl": f"bottom:12px;left:12px;border-bottom:3px solid {accent};border-left:3px solid {accent};border-bottom-left-radius:6px;",
+            "br": f"bottom:12px;right:12px;border-bottom:3px solid {accent};border-right:3px solid {accent};border-bottom-right-radius:6px;",
+        }
+    elif style == "double":
+        css = {
+            "tl": f"top:14px;left:14px;border-top:1px solid {accent};border-left:1px solid {accent};box-shadow:inset 4px 4px 0 -3px {accent};",
+            "tr": f"top:14px;right:14px;border-top:1px solid {accent};border-right:1px solid {accent};box-shadow:inset -4px 4px 0 -3px {accent};",
+            "bl": f"bottom:14px;left:14px;border-bottom:1px solid {accent};border-left:1px solid {accent};box-shadow:inset 4px -4px 0 -3px {accent};",
+            "br": f"bottom:14px;right:14px;border-bottom:1px solid {accent};border-right:1px solid {accent};box-shadow:inset -4px -4px 0 -3px {accent};",
+        }
+    elif style == "dots":
+        d = f"position:absolute;width:6px;height:6px;border-radius:50%;background:{accent};pointer-events:none;"
+        return (f'<span style="{d}top:16px;left:16px;"></span>'
+                f'<span style="{d}top:16px;right:16px;"></span>'
+                f'<span style="{d}bottom:16px;left:16px;"></span>'
+                f'<span style="{d}bottom:16px;right:16px;"></span>')
+    else:
+        return ""
+    return "".join(f'<span style="{base}{v}"></span>' for v in css.values())
+
 
 def build_html(cfg: dict, data: dict) -> str:
     layout = cfg.get("layout", "classic")
@@ -367,6 +427,30 @@ def build_html(cfg: dict, data: dict) -> str:
     _effects_with_own_shadow = {"neon", "glow_soft", "shadow3d", "engrave", "gradient"}
     title_shadow_base = "" if _te_key in _effects_with_own_shadow else "text-shadow:0 2px 6px rgba(0,0,0,0.5);"
 
+    # ── Этап 4: декоративные элементы ─────────────────────────────────────
+    # Бейдж «Проверенный продавец»
+    _vb_key = ex.get("verified_badge", "none")
+    _, _vb_text = VERIFIED_BADGES.get(_vb_key, VERIFIED_BADGES["none"])
+    verified_html = ""
+    if _vb_text:
+        verified_html = (f'<div class="vbadge" style="display:inline-block;margin:0 auto 14px;'
+                         f'padding:5px 16px;border-radius:20px;background:{accent}22;'
+                         f'border:1px solid {accent}66;color:{accent};font-size:12px;'
+                         f'font-weight:600;letter-spacing:.03em;">{_vb_text}</div>')
+
+    # Угловые орнаменты
+    _or_key = ex.get("corner_ornament", "none")
+    _, _or_style = CORNER_ORNAMENTS.get(_or_key, CORNER_ORNAMENTS["none"])
+    ornament_html = _build_ornament(_or_style, accent)
+
+    # Логотип магазина (загружаемый, base64 PNG)
+    logo_b64 = ex.get("logo_b64")
+    logo_html = ""
+    if logo_b64:
+        logo_html = (f'<div style="text-align:center;margin-bottom:12px;">'
+                     f'<img src="data:image/png;base64,{logo_b64}" '
+                     f'style="max-height:64px;max-width:180px;object-fit:contain;"></div>')
+
     if vis["show_avatar"]:
         avatar = (f'<div class="av" style="background:url(data:image/jpeg;base64,{data["avatar_b64"]}) center/cover;'
                   f'border:2px solid {accent};"></div>'
@@ -444,6 +528,14 @@ def build_html(cfg: dict, data: dict) -> str:
         <div class="divider"></div>
         <div class="meta">{avatar}<div class="mi"><div class="name">{name}</div><div class="date">{date}</div></div>{badge}</div>"""
 
+    # Декор сверху карточки: логотип + бейдж проверенного продавца
+    _decor_top = ""
+    if logo_html:
+        _decor_top += logo_html
+    if verified_html:
+        _decor_top += f'<div style="text-align:center;">{verified_html}</div>'
+    body = _decor_top + body
+
     return f"""<!DOCTYPE html><html><head><meta charset="utf-8">
 {FONT_LINKS}
 <style>
@@ -470,6 +562,7 @@ body{{width:800px;background:transparent;}}
 </style></head><body>
 <div class="frame">
 <div class="card">
+  {ornament_html}
   {body}
   <div class="wm">@{bot_username}</div>
   {creator_wm}

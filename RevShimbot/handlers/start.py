@@ -515,7 +515,15 @@ async def cb_myclienttemplate(call: CallbackQuery, db: Database):
         await call.answer("Клиентский шаблон не настроен", show_alert=True)
         return
     await call.answer()
-    tpl = TEMPLATE_NAMES.get(client["template_id"], client["template_id"])
+    tid = client["template_id"]
+    if tid.startswith("custom_"):
+        try:
+            ct = await db.get_custom_template(int(tid.split("_")[1]))
+            tpl = ct["name"] if ct else tid
+        except Exception:
+            tpl = tid
+    else:
+        tpl = TEMPLATE_NAMES.get(tid, tid)
     await call.message.answer(
         f"🎨 <b>Клиентский шаблон</b>\n\n"
         f"Стиль карточки: <b>{tpl}</b>\n\n"

@@ -17,6 +17,7 @@ from services.constructor import (
     BG_GRADIENTS, CARD_BORDERS, CARD_RADIUS, CARD_SHADOW, TEXT_SIZES,
     CORNER_FILL, VISIBILITY_DEFAULTS,
     TITLE_EFFECTS, BG_TEXTURES, PRESETS,
+    VERIFIED_BADGES, CORNER_ORNAMENTS,
     render_preview
 )
 
@@ -28,6 +29,7 @@ MAX_TEMPLATES = 15
 class ConstructorSG(StatesGroup):
     building = State()      # активное конструирование с превью
     enter_bg_image = State()
+    enter_logo = State()
     enter_name = State()
     enter_key = State()     # ввод ключа для получения шаблона
 
@@ -68,6 +70,9 @@ def kb_constructor_main() -> InlineKeyboardMarkup:
          InlineKeyboardButton(text="🧩 Текстура фона", callback_data="con:menu:bg_texture")],
         [InlineKeyboardButton(text="🔠 Размер текста", callback_data="con:menu:text_size")],
         [InlineKeyboardButton(text="👁 Показать/скрыть блоки", callback_data="con:menu:visibility")],
+        [InlineKeyboardButton(text="✅ Бейдж продавца", callback_data="con:menu:verified_badge"),
+         InlineKeyboardButton(text="⌜ Орнамент углов", callback_data="con:menu:corner_ornament")],
+        [InlineKeyboardButton(text="🖼 Логотип магазина", callback_data="con:menu:logo")],
         [InlineKeyboardButton(text="💾 Сохранить шаблон", callback_data="con:save")],
         [InlineKeyboardButton(text="❌ Отмена", callback_data="con:cancel")],
     ])
@@ -243,6 +248,8 @@ MENU_MAP = {
     "corner_fill": ("🎨 Заливка углов (когда скруглены):", CORNER_FILL),
     "title_effect": ("💫 Эффект названия магазина:", TITLE_EFFECTS),
     "bg_texture": ("🧩 Текстура фона:", BG_TEXTURES),
+    "verified_badge": ("✅ Бейдж проверенного продавца:", VERIFIED_BADGES),
+    "corner_ornament": ("⌜ Орнамент углов карточки:", CORNER_ORNAMENTS),
 }
 
 
@@ -257,6 +264,15 @@ async def cb_open_menu(call: CallbackQuery, state: FSMContext):
             "🖼 Пришли картинку которая станет фоном карточки.\n"
             "<i>Текст автоматически затемнится для читаемости. "
             "Отправь /skip чтобы вернуться без картинки.</i>"
+        )
+        return
+
+    if field == "logo":
+        await state.set_state(ConstructorSG.enter_logo)
+        await call.message.answer(
+            "🖼 Пришли логотип магазина (картинку).\n"
+            "<i>Он появится над названием. Лучше PNG с прозрачным фоном. "
+            "Отправь /skip чтобы убрать логотип.</i>"
         )
         return
 
@@ -337,7 +353,7 @@ async def cb_set_option(call: CallbackQuery, state: FSMContext, db: Database):
         changed = cfg.get("title_font") != value
         cfg["title_font"] = value
     elif field in ("bg_gradient", "card_border", "card_radius", "card_shadow", "text_size", "corner_fill",
-                   "title_effect", "bg_texture"):
+                   "title_effect", "bg_texture", "verified_badge", "corner_ornament"):
         ex = cfg.setdefault("extra_cfg", {})
         changed = ex.get(field) != value
         ex[field] = value
@@ -453,6 +469,52 @@ async def cb_bg_image(message: Message, state: FSMContext, db: Database, bot):
 
 @router.message(ConstructorSG.enter_bg_image, F.text == "/skip")
 async def cb_bg_skip(message: Message, state: FSMContext, db: Database):
+    await state.set_state(ConstructorSG.building)
+    await _send_or_update_preview(message, state, db)
+
+
+@router.message(ConstructorSG.enter_logo, F.photo)
+async def cb_logo(message: Message, state: FSMContext, db: Database, bot):
+    import base64, io
+    photo = message.photo[-1]
+    file = await bot.get_file(photo.file_id)
+    buf = await bot.download_file(file.file_path)
+    raw = buf.read()
+
+    # Сжимаем логотип: до 240px по большей стороне, PNG с прозрачностью
+    try:
+        from PIL import Image
+        im = Image.open(io.BytesIO(raw)).convert("RGBA")
+        im.thumbnail((240, 240), Image.LANCZOS)
+        out = io.BytesIO()
+        im.save(out, format="PNG", optimize=True)
+        raw = out.getvalue()
+    except Exception:
+        pass  # если не вышло — сохраняем как есть
+
+    b64 = base64.b64encode(raw).decode()
+    # Защита от слишком больших логотипов (лимит ~200KB base64)
+    if len(b64) > 200_000:
+        await message.answer("❌ Логотип слишком большой. Пришли картинку поменьше.")
+        return
+
+    data = await state.get_data()
+    cfg = data["cfg"]
+    ex = cfg.setdefault("extra_cfg", {})
+    ex["logo_b64"] = b64
+    await state.update_data(cfg=cfg)
+    await state.set_state(ConstructorSG.building)
+    await message.answer("✅ Логотип установлен!")
+    await _send_or_update_preview(message, state, db)
+
+
+@router.message(ConstructorSG.enter_logo, F.text == "/skip")
+async def cb_logo_skip(message: Message, state: FSMContext, db: Database):
+    data = await state.get_data()
+    cfg = data["cfg"]
+    ex = cfg.setdefault("extra_cfg", {})
+    ex.pop("logo_b64", None)  # /skip убирает логотип
+    await state.update_data(cfg=cfg)
     await state.set_state(ConstructorSG.building)
     await _send_or_update_preview(message, state, db)
 
