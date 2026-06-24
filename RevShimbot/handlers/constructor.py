@@ -270,9 +270,11 @@ async def cb_open_menu(call: CallbackQuery, state: FSMContext):
     if field == "logo":
         await state.set_state(ConstructorSG.enter_logo)
         await call.message.answer(
-            "🖼 Пришли логотип магазина (картинку).\n"
-            "<i>Он появится над названием. Лучше PNG с прозрачным фоном. "
-            "Отправь /skip чтобы убрать логотип.</i>"
+            "🖼 Пришли логотип магазина.\n\n"
+            "💡 <b>Важно про прозрачность:</b> если в логотипе прозрачный фон, "
+            "отправь его как <b>файл</b> (📎 → «Файл» / «Без сжатия»), а не как фото — "
+            "иначе Telegram зальёт прозрачность белым.\n\n"
+            "<i>Он появится над названием. Отправь /skip чтобы убрать логотип.</i>"
         )
         return
 
@@ -473,27 +475,21 @@ async def cb_bg_skip(message: Message, state: FSMContext, db: Database):
     await _send_or_update_preview(message, state, db)
 
 
-@router.message(ConstructorSG.enter_logo, F.photo)
-async def cb_logo(message: Message, state: FSMContext, db: Database, bot):
+async def _process_logo(message: Message, state: FSMContext, db: Database, raw: bytes):
+    """Общая обработка логотипа: сжатие (с сохранением прозрачности) и сохранение."""
     import base64, io
-    photo = message.photo[-1]
-    file = await bot.get_file(photo.file_id)
-    buf = await bot.download_file(file.file_path)
-    raw = buf.read()
-
-    # Сжимаем логотип: до 240px по большей стороне, PNG с прозрачностью
     try:
         from PIL import Image
-        im = Image.open(io.BytesIO(raw)).convert("RGBA")
+        im = Image.open(io.BytesIO(raw)).convert("RGBA")  # RGBA сохраняет альфа-канал
         im.thumbnail((240, 240), Image.LANCZOS)
         out = io.BytesIO()
-        im.save(out, format="PNG", optimize=True)
+        im.save(out, format="PNG", optimize=True)  # PNG сохраняет прозрачность
         raw = out.getvalue()
     except Exception:
-        pass  # если не вышло — сохраняем как есть
+        await message.answer("❌ Не удалось обработать картинку. Пришли PNG или JPG.")
+        return
 
     b64 = base64.b64encode(raw).decode()
-    # Защита от слишком больших логотипов (лимит ~200KB base64)
     if len(b64) > 200_000:
         await message.answer("❌ Логотип слишком большой. Пришли картинку поменьше.")
         return
@@ -506,6 +502,34 @@ async def cb_logo(message: Message, state: FSMContext, db: Database, bot):
     await state.set_state(ConstructorSG.building)
     await message.answer("✅ Логотип установлен!")
     await _send_or_update_preview(message, state, db)
+
+
+@router.message(ConstructorSG.enter_logo, F.photo)
+async def cb_logo_photo(message: Message, state: FSMContext, db: Database, bot):
+    # Фото — Telegram уже убрал прозрачность, но логотип всё равно встроится
+    photo = message.photo[-1]
+    file = await bot.get_file(photo.file_id)
+    buf = await bot.download_file(file.file_path)
+    await _process_logo(message, state, db, buf.read())
+
+
+@router.message(ConstructorSG.enter_logo, F.document)
+async def cb_logo_document(message: Message, state: FSMContext, db: Database, bot):
+    # Документ сохраняет прозрачность PNG
+    doc = message.document
+    mime = (doc.mime_type or "").lower()
+    name = (doc.file_name or "").lower()
+    is_image = mime.startswith("image/") or name.endswith((".png", ".jpg", ".jpeg", ".webp"))
+    if not is_image:
+        await message.answer("❌ Это не картинка. Пришли логотип в формате PNG, JPG или WEBP.")
+        return
+    # Защита: не качаем гигантские файлы
+    if doc.file_size and doc.file_size > 5 * 1024 * 1024:
+        await message.answer("❌ Файл слишком большой (макс. 5 МБ). Пришли логотип поменьше.")
+        return
+    file = await bot.get_file(doc.file_id)
+    buf = await bot.download_file(file.file_path)
+    await _process_logo(message, state, db, buf.read())
 
 
 @router.message(ConstructorSG.enter_logo, F.text == "/skip")
