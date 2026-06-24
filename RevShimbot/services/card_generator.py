@@ -476,8 +476,8 @@ def _render_html(html: str) -> bytes:
         full_height = page.evaluate("document.body.scrollHeight")
         page.set_viewport_size({"width": 900, "height": int(full_height) + 40})
         page.wait_for_timeout(100)
-        card = page.query_selector(".card")
-        box = card.bounding_box()
+        target = page.query_selector(".frame") or page.query_selector(".card")
+        box = target.bounding_box()
         png = page.screenshot(
             type="png",
             clip={"x": box["x"], "y": box["y"],

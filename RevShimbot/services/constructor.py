@@ -63,13 +63,13 @@ BG_COLORS = {
 # Градиентные фоны: (label, цвет1, цвет2, угол)
 BG_GRADIENTS = {
     "none":        ("⬜️ Без градиента", None, None, None),
-    "midnight":    ("🌃 Полночь", "#1a1a2e", "#0f0c1d", 180),
-    "ocean":       ("🌊 Океан", "#0f2027", "#203a43", 160),
-    "sunset":      ("🌅 Закат", "#2a1520", "#3d1e2e", 160),
-    "emerald":     ("💚 Изумруд", "#15201a", "#0a2818", 180),
-    "royal":       ("👑 Королевский", "#1e1633", "#2d1b4e", 160),
-    "ember":       ("🔥 Угли", "#1a1010", "#2e1508", 180),
-    "steel":       ("⚙️ Сталь", "#1c2128", "#2d333b", 160),
+    "midnight":    ("🌃 Полночь", "#232850", "#0a0814", 180),
+    "ocean":       ("🌊 Океан", "#0f2027", "#2c5364", 160),
+    "sunset":      ("🌅 Закат", "#3a1c2e", "#6d2b3f", 160),
+    "emerald":     ("💚 Изумруд", "#0a2818", "#1d5c3a", 180),
+    "royal":       ("👑 Королевский", "#1e1633", "#4a2d7e", 160),
+    "ember":       ("🔥 Угли", "#1a1010", "#5e2810", 180),
+    "steel":       ("⚙️ Сталь", "#1c2128", "#454d5a", 160),
 }
 
 # Рамка карточки: (label, css-border, css-extra)
@@ -93,9 +93,18 @@ CARD_RADIUS = {
 # Тень карточки
 CARD_SHADOW = {
     "none":     ("⬜️ Без тени", ""),
-    "soft":     ("🌫 Мягкая", "box-shadow:0 8px 32px rgba(0,0,0,0.4);"),
-    "hard":     ("⬛️ Жёсткая", "box-shadow:0 12px 0 rgba(0,0,0,0.25);"),
-    "glowacc":  ("✨ Цветная", "box-shadow:0 8px 40px {accent}44;"),
+    "soft":     ("🌫 Мягкая", "box-shadow:0 10px 40px rgba(0,0,0,0.55);"),
+    "hard":     ("⬛️ Жёсткая", "box-shadow:14px 14px 0 rgba(0,0,0,0.35);"),
+    "glowacc":  ("✨ Цветная", "box-shadow:0 0 60px {accent}88;"),
+}
+
+# Заливка углов (фон-подложка вокруг карточки когда углы скруглены)
+CORNER_FILL = {
+    "match":    ("🎯 Под фон карточки", "__match__"),
+    "black":    ("⬛️ Чёрный", "#000000"),
+    "white":    ("⬜️ Белый", "#ffffff"),
+    "dark":     ("🌑 Тёмно-серый", "#0e0e14"),
+    "telegram": ("💠 Фон Telegram", "#17212b"),
 }
 
 # Размер текста отзыва
@@ -176,10 +185,32 @@ def build_html(cfg: dict, data: dict) -> str:
     _rd_key = ex.get("card_radius", "sharp")
     _, card_radius = CARD_RADIUS.get(_rd_key, CARD_RADIUS["sharp"])
 
+    # Предварительно резолвим градиент (нужен для corner_fill и фона)
+    _grad_key = ex.get("bg_gradient", "none")
+    _grad_pre = BG_GRADIENTS.get(_grad_key, BG_GRADIENTS["none"])
+
     # Тень
     _sh_key = ex.get("card_shadow", "none")
     _, sh_tpl = CARD_SHADOW.get(_sh_key, CARD_SHADOW["none"])
     card_shadow = sh_tpl.format(accent=accent)
+
+    # Заливка углов (подложка) — важно когда углы скруглены, иначе Telegram заливает белым
+    _cf_key = ex.get("corner_fill", "match")
+    _, _cf_val = CORNER_FILL.get(_cf_key, CORNER_FILL["match"])
+    if _cf_val == "__match__":
+        # Под фон карточки: берём bg_color, либо первый цвет градиента, либо тёмный
+        if bg_image:
+            corner_fill = "#0e0e14"
+        elif _grad_pre and _grad_pre[1]:
+            corner_fill = _grad_pre[1]
+        else:
+            corner_fill = bg_color
+    else:
+        corner_fill = _cf_val
+
+    # Подложка нужна только если есть скругление, тень или внешняя рамка-свечение
+    _needs_pad = (_rd_key != "sharp") or (_sh_key != "none") or (_bd_key == "glow")
+    frame_pad = "28px" if _needs_pad else "0px"
 
     stars = _stars(data["stars"]) if data.get("stars", 0) > 0 else ""
     shop = data["shop_name"]
@@ -193,8 +224,7 @@ def build_html(cfg: dict, data: dict) -> str:
     bot_username = data.get("bot_username", "reviewbot")
 
     # Фон — картинка > градиент > цвет
-    _grad_key = ex.get("bg_gradient", "none")
-    _grad = BG_GRADIENTS.get(_grad_key, BG_GRADIENTS["none"])
+    _grad = _grad_pre
     if bg_image:
         bg_style = (f"background-image:linear-gradient(180deg,rgba(0,0,0,0.55),rgba(0,0,0,0.85)),"
                     f"url('data:image/png;base64,{bg_image}');background-size:cover;background-position:center;")
@@ -285,7 +315,8 @@ def build_html(cfg: dict, data: dict) -> str:
 <style>
 *{{margin:0;padding:0;box-sizing:border-box;font-family:{font_css},"Noto Sans","Noto Sans CJK SC","Noto Sans Arabic","Noto Sans Coptic","Noto Sans Gothic","Noto Sans Symbols","Noto Sans Symbols 2","Noto Color Emoji","Symbola",sans-serif;}}
 body{{width:800px;background:transparent;}}
-.card{{width:800px;{bg_style}padding:44px 56px 36px;position:relative;overflow:hidden;border:{card_border};border-radius:{card_radius};{card_border_extra}{card_shadow}}}
+.frame{{background:{corner_fill};padding:{frame_pad};display:inline-block;width:800px;}}
+.card{{width:100%;{bg_style}padding:44px 56px 36px;position:relative;overflow:hidden;border:{card_border};border-radius:{card_radius};{card_border_extra}{card_shadow}}}
 .shop{{font-family:{title_font_css},"Noto Sans","Noto Sans CJK SC","Noto Sans Arabic","Noto Sans Coptic","Noto Sans Symbols 2",sans-serif;font-weight:700;font-size:30px;color:{accent};text-align:center;margin-bottom:6px;text-shadow:0 2px 6px rgba(0,0,0,0.5);}}
 .seller{{font-size:13px;color:{text_color};opacity:0.6;text-align:center;margin-bottom:16px;}}
 .divider{{height:1px;background:{accent};opacity:0.4;margin:16px 40px;}}
@@ -302,10 +333,12 @@ body{{width:800px;background:transparent;}}
 .wm{{text-align:right;font-size:10px;color:{text_color};opacity:0.3;margin-top:14px;}}
 .creator-wm{{position:absolute;bottom:8px;left:16px;font-size:9px;color:{text_color};opacity:0.35;}}
 </style></head><body>
+<div class="frame">
 <div class="card">
   {body}
   <div class="wm">@{bot_username}</div>
   {creator_wm}
+</div>
 </div></body></html>"""
 
 
@@ -320,10 +353,10 @@ def _render(html: str) -> bytes:
         except Exception:
             pass
         full_height = page.evaluate("document.body.scrollHeight")
-        page.set_viewport_size({"width": 900, "height": int(full_height) + 40})
+        page.set_viewport_size({"width": 900, "height": int(full_height) + 60})
         page.wait_for_timeout(100)
-        card = page.query_selector(".card")
-        box = card.bounding_box()
+        target = page.query_selector(".frame") or page.query_selector(".card")
+        box = target.bounding_box()
         png = page.screenshot(type="png", clip={"x": box["x"], "y": box["y"],
                                                   "width": box["width"], "height": box["height"]})
         browser.close()

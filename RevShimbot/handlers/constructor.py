@@ -15,7 +15,7 @@ from db import Database
 from services.constructor import (
     LAYOUTS, FONTS, TEXT_COLORS, ACCENT_COLORS, BG_COLORS,
     BG_GRADIENTS, CARD_BORDERS, CARD_RADIUS, CARD_SHADOW, TEXT_SIZES,
-    VISIBILITY_DEFAULTS,
+    CORNER_FILL, VISIBILITY_DEFAULTS,
     render_preview
 )
 
@@ -60,8 +60,9 @@ def kb_constructor_main() -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text="🖼 Фон (картинка)", callback_data="con:menu:bg_image")],
         [InlineKeyboardButton(text="🔲 Рамка", callback_data="con:menu:card_border"),
          InlineKeyboardButton(text="⬜️ Углы", callback_data="con:menu:card_radius")],
-        [InlineKeyboardButton(text="🌫 Тень", callback_data="con:menu:card_shadow"),
-         InlineKeyboardButton(text="🔠 Размер текста", callback_data="con:menu:text_size")],
+        [InlineKeyboardButton(text="🎨 Заливка углов", callback_data="con:menu:corner_fill"),
+         InlineKeyboardButton(text="🌫 Тень", callback_data="con:menu:card_shadow")],
+        [InlineKeyboardButton(text="🔠 Размер текста", callback_data="con:menu:text_size")],
         [InlineKeyboardButton(text="👁 Показать/скрыть блоки", callback_data="con:menu:visibility")],
         [InlineKeyboardButton(text="💾 Сохранить шаблон", callback_data="con:save")],
         [InlineKeyboardButton(text="❌ Отмена", callback_data="con:cancel")],
@@ -180,6 +181,39 @@ async def _send_or_update_preview(message_or_call, state: FSMContext, db: Databa
     await state.update_data(preview_msg_id=sent.message_id)
 
 
+async def _refresh_preview_in_place(call: CallbackQuery, state: FSMContext, db: Database):
+    """Перерисовывает превью в существующем сообщении и возвращает главное меню.
+    Не создаёт новых сообщений — превью всегда одно и то же."""
+    data = await state.get_data()
+    cfg = data["cfg"]
+    bot_username = data.get("bot_username", "reviewbot")
+    preview_id = data.get("preview_msg_id")
+    chat_id = call.message.chat.id
+
+    png = await render_preview(cfg, bot_username)
+    media = InputMediaPhoto(
+        media=BufferedInputFile(png, filename="preview.png"),
+        caption="🎨 <b>Конструктор карточки</b>\n\nНастраивай элементы — превью обновляется вживую."
+    )
+    if preview_id:
+        try:
+            await call.bot.edit_message_media(
+                chat_id=chat_id, message_id=preview_id,
+                media=media, reply_markup=kb_constructor_main()
+            )
+            return
+        except Exception:
+            pass
+    # Фолбэк — отправляем заново
+    sent = await call.bot.send_photo(
+        chat_id=chat_id,
+        photo=BufferedInputFile(png, filename="preview.png"),
+        caption="🎨 <b>Конструктор карточки</b>\n\nНастраивай элементы — превью обновляется вживую.",
+        reply_markup=kb_constructor_main()
+    )
+    await state.update_data(preview_msg_id=sent.message_id)
+
+
 # ── Навигация по меню настроек ─────────────────────────────────────────────
 
 MENU_MAP = {
@@ -194,6 +228,7 @@ MENU_MAP = {
     "card_radius": ("⬜️ Скругление углов:", CARD_RADIUS),
     "card_shadow": ("🌫 Тень карточки:", CARD_SHADOW),
     "text_size": ("🔠 Размер текста отзыва:", TEXT_SIZES),
+    "corner_fill": ("🎨 Заливка углов (когда скруглены):", CORNER_FILL),
 }
 
 
@@ -214,14 +249,31 @@ async def cb_open_menu(call: CallbackQuery, state: FSMContext):
     if field == "visibility":
         data = await state.get_data()
         cfg = data["cfg"]
-        await call.message.answer(
-            "👁 <b>Показать / скрыть блоки</b>\n\nНажми чтобы переключить:",
-            reply_markup=_kb_visibility(cfg)
-        )
+        preview_id = data.get("preview_msg_id")
+        kb = _kb_visibility(cfg)
+        if preview_id:
+            try:
+                await call.bot.edit_message_reply_markup(
+                    chat_id=call.message.chat.id, message_id=preview_id, reply_markup=kb)
+                return
+            except Exception:
+                pass
+        await call.message.answer("👁 <b>Показать / скрыть блоки</b>", reply_markup=kb)
         return
 
     title, options = MENU_MAP[field]
-    await call.message.answer(title, reply_markup=_kb_options(field, options))
+    data = await state.get_data()
+    preview_id = data.get("preview_msg_id")
+    kb = _kb_options(field, options)
+    # Редактируем клавиатуру самого превью-сообщения (не плодим новые сообщения)
+    if preview_id:
+        try:
+            await call.bot.edit_message_reply_markup(
+                chat_id=call.message.chat.id, message_id=preview_id, reply_markup=kb)
+            return
+        except Exception:
+            pass
+    await call.message.answer(title, reply_markup=kb)
 
 
 @router.callback_query(ConstructorSG.building, F.data.startswith("con:set:"))
@@ -253,7 +305,7 @@ async def cb_set_option(call: CallbackQuery, state: FSMContext, db: Database):
     elif field == "title_font":
         changed = cfg.get("title_font") != value
         cfg["title_font"] = value
-    elif field in ("bg_gradient", "card_border", "card_radius", "card_shadow", "text_size"):
+    elif field in ("bg_gradient", "card_border", "card_radius", "card_shadow", "text_size", "corner_fill"):
         ex = cfg.setdefault("extra_cfg", {})
         changed = ex.get(field) != value
         ex[field] = value
@@ -263,18 +315,13 @@ async def cb_set_option(call: CallbackQuery, state: FSMContext, db: Database):
     else:
         changed = False
 
-    # Если ничего не изменилось — просто всплывающий тост, превью не трогаем
+    await state.update_data(cfg=cfg)
     if not changed:
         await call.answer("Уже выбрано ✓")
-        return
-
-    await state.update_data(cfg=cfg)
-    await call.answer("✅ Применено")
-    try:
-        await call.message.delete()
-    except Exception:
-        pass
-    await _send_or_update_preview(call, state, db)
+    else:
+        await call.answer("✅ Применено")
+    # Перерисовываем превью в этом же сообщении и возвращаем главное меню
+    await _refresh_preview_in_place(call, state, db)
 
 
 @router.callback_query(ConstructorSG.building, F.data.startswith("con:toggle:"))
@@ -290,20 +337,43 @@ async def cb_toggle_visibility(call: CallbackQuery, state: FSMContext, db: Datab
     ex[key] = not cur
     await state.update_data(cfg=cfg)
     await call.answer("Переключено")
-    # Обновляем клавиатуру тумблеров на месте
+    # Перерисовываем превью + оставляем клавиатуру тумблеров
+    bot_username = data.get("bot_username", "reviewbot")
+    preview_id = data.get("preview_msg_id")
+    png = await render_preview(cfg, bot_username)
+    media = InputMediaPhoto(
+        media=BufferedInputFile(png, filename="preview.png"),
+        caption="👁 <b>Показать / скрыть блоки</b>\n\nНажми чтобы переключить. «Назад» — к меню."
+    )
     try:
-        await call.message.edit_reply_markup(reply_markup=_kb_visibility(cfg))
+        await call.bot.edit_message_media(
+            chat_id=call.message.chat.id, message_id=preview_id,
+            media=media, reply_markup=_kb_visibility(cfg)
+        )
     except Exception:
-        pass
+        try:
+            await call.message.edit_reply_markup(reply_markup=_kb_visibility(cfg))
+        except Exception:
+            pass
 
 
 @router.callback_query(ConstructorSG.building, F.data == "con:back")
 async def cb_back_to_preview(call: CallbackQuery, state: FSMContext, db: Database):
     await call.answer()
-    try:
-        await call.message.delete()
-    except Exception:
-        pass
+    data = await state.get_data()
+    preview_id = data.get("preview_msg_id")
+    # Просто возвращаем главное меню на превью-сообщение
+    if preview_id:
+        try:
+            await call.bot.edit_message_reply_markup(
+                chat_id=call.message.chat.id, message_id=preview_id,
+                reply_markup=kb_constructor_main()
+            )
+            return
+        except Exception:
+            pass
+    # Фолбэк — перерисовать
+    await _refresh_preview_in_place(call, state, db)
 
 
 @router.message(ConstructorSG.enter_bg_image, F.photo)
