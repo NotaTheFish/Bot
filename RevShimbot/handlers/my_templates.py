@@ -138,6 +138,7 @@ async def cb_show(call: CallbackQuery, db: Database, config):
         "text_color": tpl["text_color"], "accent_color": tpl["accent_color"],
         "bg_color": tpl["bg_color"], "bg_image": tpl["bg_image"],
         "creator_username": tpl["creator_username"], "is_edited": tpl["is_edited"],
+        "extra_cfg": tpl.get("extra_cfg") or {},
     }
     png = await render_preview(cfg, config.BOT_USERNAME)
     await call.message.answer_photo(
@@ -228,6 +229,7 @@ async def claim_template(user_id: int, username, key: str, db: Database) -> tupl
         accent_color=src["accent_color"],
         bg_color=src["bg_color"],
         bg_image=src["bg_image"],
+        extra_cfg=src.get("extra_cfg") or {},
         is_edited=False,
     )
     await db.use_template_key(key, user_id)

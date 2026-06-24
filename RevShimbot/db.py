@@ -186,11 +186,23 @@ class Database:
             return d
 
     async def list_custom_templates(self, owner_id: int) -> list:
+        import json as _json
         async with self.pool.acquire() as conn:
             rows = await conn.fetch(
                 "SELECT * FROM rvb_custom_templates WHERE owner_id = $1 ORDER BY created_at DESC",
                 owner_id)
-            return [dict(r) for r in rows]
+            result = []
+            for r in rows:
+                d = dict(r)
+                if isinstance(d.get("extra_cfg"), str):
+                    try:
+                        d["extra_cfg"] = _json.loads(d["extra_cfg"])
+                    except Exception:
+                        d["extra_cfg"] = {}
+                elif d.get("extra_cfg") is None:
+                    d["extra_cfg"] = {}
+                result.append(d)
+            return result
 
     async def count_custom_templates(self, owner_id: int) -> int:
         async with self.pool.acquire() as conn:
@@ -220,7 +232,15 @@ class Database:
             row = await conn.fetchrow(
                 f"UPDATE rvb_custom_templates SET {', '.join(sets)}, updated_at=NOW() "
                 f"WHERE id = ${len(vals)} RETURNING *", *vals)
-            return dict(row) if row else None
+            if not row:
+                return None
+            d = dict(row)
+            if isinstance(d.get("extra_cfg"), str):
+                try:
+                    d["extra_cfg"] = _json.loads(d["extra_cfg"])
+                except Exception:
+                    d["extra_cfg"] = {}
+            return d
 
     async def delete_custom_template(self, template_id: int, owner_id: int) -> bool:
         async with self.pool.acquire() as conn:

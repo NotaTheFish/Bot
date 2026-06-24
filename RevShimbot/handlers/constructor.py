@@ -293,9 +293,12 @@ async def cb_set_option(call: CallbackQuery, state: FSMContext, db: Database):
         cfg["accent_color"] = new_val
     elif field == "bg_color":
         new_val = BG_COLORS[value][1]
-        changed = cfg.get("bg_color") != new_val or cfg.get("bg_image") is not None
+        ex = cfg.setdefault("extra_cfg", {})
+        changed = (cfg.get("bg_color") != new_val or cfg.get("bg_image") is not None
+                   or ex.get("bg_gradient", "none") != "none")
         cfg["bg_color"] = new_val
-        cfg["bg_image"] = None  # цвет отменяет картинку
+        cfg["bg_image"] = None       # цвет отменяет картинку
+        ex["bg_gradient"] = "none"   # и градиент — иначе он перекрыл бы цвет
     elif field == "layout":
         changed = cfg.get("layout") != value
         cfg["layout"] = value
