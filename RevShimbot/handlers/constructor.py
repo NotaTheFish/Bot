@@ -21,7 +21,9 @@ from services.constructor import (
     render_preview
 )
 
+import logging
 router = Router()
+logger = logging.getLogger(__name__)
 
 MAX_TEMPLATES = 15
 
@@ -515,10 +517,12 @@ async def cb_logo_photo(message: Message, state: FSMContext, db: Database, bot):
 
 @router.message(ConstructorSG.enter_logo, F.document)
 async def cb_logo_document(message: Message, state: FSMContext, db: Database, bot):
+    logger.info(f"[LOGO] Документ получен в состоянии enter_logo от {message.from_user.id}")
     # Документ сохраняет прозрачность PNG
     doc = message.document
     mime = (doc.mime_type or "").lower()
     name = (doc.file_name or "").lower()
+    logger.info(f"[LOGO] mime={mime}, name={name}, size={doc.file_size}")
     is_image = mime.startswith("image/") or name.endswith((".png", ".jpg", ".jpeg", ".webp"))
     if not is_image:
         await message.answer("❌ Это не картинка. Пришли логотип в формате PNG, JPG или WEBP.")
@@ -636,3 +640,16 @@ async def cb_enter_key(message: Message, state: FSMContext, db: Database):
     from handlers.my_templates import claim_template
     ok, msg = await claim_template(message.from_user.id, message.from_user.username, key, db)
     await message.answer(msg)
+
+
+# ВРЕМЕННАЯ ДИАГНОСТИКА: ловим документ в любом состоянии конструктора
+@router.message(F.document)
+async def _diag_any_document(message: Message, state: FSMContext):
+    cur = await state.get_state()
+    logger.info(f"[DIAG] Документ пришёл, текущее состояние FSM = {cur}, "
+                f"mime={message.document.mime_type}, name={message.document.file_name}")
+    if cur is None:
+        await message.answer(
+            "📎 Я получил файл, но сейчас не жду логотип. "
+            "Открой конструктор → «🖼 Логотип магазина» и пришли файл там."
+        )
