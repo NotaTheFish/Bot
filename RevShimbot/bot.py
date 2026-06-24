@@ -2,6 +2,7 @@ import asyncio
 import logging
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
+from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.enums import ParseMode
 from aiogram.fsm.storage.memory import MemoryStorage
 
@@ -39,8 +40,11 @@ async def main():
     except Exception as e:
         logger.warning(f"Не удалось проверить шрифты: {e}")
 
+    # Увеличенный таймаут сессии — большие карточки (логотип + пруф) грузятся дольше
+    session = AiohttpSession(timeout=120)
     bot = Bot(
         token=config.BOT_TOKEN,
+        session=session,
         default=DefaultBotProperties(parse_mode=ParseMode.HTML)
     )
     dp = Dispatcher(storage=MemoryStorage())

@@ -4,6 +4,7 @@ from aiogram.types import BufferedInputFile, InlineKeyboardMarkup, InlineKeyboar
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 import logging
+import asyncio
 
 from db import Database
 from keyboards import kb_buyer_stars, kb_templates, kb_cancel
@@ -112,6 +113,21 @@ async def ask_text(message: Message, state: FSMContext):
     )
 
 
+def _compress_proof(raw: bytes, max_side: int = 1000) -> bytes:
+    """Сжимает фото-пруф чтобы карточка не была слишком тяжёлой для отправки."""
+    try:
+        import io
+        from PIL import Image
+        im = Image.open(io.BytesIO(raw)).convert("RGB")
+        if max(im.size) > max_side:
+            im.thumbnail((max_side, max_side), Image.LANCZOS)
+        out = io.BytesIO()
+        im.save(out, format="JPEG", quality=82, optimize=True)
+        return out.getvalue()
+    except Exception:
+        return raw
+
+
 async def _get_avatar_bytes(bot, user_id: int):
     try:
         photos = await bot.get_user_profile_photos(user_id, limit=1)
@@ -186,10 +202,20 @@ async def finalize_review(event, state: FSMContext, db: Database, bot, config,
     caption_parts.append(f"\n— {buyer_name}")
     review_caption = "\n".join(caption_parts)
 
-    sent = await answer_photo(
-        BufferedInputFile(img_bytes, filename="review.png"),
-        caption=review_caption
-    )
+    sent = None
+    for attempt in range(3):
+        try:
+            sent = await answer_photo(
+                BufferedInputFile(img_bytes, filename="review.png"),
+                caption=review_caption
+            )
+            break
+        except Exception as e:
+            logger.warning(f"Отправка карточки покупателю не удалась (попытка {attempt+1}): {e}")
+            await asyncio.sleep(1.5)
+    if sent is None:
+        await answer("⚠️ Карточка сгенерирована, но не отправилась из-за сети. Попробуй ещё раз.")
+        return
 
     file_id = sent.photo[-1].file_id if sent.photo else None
     review_row = await db.save_review(
@@ -258,7 +284,7 @@ async def step_enter_text_with_photo(message: Message, state: FSMContext, db: Da
     try:
         file = await bot.get_file(message.photo[-1].file_id)
         buf = await bot.download_file(file.file_path)
-        proof_bytes = buf.read()
+        proof_bytes = _compress_proof(buf.read())
     except Exception as e:
         logger.error(f"Не удалось скачать пруф: {e}")
 
@@ -299,7 +325,7 @@ async def step_enter_proof(message: Message, state: FSMContext, db: Database, bo
     try:
         file = await bot.get_file(message.photo[-1].file_id)
         buf = await bot.download_file(file.file_path)
-        proof_bytes = buf.read()
+        proof_bytes = _compress_proof(buf.read())
     except Exception as e:
         logger.error(f"Не удалось скачать пруф: {e}")
 

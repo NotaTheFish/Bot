@@ -17,6 +17,26 @@ from services.card_generator import generate_card
 router = Router()
 logger = logging.getLogger(__name__)
 
+# Кеш сгенерированных карточек в памяти: ключ -> file_id.
+# Инлайн-запрос должен ответить за ~10 сек, а рендер Playwright медленный,
+# поэтому одинаковые/повторные запросы берём из кеша мгновенно.
+_INLINE_CARD_CACHE: dict[str, str] = {}
+_INLINE_CACHE_MAX = 500
+
+
+def _cache_key(seller: dict, review_text: str) -> str:
+    raw = f"{seller.get('template_id')}|{seller.get('shop_name')}|{seller.get('stars_mode')}|{seller.get('stars_value')}|{seller.get('item_mode')}|{seller.get('item_value')}|{review_text}"
+    return hashlib.sha256(raw.encode()).hexdigest()
+
+
+async def _safe_answer(query: InlineQuery, **kwargs):
+    """Отвечает на инлайн-запрос, гася ошибку устаревшего запроса."""
+    try:
+        await query.answer(**kwargs)
+    except Exception as e:
+        # query is too old / invalid — пользователь уже изменил текст, это норма
+        logger.info(f"Inline answer skipped (stale query): {e}")
+
 
 async def get_or_generate_card(
     query: InlineQuery,
@@ -33,6 +53,12 @@ async def get_or_generate_card(
     """
     if not config.CACHE_CHAT_ID:
         return None
+
+    # Кеш в памяти — если такую же карточку уже рендерили, отдаём мгновенно
+    ckey = _cache_key(seller, review_text)
+    cached = _INLINE_CARD_CACHE.get(ckey)
+    if cached:
+        return cached
 
     buyer_name = query.from_user.full_name or query.from_user.first_name or "Трейдер"
     buyer_initials = "".join(w[0].upper() for w in buyer_name.split() if w)[:2]
@@ -64,7 +90,12 @@ async def get_or_generate_card(
             chat_id=config.CACHE_CHAT_ID,
             photo=BufferedInputFile(img_bytes, filename="review_cache.png"),
         )
-        return sent.photo[-1].file_id
+        fid = sent.photo[-1].file_id
+        # Сохраняем в кеш (с простым ограничением размера)
+        if len(_INLINE_CARD_CACHE) >= _INLINE_CACHE_MAX:
+            _INLINE_CARD_CACHE.clear()
+        _INLINE_CARD_CACHE[ckey] = fid
+        return fid
     except Exception as e:
         logger.error(f"Failed to upload card to cache chat: {e}")
         return None
@@ -150,7 +181,7 @@ async def inline_review(query: InlineQuery, db: Database, bot, config):
                     f"<code>@{config.BOT_USERNAME} {seller['pub_id']} твой отзыв</code> "
                     f"и нажми на всплывающую картинку.</i>"
                 )
-                await query.answer(
+                await _safe_answer(query,
                     results=[
                         InlineQueryResultCachedPhoto(
                             id=result_id,
@@ -170,7 +201,7 @@ async def inline_review(query: InlineQuery, db: Database, bot, config):
         kb = InlineKeyboardMarkup(inline_keyboard=[[
             InlineKeyboardButton(text="✍️ Написать отзыв в боте", url=ref_link)
         ]])
-        await query.answer(
+        await _safe_answer(query,
             results=[
                 InlineQueryResultArticle(
                     id=result_id,
@@ -199,7 +230,7 @@ async def inline_review(query: InlineQuery, db: Database, bot, config):
                 f"<b>{seller['shop_name']}</b>\n{stars}\n\n"
                 f"<i>«{review_text}»</i>\n\n— {buyer_name}"
             )
-            await query.answer(
+            await _safe_answer(query,
                 results=[
                     InlineQueryResultCachedPhoto(
                         id=result_id,
@@ -229,7 +260,7 @@ async def inline_review(query: InlineQuery, db: Database, bot, config):
             }
             file_id = await get_or_generate_card(query, fake_seller, review_text, bot, config, db)
             if file_id:
-                await query.answer(
+                await _safe_answer(query,
                     results=[InlineQueryResultCachedPhoto(
                         id=result_id, photo_file_id=file_id,
                         caption=f"<i>«{review_text}»</i>\n\n— {buyer_name}",
@@ -252,7 +283,7 @@ async def inline_review(query: InlineQuery, db: Database, bot, config):
             }
             file_id = await get_or_generate_card(query, fake_seller, review_text, bot, config, db)
             if file_id:
-                await query.answer(
+                await _safe_answer(query,
                     results=[InlineQueryResultCachedPhoto(
                         id=result_id, photo_file_id=file_id,
                         caption=f"<i>«{review_text}»</i>\n\n— {buyer_name}",
@@ -264,7 +295,7 @@ async def inline_review(query: InlineQuery, db: Database, bot, config):
                 return
 
     # ── СЛУЧАЙ 5: совсем пусто или нет CACHE → подсказка ───────────────────
-    await query.answer(
+    await _safe_answer(query,
         results=[],
         switch_pm_text="✏️ Открыть бота чтобы оставить отзыв",
         switch_pm_parameter="inline_help",
