@@ -16,6 +16,7 @@ from services.constructor import (
     LAYOUTS, FONTS, TEXT_COLORS, ACCENT_COLORS, BG_COLORS,
     BG_GRADIENTS, CARD_BORDERS, CARD_RADIUS, CARD_SHADOW, TEXT_SIZES,
     CORNER_FILL, VISIBILITY_DEFAULTS,
+    TITLE_EFFECTS, BG_TEXTURES,
     render_preview
 )
 
@@ -62,6 +63,8 @@ def kb_constructor_main() -> InlineKeyboardMarkup:
          InlineKeyboardButton(text="⬜️ Углы", callback_data="con:menu:card_radius")],
         [InlineKeyboardButton(text="🎨 Заливка углов", callback_data="con:menu:corner_fill"),
          InlineKeyboardButton(text="🌫 Тень", callback_data="con:menu:card_shadow")],
+        [InlineKeyboardButton(text="💫 Эффект названия", callback_data="con:menu:title_effect"),
+         InlineKeyboardButton(text="🧩 Текстура фона", callback_data="con:menu:bg_texture")],
         [InlineKeyboardButton(text="🔠 Размер текста", callback_data="con:menu:text_size")],
         [InlineKeyboardButton(text="👁 Показать/скрыть блоки", callback_data="con:menu:visibility")],
         [InlineKeyboardButton(text="💾 Сохранить шаблон", callback_data="con:save")],
@@ -229,6 +232,8 @@ MENU_MAP = {
     "card_shadow": ("🌫 Тень карточки:", CARD_SHADOW),
     "text_size": ("🔠 Размер текста отзыва:", TEXT_SIZES),
     "corner_fill": ("🎨 Заливка углов (когда скруглены):", CORNER_FILL),
+    "title_effect": ("💫 Эффект названия магазина:", TITLE_EFFECTS),
+    "bg_texture": ("🧩 Текстура фона:", BG_TEXTURES),
 }
 
 
@@ -308,7 +313,8 @@ async def cb_set_option(call: CallbackQuery, state: FSMContext, db: Database):
     elif field == "title_font":
         changed = cfg.get("title_font") != value
         cfg["title_font"] = value
-    elif field in ("bg_gradient", "card_border", "card_radius", "card_shadow", "text_size", "corner_fill"):
+    elif field in ("bg_gradient", "card_border", "card_radius", "card_shadow", "text_size", "corner_fill",
+                   "title_effect", "bg_texture"):
         ex = cfg.setdefault("extra_cfg", {})
         changed = ex.get(field) != value
         ex[field] = value

@@ -29,6 +29,10 @@ FONTS = {
     "inter":       ("Inter", "'Inter',sans-serif"),
     "oswald":      ("Oswald", "'Oswald',sans-serif"),
     "comfortaa":   ("Comfortaa", "'Comfortaa',cursive"),
+    "vt323":       ("🎮 Pixel (VT323)", "'VT323',monospace"),
+    "cinzel":      ("🏛 Cinzel (англ.)", "'Cinzel',serif"),
+    "jetbrains":   ("💻 JetBrains Mono", "'JetBrains Mono',monospace"),
+    "bebas":       ("🅱️ Bebas Neue (англ.)", "'Bebas Neue',sans-serif"),
 }
 
 TEXT_COLORS = {
@@ -123,16 +127,45 @@ VISIBILITY_DEFAULTS = {
     "show_quote": True,
 }
 
+# ── Этап 2: типографика и текстуры ─────────────────────────────────────────
+
+# Эффекты заголовка магазина. Значение — функция от accent → CSS.
+TITLE_EFFECTS = {
+    "none":     ("⬜️ Обычный", ""),
+    "outline":  ("🅾️ Обводка", "-webkit-text-stroke:1.5px {accent};paint-order:stroke fill;"),
+    "neon":     ("💡 Неон", "text-shadow:0 0 6px {accent},0 0 14px {accent},0 0 28px {accent};"),
+    "glow_soft":("🌟 Мягкое свечение", "text-shadow:0 0 18px {accent}99;"),
+    "shadow3d": ("🎲 3D-тень", "text-shadow:2px 2px 0 rgba(0,0,0,0.5),4px 4px 0 {accent}55;"),
+    "gradient": ("🌈 Градиентная заливка", "__gradient__"),
+    "engrave":  ("🪨 Тиснение", "text-shadow:0 1px 0 rgba(255,255,255,0.25),0 -1px 0 rgba(0,0,0,0.6);"),
+}
+
+# Текстуры фона — накладываются ПОВЕРХ фона (цвет/градиент). CSS background-image слои.
+BG_TEXTURES = {
+    "none":     ("⬜️ Без текстуры", ""),
+    "grid":     ("▦ Сетка", "linear-gradient({tc}11 1px,transparent 1px),linear-gradient(90deg,{tc}11 1px,transparent 1px)|22px 22px"),
+    "dots":     ("⠿ Точки", "radial-gradient({tc}18 1.4px,transparent 1.4px)|22px 22px"),
+    "diagonal": ("╱ Диагонали", "repeating-linear-gradient(45deg,{tc}0a 0,{tc}0a 1px,transparent 1px,transparent 12px)|auto"),
+    "crosshatch":("▨ Штриховка", "repeating-linear-gradient(45deg,{tc}0a 0,{tc}0a 1px,transparent 1px,transparent 10px),repeating-linear-gradient(-45deg,{tc}0a 0,{tc}0a 1px,transparent 1px,transparent 10px)|auto"),
+    "vignette": ("🎯 Виньетка", "radial-gradient(ellipse at center,transparent 55%,rgba(0,0,0,0.45) 100%)|auto"),
+    "topglow":  ("🔆 Свет сверху", "radial-gradient(ellipse at top,{ac}22,transparent 60%)|auto"),
+}
+
+
 
 FONT_LINKS = (
-    "https://fonts.googleapis.com/css2?"
-    "family=Montserrat:wght@400;600;700;800&"
-    "family=Playfair+Display:wght@400;700&"
-    "family=Caveat:wght@600;700&"
-    "family=Space+Grotesk:wght@400;600&"
-    "family=Inter:wght@300;400;600&"
-    "family=Oswald:wght@400;600&"
-    "family=Comfortaa:wght@400;700&display=swap"
+    '<link href="https://fonts.googleapis.com/css2?'
+    'family=Montserrat:wght@400;600;700;800&'
+    'family=Playfair+Display:wght@400;700&'
+    'family=Caveat:wght@600;700&'
+    'family=Space+Grotesk:wght@400;600&'
+    'family=Inter:wght@300;400;600&'
+    'family=Oswald:wght@400;600&'
+    'family=Comfortaa:wght@400;700&display=swap" rel="stylesheet">'
+    '<link href="https://fonts.googleapis.com/css2?family=VT323&display=swap" rel="stylesheet">'
+    '<link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@400;700;900&display=swap" rel="stylesheet">'
+    '<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">'
+    '<link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&display=swap" rel="stylesheet">'
 )
 
 
@@ -233,6 +266,36 @@ def build_html(cfg: dict, data: dict) -> str:
     else:
         bg_style = f"background:{bg_color};"
 
+    # ── Этап 2: текстура фона (накладывается слоем поверх) ────────────────
+    _tx_key = ex.get("bg_texture", "none")
+    _, _tx_tpl = BG_TEXTURES.get(_tx_key, BG_TEXTURES["none"])
+    texture_layer = ""
+    if _tx_tpl:
+        tc = text_color.lstrip("#")
+        ac = accent.lstrip("#")
+        spec = _tx_tpl.replace("{tc}", "#" + tc).replace("{ac}", "#" + ac)
+        img_part, _, size_part = spec.partition("|")
+        texture_layer = f".card::before{{content:'';position:absolute;inset:0;pointer-events:none;z-index:0;background-image:{img_part};"
+        if size_part and size_part != "auto":
+            texture_layer += f"background-size:{size_part};"
+        texture_layer += "}.card>*{position:relative;z-index:1;}"
+
+    # ── Этап 2: эффект заголовка ──────────────────────────────────────────
+    _te_key = ex.get("title_effect", "none")
+    _, _te_tpl = TITLE_EFFECTS.get(_te_key, TITLE_EFFECTS["none"])
+    title_effect_css = ""
+    if _te_tpl == "__gradient__":
+        # Градиентная заливка букв: accent → светлее
+        title_effect_css = (f"background:linear-gradient(180deg,{accent},#ffffff);"
+                            f"-webkit-background-clip:text;background-clip:text;"
+                            f"-webkit-text-fill-color:transparent;")
+    elif _te_tpl:
+        title_effect_css = _te_tpl.format(accent=accent)
+
+    # Базовая тень заголовка — только если эффект не задаёт свою тень/заливку
+    _effects_with_own_shadow = {"neon", "glow_soft", "shadow3d", "engrave", "gradient"}
+    title_shadow_base = "" if _te_key in _effects_with_own_shadow else "text-shadow:0 2px 6px rgba(0,0,0,0.5);"
+
     if vis["show_avatar"]:
         avatar = (f'<div class="av" style="background:url(data:image/jpeg;base64,{data["avatar_b64"]}) center/cover;'
                   f'border:2px solid {accent};"></div>'
@@ -311,13 +374,14 @@ def build_html(cfg: dict, data: dict) -> str:
         <div class="meta">{avatar}<div class="mi"><div class="name">{name}</div><div class="date">{date}</div></div>{badge}</div>"""
 
     return f"""<!DOCTYPE html><html><head><meta charset="utf-8">
-<link href="{FONT_LINKS}" rel="stylesheet">
+{FONT_LINKS}
 <style>
 *{{margin:0;padding:0;box-sizing:border-box;font-family:{font_css},"Noto Sans","Noto Sans CJK SC","Noto Sans Arabic","Noto Sans Coptic","Noto Sans Gothic","Noto Sans Symbols","Noto Sans Symbols 2","Noto Color Emoji","Symbola",sans-serif;}}
 body{{width:800px;background:transparent;}}
 .frame{{background:{corner_fill};padding:{frame_pad};display:inline-block;width:800px;}}
 .card{{width:100%;{bg_style}padding:44px 56px 36px;position:relative;overflow:hidden;border:{card_border};border-radius:{card_radius};{card_border_extra}{card_shadow}}}
-.shop{{font-family:{title_font_css},"Noto Sans","Noto Sans CJK SC","Noto Sans Arabic","Noto Sans Coptic","Noto Sans Symbols 2",sans-serif;font-weight:700;font-size:30px;color:{accent};text-align:center;margin-bottom:6px;text-shadow:0 2px 6px rgba(0,0,0,0.5);}}
+{texture_layer}
+.shop{{font-family:{title_font_css},"Noto Sans","Noto Sans CJK SC","Noto Sans Arabic","Noto Sans Coptic","Noto Sans Symbols 2",sans-serif;font-weight:700;font-size:30px;color:{accent};text-align:center;margin-bottom:6px;position:relative;z-index:1;{title_shadow_base}{title_effect_css}}}
 .seller{{font-size:13px;color:{text_color};opacity:0.6;text-align:center;margin-bottom:16px;}}
 .divider{{height:1px;background:{accent};opacity:0.4;margin:16px 40px;}}
 .stars{{font-size:20px;color:{accent};text-align:center;letter-spacing:4px;margin-bottom:14px;text-shadow:0 1px 4px rgba(0,0,0,0.5);}}
@@ -349,12 +413,26 @@ def _render(html: str) -> bytes:
         page = browser.new_page(viewport={"width": 900, "height": 600}, device_scale_factor=2)
         page.set_content(html, wait_until="networkidle")
         try:
-            page.evaluate("document.fonts.ready")
+            # Принудительно загружаем все используемые шрифты (иначе часть не успевает)
+            page.evaluate("""async () => {
+                const families = ['Montserrat','Playfair Display','Caveat','Space Grotesk',
+                    'Inter','Oswald','Comfortaa','VT323','Cinzel',
+                    'JetBrains Mono','Bebas Neue'];
+                await Promise.all(families.map(f => {
+                    try { return Promise.all([
+                        document.fonts.load('400 30px "'+f+'"'),
+                        document.fonts.load('700 30px "'+f+'"')
+                    ]); }
+                    catch(e) { return Promise.resolve(); }
+                }));
+                await document.fonts.ready;
+            }""")
         except Exception:
             pass
+        page.wait_for_timeout(400)
         full_height = page.evaluate("document.body.scrollHeight")
         page.set_viewport_size({"width": 900, "height": int(full_height) + 60})
-        page.wait_for_timeout(100)
+        page.wait_for_timeout(120)
         target = page.query_selector(".frame") or page.query_selector(".card")
         box = target.bounding_box()
         png = page.screenshot(type="png", clip={"x": box["x"], "y": box["y"],

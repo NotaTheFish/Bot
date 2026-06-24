@@ -469,13 +469,14 @@ def _render_html(html: str) -> bytes:
         )
         page.set_content(html, wait_until="networkidle")
         try:
-            page.evaluate("document.fonts.ready")
+            page.evaluate("async () => { await document.fonts.ready; }")
         except Exception:
             pass
+        page.wait_for_timeout(350)
         # Расширяем viewport под полную высоту контента (иначе высокие пруфы обрезаются)
         full_height = page.evaluate("document.body.scrollHeight")
         page.set_viewport_size({"width": 900, "height": int(full_height) + 40})
-        page.wait_for_timeout(100)
+        page.wait_for_timeout(120)
         target = page.query_selector(".frame") or page.query_selector(".card")
         box = target.bounding_box()
         png = page.screenshot(
