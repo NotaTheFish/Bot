@@ -547,6 +547,30 @@ async def cb_logo_skip(message: Message, state: FSMContext, db: Database):
     await _send_or_update_preview(message, state, db)
 
 
+@router.message(ConstructorSG.enter_logo, F.sticker)
+async def cb_logo_sticker(message: Message, state: FSMContext, db: Database, bot):
+    # Telegram превращает .webp в стикер! Скачиваем и обрабатываем как логотип.
+    logger.info(f"[LOGO] Стикер в enter_logo, animated={message.sticker.is_animated}, video={message.sticker.is_video}")
+    st = message.sticker
+    if st.is_animated or st.is_video:
+        await message.answer("❌ Анимированный стикер не подойдёт. Пришли статичную картинку (PNG-файл).")
+        return
+    file = await bot.get_file(st.file_id)
+    buf = await bot.download_file(file.file_path)
+    await _process_logo(message, state, db, buf.read())
+
+
+@router.message(ConstructorSG.enter_logo)
+async def cb_logo_fallback(message: Message, state: FSMContext, db: Database, bot):
+    # Ловим ВСЁ остальное в состоянии логотипа — покажем что именно пришло
+    ct = message.content_type
+    logger.info(f"[LOGO] Fallback: content_type={ct}")
+    await message.answer(
+        f"⚠️ Я ожидаю картинку, а получил: <b>{ct}</b>.\n\n"
+        "Пришли логотип как обычную картинку или PNG-файл. Или /skip чтобы убрать логотип."
+    )
+
+
 # ── Сохранение ─────────────────────────────────────────────────────────────
 
 @router.callback_query(ConstructorSG.building, F.data == "con:save")
