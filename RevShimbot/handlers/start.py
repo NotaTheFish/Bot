@@ -494,13 +494,18 @@ async def cb_mytemplate(call: CallbackQuery, db: Database, config):
     seller["channel_verified"] = ch and ch["verified"]
     link = f"https://t.me/{config.BOT_USERNAME}?start=seller_{pub_id}"
 
+    from keyboards import CARD_SOURCE_LABELS, INLINE_BTN_LABELS
+    card_src = CARD_SOURCE_LABELS.get(seller.get("card_source_mode", "standard"), "Стандартные")
+    btn_mode = INLINE_BTN_LABELS.get(seller.get("inline_button_mode", "shown"), "Включена")
+
     await call.message.answer(
         f"📋 <b>Торговый шаблон — {seller['shop_name']}</b>\n\n"
         f"🆔 Твой ID: <code>{pub_id}</code>\n"
         f"🎨 Стиль: <b>{tpl}</b>\n"
         f"⭐️ Звёзды: <b>{stars_info}</b>\n"
         f"📦 Что купил: <b>{item_info}</b>\n"
-        f"🎨 Выбор стиля покупателем: <b>{allow}</b>\n\n"
+        f"🎴 Карточки для отзывов: <b>{card_src}</b>\n"
+        f"🔘 Инлайн-кнопка: <b>{btn_mode}</b>\n\n"
         f"🔗 Реф-ссылка: <code>{link}</code>\n\n"
         f"💬 Отзыв в чате: <code>@{config.BOT_USERNAME} {pub_id} текст</code>\n\n"
         f"Что изменить?",
@@ -602,12 +607,111 @@ async def cb_edit_field(call: CallbackQuery, db: Database, state: FSMContext):
     elif field == "item":
         await state.set_state(SetupSG.item_mode)
         await call.message.answer("📦 Режим «Что купил»:", reply_markup=kb_item_mode(data.get("item_mode")))
-    elif field == "tpl_choice":
-        await state.set_state(SetupSG.template_choice)
+    elif field == "cards":
+        seller = await db.get_seller(call.from_user.id)
+        from keyboards import kb_card_source, CARD_SOURCE_LABELS
+        cur_label = CARD_SOURCE_LABELS.get(seller.get("card_source_mode", "standard"))
         await call.message.answer(
-            "🎨 Разрешить покупателю выбирать стиль?",
-            reply_markup=kb_allow_template_choice(data.get("allow_template_choice", False))
+            "🎴 <b>Карточки для отзывов</b>\n\n"
+            "Выбери, какие карточки увидит клиент, когда пишет отзыв для твоего магазина:\n\n"
+            "• <b>Только стандартные</b> — встроенные шаблоны бота\n"
+            "• <b>Только мои</b> — карточки из конструктора (подчёркивают уникальность магазина)\n"
+            "• <b>Мои + стандартные</b> — всё вместе\n\n"
+            f"Сейчас: <b>{cur_label}</b>",
+            reply_markup=kb_card_source(seller)
         )
+    elif field == "inlinebtn":
+        seller = await db.get_seller(call.from_user.id)
+        from keyboards import kb_inline_button, INLINE_BTN_LABELS
+        cur_label = INLINE_BTN_LABELS.get(seller.get("inline_button_mode", "shown"))
+        await call.message.answer(
+            "🔘 <b>Управление инлайн-кнопкой</b>\n\n"
+            "К карточке отзыва, которую получает продавец, можно добавить кнопку "
+            "со ссылкой на профиль покупателя:\n\n"
+            "• <b>Спрятать</b> — кнопки не будет\n"
+            "• <b>Включить</b> — кнопка всегда добавляется\n"
+            "• <b>Спросить клиента</b> — у покупателя спросят, хочет ли он ссылку на себя\n\n"
+            f"Сейчас: <b>{cur_label}</b>",
+            reply_markup=kb_inline_button(seller)
+        )
+
+
+@router.callback_query(F.data.startswith("cardsrc:"))
+async def cb_card_source(call: CallbackQuery, db: Database):
+    action = call.data.split(":")[1]
+    if action == "noop":
+        await call.answer()
+        return
+    seller = await db.get_seller(call.from_user.id)
+    if not seller:
+        await call.answer("Сначала настрой шаблон", show_alert=True)
+        return
+
+    if action == "pick":
+        await call.answer()
+        from keyboards import kb_pick_custom_cards
+        customs = await db.list_custom_templates(call.from_user.id)
+        await call.message.answer(
+            "⚙️ <b>Выбор карточек</b>\n\n"
+            "Отметь, какие из твоих карточек показывать клиенту. "
+            "Если ничего не отмечено — клиент увидит все твои карточки.",
+            reply_markup=kb_pick_custom_cards(customs, seller.get("allowed_custom_ids", []))
+        )
+        return
+
+    # Смена режима источника
+    if action in ("standard", "custom", "both"):
+        await db.update_seller(call.from_user.id, card_source_mode=action)
+        await call.answer("✅ Режим обновлён")
+        seller = await db.get_seller(call.from_user.id)
+        from keyboards import kb_card_source
+        try:
+            await call.message.edit_reply_markup(reply_markup=kb_card_source(seller))
+        except Exception:
+            pass
+
+
+@router.callback_query(F.data.startswith("cardpick:"))
+async def cb_card_pick(call: CallbackQuery, db: Database):
+    cid = int(call.data.split(":")[1])
+    seller = await db.get_seller(call.from_user.id)
+    if not seller:
+        await call.answer("Сначала настрой шаблон", show_alert=True)
+        return
+    allowed = list(seller.get("allowed_custom_ids", []))
+    if cid in allowed:
+        allowed.remove(cid)
+    else:
+        allowed.append(cid)
+    await db.update_seller(call.from_user.id, allowed_custom_ids=allowed)
+    await call.answer("Переключено")
+    from keyboards import kb_pick_custom_cards
+    customs = await db.list_custom_templates(call.from_user.id)
+    try:
+        await call.message.edit_reply_markup(
+            reply_markup=kb_pick_custom_cards(customs, allowed))
+    except Exception:
+        pass
+
+
+@router.callback_query(F.data.startswith("inlbtn:"))
+async def cb_inline_button_mode(call: CallbackQuery, db: Database):
+    mode = call.data.split(":")[1]
+    if mode not in ("hidden", "shown", "ask"):
+        await call.answer()
+        return
+    seller = await db.get_seller(call.from_user.id)
+    if not seller:
+        await call.answer("Сначала настрой шаблон", show_alert=True)
+        return
+    await db.update_seller(call.from_user.id, inline_button_mode=mode)
+    await call.answer("✅ Режим кнопки обновлён")
+    seller = await db.get_seller(call.from_user.id)
+    from keyboards import kb_inline_button
+    try:
+        await call.message.edit_reply_markup(reply_markup=kb_inline_button(seller))
+    except Exception:
+        pass
 
 
 @router.callback_query(F.data == "menu:back")

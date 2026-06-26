@@ -18,6 +18,9 @@ CREATE TABLE IF NOT EXISTS rvb_sellers (
     item_mode TEXT NOT NULL DEFAULT 'free',
     item_value TEXT NOT NULL DEFAULT '',
     allow_template_choice BOOLEAN NOT NULL DEFAULT FALSE,
+    card_source_mode TEXT NOT NULL DEFAULT 'standard',
+    allowed_custom_ids JSONB NOT NULL DEFAULT '[]',
+    inline_button_mode TEXT NOT NULL DEFAULT 'shown',
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
@@ -115,6 +118,19 @@ class Database:
             await conn.execute("""
                 ALTER TABLE rvb_sellers
                 ADD COLUMN IF NOT EXISTS pub_id_changed_at TIMESTAMPTZ
+            """)
+            # Авто-миграция: режим источника карточек и список разрешённых своих
+            await conn.execute("""
+                ALTER TABLE rvb_sellers
+                ADD COLUMN IF NOT EXISTS card_source_mode TEXT NOT NULL DEFAULT 'standard'
+            """)
+            await conn.execute("""
+                ALTER TABLE rvb_sellers
+                ADD COLUMN IF NOT EXISTS allowed_custom_ids JSONB NOT NULL DEFAULT '[]'
+            """)
+            await conn.execute("""
+                ALTER TABLE rvb_sellers
+                ADD COLUMN IF NOT EXISTS inline_button_mode TEXT NOT NULL DEFAULT 'shown'
             """)
             # Авто-миграция: verified_at для каналов
             await conn.execute("""
@@ -294,19 +310,35 @@ class Database:
 
     # ── Sellers ────────────────────────────────────────────────────────────
 
+    @staticmethod
+    def _parse_seller(row) -> Optional[dict]:
+        if not row:
+            return None
+        import json as _json
+        d = dict(row)
+        v = d.get("allowed_custom_ids")
+        if isinstance(v, str):
+            try:
+                d["allowed_custom_ids"] = _json.loads(v)
+            except Exception:
+                d["allowed_custom_ids"] = []
+        elif v is None:
+            d["allowed_custom_ids"] = []
+        return d
+
     async def get_seller(self, user_id: int) -> Optional[dict]:
         async with self.pool.acquire() as conn:
             row = await conn.fetchrow(
                 "SELECT * FROM rvb_sellers WHERE id = $1", user_id
             )
-            return dict(row) if row else None
+            return self._parse_seller(row)
 
     async def get_seller_by_pubid(self, pub_id: str) -> Optional[dict]:
         async with self.pool.acquire() as conn:
             row = await conn.fetchrow(
                 "SELECT * FROM rvb_sellers WHERE pub_id = $1", pub_id
             )
-            return dict(row) if row else None
+            return self._parse_seller(row)
 
     async def ensure_pub_id(self, user_id: int) -> str:
         """Возвращает pub_id продавца, генерируя уникальный если ещё нет."""
@@ -398,16 +430,19 @@ class Database:
     async def update_seller(self, user_id: int, **fields) -> Optional[dict]:
         if not fields:
             return await self.get_seller(user_id)
+        import json as _json
         set_parts = []
         values = []
         for i, (k, v) in enumerate(fields.items(), start=1):
+            if k == "allowed_custom_ids" and not isinstance(v, str):
+                v = _json.dumps(v)
             set_parts.append(f"{k} = ${i}")
             values.append(v)
         values.append(user_id)
         query = f"UPDATE rvb_sellers SET {', '.join(set_parts)}, updated_at = NOW() WHERE id = ${len(values)} RETURNING *"
         async with self.pool.acquire() as conn:
             row = await conn.fetchrow(query, *values)
-            return dict(row) if row else None
+            return self._parse_seller(row)
 
     async def save_review(
         self, seller_id: int, buyer_id: int, buyer_name: str,

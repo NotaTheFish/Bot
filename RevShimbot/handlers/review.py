@@ -21,6 +21,7 @@ class ReviewSG(StatesGroup):
     enter_item = State()
     enter_text = State()
     enter_proof = State()
+    ask_inline_btn = State()
 
 
 async def start_review_flow(message: Message, seller: dict, state: FSMContext, db: Database):
@@ -34,13 +35,30 @@ async def start_review_flow(message: Message, seller: dict, state: FSMContext, d
         f"Давай создадим красивую карточку!"
     )
 
-    if seller["allow_template_choice"]:
+    # Какие карточки показать клиенту — зависит от настроек продавца
+    source_mode = seller.get("card_source_mode", "standard")
+    allow_choice = seller["allow_template_choice"] or source_mode in ("custom", "both")
+
+    if allow_choice:
         await state.set_state(ReviewSG.choose_template)
-        # Показываем кастомные шаблоны ПРОДАВЦА — ведь отзыв для его магазина
-        customs = await db.list_custom_templates(seller["id"])
+        customs_all = await db.list_custom_templates(seller["id"])
+        allowed_ids = set(seller.get("allowed_custom_ids", []) or [])
+        # Если список разрешённых задан — показываем только их, иначе все свои
+        if allowed_ids:
+            customs = [c for c in customs_all if c["id"] in allowed_ids]
+        else:
+            customs = customs_all
+
+        # Стандартные карточки показываем только если режим это разрешает
+        show_standard = source_mode in ("standard", "both")
+        if source_mode == "custom" and not customs:
+            # режим «только свои», но разрешённых нет — fallback на стандартные
+            show_standard = True
+
+        from keyboards import kb_templates_filtered
         await message.answer(
             "🎨 Выбери стиль карточки:",
-            reply_markup=kb_templates(seller["template_id"], customs)
+            reply_markup=kb_templates_filtered(seller["template_id"], customs, show_standard)
         )
     else:
         await state.update_data(template_id=seller["template_id"])
@@ -140,6 +158,61 @@ async def _get_avatar_bytes(bot, user_id: int):
     return None
 
 
+async def _gate_inline_button(event, state: FSMContext, db: Database, bot, config,
+                               text: str, entities, proof_bytes=None):
+    """Перед финализацией: если продавец выбрал режим «спросить» — спрашиваем
+    покупателя про кнопку-ссылку. Иначе сразу финализируем."""
+    data = await state.get_data()
+    seller = data["seller"]
+    mode = seller.get("inline_button_mode", "shown")
+
+    if mode == "ask":
+        # Сохраняем всё что нужно для финализации после ответа
+        import base64
+        await state.update_data(
+            pending_text=text,
+            pending_entities=[e.model_dump() for e in entities] if entities else [],
+            pending_proof_b64=base64.b64encode(proof_bytes).decode() if proof_bytes else None,
+        )
+        await state.set_state(ReviewSG.ask_inline_btn)
+        from aiogram.types import CallbackQuery as _CQ
+        answer = event.message.answer if isinstance(event, _CQ) else event.answer
+        await answer(
+            "🔘 Хочешь, чтобы в карточке для продавца была <b>кнопка-ссылка на твой профиль</b>?\n\n"
+            "Так продавцу будет проще тебя найти.",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+                InlineKeyboardButton(text="✅ Да, добавить ссылку", callback_data="inlask:yes"),
+                InlineKeyboardButton(text="❌ Нет, без ссылки", callback_data="inlask:no"),
+            ]])
+        )
+        return
+
+    # Режимы hidden/shown — кнопка решается в finalize по mode, сразу финализируем
+    await finalize_review(event, state, db, bot, config, text=text,
+                          entities=entities, proof_bytes=proof_bytes)
+
+
+@router.callback_query(ReviewSG.ask_inline_btn, F.data.startswith("inlask:"))
+async def cb_inline_ask(call: CallbackQuery, state: FSMContext, db: Database, bot, config):
+    choice = call.data.split(":")[1]
+    await call.answer()
+    try:
+        await call.message.edit_reply_markup(reply_markup=None)
+    except Exception:
+        pass
+    await state.update_data(buyer_wants_button=(choice == "yes"))
+    data = await state.get_data()
+    import base64
+    from aiogram.types import MessageEntity
+    text = data.get("pending_text", "")
+    raw_entities = data.get("pending_entities", [])
+    entities = [MessageEntity(**e) for e in raw_entities] if raw_entities else []
+    proof_b64 = data.get("pending_proof_b64")
+    proof_bytes = base64.b64decode(proof_b64) if proof_b64 else None
+    await finalize_review(call, state, db, bot, config, text=text,
+                          entities=entities, proof_bytes=proof_bytes)
+
+
 async def finalize_review(event, state: FSMContext, db: Database, bot, config,
                           text: str, entities, proof_bytes=None):
     """Общая финализация: генерит карточку, шлёт покупателю и продавцу.
@@ -237,17 +310,24 @@ async def finalize_review(event, state: FSMContext, db: Database, bot, config,
     ch = await db.get_seller_channel(seller["id"])
     channel_verified = ch and ch["verified"]
 
-    buyer_btn = InlineKeyboardButton(text=f"👤 {buyer_name}", url=buyer_url)
+    # Решаем, показывать ли кнопку-ссылку на покупателя
+    btn_mode = seller.get("inline_button_mode", "shown")
+    if btn_mode == "hidden":
+        show_button = False
+    elif btn_mode == "ask":
+        show_button = data.get("buyer_wants_button", False)
+    else:  # shown
+        show_button = True
+
+    rows = []
+    if show_button:
+        rows.append([InlineKeyboardButton(text=f"👤 {buyer_name}", url=buyer_url)])
     if channel_verified:
-        seller_kb = InlineKeyboardMarkup(inline_keyboard=[
-            [buyer_btn],
-            [
-                InlineKeyboardButton(text="✅ Принять", callback_data=f"review:accept:{review_id}"),
-                InlineKeyboardButton(text="❌ Отклонить", callback_data=f"review:reject:{review_id}"),
-            ]
+        rows.append([
+            InlineKeyboardButton(text="✅ Принять", callback_data=f"review:accept:{review_id}"),
+            InlineKeyboardButton(text="❌ Отклонить", callback_data=f"review:reject:{review_id}"),
         ])
-    else:
-        seller_kb = InlineKeyboardMarkup(inline_keyboard=[[buyer_btn]])
+    seller_kb = InlineKeyboardMarkup(inline_keyboard=rows) if rows else None
 
     try:
         await bot.send_photo(
@@ -288,7 +368,7 @@ async def step_enter_text_with_photo(message: Message, state: FSMContext, db: Da
     except Exception as e:
         logger.error(f"Не удалось скачать пруф: {e}")
 
-    await finalize_review(message, state, db, bot, config,
+    await _gate_inline_button(message, state, db, bot, config,
                           text=text, entities=message.caption_entities, proof_bytes=proof_bytes)
 
 
@@ -334,7 +414,7 @@ async def step_enter_proof(message: Message, state: FSMContext, db: Database, bo
     raw_entities = data.get("review_entities", [])
     entities = [MessageEntity(**e) for e in raw_entities] if raw_entities else []
 
-    await finalize_review(message, state, db, bot, config,
+    await _gate_inline_button(message, state, db, bot, config,
                           text=text, entities=entities, proof_bytes=proof_bytes)
 
 
@@ -356,7 +436,7 @@ async def cb_skip_proof(call: CallbackQuery, state: FSMContext, db: Database, bo
     raw_entities = data.get("review_entities", [])
     entities = [MessageEntity(**e) for e in raw_entities] if raw_entities else []
     # Используем call (не call.message) — нужен реальный from_user покупателя
-    await finalize_review(call, state, db, bot, config,
+    await _gate_inline_button(call, state, db, bot, config,
                           text=text, entities=entities, proof_bytes=None)
 
 
