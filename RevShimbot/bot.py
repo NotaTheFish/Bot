@@ -8,7 +8,7 @@ from aiogram.fsm.storage.memory import MemoryStorage
 
 from config import Config
 from db import Database
-from handlers import start, setup, review, inline, client_setup, constructor, my_templates, channel
+from handlers import start, setup, review, inline, client_setup, constructor, my_templates, channel, admin
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -52,6 +52,7 @@ async def main():
     dp["db"] = db
     dp["config"] = config
 
+    dp.include_router(admin.router)
     dp.include_router(start.router)
     dp.include_router(setup.router)
     dp.include_router(review.router)

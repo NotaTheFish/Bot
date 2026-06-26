@@ -60,6 +60,8 @@ class QuickReviewSG(StatesGroup):
 @router.message(CommandStart())
 async def cmd_start(message: Message, db: Database, bot, state: FSMContext):
     await state.clear()
+    # Регистрируем пользователя для возможной рассылки
+    await db.track_user(message.from_user.id, message.from_user.username)
     args = message.text.split()
     deep_link = args[1] if len(args) > 1 else None
 
@@ -284,20 +286,6 @@ async def cb_start_mytemplates(call: CallbackQuery, db: Database):
     await show_templates_list(call.message, db, call.from_user.id)
 
 
-@router.message(Command("stats"))
-async def cmd_admin_stats(message: Message, db: Database, config):
-    if message.from_user.id != config.ADMIN_TG_ID:
-        return
-    stats = await db.get_global_stats()
-    await message.answer(
-        f"📊 <b>Статистика бота</b>\n\n"
-        f"🏪 Продавцов: <b>{stats['sellers']}</b>\n"
-        f"💬 Отзывов всего: <b>{stats['reviews']}</b>\n"
-        f"📅 За 7 дней: <b>{stats['reviews_7d']}</b>\n"
-        f"👥 Уникальных покупателей: <b>{stats['buyers']}</b>"
-    )
-
-
 @router.message(Command("menu"))
 async def cmd_menu(message: Message, db: Database):
     seller = await db.get_seller(message.from_user.id)
@@ -342,6 +330,10 @@ async def cb_profile(call: CallbackQuery, db: Database, config):
             )
         ])
     profile_kb_rows.append([InlineKeyboardButton(text="« Назад", callback_data="menu:back")])
+
+    # Кнопка админки — только для админа
+    if config.ADMIN_TG_ID and call.from_user.id == config.ADMIN_TG_ID:
+        profile_kb_rows.insert(0, [InlineKeyboardButton(text="🛠 Админка", callback_data="admin:home")])
 
     await call.message.answer(
         f"👤 <b>Профиль</b>\n\n"

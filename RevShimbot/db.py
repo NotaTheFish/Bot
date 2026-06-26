@@ -92,6 +92,13 @@ CREATE TABLE IF NOT EXISTS rvb_seller_channels (
     verified_at TIMESTAMPTZ,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+CREATE TABLE IF NOT EXISTS rvb_bot_users (
+    id BIGINT PRIMARY KEY,
+    username TEXT,
+    first_seen TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    last_seen TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    is_blocked BOOLEAN NOT NULL DEFAULT FALSE
+);
 """
 
 
@@ -172,6 +179,20 @@ class Database:
                     verify_key TEXT,
                     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
                 )
+            """)
+            # Бэкфилл: добавляем существующих продавцов и покупателей в список пользователей,
+            # чтобы рассылка охватила тех, кто пользовался ботом до появления учёта.
+            await conn.execute("""
+                INSERT INTO rvb_bot_users (id, username, first_seen, last_seen)
+                SELECT id, username, created_at, created_at FROM rvb_sellers
+                ON CONFLICT (id) DO NOTHING
+            """)
+            await conn.execute("""
+                INSERT INTO rvb_bot_users (id, username, first_seen, last_seen)
+                SELECT DISTINCT buyer_id, buyer_username, MIN(created_at), MAX(created_at)
+                FROM rvb_reviews
+                GROUP BY buyer_id, buyer_username
+                ON CONFLICT (id) DO NOTHING
             """)
         logger.info("Database initialized")
 
@@ -573,12 +594,57 @@ class Database:
                 "SELECT COUNT(*) FROM rvb_reviews WHERE created_at > NOW() - INTERVAL '7 days'"
             )
             buyers = await conn.fetchval("SELECT COUNT(DISTINCT buyer_id) FROM rvb_reviews")
+            total_users = await conn.fetchval("SELECT COUNT(*) FROM rvb_bot_users")
+            users_7d = await conn.fetchval(
+                "SELECT COUNT(*) FROM rvb_bot_users WHERE first_seen > NOW() - INTERVAL '7 days'"
+            )
+            custom_tpls = await conn.fetchval("SELECT COUNT(*) FROM rvb_custom_templates")
+            channels = await conn.fetchval("SELECT COUNT(*) FROM rvb_seller_channels WHERE verified = TRUE")
             return {
                 "sellers": sellers or 0,
                 "reviews": reviews or 0,
                 "reviews_7d": reviews_7d or 0,
                 "buyers": buyers or 0,
+                "total_users": total_users or 0,
+                "users_7d": users_7d or 0,
+                "custom_tpls": custom_tpls or 0,
+                "channels": channels or 0,
             }
+
+    # ── Учёт пользователей бота (для рассылки рекламы) ─────────────────────
+
+    async def track_user(self, user_id: int, username: Optional[str] = None):
+        """Регистрирует/обновляет пользователя бота (вызывается на /start)."""
+        async with self.pool.acquire() as conn:
+            await conn.execute("""
+                INSERT INTO rvb_bot_users (id, username, first_seen, last_seen, is_blocked)
+                VALUES ($1, $2, NOW(), NOW(), FALSE)
+                ON CONFLICT (id) DO UPDATE
+                    SET last_seen = NOW(),
+                        username = COALESCE(EXCLUDED.username, rvb_bot_users.username),
+                        is_blocked = FALSE
+            """, user_id, username)
+
+    async def get_all_user_ids(self) -> list:
+        """Все ID пользователей бота, кто не заблокировал бота."""
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT id FROM rvb_bot_users WHERE is_blocked = FALSE"
+            )
+            return [r["id"] for r in rows]
+
+    async def mark_user_blocked(self, user_id: int):
+        """Помечает пользователя как заблокировавшего бота (чтобы не слать ему)."""
+        async with self.pool.acquire() as conn:
+            await conn.execute(
+                "UPDATE rvb_bot_users SET is_blocked = TRUE WHERE id = $1", user_id
+            )
+
+    async def count_bot_users(self) -> int:
+        async with self.pool.acquire() as conn:
+            return await conn.fetchval(
+                "SELECT COUNT(*) FROM rvb_bot_users WHERE is_blocked = FALSE"
+            ) or 0
 
     async def get_seller_stats(self, seller_id: int) -> dict:
         async with self.pool.acquire() as conn:
