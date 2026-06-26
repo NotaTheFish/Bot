@@ -23,6 +23,7 @@ CREATE TABLE IF NOT EXISTS rvb_sellers (
     inline_button_mode TEXT NOT NULL DEFAULT 'shown',
     inline_template_id TEXT,
     inline_button_show BOOLEAN NOT NULL DEFAULT TRUE,
+    inline_notify_seller BOOLEAN NOT NULL DEFAULT FALSE,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
@@ -142,6 +143,10 @@ class Database:
             await conn.execute("""
                 ALTER TABLE rvb_sellers
                 ADD COLUMN IF NOT EXISTS inline_button_show BOOLEAN NOT NULL DEFAULT TRUE
+            """)
+            await conn.execute("""
+                ALTER TABLE rvb_sellers
+                ADD COLUMN IF NOT EXISTS inline_notify_seller BOOLEAN NOT NULL DEFAULT FALSE
             """)
             # Авто-миграция: verified_at для каналов
             await conn.execute("""

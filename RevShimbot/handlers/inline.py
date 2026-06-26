@@ -23,6 +23,10 @@ logger = logging.getLogger(__name__)
 _INLINE_CARD_CACHE: dict[str, str] = {}
 _INLINE_CACHE_MAX = 500
 
+# Ожидающие инлайн-отзывы для уведомления продавца (когда покупатель реально отправит)
+_PENDING_INLINE: dict[str, dict] = {}
+_PENDING_MAX = 500
+
 
 def _cache_key(seller: dict, review_text: str) -> str:
     raw = f"{seller.get('template_id')}|{seller.get('inline_template_id')}|{seller.get('shop_name')}|{seller.get('stars_mode')}|{seller.get('stars_value')}|{seller.get('item_mode')}|{seller.get('item_value')}|{review_text}"
@@ -247,10 +251,32 @@ async def inline_review(query: InlineQuery, db: Database, bot, config):
                 inline_kb = InlineKeyboardMarkup(inline_keyboard=[[
                     InlineKeyboardButton(text=f"👤 {buyer_name}", url=buyer_url)
                 ]])
+
+            # Если продавец хочет уведомления — регистрируем данные для chosen_inline_result
+            r_id = result_id
+            if seller.get("inline_notify_seller", False):
+                import time as _time
+                r_id = f"notify:{result_id}"
+                _PENDING_INLINE[r_id] = {
+                    "seller_id": seller["id"],
+                    "buyer_id": query.from_user.id,
+                    "buyer_name": buyer_name,
+                    "buyer_username": query.from_user.username,
+                    "review_text": review_text,
+                    "stars": seller["stars_value"] if seller["stars_mode"] == "fixed" else 5,
+                    "item_bought": seller["item_value"] if seller["item_mode"] == "fixed" else "",
+                    "file_id": file_id,
+                    "template_id": seller.get("inline_template_id") or seller["template_id"],
+                    "ts": _time.time(),
+                }
+                if len(_PENDING_INLINE) > _PENDING_MAX:
+                    for k in sorted(_PENDING_INLINE, key=lambda x: _PENDING_INLINE[x]["ts"])[:100]:
+                        _PENDING_INLINE.pop(k, None)
+
             await _safe_answer(query,
                 results=[
                     InlineQueryResultCachedPhoto(
-                        id=result_id,
+                        id=r_id,
                         photo_file_id=file_id,
                         caption=caption,
                         parse_mode="HTML",
@@ -319,3 +345,79 @@ async def inline_review(query: InlineQuery, db: Database, bot, config):
         switch_pm_parameter="inline_help",
         cache_time=1,
     )
+
+
+@router.chosen_inline_result()
+async def on_chosen_inline_result(chosen, bot, db: Database, config):
+    """Срабатывает когда покупатель реально отправил инлайн-карточку.
+    Если продавец включил уведомления — шлём ему карточку в ЛС с кнопками."""
+    result_id = chosen.result_id
+    if not result_id.startswith("notify:"):
+        return
+    pending = _PENDING_INLINE.pop(result_id, None)
+    if not pending:
+        return
+
+    seller_id = pending["seller_id"]
+    buyer_name = pending["buyer_name"]
+    buyer_username = pending.get("buyer_username")
+    buyer_id = pending["buyer_id"]
+    review_text = pending["review_text"]
+    stars = pending["stars"]
+    file_id = pending["file_id"]
+
+    # Сохраняем отзыв в БД — чтобы работали принять/отклонить
+    try:
+        seller = await db.get_seller(seller_id)
+        show_btn = seller.get("inline_button_show", True) if seller else True
+        review_row = await db.save_review(
+            seller_id=seller_id,
+            buyer_id=buyer_id,
+            buyer_name=buyer_name,
+            buyer_username=buyer_username,
+            review_text=review_text,
+            item_bought=pending.get("item_bought", ""),
+            stars=stars,
+            template_used=pending.get("template_id", "classic_gold"),
+            card_file_id=file_id,
+            show_buyer_button=show_btn,
+        )
+        review_id = review_row["id"]
+    except Exception as e:
+        logger.error(f"Не удалось сохранить инлайн-отзыв: {e}")
+        return
+
+    stars_line = "★" * stars if stars > 0 else ""
+    caption_parts = [f"<b>{seller['shop_name'] if seller else ''}</b>"]
+    if stars_line:
+        caption_parts.append(stars_line)
+    caption_parts.append(f"\n<i>«{review_text}»</i>")
+    caption_parts.append(f"\n— {buyer_name}")
+    caption = "\n".join(caption_parts)
+
+    buyer_url = f"https://t.me/{buyer_username}" if buyer_username else f"tg://user?id={buyer_id}"
+
+    ch = await db.get_seller_channel(seller_id)
+    channel_verified = ch and ch["verified"]
+
+    rows = []
+    if show_btn:
+        rows.append([InlineKeyboardButton(text=f"👤 {buyer_name}", url=buyer_url)])
+    if channel_verified:
+        rows.append([
+            InlineKeyboardButton(text="✅ Принять", callback_data=f"review:accept:{review_id}"),
+            InlineKeyboardButton(text="❌ Отклонить", callback_data=f"review:reject:{review_id}"),
+        ])
+    seller_kb = InlineKeyboardMarkup(inline_keyboard=rows) if rows else None
+
+    try:
+        await bot.send_photo(
+            chat_id=seller_id,
+            photo=file_id,
+            caption=f"⭐ Новый отзыв (через чат)!\n\n{caption}",
+            reply_markup=seller_kb,
+            parse_mode="HTML",
+        )
+        logger.info(f"Инлайн-отзыв отправлен продавцу {seller_id}")
+    except Exception as e:
+        logger.error(f"Ошибка отправки инлайн-отзыва продавцу {seller_id}: {e}")

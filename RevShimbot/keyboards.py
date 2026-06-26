@@ -189,6 +189,10 @@ def kb_inline_button(seller: dict) -> InlineKeyboardMarkup:
     for key, label in INLINE_BTN_LABELS.items():
         mark = "✅ " if mode == key else ""
         rows.append([InlineKeyboardButton(text=f"{mark}{label}", callback_data=f"inlbtn:{key}")])
+    # Тумблер пересылки инлайн-отзыва продавцу в ЛС
+    notify_on = seller.get("inline_notify_seller", False)
+    notify_label = "🔔 Уведомления о чат-отзывах: ВКЛ" if notify_on else "🔕 Уведомления о чат-отзывах: ВЫКЛ"
+    rows.append([InlineKeyboardButton(text=notify_label, callback_data="inlbtn:notifytoggle")])
     rows.append([InlineKeyboardButton(text="« Назад", callback_data="menu:mytemplate")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 

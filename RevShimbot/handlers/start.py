@@ -631,6 +631,9 @@ async def cb_edit_field(call: CallbackQuery, db: Database, state: FSMContext, co
             "• <b>Спрятать</b> — кнопки не будет\n"
             "• <b>Включить</b> — кнопка всегда добавляется\n"
             "• <b>Спросить клиента</b> — у покупателя спросят, хочет ли он ссылку на себя\n\n"
+            "🔔 <b>Уведомления о чат-отзывах</b> — когда покупатель пишет отзыв прямо в "
+            "чате через <code>@" + config.BOT_USERNAME + " ID текст</code>, бот пришлёт тебе "
+            "карточку в ЛС с кнопками «Принять / Отклонить», как при обычном отзыве.\n\n"
             f"Сейчас: <b>{cur_label}</b>",
             reply_markup=kb_inline_button(seller)
         )
@@ -717,15 +720,28 @@ async def cb_card_pick(call: CallbackQuery, db: Database):
 
 @router.callback_query(F.data.startswith("inlbtn:"))
 async def cb_inline_button_mode(call: CallbackQuery, db: Database):
-    mode = call.data.split(":")[1]
-    if mode not in ("hidden", "shown", "ask"):
-        await call.answer()
-        return
+    action = call.data.split(":")[1]
     seller = await db.get_seller(call.from_user.id)
     if not seller:
         await call.answer("Сначала настрой шаблон", show_alert=True)
         return
-    await db.update_seller(call.from_user.id, inline_button_mode=mode)
+
+    if action == "notifytoggle":
+        new_val = not seller.get("inline_notify_seller", False)
+        await db.update_seller(call.from_user.id, inline_notify_seller=new_val)
+        await call.answer("🔔 Уведомления включены" if new_val else "🔕 Уведомления выключены")
+        seller = await db.get_seller(call.from_user.id)
+        from keyboards import kb_inline_button
+        try:
+            await call.message.edit_reply_markup(reply_markup=kb_inline_button(seller))
+        except Exception:
+            pass
+        return
+
+    if action not in ("hidden", "shown", "ask"):
+        await call.answer()
+        return
+    await db.update_seller(call.from_user.id, inline_button_mode=action)
     await call.answer("✅ Режим кнопки обновлён")
     seller = await db.get_seller(call.from_user.id)
     from keyboards import kb_inline_button
