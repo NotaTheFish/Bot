@@ -25,7 +25,7 @@ _INLINE_CACHE_MAX = 500
 
 
 def _cache_key(seller: dict, review_text: str) -> str:
-    raw = f"{seller.get('template_id')}|{seller.get('shop_name')}|{seller.get('stars_mode')}|{seller.get('stars_value')}|{seller.get('item_mode')}|{seller.get('item_value')}|{review_text}"
+    raw = f"{seller.get('template_id')}|{seller.get('inline_template_id')}|{seller.get('shop_name')}|{seller.get('stars_mode')}|{seller.get('stars_value')}|{seller.get('item_mode')}|{seller.get('item_value')}|{review_text}"
     return hashlib.sha256(raw.encode()).hexdigest()
 
 
@@ -64,6 +64,7 @@ async def get_or_generate_card(
     buyer_initials = "".join(w[0].upper() for w in buyer_name.split() if w)[:2]
 
     # Аватарку в inline не берём — слишком медленно для живого запроса
+    inline_tpl = seller.get("inline_template_id") or seller["template_id"]
     card_data = {
         "shop_name": seller["shop_name"],
         "seller_tag": f"@{seller['username']}" if seller.get("username") else f"ID:{seller['id']}",
@@ -73,7 +74,7 @@ async def get_or_generate_card(
         "item_bought": seller["item_value"] if seller["item_mode"] == "fixed" else "",
         "stars": seller["stars_value"] if seller["stars_mode"] == "fixed" else 5,
         "stars_mode": seller["stars_mode"],
-        "template_id": seller["template_id"],
+        "template_id": inline_tpl,
         "avatar_bytes": None,
         "bot_username": config.BOT_USERNAME,
         "db": db,
@@ -104,7 +105,15 @@ async def get_or_generate_card(
 @router.inline_query()
 async def inline_review(query: InlineQuery, db: Database, bot, config):
     import re as _re
-    text = query.query.strip()
+    raw = query.query
+    text = raw.strip()
+
+    # Если запрос пустой (юзер просто написал @username без текста) —
+    # не показываем инлайн-панель, чтобы можно было отправить @username как текст.
+    if not text:
+        await _safe_answer(query, results=[], cache_time=1)
+        return
+
     buyer_name = query.from_user.full_name or "Трейдер"
 
     parts = text.split(None, 1)
@@ -154,7 +163,7 @@ async def inline_review(query: InlineQuery, db: Database, bot, config):
                 "item_bought": seller["item_value"] if seller["item_mode"] == "fixed" else "",
                 "stars": seller["stars_value"] if seller["stars_mode"] == "fixed" else 5,
                 "stars_mode": seller["stars_mode"],
-                "template_id": seller["template_id"],
+                "template_id": seller.get("inline_template_id") or seller["template_id"],
                 "avatar_bytes": None,
                 "bot_username": config.BOT_USERNAME,
                 "db": db,
@@ -230,6 +239,14 @@ async def inline_review(query: InlineQuery, db: Database, bot, config):
                 f"<b>{seller['shop_name']}</b>\n{stars}\n\n"
                 f"<i>«{review_text}»</i>\n\n— {buyer_name}"
             )
+            # Кнопка-ссылка на покупателя, если продавец её включил для инлайн
+            inline_kb = None
+            if seller.get("inline_button_show", True):
+                buyer_uname = query.from_user.username
+                buyer_url = f"https://t.me/{buyer_uname}" if buyer_uname else f"tg://user?id={query.from_user.id}"
+                inline_kb = InlineKeyboardMarkup(inline_keyboard=[[
+                    InlineKeyboardButton(text=f"👤 {buyer_name}", url=buyer_url)
+                ]])
             await _safe_answer(query,
                 results=[
                     InlineQueryResultCachedPhoto(
@@ -237,6 +254,7 @@ async def inline_review(query: InlineQuery, db: Database, bot, config):
                         photo_file_id=file_id,
                         caption=caption,
                         parse_mode="HTML",
+                        reply_markup=inline_kb,
                         title=f"⭐️ Отзыв для {seller['shop_name']}",
                         description=review_text[:100],
                     )

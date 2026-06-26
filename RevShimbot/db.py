@@ -21,6 +21,8 @@ CREATE TABLE IF NOT EXISTS rvb_sellers (
     card_source_mode TEXT NOT NULL DEFAULT 'standard',
     allowed_custom_ids JSONB NOT NULL DEFAULT '[]',
     inline_button_mode TEXT NOT NULL DEFAULT 'shown',
+    inline_template_id TEXT,
+    inline_button_show BOOLEAN NOT NULL DEFAULT TRUE,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
@@ -74,6 +76,7 @@ CREATE TABLE IF NOT EXISTS rvb_reviews (
     template_used TEXT NOT NULL DEFAULT 'classic_gold',
     card_file_id TEXT,
     status TEXT NOT NULL DEFAULT 'pending',
+    show_buyer_button BOOLEAN NOT NULL DEFAULT TRUE,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
@@ -132,6 +135,14 @@ class Database:
                 ALTER TABLE rvb_sellers
                 ADD COLUMN IF NOT EXISTS inline_button_mode TEXT NOT NULL DEFAULT 'shown'
             """)
+            await conn.execute("""
+                ALTER TABLE rvb_sellers
+                ADD COLUMN IF NOT EXISTS inline_template_id TEXT
+            """)
+            await conn.execute("""
+                ALTER TABLE rvb_sellers
+                ADD COLUMN IF NOT EXISTS inline_button_show BOOLEAN NOT NULL DEFAULT TRUE
+            """)
             # Авто-миграция: verified_at для каналов
             await conn.execute("""
                 ALTER TABLE rvb_seller_channels
@@ -141,6 +152,10 @@ class Database:
             await conn.execute("""
                 ALTER TABLE rvb_reviews
                 ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'pending'
+            """)
+            await conn.execute("""
+                ALTER TABLE rvb_reviews
+                ADD COLUMN IF NOT EXISTS show_buyer_button BOOLEAN NOT NULL DEFAULT TRUE
             """)
             # Авто-миграция: таблица каналов продавцов
             await conn.execute("""
@@ -448,17 +463,17 @@ class Database:
         self, seller_id: int, buyer_id: int, buyer_name: str,
         buyer_username: Optional[str], review_text: str,
         item_bought: str, stars: int, template_used: str,
-        card_file_id: Optional[str] = None
+        card_file_id: Optional[str] = None, show_buyer_button: bool = True
     ) -> dict:
         async with self.pool.acquire() as conn:
             row = await conn.fetchrow("""
                 INSERT INTO rvb_reviews
                     (seller_id, buyer_id, buyer_name, buyer_username,
-                     review_text, item_bought, stars, template_used, card_file_id)
-                VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+                     review_text, item_bought, stars, template_used, card_file_id, show_buyer_button)
+                VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
                 RETURNING *
             """, seller_id, buyer_id, buyer_name, buyer_username,
-                review_text, item_bought, stars, template_used, card_file_id)
+                review_text, item_bought, stars, template_used, card_file_id, show_buyer_button)
             return dict(row)
 
     async def get_pending_reviews(self, seller_id: int) -> list:

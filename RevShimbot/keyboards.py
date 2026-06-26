@@ -112,6 +112,7 @@ def kb_template_view(seller: dict) -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text="📦 Поле «Что купил»", callback_data="edit:item")],
         [InlineKeyboardButton(text="🎴 Карточки для отзывов", callback_data="edit:cards")],
         [InlineKeyboardButton(text="🔘 Управление инлайн-кнопкой", callback_data="edit:inlinebtn")],
+        [InlineKeyboardButton(text="💬 Отзывы через личку (инлайн)", callback_data="edit:inlinecfg")],
     ]
     pub_id = seller.get("pub_id")
     if pub_id:
@@ -189,6 +190,18 @@ def kb_inline_button(seller: dict) -> InlineKeyboardMarkup:
         mark = "✅ " if mode == key else ""
         rows.append([InlineKeyboardButton(text=f"{mark}{label}", callback_data=f"inlbtn:{key}")])
     rows.append([InlineKeyboardButton(text="« Назад", callback_data="menu:mytemplate")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def kb_inline_config(seller: dict) -> InlineKeyboardMarkup:
+    """Настройки отзывов через личку/инлайн: карточка по умолчанию + кнопка-ссылка."""
+    btn_on = seller.get("inline_button_show", True)
+    btn_label = "✅ Ссылка на покупателя: ВКЛ" if btn_on else "⬜️ Ссылка на покупателя: ВЫКЛ"
+    rows = [
+        [InlineKeyboardButton(text="🎨 Карточка по умолчанию", callback_data="inlcfg:tpl")],
+        [InlineKeyboardButton(text=btn_label, callback_data="inlcfg:btntoggle")],
+        [InlineKeyboardButton(text="« Назад", callback_data="menu:mytemplate")],
+    ]
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 

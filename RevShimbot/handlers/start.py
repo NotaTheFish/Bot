@@ -542,7 +542,7 @@ async def cb_myclienttemplate(call: CallbackQuery, db: Database):
 
 
 @router.callback_query(F.data.startswith("edit:"))
-async def cb_edit_field(call: CallbackQuery, db: Database, state: FSMContext):
+async def cb_edit_field(call: CallbackQuery, db: Database, state: FSMContext, config):
     field = call.data.split(":")[1]
 
     from handlers.setup import SetupSG
@@ -634,6 +634,27 @@ async def cb_edit_field(call: CallbackQuery, db: Database, state: FSMContext):
             f"Сейчас: <b>{cur_label}</b>",
             reply_markup=kb_inline_button(seller)
         )
+    elif field == "inlinecfg":
+        seller = await db.get_seller(call.from_user.id)
+        from keyboards import kb_inline_config
+        itid = seller.get("inline_template_id") or seller["template_id"]
+        if itid.startswith("custom_"):
+            try:
+                ct = await db.get_custom_template(int(itid.split("_")[1]))
+                tpl_name = ct["name"] if ct else itid
+            except Exception:
+                tpl_name = itid
+        else:
+            tpl_name = TEMPLATE_NAMES.get(itid, itid)
+        await call.message.answer(
+            "💬 <b>Отзывы через личку (инлайн)</b>\n\n"
+            "Когда клиент пишет отзыв прямо в чате через "
+            f"<code>@{config.BOT_USERNAME} ID текст</code>, он не может выбрать карточку — "
+            "используется карточка по умолчанию.\n\n"
+            f"🎨 Сейчас: <b>{tpl_name}</b>\n\n"
+            "Здесь можно задать отдельную карточку и решить, показывать ли ссылку на покупателя.",
+            reply_markup=kb_inline_config(seller)
+        )
 
 
 @router.callback_query(F.data.startswith("cardsrc:"))
@@ -710,6 +731,74 @@ async def cb_inline_button_mode(call: CallbackQuery, db: Database):
     from keyboards import kb_inline_button
     try:
         await call.message.edit_reply_markup(reply_markup=kb_inline_button(seller))
+    except Exception:
+        pass
+
+
+@router.callback_query(F.data.startswith("inlcfg:"))
+async def cb_inline_config(call: CallbackQuery, db: Database, state: FSMContext):
+    action = call.data.split(":")[1]
+    seller = await db.get_seller(call.from_user.id)
+    if not seller:
+        await call.answer("Сначала настрой шаблон", show_alert=True)
+        return
+
+    if action == "btntoggle":
+        new_val = not seller.get("inline_button_show", True)
+        await db.update_seller(call.from_user.id, inline_button_show=new_val)
+        await call.answer("✅ Обновлено")
+        seller = await db.get_seller(call.from_user.id)
+        from keyboards import kb_inline_config
+        try:
+            await call.message.edit_reply_markup(reply_markup=kb_inline_config(seller))
+        except Exception:
+            pass
+        return
+
+    if action == "tpl":
+        await call.answer()
+        from keyboards import kb_templates
+        customs = await db.list_custom_templates(call.from_user.id)
+        cur = seller.get("inline_template_id") or seller["template_id"]
+        await state.update_data(inlcfg_picking=True)
+        await call.message.answer(
+            "🎨 Выбери карточку по умолчанию для инлайн-отзывов:",
+            reply_markup=_kb_inline_tpl_pick(cur, customs)
+        )
+        return
+
+
+def _kb_inline_tpl_pick(selected, customs):
+    """Клавиатура выбора инлайн-карточки (callback inltpl:*)."""
+    from constants import TEMPLATES
+    rows = []
+    for tid, label in TEMPLATES.items():
+        mark = "✅ " if tid == selected else ""
+        rows.append([InlineKeyboardButton(text=f"{mark}{label}", callback_data=f"inltpl:{tid}")])
+    if customs:
+        for tpl in customs:
+            own = "👑" if tpl["owner_id"] == tpl["creator_id"] else "🎁"
+            cid = f"custom_{tpl['id']}"
+            mark = "✅ " if selected == cid else ""
+            rows.append([InlineKeyboardButton(text=f"{mark}{own} {tpl['name']}",
+                                               callback_data=f"inltpl:{cid}")])
+    rows.append([InlineKeyboardButton(text="« Назад", callback_data="edit:inlinecfg")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+@router.callback_query(F.data.startswith("inltpl:"))
+async def cb_inline_tpl_set(call: CallbackQuery, db: Database):
+    tid = call.data.split(":", 1)[1]
+    seller = await db.get_seller(call.from_user.id)
+    if not seller:
+        await call.answer("Сначала настрой шаблон", show_alert=True)
+        return
+    await db.update_seller(call.from_user.id, inline_template_id=tid)
+    await call.answer("✅ Карточка для инлайн обновлена")
+    seller = await db.get_seller(call.from_user.id)
+    customs = await db.list_custom_templates(call.from_user.id)
+    try:
+        await call.message.edit_reply_markup(reply_markup=_kb_inline_tpl_pick(tid, customs))
     except Exception:
         pass
 

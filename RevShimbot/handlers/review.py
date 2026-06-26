@@ -290,6 +290,15 @@ async def finalize_review(event, state: FSMContext, db: Database, bot, config,
         await answer("⚠️ Карточка сгенерирована, но не отправилась из-за сети. Попробуй ещё раз.")
         return
 
+    # Решаем, показывать ли кнопку-ссылку на покупателя (нужно ДО сохранения)
+    btn_mode = seller.get("inline_button_mode", "shown")
+    if btn_mode == "hidden":
+        show_button = False
+    elif btn_mode == "ask":
+        show_button = data.get("buyer_wants_button", False)
+    else:  # shown
+        show_button = True
+
     file_id = sent.photo[-1].file_id if sent.photo else None
     review_row = await db.save_review(
         seller_id=seller["id"],
@@ -301,6 +310,7 @@ async def finalize_review(event, state: FSMContext, db: Database, bot, config,
         stars=data.get("stars", 0),
         template_used=data.get("template_id", seller["template_id"]),
         card_file_id=file_id,
+        show_buyer_button=show_button,
     )
     review_id = review_row["id"]
     await state.clear()
@@ -309,15 +319,6 @@ async def finalize_review(event, state: FSMContext, db: Database, bot, config,
 
     ch = await db.get_seller_channel(seller["id"])
     channel_verified = ch and ch["verified"]
-
-    # Решаем, показывать ли кнопку-ссылку на покупателя
-    btn_mode = seller.get("inline_button_mode", "shown")
-    if btn_mode == "hidden":
-        show_button = False
-    elif btn_mode == "ask":
-        show_button = data.get("buyer_wants_button", False)
-    else:  # shown
-        show_button = True
 
     rows = []
     if show_button:
@@ -455,7 +456,7 @@ async def cb_review_accept(call: CallbackQuery, bot: Bot, db: Database):
     # Достаём данные отзыва из БД
     async with db.pool.acquire() as conn:
         row = await conn.fetchrow(
-            "SELECT card_file_id, buyer_name, buyer_username, buyer_id, review_text, stars FROM rvb_reviews WHERE id = $1",
+            "SELECT card_file_id, buyer_name, buyer_username, buyer_id, review_text, stars, show_buyer_button FROM rvb_reviews WHERE id = $1",
             review_id
         )
     if not row or not row["card_file_id"]:
@@ -466,9 +467,11 @@ async def cb_review_accept(call: CallbackQuery, bot: Bot, db: Database):
     buyer_name = row["buyer_name"]
     buyer_username = row["buyer_username"]
     buyer_id = row["buyer_id"]
+    # Уважаем выбор покупателя: показывать ли ссылку на него
+    show_btn = row["show_buyer_button"] if row["show_buyer_button"] is not None else True
     buyer_url = f"https://t.me/{buyer_username}" if buyer_username else f"tg://user?id={buyer_id}"
     buyer_btn = InlineKeyboardButton(text=f"👤 {buyer_name}", url=buyer_url)
-    channel_kb = InlineKeyboardMarkup(inline_keyboard=[[buyer_btn]])
+    channel_kb = InlineKeyboardMarkup(inline_keyboard=[[buyer_btn]]) if show_btn else None
 
     # Получаем название магазина продавца
     seller = await db.get_seller(seller_id)
@@ -500,7 +503,7 @@ async def cb_review_accept(call: CallbackQuery, bot: Bot, db: Database):
     # Убираем кнопки из текущего сообщения или удаляем его
     try:
         if call.message.photo:
-            new_kb = InlineKeyboardMarkup(inline_keyboard=[[buyer_btn]])
+            new_kb = InlineKeyboardMarkup(inline_keyboard=[[buyer_btn]]) if show_btn else None
             await call.message.edit_reply_markup(reply_markup=new_kb)
         else:
             await call.message.delete()
