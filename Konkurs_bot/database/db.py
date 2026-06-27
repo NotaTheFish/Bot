@@ -224,3 +224,11 @@ async def get_winners(giveaway_id: int) -> list[dict]:
             "SELECT * FROM winners WHERE giveaway_id = $1 ORDER BY place", giveaway_id
         )
         return [dict(r) for r in rows]
+
+
+async def update_channel_title(channel_id: int, title: str):
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "UPDATE channels SET chat_title = $1 WHERE id = $2", title, channel_id
+        )

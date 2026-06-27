@@ -418,8 +418,21 @@ async def process_publish_channel(message: Message, state: FSMContext, bot: Bot)
     g = await db.get_giveaway_by_id(giveaway_id)
     channels = await db.get_channels(giveaway_id)
 
+    # Fix missing chat_title for channels added by ID
+    fixed_channels = []
+    for ch in channels:
+        title = ch.get('chat_title', '')
+        if not title or title.lstrip('-').isdigit():
+            try:
+                chat_info = await bot.get_chat(ch['chat_id'])
+                title = chat_info.title or str(ch['chat_id'])
+                await db.update_channel_title(ch['id'], title)
+            except Exception:
+                title = str(ch['chat_id'])
+        fixed_channels.append({**ch, 'chat_title': title})
+
     text = g['announcement']
-    kb = channels_kb(channels, giveaway_id)
+    kb = channels_kb(fixed_channels, giveaway_id)
 
     try:
         await bot.send_message(target_chat_id, text, reply_markup=kb)
