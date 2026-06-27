@@ -197,6 +197,15 @@ async def get_participant_count(giveaway_id: int) -> int:
         return row['cnt']
 
 
+# ── Delete ───────────────────────────────────────────────────────────────────
+
+async def delete_giveaway(giveaway_id: int):
+    """Hard delete giveaway and all related data (CASCADE handles the rest)."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute("DELETE FROM giveaways WHERE id = $1", giveaway_id)
+
+
 # ── Winners ───────────────────────────────────────────────────────────────────
 
 async def add_winner(giveaway_id: int, user_id: int, username: str, full_name: str, place: int, prize: str):

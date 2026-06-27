@@ -22,7 +22,7 @@ PLACE_EMOJI = {1: "🥇", 2: "🥈", 3: "🥉"}
 
 
 def place_emoji(n: int) -> str:
-    return PLACE_EMOJI.get(n, f"#{n}")
+    return PLACE_EMOJI.get(n, "🏅")
 
 
 def is_admin(user_id: int) -> bool:
@@ -81,11 +81,10 @@ async def giveaway_info_text(g: dict) -> str:
     return (
         f"🎯 <b>{g['title']}</b>\n"
         f"🔑 Ключ: <code>!{g['key']}!</code>\n"
-        f"📊 Статус: {status}\n\n"
-        f"📣 Объявление:\n{g['announcement']}\n\n"
+        f"📊 Статус: {status}\n"
+        f"👥 Участников: <b>{count}</b>\n\n"
         f"🏆 Призовые места:\n{prizes_text}\n\n"
-        f"📡 Каналы для подписки:\n{channels_text}\n\n"
-        f"👥 Участников: <b>{count}</b>"
+        f"📡 Каналы:\n{channels_text}"
     )
 
 
@@ -295,7 +294,13 @@ async def process_channels(message: Message, state: FSMContext, bot: Bot):
     elif message.sender_chat:
         chat_id = message.sender_chat.id
         chat_title = message.sender_chat.title
-    # Case 3: manual numeric ID
+    # Case 3: forward_origin for newer Telegram clients
+    elif hasattr(message, 'forward_origin') and message.forward_origin:
+        origin = message.forward_origin
+        if hasattr(origin, 'chat') and origin.chat:
+            chat_id = origin.chat.id
+            chat_title = origin.chat.title
+    # Case 4: manual numeric ID
     elif message.text:
         raw = message.text.strip()
         try:
@@ -412,17 +417,8 @@ async def process_publish_channel(message: Message, state: FSMContext, bot: Bot)
 
     g = await db.get_giveaway_by_id(giveaway_id)
     channels = await db.get_channels(giveaway_id)
-    prizes = await db.get_prizes(giveaway_id)
 
-    prizes_text = "\n".join(
-        f"{place_emoji(p['place'])} {p['place']} место — {p['description']}"
-        for p in prizes
-    )
-
-    text = (
-        f"{g['announcement']}\n\n"
-        f"🏆 <b>Призы:</b>\n{prizes_text}"
-    )
+    text = g['announcement']
     kb = channels_kb(channels, giveaway_id)
 
     try:
@@ -556,6 +552,38 @@ async def do_cancel_giveaway(callback: CallbackQuery, state: FSMContext):
 @router.callback_query(F.data == "cancel_action")
 async def cancel_action(callback: CallbackQuery):
     await callback.message.edit_text("Действие отменено.")
+    await callback.answer()
+
+
+# ── Удалить конкурс ───────────────────────────────────────────────────────────
+
+@router.message(F.text == "🗑 Удалить конкурс")
+async def delete_giveaway_confirm(message: Message, state: FSMContext):
+    if not is_admin(message.from_user.id):
+        return
+    data = await state.get_data()
+    giveaway_id = data.get("current_giveaway_id")
+    if not giveaway_id:
+        await message.answer("❌ Сначала выбери конкурс.")
+        return
+    g = await db.get_giveaway_by_id(giveaway_id)
+    await message.answer(
+        f"🗑 Удалить конкурс «{g['title']}» навсегда?\nВсе участники, призы и каналы будут удалены. Это нельзя отменить.",
+        reply_markup=confirm_kb("delete", giveaway_id)
+    )
+
+
+@router.callback_query(F.data.startswith("confirm_delete:"))
+async def do_delete_giveaway(callback: CallbackQuery, state: FSMContext):
+    if not is_admin(callback.from_user.id):
+        return
+    giveaway_id = int(callback.data.split(":")[1])
+    g = await db.get_giveaway_by_id(giveaway_id)
+    title = g['title'] if g else str(giveaway_id)
+    await db.delete_giveaway(giveaway_id)
+    await state.update_data(current_giveaway_id=None)
+    await callback.message.edit_text(f"🗑 Конкурс «{title}» удалён.")
+    await callback.message.answer("Главное меню:", reply_markup=main_menu_kb())
     await callback.answer()
 
 

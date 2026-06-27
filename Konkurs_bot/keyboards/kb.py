@@ -22,7 +22,7 @@ def giveaway_menu_kb() -> ReplyKeyboardMarkup:
         keyboard=[
             [KeyboardButton(text="📢 Запустить в канале"), KeyboardButton(text="✅ Завершить конкурс")],
             [KeyboardButton(text="❌ Отменить конкурс"), KeyboardButton(text="👥 Участники")],
-            [KeyboardButton(text="◀️ Назад к списку")],
+            [KeyboardButton(text="🗑 Удалить конкурс"), KeyboardButton(text="◀️ Назад к списку")],
         ],
         resize_keyboard=True
     )
