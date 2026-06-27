@@ -52,6 +52,13 @@ async def main():
     dp["db"] = db
     dp["config"] = config
 
+    # Мидлварь блокировки забаненных — на сообщения, колбэки и инлайн
+    from middlewares import BanMiddleware
+    ban_mw = BanMiddleware(db, config)
+    dp.message.middleware(ban_mw)
+    dp.callback_query.middleware(ban_mw)
+    dp.inline_query.middleware(ban_mw)
+
     dp.include_router(admin.router)
     dp.include_router(start.router)
     dp.include_router(setup.router)

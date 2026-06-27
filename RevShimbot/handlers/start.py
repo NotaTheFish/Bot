@@ -156,6 +156,7 @@ async def cb_start_quick(call: CallbackQuery, state: FSMContext, db: Database):
             text=f"{own} {tpl['name']}",
             callback_data=f"quick_tpl:custom_{tpl['id']}"
         )])
+    rows.append([InlineKeyboardButton(text="« Назад", callback_data="menu:back")])
     await call.message.answer(
         "⚡️ <b>Быстрый отзыв</b> — выбери стиль карточки:",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=rows)

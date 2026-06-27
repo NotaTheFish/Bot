@@ -109,6 +109,12 @@ CREATE TABLE IF NOT EXISTS rvb_ad_pins (
     pinned_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     PRIMARY KEY (user_id, message_id)
 );
+CREATE TABLE IF NOT EXISTS rvb_banned_users (
+    id BIGINT PRIMARY KEY,
+    username TEXT,
+    banned_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    notified BOOLEAN NOT NULL DEFAULT FALSE
+);
 """
 
 
@@ -217,6 +223,14 @@ class Database:
                     message_id BIGINT NOT NULL,
                     pinned_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                     PRIMARY KEY (user_id, message_id)
+                )
+            """)
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS rvb_banned_users (
+                    id BIGINT PRIMARY KEY,
+                    username TEXT,
+                    banned_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    notified BOOLEAN NOT NULL DEFAULT FALSE
                 )
             """)
         logger.info("Database initialized")
@@ -695,6 +709,82 @@ class Database:
         async with self.pool.acquire() as conn:
             n = await conn.fetchval("SELECT COUNT(*) FROM rvb_ad_pins")
             return (n or 0) > 0
+
+    # ── Топ продавцов ──────────────────────────────────────────────────────
+
+    async def get_top_sellers(self, limit: int = 10) -> list:
+        """Топ продавцов по количеству отзывов."""
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch("""
+                SELECT s.id, s.username, s.shop_name, COUNT(r.id) AS review_count
+                FROM rvb_sellers s
+                JOIN rvb_reviews r ON r.seller_id = s.id
+                GROUP BY s.id, s.username, s.shop_name
+                ORDER BY review_count DESC
+                LIMIT $1
+            """, limit)
+            return [dict(r) for r in rows]
+
+    # ── Баны ───────────────────────────────────────────────────────────────
+
+    async def ban_user(self, user_id: int, username: Optional[str] = None):
+        async with self.pool.acquire() as conn:
+            await conn.execute("""
+                INSERT INTO rvb_banned_users (id, username, banned_at, notified)
+                VALUES ($1, $2, NOW(), FALSE)
+                ON CONFLICT (id) DO UPDATE
+                    SET username = COALESCE(EXCLUDED.username, rvb_banned_users.username),
+                        banned_at = NOW()
+            """, user_id, username)
+
+    async def unban_user(self, user_id: int):
+        async with self.pool.acquire() as conn:
+            await conn.execute("DELETE FROM rvb_banned_users WHERE id = $1", user_id)
+
+    async def is_banned(self, user_id: int) -> bool:
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchval("SELECT 1 FROM rvb_banned_users WHERE id = $1", user_id)
+            return bool(row)
+
+    async def was_ban_notified(self, user_id: int) -> bool:
+        """Был ли уже отправлен забаненному ответ «вы забанены»."""
+        async with self.pool.acquire() as conn:
+            return bool(await conn.fetchval(
+                "SELECT notified FROM rvb_banned_users WHERE id = $1", user_id
+            ))
+
+    async def mark_ban_notified(self, user_id: int):
+        async with self.pool.acquire() as conn:
+            await conn.execute(
+                "UPDATE rvb_banned_users SET notified = TRUE WHERE id = $1", user_id
+            )
+
+    async def get_banned_users(self) -> list:
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT id, username, banned_at FROM rvb_banned_users ORDER BY banned_at DESC"
+            )
+            return [dict(r) for r in rows]
+
+    async def find_user_id_by_username(self, username: str) -> Optional[int]:
+        """Ищет ID пользователя по юзернейму среди известных боту (для бана по @username)."""
+        uname = username.lstrip("@").lower()
+        async with self.pool.acquire() as conn:
+            # Ищем в пользователях бота, продавцах и покупателях отзывов
+            row = await conn.fetchval(
+                "SELECT id FROM rvb_bot_users WHERE LOWER(username) = $1 LIMIT 1", uname
+            )
+            if row:
+                return row
+            row = await conn.fetchval(
+                "SELECT id FROM rvb_sellers WHERE LOWER(username) = $1 LIMIT 1", uname
+            )
+            if row:
+                return row
+            row = await conn.fetchval(
+                "SELECT buyer_id FROM rvb_reviews WHERE LOWER(buyer_username) = $1 LIMIT 1", uname
+            )
+            return row
 
     async def get_seller_stats(self, seller_id: int) -> dict:
         async with self.pool.acquire() as conn:

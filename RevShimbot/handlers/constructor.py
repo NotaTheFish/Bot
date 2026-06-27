@@ -273,22 +273,24 @@ async def cb_open_menu(call: CallbackQuery, state: FSMContext):
 
     if field == "bg_image":
         await state.set_state(ConstructorSG.enter_bg_image)
-        await call.message.answer(
+        prompt = await call.message.answer(
             "🖼 Пришли картинку которая станет фоном карточки.\n"
             "<i>Текст автоматически затемнится для читаемости. "
             "Отправь /skip чтобы вернуться без картинки.</i>"
         )
+        await state.update_data(upload_prompt_id=prompt.message_id)
         return
 
     if field == "logo":
         await state.set_state(ConstructorSG.enter_logo)
-        await call.message.answer(
+        prompt = await call.message.answer(
             "🖼 Пришли логотип магазина.\n\n"
             "💡 <b>Важно про прозрачность:</b> если в логотипе прозрачный фон, "
             "отправь его как <b>файл</b> (📎 → «Файл» / «Без сжатия»), а не как фото — "
             "иначе Telegram зальёт прозрачность белым.\n\n"
             "<i>Он появится над названием. Отправь /skip чтобы убрать логотип.</i>"
         )
+        await state.update_data(upload_prompt_id=prompt.message_id)
         return
 
     if field == "presets":
@@ -489,17 +491,37 @@ async def cb_bg_image(message: Message, state: FSMContext, db: Database, bot):
     cfg["bg_image"] = b64
     await state.update_data(cfg=cfg)
     await state.set_state(ConstructorSG.building)
-    # Убираем загруженную картинку из чата, чтобы не мешала настройке
+    # Убираем загруженную картинку и сообщение-приглашение из чата
     try:
         await message.delete()
     except Exception:
         pass
+    data2 = await state.get_data()
+    prompt_id = data2.get("upload_prompt_id")
+    if prompt_id:
+        try:
+            await message.bot.delete_message(message.chat.id, prompt_id)
+        except Exception:
+            pass
+        await state.update_data(upload_prompt_id=None)
     await _send_or_update_preview(message, state, db)
 
 
 @router.message(ConstructorSG.enter_bg_image, F.text == "/skip")
 async def cb_bg_skip(message: Message, state: FSMContext, db: Database):
     await state.set_state(ConstructorSG.building)
+    data = await state.get_data()
+    prompt_id = data.get("upload_prompt_id")
+    try:
+        await message.delete()
+    except Exception:
+        pass
+    if prompt_id:
+        try:
+            await message.bot.delete_message(message.chat.id, prompt_id)
+        except Exception:
+            pass
+        await state.update_data(upload_prompt_id=None)
     await _send_or_update_preview(message, state, db)
 
 
@@ -528,11 +550,19 @@ async def _process_logo(message: Message, state: FSMContext, db: Database, raw: 
     ex["logo_b64"] = b64
     await state.update_data(cfg=cfg)
     await state.set_state(ConstructorSG.building)
-    # Убираем загруженную картинку/файл из чата, чтобы не мешала настройке
+    # Убираем загруженную картинку/файл и сообщение-приглашение из чата
     try:
         await message.delete()
     except Exception:
         pass
+    data2 = await state.get_data()
+    prompt_id = data2.get("upload_prompt_id")
+    if prompt_id:
+        try:
+            await message.bot.delete_message(message.chat.id, prompt_id)
+        except Exception:
+            pass
+        await state.update_data(upload_prompt_id=None)
     await _send_or_update_preview(message, state, db)
 
 
@@ -574,6 +604,17 @@ async def cb_logo_skip(message: Message, state: FSMContext, db: Database):
     ex.pop("logo_b64", None)  # /skip убирает логотип
     await state.update_data(cfg=cfg)
     await state.set_state(ConstructorSG.building)
+    prompt_id = data.get("upload_prompt_id")
+    try:
+        await message.delete()
+    except Exception:
+        pass
+    if prompt_id:
+        try:
+            await message.bot.delete_message(message.chat.id, prompt_id)
+        except Exception:
+            pass
+        await state.update_data(upload_prompt_id=None)
     await _send_or_update_preview(message, state, db)
 
 
@@ -675,14 +716,19 @@ async def cb_save_name(message: Message, state: FSMContext, db: Database):
 
 
 @router.callback_query(F.data == "con:cancel")
-async def cb_cancel(call: CallbackQuery, state: FSMContext):
+async def cb_cancel(call: CallbackQuery, state: FSMContext, db: Database):
     await state.clear()
-    await call.answer("Отменено")
+    await call.answer("Закрыто")
     try:
         await call.message.delete()
     except Exception:
         pass
-    await call.message.answer("❌ Конструктор закрыт.")
+    # Возвращаем в меню «Твои шаблоны», чтобы был понятный путь дальше
+    from handlers.my_templates import show_templates_list
+    try:
+        await show_templates_list(call.message, db, call.from_user.id)
+    except Exception:
+        await call.message.answer("❌ Конструктор закрыт. Открой меню командой /menu.")
 
 
 @router.message(ConstructorSG.enter_key)

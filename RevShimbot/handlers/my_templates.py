@@ -37,6 +37,7 @@ def kb_templates_list(templates: list) -> InlineKeyboardMarkup:
         )])
     rows.append([InlineKeyboardButton(text="➕ Создать новый", callback_data="mytpl:new")])
     rows.append([InlineKeyboardButton(text="🔑 Получить по ключу", callback_data="mytpl:bykey")])
+    rows.append([InlineKeyboardButton(text="« Назад", callback_data="menu:back")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -61,6 +62,7 @@ async def show_templates_list(message: Message, db: Database, user_id: int):
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
                 [InlineKeyboardButton(text="➕ Создать шаблон", callback_data="mytpl:new")],
                 [InlineKeyboardButton(text="🔑 Получить по ключу", callback_data="mytpl:bykey")],
+                [InlineKeyboardButton(text="« Назад", callback_data="menu:back")],
             ])
         )
         return

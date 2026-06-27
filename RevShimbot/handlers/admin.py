@@ -20,6 +20,8 @@ def _is_admin(user_id: int, config) -> bool:
 class AdSG(StatesGroup):
     enter_broadcast = State()   # ввод текста рассылки всем
     enter_pin = State()         # ввод текста для закрепа
+    enter_ban = State()         # ввод ID/юзернейма для бана
+    enter_unban = State()       # ввод ID для разбана
 
 
 # ── Клавиатуры ─────────────────────────────────────────────────────────────
@@ -27,7 +29,9 @@ class AdSG(StatesGroup):
 def kb_admin_main() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📊 Статистика", callback_data="admin:stats")],
+        [InlineKeyboardButton(text="🏆 Топ продавцов", callback_data="admin:topsellers")],
         [InlineKeyboardButton(text="📣 Управление рекламой", callback_data="admin:ads")],
+        [InlineKeyboardButton(text="🚫 Баны", callback_data="admin:bans")],
         [InlineKeyboardButton(text="« Назад", callback_data="menu:back")],
     ])
 
@@ -311,3 +315,214 @@ async def cb_ad_unpin_go(call: CallbackQuery, db: Database, bot, config):
         f"⚠️ Ошибки: <b>{failed}</b>",
         reply_markup=kb_admin_ads(has_pins=False)
     )
+
+
+# ── Топ продавцов ──────────────────────────────────────────────────────────
+
+@router.callback_query(F.data == "admin:topsellers")
+async def cb_top_sellers(call: CallbackQuery, db: Database, config):
+    if not _is_admin(call.from_user.id, config):
+        await call.answer("Недоступно", show_alert=True)
+        return
+    await call.answer()
+    top = await db.get_top_sellers(10)
+    if not top:
+        await call.message.answer(
+            "🏆 <b>Топ продавцов</b>\n\nПока нет ни одного отзыва.",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="« Назад", callback_data="admin:home")]
+            ])
+        )
+        return
+
+    lines = ["🏆 <b>Топ-10 продавцов по отзывам</b>\n"]
+    rows = []
+    medals = ["🥇", "🥈", "🥉"]
+    for i, s in enumerate(top):
+        place = medals[i] if i < 3 else f"{i+1}."
+        uname = f"@{s['username']}" if s.get("username") else "без юзернейма"
+        lines.append(f"{place} <b>{s['shop_name']}</b> ({uname}) — {s['review_count']} отзывов")
+        # Кнопка-ссылка на аккаунт продавца
+        if s.get("username"):
+            url = f"https://t.me/{s['username']}"
+        else:
+            url = f"tg://user?id={s['id']}"
+        btn_text = f"{place} {s['shop_name']}"[:60]
+        rows.append([InlineKeyboardButton(text=btn_text, url=url)])
+
+    rows.append([InlineKeyboardButton(text="« Назад", callback_data="admin:home")])
+    await call.message.answer(
+        "\n".join(lines),
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=rows)
+    )
+
+
+# ── Система банов ──────────────────────────────────────────────────────────
+
+def kb_bans_menu(banned_count: int) -> InlineKeyboardMarkup:
+    rows = [
+        [InlineKeyboardButton(text="🚫 Забанить", callback_data="admin:ban_add")],
+    ]
+    if banned_count > 0:
+        rows.append([InlineKeyboardButton(text=f"📋 Список банов ({banned_count})", callback_data="admin:ban_list")])
+    rows.append([InlineKeyboardButton(text="« Назад", callback_data="admin:home")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+@router.callback_query(F.data == "admin:bans")
+async def cb_bans(call: CallbackQuery, state: FSMContext, db: Database, config):
+    if not _is_admin(call.from_user.id, config):
+        await call.answer("Недоступно", show_alert=True)
+        return
+    await state.clear()
+    await call.answer()
+    banned = await db.get_banned_users()
+    await call.message.answer(
+        "🚫 <b>Система банов</b>\n\n"
+        "Забаненные не могут писать боту — он их игнорирует. "
+        "Бан хранится по ID, поэтому смена юзернейма не помогает обойти его.\n\n"
+        f"Сейчас в бане: <b>{len(banned)}</b>",
+        reply_markup=kb_bans_menu(len(banned))
+    )
+
+
+@router.callback_query(F.data == "admin:ban_add")
+async def cb_ban_add(call: CallbackQuery, state: FSMContext, config):
+    if not _is_admin(call.from_user.id, config):
+        await call.answer("Недоступно", show_alert=True)
+        return
+    await call.answer()
+    await state.set_state(AdSG.enter_ban)
+    await call.message.answer(
+        "🚫 Пришли <b>ID</b> или <b>@юзернейм</b> пользователя, которого нужно забанить.\n\n"
+        "Если по юзернейму — бот найдёт его ID (для этого пользователь должен быть знаком боту).\n\n"
+        "Отправь /cancel чтобы отменить."
+    )
+
+
+@router.message(AdSG.enter_ban, F.text == "/cancel")
+@router.message(AdSG.enter_unban, F.text == "/cancel")
+async def cb_ban_cancel(message: Message, state: FSMContext, db: Database):
+    await state.clear()
+    banned = await db.get_banned_users()
+    await message.answer("Отменено.", reply_markup=kb_bans_menu(len(banned)))
+
+
+@router.message(AdSG.enter_ban)
+async def cb_ban_process(message: Message, state: FSMContext, db: Database, bot, config):
+    if not _is_admin(message.from_user.id, config):
+        return
+    raw = (message.text or "").strip()
+    await state.clear()
+
+    user_id = None
+    username = None
+    if raw.lstrip("-").isdigit():
+        user_id = int(raw)
+    else:
+        # По юзернейму — резолвим ID
+        username = raw.lstrip("@")
+        user_id = await db.find_user_id_by_username(username)
+        if not user_id:
+            banned = await db.get_banned_users()
+            await message.answer(
+                f"❌ Не нашёл пользователя @{username} среди знакомых боту. "
+                "Забанить можно по числовому ID.",
+                reply_markup=kb_bans_menu(len(banned))
+            )
+            return
+
+    if config.ADMIN_TG_ID and user_id == config.ADMIN_TG_ID:
+        await message.answer("❌ Нельзя забанить самого себя.")
+        return
+
+    await db.ban_user(user_id, username)
+    # Ссылка на аккаунт
+    if username:
+        url = f"https://t.me/{username}"
+        who = f"@{username} (ID <code>{user_id}</code>)"
+    else:
+        url = f"tg://user?id={user_id}"
+        who = f"ID <code>{user_id}</code>"
+
+    banned = await db.get_banned_users()
+    await message.answer(
+        f"✅ Забанен: {who}",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="👤 Открыть профиль", url=url)],
+            [InlineKeyboardButton(text="« Назад", callback_data="admin:bans")],
+        ])
+    )
+
+
+@router.callback_query(F.data == "admin:ban_list")
+async def cb_ban_list(call: CallbackQuery, db: Database, config):
+    if not _is_admin(call.from_user.id, config):
+        await call.answer("Недоступно", show_alert=True)
+        return
+    await call.answer()
+    banned = await db.get_banned_users()
+    if not banned:
+        await call.message.answer("Список банов пуст.",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="« Назад", callback_data="admin:bans")]
+            ]))
+        return
+
+    lines = ["🚫 <b>Забаненные пользователи</b>\n"]
+    rows = []
+    for b in banned[:20]:
+        uname = f"@{b['username']}" if b.get("username") else "без юзернейма"
+        lines.append(f"• <code>{b['id']}</code> ({uname})")
+        # Кнопки: открыть профиль + разбанить
+        if b.get("username"):
+            url = f"https://t.me/{b['username']}"
+        else:
+            url = f"tg://user?id={b['id']}"
+        rows.append([
+            InlineKeyboardButton(text=f"👤 {uname}"[:30], url=url),
+            InlineKeyboardButton(text="✅ Разбан", callback_data=f"admin:unban:{b['id']}"),
+        ])
+    rows.append([InlineKeyboardButton(text="« Назад", callback_data="admin:bans")])
+    await call.message.answer("\n".join(lines),
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
+
+
+@router.callback_query(F.data.startswith("admin:unban:"))
+async def cb_unban(call: CallbackQuery, db: Database, config):
+    if not _is_admin(call.from_user.id, config):
+        await call.answer("Недоступно", show_alert=True)
+        return
+    uid = int(call.data.split(":")[2])
+    await db.unban_user(uid)
+    await call.answer("✅ Разбанен")
+    # Обновляем список
+    banned = await db.get_banned_users()
+    if not banned:
+        try:
+            await call.message.edit_text("✅ Все разбанены. Список пуст.",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="« Назад", callback_data="admin:bans")]
+                ]))
+        except Exception:
+            pass
+        return
+    lines = ["🚫 <b>Забаненные пользователи</b>\n"]
+    rows = []
+    for b in banned[:20]:
+        uname = f"@{b['username']}" if b.get("username") else "без юзернейма"
+        lines.append(f"• <code>{b['id']}</code> ({uname})")
+        if b.get("username"):
+            url = f"https://t.me/{b['username']}"
+        else:
+            url = f"tg://user?id={b['id']}"
+        rows.append([
+            InlineKeyboardButton(text=f"👤 {uname}"[:30], url=url),
+            InlineKeyboardButton(text="✅ Разбан", callback_data=f"admin:unban:{b['id']}"),
+        ])
+    rows.append([InlineKeyboardButton(text="« Назад", callback_data="admin:bans")])
+    try:
+        await call.message.edit_text("\n".join(lines),
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
+    except Exception:
+        pass
