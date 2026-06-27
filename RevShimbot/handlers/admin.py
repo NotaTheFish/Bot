@@ -36,6 +36,7 @@ def kb_admin_ads() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📢 Рассылка всем", callback_data="admin:ad_broadcast")],
         [InlineKeyboardButton(text="📌 Закреп (объявление)", callback_data="admin:ad_pin")],
+        [InlineKeyboardButton(text="📌❌ Открепить рекламу", callback_data="admin:ad_unpin")],
         [InlineKeyboardButton(text="« Назад", callback_data="admin:home")],
     ])
 
@@ -237,4 +238,64 @@ async def cb_ad_send(call: CallbackQuery, state: FSMContext, db: Database, bot, 
         f"📨 Доставлено: <b>{sent}</b>\n"
         f"🚫 Заблокировали бота: <b>{blocked}</b>\n"
         f"⚠️ Прочие ошибки: <b>{failed}</b>"
+    )
+
+
+# ── Открепление рекламы ────────────────────────────────────────────────────
+
+@router.callback_query(F.data == "admin:ad_unpin")
+async def cb_ad_unpin_confirm(call: CallbackQuery, config):
+    if not _is_admin(call.from_user.id, config):
+        await call.answer("Недоступно", show_alert=True)
+        return
+    await call.answer()
+    if config.AD_TEST_ID:
+        who = f"тестового пользователя (<code>{config.AD_TEST_ID}</code>)"
+    else:
+        who = "<b>всех пользователей</b> бота"
+    await call.message.answer(
+        f"📌❌ Открепить рекламу у {who}?\n\n"
+        "Бот снимет закреплённые им сообщения в личных чатах.",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="✅ Да, открепить", callback_data="admin:ad_unpin_go"),
+             InlineKeyboardButton(text="❌ Отмена", callback_data="admin:ads")],
+        ])
+    )
+
+
+@router.callback_query(F.data == "admin:ad_unpin_go")
+async def cb_ad_unpin_go(call: CallbackQuery, db: Database, bot, config):
+    if not _is_admin(call.from_user.id, config):
+        await call.answer("Недоступно", show_alert=True)
+        return
+    await call.answer()
+    try:
+        await call.message.edit_reply_markup(reply_markup=None)
+    except Exception:
+        pass
+
+    if config.AD_TEST_ID:
+        targets = [config.AD_TEST_ID]
+        mode_note = f"тест ({config.AD_TEST_ID})"
+    else:
+        targets = await db.get_all_user_ids()
+        mode_note = "все"
+
+    status = await call.message.answer(f"⏳ Открепляю ({mode_note})… Чатов: {len(targets)}")
+
+    done, failed = 0, 0
+    for uid in targets:
+        try:
+            # Снимаем все закрепы бота в личном чате с пользователем
+            await bot.unpin_all_chat_messages(uid)
+            done += 1
+        except Exception as e:
+            failed += 1
+            logger.info(f"Не удалось открепить у {uid}: {e}")
+        await asyncio.sleep(0.05)
+
+    await status.edit_text(
+        f"✅ <b>Открепление завершено</b>\n\n"
+        f"📌 Откреплено в чатах: <b>{done}</b>\n"
+        f"⚠️ Ошибки: <b>{failed}</b>"
     )
