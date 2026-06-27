@@ -342,6 +342,18 @@ async def finalize_review(event, state: FSMContext, db: Database, bot, config,
     except Exception as e:
         logger.error(f"Ошибка отправки карточки продавцу {seller['id']}: {e}")
 
+    # Регистрируем покупателя и показываем ему меню — чтобы он мог пользоваться ботом сам
+    try:
+        await db.track_user(user.id, user.username)
+    except Exception:
+        pass
+    from keyboards import kb_main_reply
+    await answer(
+        "🎉 Готово! Кстати, ты тоже можешь создавать свои карточки отзывов и "
+        "настраивать магазин — просто загляни в меню ниже 👇",
+        reply_markup=kb_main_reply()
+    )
+
 
 def _kb_skip_proof():
     return InlineKeyboardMarkup(inline_keyboard=[[

@@ -82,6 +82,13 @@ def kb_setup_done() -> InlineKeyboardMarkup:
     ]])
 
 
+def kb_back_to_menu() -> InlineKeyboardMarkup:
+    """Кнопка возврата в меню продавца — для информационных экранов."""
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="« Назад в меню", callback_data="menu:seller_home")]
+    ])
+
+
 def kb_seller_menu(pub_id: str = None) -> InlineKeyboardMarkup:
     rows = [
         [InlineKeyboardButton(text="📋 Мой шаблон", callback_data="menu:mytemplate")],

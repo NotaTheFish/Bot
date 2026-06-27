@@ -5,7 +5,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 
 from db import Database
-from keyboards import kb_seller_menu, kb_templates, kb_template_view, kb_main_reply
+from keyboards import kb_seller_menu, kb_templates, kb_template_view, kb_main_reply, kb_back_to_menu
 from utils.helpers import get_ref_link
 from constants import TEMPLATES
 
@@ -393,7 +393,8 @@ async def cb_mylink(call: CallbackQuery, db: Database, config):
         f"не заходя в бот. Для этого ему нужно написать:\n\n"
         f"<code>@{config.BOT_USERNAME} {pub_id} текст отзыва</code>\n\n"
         f"🆔 Твой ID: <code>{pub_id}</code>\n"
-        f"Скинь покупателю этот ID — и он отправит красивую карточку прямо в вашем чате."
+        f"Скинь покупателю этот ID — и он отправит красивую карточку прямо в вашем чате.",
+        reply_markup=kb_back_to_menu()
     )
     await call.answer()
 
@@ -408,7 +409,8 @@ async def cb_stats(call: CallbackQuery, db: Database):
     await call.message.answer(
         f"📊 <b>Статистика — {seller['shop_name']}</b>\n\n"
         f"Всего отзывов: <b>{stats['total']}</b>\n"
-        f"Средняя оценка: <b>{stats['avg_stars'] or '—'} ★</b>"
+        f"Средняя оценка: <b>{stats['avg_stars'] or '—'} ★</b>",
+        reply_markup=kb_back_to_menu()
     )
     await call.answer()
 
@@ -817,6 +819,22 @@ async def cb_back(call: CallbackQuery, db: Database):
     has_seller = bool(await db.get_seller(call.from_user.id))
     has_client = bool(await db.get_client_template(call.from_user.id))
     await call.message.answer("Выбери действие:", reply_markup=kb_start_menu(has_seller, has_client))
+
+
+@router.callback_query(F.data == "menu:seller_home")
+async def cb_seller_home(call: CallbackQuery, db: Database):
+    """Возврат в меню продавца с информационных экранов."""
+    await call.answer()
+    seller = await db.get_seller(call.from_user.id)
+    if not seller:
+        has_client = bool(await db.get_client_template(call.from_user.id))
+        await call.message.answer("Выбери действие:", reply_markup=kb_start_menu(False, has_client))
+        return
+    pub_id = seller.get("pub_id") or await db.ensure_pub_id(call.from_user.id)
+    await call.message.answer(
+        f"🏪 <b>{seller['shop_name']}</b> — меню продавца\n🆔 ID: <code>{pub_id}</code>",
+        reply_markup=kb_seller_menu(pub_id)
+    )
 
 
 @router.callback_query(F.data == "cancel")

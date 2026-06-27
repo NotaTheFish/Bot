@@ -206,14 +206,19 @@ async def _send_or_update_preview(message_or_call, state: FSMContext, db: Databa
     await state.update_data(preview_msg_id=sent.message_id)
 
 
-async def _refresh_preview_in_place(call: CallbackQuery, state: FSMContext, db: Database):
-    """Перерисовывает превью в существующем сообщении и возвращает главное меню.
-    Не создаёт новых сообщений — превью всегда одно и то же."""
+async def _refresh_preview_in_place(call: CallbackQuery, state: FSMContext, db: Database,
+                                    keyboard=None):
+    """Перерисовывает превью в существующем сообщении.
+    keyboard=None — возвращает главное меню конструктора;
+    иначе оставляет переданную клавиатуру (например меню выбора цвета),
+    чтобы можно было удобно перебирать варианты подряд."""
     data = await state.get_data()
     cfg = data["cfg"]
     bot_username = data.get("bot_username", "reviewbot")
     preview_id = data.get("preview_msg_id")
     chat_id = call.message.chat.id
+
+    kb = keyboard if keyboard is not None else kb_constructor_main()
 
     png = await render_preview(cfg, bot_username)
     media = InputMediaPhoto(
@@ -224,7 +229,7 @@ async def _refresh_preview_in_place(call: CallbackQuery, state: FSMContext, db: 
         try:
             await call.bot.edit_message_media(
                 chat_id=chat_id, message_id=preview_id,
-                media=media, reply_markup=kb_constructor_main()
+                media=media, reply_markup=kb
             )
             return
         except Exception:
@@ -234,7 +239,7 @@ async def _refresh_preview_in_place(call: CallbackQuery, state: FSMContext, db: 
         chat_id=chat_id,
         photo=BufferedInputFile(png, filename="preview.png"),
         caption="🎨 <b>Конструктор карточки</b>\n\nНастраивай элементы — превью обновляется вживую.",
-        reply_markup=kb_constructor_main()
+        reply_markup=kb
     )
     await state.update_data(preview_msg_id=sent.message_id)
 
@@ -381,8 +386,16 @@ async def cb_set_option(call: CallbackQuery, state: FSMContext, db: Database):
         await call.answer("Уже выбрано ✓")
     else:
         await call.answer("✅ Применено")
-    # Перерисовываем превью в этом же сообщении и возвращаем главное меню
-    await _refresh_preview_in_place(call, state, db)
+    # Перерисовываем превью, НО оставляем то же меню выбора открытым —
+    # чтобы можно было перебирать варианты подряд (цвета, шрифты и т.д.)
+    if field in MENU_MAP:
+        _, options = MENU_MAP[field]
+        color_fields = {"text_color", "accent_color", "bg_color"}
+        cols = 2 if field in color_fields else 1
+        same_menu = _kb_options(field, options, cols=cols)
+        await _refresh_preview_in_place(call, state, db, keyboard=same_menu)
+    else:
+        await _refresh_preview_in_place(call, state, db)
 
 
 @router.callback_query(ConstructorSG.building, F.data.startswith("con:toggle:"))
@@ -476,7 +489,11 @@ async def cb_bg_image(message: Message, state: FSMContext, db: Database, bot):
     cfg["bg_image"] = b64
     await state.update_data(cfg=cfg)
     await state.set_state(ConstructorSG.building)
-    await message.answer("✅ Фон установлен!")
+    # Убираем загруженную картинку из чата, чтобы не мешала настройке
+    try:
+        await message.delete()
+    except Exception:
+        pass
     await _send_or_update_preview(message, state, db)
 
 
@@ -511,7 +528,11 @@ async def _process_logo(message: Message, state: FSMContext, db: Database, raw: 
     ex["logo_b64"] = b64
     await state.update_data(cfg=cfg)
     await state.set_state(ConstructorSG.building)
-    await message.answer("✅ Логотип установлен!")
+    # Убираем загруженную картинку/файл из чата, чтобы не мешала настройке
+    try:
+        await message.delete()
+    except Exception:
+        pass
     await _send_or_update_preview(message, state, db)
 
 
