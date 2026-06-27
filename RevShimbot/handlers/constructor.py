@@ -80,12 +80,18 @@ def kb_constructor_main() -> InlineKeyboardMarkup:
     ])
 
 
-def _kb_options(prefix: str, options: dict, back="con:back") -> InlineKeyboardMarkup:
+def _kb_options(prefix: str, options: dict, back="con:back", cols: int = 1) -> InlineKeyboardMarkup:
     rows = []
     items = list(options.items())
+    row = []
     for key, val in items:
         label = val[0] if isinstance(val, tuple) else val
-        rows.append([InlineKeyboardButton(text=label, callback_data=f"con:set:{prefix}:{key}")])
+        row.append(InlineKeyboardButton(text=label, callback_data=f"con:set:{prefix}:{key}"))
+        if len(row) >= cols:
+            rows.append(row)
+            row = []
+    if row:
+        rows.append(row)
     rows.append([InlineKeyboardButton(text="« Назад", callback_data=back)])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
@@ -312,7 +318,10 @@ async def cb_open_menu(call: CallbackQuery, state: FSMContext):
     title, options = MENU_MAP[field]
     data = await state.get_data()
     preview_id = data.get("preview_msg_id")
-    kb = _kb_options(field, options)
+    # Цветовые палитры — в 2 колонки, чтобы меню было компактным
+    color_fields = {"text_color", "accent_color", "bg_color"}
+    cols = 2 if field in color_fields else 1
+    kb = _kb_options(field, options, cols=cols)
     # Редактируем клавиатуру самого превью-сообщения (не плодим новые сообщения)
     if preview_id:
         try:

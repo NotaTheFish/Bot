@@ -22,13 +22,13 @@ LAYOUTS = {
 }
 
 FONTS = {
-    "montserrat":  ("Montserrat", "'Montserrat',sans-serif"),
-    "playfair":    ("Playfair Display", "'Playfair Display',serif"),
-    "caveat":      ("Caveat", "'Caveat',cursive"),
-    "spacegrotesk":("Space Grotesk", "'Space Grotesk',sans-serif"),
-    "inter":       ("Inter", "'Inter',sans-serif"),
-    "oswald":      ("Oswald", "'Oswald',sans-serif"),
-    "comfortaa":   ("Comfortaa", "'Comfortaa',cursive"),
+    "montserrat":  ("🔤 Montserrat", "'Montserrat',sans-serif"),
+    "playfair":    ("📖 Playfair Display", "'Playfair Display',serif"),
+    "caveat":      ("✍️ Caveat", "'Caveat',cursive"),
+    "spacegrotesk":("🚀 Space Grotesk", "'Space Grotesk',sans-serif"),
+    "inter":       ("📰 Inter", "'Inter',sans-serif"),
+    "oswald":      ("📐 Oswald", "'Oswald',sans-serif"),
+    "comfortaa":   ("🫧 Comfortaa", "'Comfortaa',cursive"),
     "vt323":       ("🎮 Pixel (VT323)", "'VT323',monospace"),
     "cinzel":      ("🏛 Cinzel (англ.)", "'Cinzel',serif"),
     "jetbrains":   ("💻 JetBrains Mono", "'JetBrains Mono',monospace"),
@@ -37,29 +37,50 @@ FONTS = {
 
 TEXT_COLORS = {
     "white":  ("⚪️ Белый", "#f0f0f0"),
+    "cream":  ("🍦 Кремовый", "#f5e9c8"),
     "gold":   ("🟡 Золотой", "#ffd95a"),
+    "amber":  ("🟠 Янтарный", "#ffb86c"),
     "cyan":   ("🔵 Голубой", "#7ad6ff"),
+    "sky":    ("💙 Небесный", "#9bb8ff"),
     "green":  ("🟢 Зелёный", "#7ee787"),
+    "mint":   ("🌿 Мятный", "#9af2cf"),
     "pink":   ("🩷 Розовый", "#ff9ec4"),
+    "rose":   ("🌹 Розовый тёмный", "#ff7a9c"),
     "purple": ("🟣 Фиолетовый", "#c9a4ff"),
+    "silver": ("🩶 Серебро", "#c8ccd4"),
 }
 
 ACCENT_COLORS = {
     "gold":   ("🟡 Золото", "#c9a84c"),
+    "orange": ("🟠 Оранжевый", "#ff7a1a"),
+    "amber":  ("🍯 Янтарь", "#f0a500"),
     "blue":   ("🔵 Синий", "#58a6ff"),
+    "cyan":   ("🩵 Бирюзовый", "#2ad4d4"),
     "green":  ("🟢 Зелёный", "#3fb950"),
+    "lime":   ("🟢 Лайм", "#7ee83f"),
     "pink":   ("🩷 Розовый", "#ff7eb6"),
+    "magenta":("💗 Маджента", "#ff2e97"),
     "purple": ("🟣 Фиолет", "#a371f7"),
     "red":    ("🔴 Красный", "#ff6b6b"),
+    "crimson":("❤️ Багровый", "#e01e5a"),
+    "white":  ("⚪️ Белый", "#f5f5f5"),
+    "black":  ("⚫️ Чёрный", "#1a1a1a"),
+    "silver": ("🩶 Серебро", "#b8bcc4"),
 }
 
 BG_COLORS = {
     "dark_blue":   ("🌌 Тёмно-синий", "#1a1a2e"),
     "charcoal":    ("⚫️ Уголь", "#161b22"),
+    "black":       ("🖤 Чёрный", "#0a0a0a"),
     "deep_purple": ("🟪 Глубокий фиолет", "#1e1633"),
     "forest":      ("🌲 Тёмный лес", "#15201a"),
     "wine":        ("🍷 Винный", "#2a1520"),
     "slate":       ("🪨 Сланец", "#1c2128"),
+    "navy":        ("⚓️ Морской", "#0d1b2a"),
+    "espresso":    ("☕️ Эспрессо", "#1c1410"),
+    "midnight_green":("🌑 Тёмно-зелёный", "#0a1414"),
+    "plum":        ("🍇 Слива", "#1a0f1f"),
+    "graphite":    ("✏️ Графит", "#18181b"),
 }
 
 # ── Этап 1: расширенные настройки ──────────────────────────────────────────
