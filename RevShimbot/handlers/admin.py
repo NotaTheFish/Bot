@@ -32,13 +32,15 @@ def kb_admin_main() -> InlineKeyboardMarkup:
     ])
 
 
-def kb_admin_ads() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(inline_keyboard=[
+def kb_admin_ads(has_pins: bool = False) -> InlineKeyboardMarkup:
+    rows = [
         [InlineKeyboardButton(text="📢 Рассылка всем", callback_data="admin:ad_broadcast")],
         [InlineKeyboardButton(text="📌 Закреп (объявление)", callback_data="admin:ad_pin")],
-        [InlineKeyboardButton(text="📌❌ Открепить рекламу", callback_data="admin:ad_unpin")],
-        [InlineKeyboardButton(text="« Назад", callback_data="admin:home")],
-    ])
+    ]
+    if has_pins:
+        rows.append([InlineKeyboardButton(text="📌❌ Открепить рекламу", callback_data="admin:ad_unpin")])
+    rows.append([InlineKeyboardButton(text="« Назад", callback_data="admin:home")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def _kb_ad_confirm(kind: str) -> InlineKeyboardMarkup:
@@ -98,7 +100,7 @@ async def cb_admin_stats(call: CallbackQuery, db: Database, config):
 # ── Управление рекламой ────────────────────────────────────────────────────
 
 @router.callback_query(F.data == "admin:ads")
-async def cb_admin_ads(call: CallbackQuery, state: FSMContext, config):
+async def cb_admin_ads(call: CallbackQuery, state: FSMContext, db: Database, config):
     if not _is_admin(call.from_user.id, config):
         await call.answer("Недоступно", show_alert=True)
         return
@@ -110,13 +112,15 @@ async def cb_admin_ads(call: CallbackQuery, state: FSMContext, config):
                      f"<code>{config.AD_TEST_ID}</code>, а не всем.")
     else:
         test_note = "\n\n🟢 Боевой режим: реклама уйдёт <b>всем</b> пользователям бота."
+    has_pins = await db.has_ad_pins()
+    pin_note = "\n\n📌 Сейчас реклама <b>в закрепе</b>." if has_pins else ""
     await call.message.answer(
         "📣 <b>Управление рекламой</b>\n\n"
         "Два вида:\n"
         "• <b>Рассылка всем</b> — личное сообщение каждому пользователю бота\n"
         "• <b>Закреп</b> — отправляет сообщение и закрепляет его в чате с пользователем"
-        + test_note,
-        reply_markup=kb_admin_ads()
+        + test_note + pin_note,
+        reply_markup=kb_admin_ads(has_pins)
     )
 
 
@@ -150,9 +154,10 @@ async def cb_ad_pin_start(call: CallbackQuery, state: FSMContext, config):
 
 @router.message(AdSG.enter_broadcast, F.text == "/cancel")
 @router.message(AdSG.enter_pin, F.text == "/cancel")
-async def cb_ad_cancel(message: Message, state: FSMContext):
+async def cb_ad_cancel(message: Message, state: FSMContext, db: Database):
     await state.clear()
-    await message.answer("Отменено.", reply_markup=kb_admin_ads())
+    has_pins = await db.has_ad_pins()
+    await message.answer("Отменено.", reply_markup=kb_admin_ads(has_pins))
 
 
 @router.message(AdSG.enter_broadcast)
@@ -218,6 +223,8 @@ async def cb_ad_send(call: CallbackQuery, state: FSMContext, db: Database, bot, 
             if kind == "pin":
                 try:
                     await bot.pin_chat_message(uid, msg.message_id, disable_notification=True)
+                    # Запоминаем закреп, чтобы потом точно открепить и показать кнопку
+                    await db.record_ad_pin(uid, msg.message_id)
                 except Exception as e:
                     logger.info(f"Не удалось закрепить у {uid}: {e}")
             sent += 1
@@ -233,29 +240,30 @@ async def cb_ad_send(call: CallbackQuery, state: FSMContext, db: Database, bot, 
         await asyncio.sleep(0.05)
 
     kind_label = "Рассылка" if kind == "broadcast" else "Закреп"
+    # После операции показываем актуальную клавиатуру (с кнопкой открепа если закрепили)
+    has_pins = await db.has_ad_pins()
     await status.edit_text(
         f"✅ <b>{kind_label} завершена</b>\n\n"
         f"📨 Доставлено: <b>{sent}</b>\n"
         f"🚫 Заблокировали бота: <b>{blocked}</b>\n"
-        f"⚠️ Прочие ошибки: <b>{failed}</b>"
+        f"⚠️ Прочие ошибки: <b>{failed}</b>",
+        reply_markup=kb_admin_ads(has_pins)
     )
 
 
 # ── Открепление рекламы ────────────────────────────────────────────────────
 
 @router.callback_query(F.data == "admin:ad_unpin")
-async def cb_ad_unpin_confirm(call: CallbackQuery, config):
+async def cb_ad_unpin_confirm(call: CallbackQuery, db: Database, config):
     if not _is_admin(call.from_user.id, config):
         await call.answer("Недоступно", show_alert=True)
         return
     await call.answer()
-    if config.AD_TEST_ID:
-        who = f"тестового пользователя (<code>{config.AD_TEST_ID}</code>)"
-    else:
-        who = "<b>всех пользователей</b> бота"
+    pins = await db.get_ad_pins()
     await call.message.answer(
-        f"📌❌ Открепить рекламу у {who}?\n\n"
-        "Бот снимет закреплённые им сообщения в личных чатах.",
+        f"📌❌ Открепить рекламу?\n\n"
+        f"Сейчас закреплено в <b>{len(pins)}</b> чат(ах). "
+        "Бот снимет эти закрепы.",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="✅ Да, открепить", callback_data="admin:ad_unpin_go"),
              InlineKeyboardButton(text="❌ Отмена", callback_data="admin:ads")],
@@ -274,28 +282,32 @@ async def cb_ad_unpin_go(call: CallbackQuery, db: Database, bot, config):
     except Exception:
         pass
 
-    if config.AD_TEST_ID:
-        targets = [config.AD_TEST_ID]
-        mode_note = f"тест ({config.AD_TEST_ID})"
-    else:
-        targets = await db.get_all_user_ids()
-        mode_note = "все"
-
-    status = await call.message.answer(f"⏳ Открепляю ({mode_note})… Чатов: {len(targets)}")
+    # Берём точные закрепы из БД (что бот реально закреплял)
+    pins = await db.get_ad_pins()
+    status = await call.message.answer(f"⏳ Открепляю… Закрепов: {len(pins)}")
 
     done, failed = 0, 0
-    for uid in targets:
+    for uid, mid in pins:
         try:
-            # Снимаем все закрепы бота в личном чате с пользователем
-            await bot.unpin_all_chat_messages(uid)
+            # Открепляем конкретное сообщение
+            await bot.unpin_chat_message(uid, mid)
             done += 1
         except Exception as e:
-            failed += 1
-            logger.info(f"Не удалось открепить у {uid}: {e}")
+            # Запасной вариант — снять все закрепы бота в этом чате
+            try:
+                await bot.unpin_all_chat_messages(uid)
+                done += 1
+            except Exception as e2:
+                failed += 1
+                logger.info(f"Не удалось открепить у {uid} (msg {mid}): {e2}")
         await asyncio.sleep(0.05)
+
+    # Чистим записи о закрепах — реклама больше не закреплена
+    await db.clear_ad_pins()
 
     await status.edit_text(
         f"✅ <b>Открепление завершено</b>\n\n"
-        f"📌 Откреплено в чатах: <b>{done}</b>\n"
-        f"⚠️ Ошибки: <b>{failed}</b>"
+        f"📌 Откреплено: <b>{done}</b>\n"
+        f"⚠️ Ошибки: <b>{failed}</b>",
+        reply_markup=kb_admin_ads(has_pins=False)
     )

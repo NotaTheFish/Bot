@@ -99,6 +99,16 @@ CREATE TABLE IF NOT EXISTS rvb_bot_users (
     last_seen TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     is_blocked BOOLEAN NOT NULL DEFAULT FALSE
 );
+CREATE TABLE IF NOT EXISTS rvb_settings (
+    key TEXT PRIMARY KEY,
+    value TEXT
+);
+CREATE TABLE IF NOT EXISTS rvb_ad_pins (
+    user_id BIGINT NOT NULL,
+    message_id BIGINT NOT NULL,
+    pinned_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (user_id, message_id)
+);
 """
 
 
@@ -193,6 +203,21 @@ class Database:
                 FROM rvb_reviews
                 GROUP BY buyer_id, buyer_username
                 ON CONFLICT (id) DO NOTHING
+            """)
+            # Авто-миграция: таблицы настроек и закрепов рекламы
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS rvb_settings (
+                    key TEXT PRIMARY KEY,
+                    value TEXT
+                )
+            """)
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS rvb_ad_pins (
+                    user_id BIGINT NOT NULL,
+                    message_id BIGINT NOT NULL,
+                    pinned_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    PRIMARY KEY (user_id, message_id)
+                )
             """)
         logger.info("Database initialized")
 
@@ -645,6 +670,31 @@ class Database:
             return await conn.fetchval(
                 "SELECT COUNT(*) FROM rvb_bot_users WHERE is_blocked = FALSE"
             ) or 0
+
+    # ── Закрепы рекламы (для точного открепления и состояния кнопки) ───────
+
+    async def record_ad_pin(self, user_id: int, message_id: int):
+        async with self.pool.acquire() as conn:
+            await conn.execute("""
+                INSERT INTO rvb_ad_pins (user_id, message_id, pinned_at)
+                VALUES ($1, $2, NOW())
+                ON CONFLICT (user_id, message_id) DO NOTHING
+            """, user_id, message_id)
+
+    async def get_ad_pins(self) -> list:
+        """Возвращает список (user_id, message_id) всех активных закрепов рекламы."""
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch("SELECT user_id, message_id FROM rvb_ad_pins")
+            return [(r["user_id"], r["message_id"]) for r in rows]
+
+    async def clear_ad_pins(self):
+        async with self.pool.acquire() as conn:
+            await conn.execute("DELETE FROM rvb_ad_pins")
+
+    async def has_ad_pins(self) -> bool:
+        async with self.pool.acquire() as conn:
+            n = await conn.fetchval("SELECT COUNT(*) FROM rvb_ad_pins")
+            return (n or 0) > 0
 
     async def get_seller_stats(self, seller_id: int) -> dict:
         async with self.pool.acquire() as conn:
