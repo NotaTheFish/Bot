@@ -36,7 +36,7 @@ async def suggest_start(message: Message, state: FSMContext, redis: Redis) -> No
         return  # обрабатывается middleware — здесь просто выходим
 
     await state.set_state(UserSuggest.waiting_content)
-    await state.update_data(items=[], media_group_ids=set())
+    await state.update_data(items=[], media_group_ids=[])
     await message.answer(
         "📝 Опишите что хотите предложить.\n\n"
         "Можно отправить текст, фото, видео — или всё вместе.\n"
