@@ -69,7 +69,7 @@ async def cmd_start(message: Message, db: Database, bot, state: FSMContext):
     if deep_link and deep_link.startswith("tpl_"):
         key = "!" + deep_link.replace("tpl_", "")
         from handlers.my_templates import claim_template
-        ok, msg = await claim_template(message.from_user.id, message.from_user.username, key, db)
+        ok, msg = await claim_template(message.from_user.id, message.from_user.username, key, db, bot)
         await message.answer(msg)
         if ok:
             from handlers.my_templates import show_templates_list

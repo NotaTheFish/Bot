@@ -754,13 +754,13 @@ async def cb_cancel(call: CallbackQuery, state: FSMContext, db: Database):
 
 
 @router.message(ConstructorSG.enter_key)
-async def cb_enter_key(message: Message, state: FSMContext, db: Database):
+async def cb_enter_key(message: Message, state: FSMContext, db: Database, bot):
     key = message.text.strip()
     if not key.startswith("!"):
         key = "!" + key
     await state.clear()
     from handlers.my_templates import claim_template
-    ok, msg = await claim_template(message.from_user.id, message.from_user.username, key, db)
+    ok, msg = await claim_template(message.from_user.id, message.from_user.username, key, db, bot)
     await message.answer(msg)
 
 

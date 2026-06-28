@@ -3,6 +3,7 @@
 """
 import secrets
 import string
+import logging
 from aiogram import Router, F
 from aiogram.types import (
     Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton,
@@ -14,6 +15,7 @@ from db import Database
 from services.constructor import render_preview, LAYOUTS, FONTS
 
 router = Router()
+logger = logging.getLogger(__name__)
 
 
 def _gen_key() -> str:
@@ -362,8 +364,47 @@ def _key_status_label(db: Database, kr: dict) -> str:
     return ", ".join(parts)
 
 
+def _build_keys_view(db: Database, tpl: dict, tpl_id: int, keys: list,
+                     bot_username: str, show_links: bool):
+    """Собирает текст и клавиатуру для экрана «Мои ключи».
+    show_links=True — показывает реф-ссылку рядом с каждым ключом."""
+    if not keys:
+        text = (f"🗝 У карточки «{tpl['name']}» пока нет ключей.\n\n"
+                f"Создай ключ через «🔗 Поделиться» или «👑 Передать авторство».")
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="« Назад", callback_data=f"mytpl:view:{tpl_id}")]
+        ])
+        return text, kb
+
+    lines = [f"🗝 <b>Ключи карточки «{tpl['name']}»</b>\n"]
+    rows = []
+    for kr in keys:
+        type_emoji = "👑" if kr["key_type"] == "transfer" else "🔗"
+        type_label = "передача" if kr["key_type"] == "transfer" else "копия"
+        status = _key_status_label(db, kr)
+        lines.append(f"{type_emoji} <code>{kr['key']}</code> — {type_label} ({status})")
+        if show_links:
+            ref = f"https://t.me/{bot_username}?start=tpl_{kr['key'][1:]}"
+            lines.append(f"   └ <code>{ref}</code>")
+        rows.append([InlineKeyboardButton(
+            text=f"🗑 {type_emoji} {kr['key']}",
+            callback_data=f"delkey:{tpl_id}:{kr['key']}"
+        )])
+
+    # Кнопка-переключатель показа реф-ссылок
+    if show_links:
+        rows.append([InlineKeyboardButton(text="🙈 Скрыть реф-ссылки",
+                                          callback_data=f"mytpl:keys:{tpl_id}")])
+    else:
+        rows.append([InlineKeyboardButton(text="🌐 Показать реф-ссылки",
+                                          callback_data=f"mytpl:keyslinks:{tpl_id}")])
+    lines.append("\n<i>Удали ключ, чтобы мгновенно перекрыть доступ при утечке.</i>")
+    rows.append([InlineKeyboardButton(text="« Назад", callback_data=f"mytpl:view:{tpl_id}")])
+    return "\n".join(lines), InlineKeyboardMarkup(inline_keyboard=rows)
+
+
 @router.callback_query(F.data.startswith("mytpl:keys:"))
-async def cb_keys(call: CallbackQuery, db: Database):
+async def cb_keys(call: CallbackQuery, db: Database, config):
     tpl_id = int(call.data.split(":")[2])
     tpl = await db.get_custom_template(tpl_id)
     if not tpl or tpl["owner_id"] != call.from_user.id:
@@ -371,36 +412,32 @@ async def cb_keys(call: CallbackQuery, db: Database):
         return
     await call.answer()
     keys = await db.list_template_keys(tpl_id)
-    if not keys:
-        await call.message.answer(
-            f"🗝 У карточки «{tpl['name']}» пока нет ключей.\n\n"
-            f"Создай ключ через «🔗 Поделиться» или «👑 Передать авторство».",
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="« Назад", callback_data=f"mytpl:view:{tpl_id}")]
-            ])
-        )
-        return
+    text, kb = _build_keys_view(db, tpl, tpl_id, keys, config.BOT_USERNAME, show_links=False)
+    # Если пришли из toggle (скрыть) — редактируем, иначе шлём новое
+    try:
+        await call.message.edit_text(text, reply_markup=kb)
+    except Exception:
+        await call.message.answer(text, reply_markup=kb)
 
-    lines = [f"🗝 <b>Ключи карточки «{tpl['name']}»</b>\n"]
-    rows = []
-    for kr in keys:
-        type_emoji = "👑" if kr["key_type"] == "transfer" else "🔗"
-        type_label = "передача" if kr["key_type"] == "transfer" else "копия"
-        status = _key_status_label(db, kr)
-        lines.append(f"{type_emoji} <code>{kr['key']}</code> — {type_label} ({status})")
-        # Кнопка удаления каждого ключа
-        rows.append([InlineKeyboardButton(
-            text=f"🗑 {type_emoji} {kr['key']}",
-            callback_data=f"delkey:{tpl_id}:{kr['key']}"
-        )])
-    lines.append("\n<i>Удали ключ, чтобы мгновенно перекрыть доступ при утечке.</i>")
-    rows.append([InlineKeyboardButton(text="« Назад", callback_data=f"mytpl:view:{tpl_id}")])
-    await call.message.answer("\n".join(lines),
-                              reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
+
+@router.callback_query(F.data.startswith("mytpl:keyslinks:"))
+async def cb_keys_links(call: CallbackQuery, db: Database, config):
+    tpl_id = int(call.data.split(":")[2])
+    tpl = await db.get_custom_template(tpl_id)
+    if not tpl or tpl["owner_id"] != call.from_user.id:
+        await call.answer("Не найдено", show_alert=True)
+        return
+    await call.answer()
+    keys = await db.list_template_keys(tpl_id)
+    text, kb = _build_keys_view(db, tpl, tpl_id, keys, config.BOT_USERNAME, show_links=True)
+    try:
+        await call.message.edit_text(text, reply_markup=kb)
+    except Exception:
+        await call.message.answer(text, reply_markup=kb)
 
 
 @router.callback_query(F.data.startswith("delkey:"))
-async def cb_del_key(call: CallbackQuery, db: Database):
+async def cb_del_key(call: CallbackQuery, db: Database, config):
     _, tpl_id, key = call.data.split(":", 2)
     tpl_id = int(tpl_id)
     ok = await db.delete_template_key(key, call.from_user.id)
@@ -408,35 +445,13 @@ async def cb_del_key(call: CallbackQuery, db: Database):
         await call.answer("🗑 Ключ удалён")
     else:
         await call.answer("Не удалось удалить", show_alert=True)
-    # Обновляем список ключей
     keys = await db.list_template_keys(tpl_id)
     tpl = await db.get_custom_template(tpl_id)
-    if not keys:
-        try:
-            await call.message.edit_text(
-                f"🗝 У карточки «{tpl['name'] if tpl else ''}» больше нет ключей.",
-                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                    [InlineKeyboardButton(text="« Назад", callback_data=f"mytpl:view:{tpl_id}")]
-                ]))
-        except Exception:
-            pass
+    if not tpl:
         return
-    lines = [f"🗝 <b>Ключи карточки «{tpl['name']}»</b>\n"]
-    rows = []
-    for kr in keys:
-        type_emoji = "👑" if kr["key_type"] == "transfer" else "🔗"
-        type_label = "передача" if kr["key_type"] == "transfer" else "копия"
-        status = _key_status_label(db, kr)
-        lines.append(f"{type_emoji} <code>{kr['key']}</code> — {type_label} ({status})")
-        rows.append([InlineKeyboardButton(
-            text=f"🗑 {type_emoji} {kr['key']}",
-            callback_data=f"delkey:{tpl_id}:{kr['key']}"
-        )])
-    lines.append("\n<i>Удали ключ, чтобы мгновенно перекрыть доступ при утечке.</i>")
-    rows.append([InlineKeyboardButton(text="« Назад", callback_data=f"mytpl:view:{tpl_id}")])
+    text, kb = _build_keys_view(db, tpl, tpl_id, keys, config.BOT_USERNAME, show_links=False)
     try:
-        await call.message.edit_text("\n".join(lines),
-                                     reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
+        await call.message.edit_text(text, reply_markup=kb)
     except Exception:
         pass
 
@@ -453,8 +468,9 @@ async def cb_bykey(call: CallbackQuery, state: FSMContext):
     )
 
 
-async def claim_template(user_id: int, username, key: str, db: Database) -> tuple[bool, str]:
-    """Активирует ключ. Тип 'copy' — создаёт копию; 'transfer' — передаёт авторство."""
+async def claim_template(user_id: int, username, key: str, db: Database, bot=None) -> tuple[bool, str]:
+    """Активирует ключ. Тип 'copy' — создаёт копию; 'transfer' — передаёт авторство.
+    bot — если передан, владелец карточки получит уведомление об активации."""
     key_row = await db.get_template_key(key)
     if not key_row:
         return False, "❌ Ключ не найден."
@@ -469,6 +485,9 @@ async def claim_template(user_id: int, username, key: str, db: Database) -> tupl
     src = await db.get_custom_template(key_row["template_id"])
     if not src:
         return False, "❌ Оригинальный шаблон не найден."
+
+    # Имя того, кто активировал — для уведомления владельцу
+    who = f"@{username}" if username else f"ID {user_id}"
 
     # ── Передача авторства ──
     if key_row["key_type"] == "transfer":
@@ -496,6 +515,18 @@ async def claim_template(user_id: int, username, key: str, db: Database) -> tupl
         # Переносим авторство: водяной знак у всех копий → новый владелец,
         # у старого владельца карточка удаляется
         await db.transfer_authorship(lineage, old_owner, user_id, username)
+        # Уведомляем бывшего владельца, что авторство ушло
+        if bot:
+            try:
+                await bot.send_message(
+                    old_owner,
+                    f"👑 <b>Авторство передано</b>\n\n"
+                    f"{who} активировал ключ передачи авторства карточки «{src['name']}».\n\n"
+                    f"Теперь карточка принадлежит ему и пропала из твоего списка. "
+                    f"У всех, кому ты её раздавал, водяной знак сменился на нового владельца."
+                )
+            except Exception as e:
+                logger.info(f"Не удалось уведомить о передаче {old_owner}: {e}")
         return True, (f"👑 Тебе передали авторство карточки «{src['name']}»!\n"
                       f"Теперь она твоя — отображается как созданная, без чужого водяного знака.")
 
@@ -529,14 +560,30 @@ async def claim_template(user_id: int, username, key: str, db: Database) -> tupl
         extra_cfg=src.get("extra_cfg") or {},
         is_edited=False,
     )
+    # Уведомляем владельца карточки об активации копии
+    if bot:
+        # Сколько активаций осталось (для информативности)
+        fresh_key = await db.get_template_key(key)
+        left_note = ""
+        if fresh_key and fresh_key.get("max_uses") is not None:
+            left = fresh_key["max_uses"] - fresh_key.get("uses_count", 0)
+            left_note = f"\nОсталось активаций: <b>{left}</b>"
+        try:
+            await bot.send_message(
+                src["owner_id"],
+                f"🔗 <b>Кто-то получил твою карточку</b>\n\n"
+                f"{who} активировал ключ-копию карточки «{src['name']}».{left_note}"
+            )
+        except Exception as e:
+            logger.info(f"Не удалось уведомить владельца {src['owner_id']}: {e}")
     return True, f"✅ Шаблон «{src['name']}» добавлен в твою коллекцию!"
 
 
 @router.message(F.text.regexp(r"^!\w{6,12}$"))
-async def cb_text_key(message: Message, db: Database):
+async def cb_text_key(message: Message, db: Database, bot):
     """Ловит ключ вида !abc12xyz написанный прямо в чат."""
     key = message.text.strip()
-    ok, msg = await claim_template(message.from_user.id, message.from_user.username, key, db)
+    ok, msg = await claim_template(message.from_user.id, message.from_user.username, key, db, bot)
     await message.answer(msg)
     if ok:
         await show_templates_list(message, db, message.from_user.id)
