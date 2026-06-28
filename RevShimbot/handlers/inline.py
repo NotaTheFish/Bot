@@ -123,13 +123,13 @@ async def inline_review(query: InlineQuery, db: Database, bot, config):
     parts = text.split(None, 1)
     first = parts[0] if parts else ""
 
-    # Распознаём pub_id продавца: строго 4 заглавных буквы/цифры
-    pub_id_match = bool(_re.fullmatch(r"[A-Z0-9]{4}", first))
+    # Распознаём pub_id продавца: 4 буквы/цифры, регистр не важен (shim = SHIM)
+    pub_id_match = bool(_re.fullmatch(r"[A-Za-z0-9]{4}", first))
     seller = None
     review_text = ""
 
     if pub_id_match:
-        seller = await db.get_seller_by_pubid(first)
+        seller = await db.get_seller_by_pubid(first.upper())
         if seller:
             review_text = parts[1].strip() if len(parts) > 1 else ""
         else:

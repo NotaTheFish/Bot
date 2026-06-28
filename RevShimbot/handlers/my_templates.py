@@ -10,12 +10,56 @@ from aiogram.types import (
     BufferedInputFile
 )
 from aiogram.fsm.context import FSMContext
+from aiogram.filters import StateFilter
 
 from db import Database
 from services.constructor import render_preview, LAYOUTS, FONTS
+from aiogram.fsm.state import State, StatesGroup
 
 router = Router()
 logger = logging.getLogger(__name__)
+
+
+class ShareSG(StatesGroup):
+    custom_uses = State()
+    custom_days = State()
+
+
+def _parse_uses(text: str):
+    """Парсит число активаций. (ok, value|None, error). value=None — без лимита."""
+    t = text.strip().lower()
+    if t in ("0", "inf", "∞", "без лимита", "безлимит"):
+        return True, None, ""
+    if not t.isdigit():
+        return False, None, "Нужно число, например 2."
+    n = int(t)
+    if n < 1:
+        return False, None, "Минимум 1."
+    if n > 100000:
+        return False, None, "Максимум 100000."
+    return True, n, ""
+
+
+def _parse_duration(text: str):
+    """Парсит срок: 13d / 13h. (ok, days|None, label, error). days=None — бессрочно."""
+    import re as _re
+    t = text.strip().lower().replace(" ", "")
+    if t in ("0", "inf", "∞", "бессрочно", "бессрочный"):
+        return True, None, "Бессрочно", ""
+    m = _re.fullmatch(r"(\d+)([dhдч]?)", t)
+    if not m:
+        return False, None, "", "Формат: 13d или 6h."
+    num = int(m.group(1))
+    unit = m.group(2)
+    if num < 1:
+        return False, None, "", "Минимум 1."
+    if unit in ("h", "ч"):
+        if num > 8760:
+            return False, None, "", "Максимум 8760 часов."
+        return True, num / 24.0, f"{num} ч", ""
+    if num > 365:
+        return False, None, "", "Максимум 365 дней."
+    return True, float(num), f"{num} дн", ""
 
 
 def _gen_key() -> str:
@@ -72,6 +116,13 @@ KEY_DAYS_OPTIONS = {
 }
 
 
+def _uses_label(max_uses) -> str:
+    """Человекочитаемая подпись для количества активаций."""
+    if max_uses is None:
+        return "Без лимита"
+    return f"{max_uses} актив."
+
+
 def kb_share_uses(tpl_id: int) -> InlineKeyboardMarkup:
     rows = [[InlineKeyboardButton(text=label, callback_data=f"sharekey:uses:{tpl_id}:{k}")]
             for k, (label, _) in KEY_USES_OPTIONS.items()]
@@ -80,7 +131,8 @@ def kb_share_uses(tpl_id: int) -> InlineKeyboardMarkup:
 
 
 def kb_share_days(tpl_id: int, uses_key: str) -> InlineKeyboardMarkup:
-    rows = [[InlineKeyboardButton(text=label, callback_data=f"sharekey:days:{tpl_id}:{uses_key}:{k}")]
+    # uses_key больше не нужен в callback (значение хранится в FSM), но оставлен для совместимости
+    rows = [[InlineKeyboardButton(text=label, callback_data=f"sharekey:days:{tpl_id}:x:{k}")]
             for k, (label, _) in KEY_DAYS_OPTIONS.items()]
     rows.append([InlineKeyboardButton(text="« Назад", callback_data=f"mytpl:share:{tpl_id}")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
@@ -107,7 +159,8 @@ async def show_templates_list(message: Message, db: Database, user_id: int):
 
 
 @router.callback_query(F.data == "mytpl:list")
-async def cb_list(call: CallbackQuery, db: Database):
+async def cb_list(call: CallbackQuery, state: FSMContext, db: Database):
+    await state.clear()
     await call.answer()
     await show_templates_list(call.message, db, call.from_user.id)
 
@@ -120,7 +173,8 @@ async def cb_new(call: CallbackQuery, state: FSMContext, db: Database, config):
 
 
 @router.callback_query(F.data.startswith("mytpl:view:"))
-async def cb_view(call: CallbackQuery, db: Database):
+async def cb_view(call: CallbackQuery, state: FSMContext, db: Database):
+    await state.clear()
     tpl_id = int(call.data.split(":")[2])
     tpl = await db.get_custom_template(tpl_id)
     if not tpl or tpl["owner_id"] != call.from_user.id:
@@ -183,7 +237,7 @@ async def cb_show(call: CallbackQuery, db: Database, config):
 
 
 @router.callback_query(F.data.startswith("mytpl:share:"))
-async def cb_share(call: CallbackQuery, db: Database, config):
+async def cb_share(call: CallbackQuery, state: FSMContext, db: Database, config):
     tpl_id = int(call.data.split(":")[2])
     tpl = await db.get_custom_template(tpl_id)
     if not tpl or tpl["owner_id"] != call.from_user.id:
@@ -193,58 +247,101 @@ async def cb_share(call: CallbackQuery, db: Database, config):
         await call.answer("Этот шаблон нельзя share — он чужой", show_alert=True)
         return
     await call.answer()
+    await state.set_state(ShareSG.custom_uses)
+    await state.update_data(share_tpl_id=tpl_id)
     await call.message.answer(
         f"🔗 <b>Поделиться «{tpl['name']}»</b>\n\n"
         f"Получатель получит <b>копию</b> карточки (🎁).\n\n"
-        f"Сколько раз можно активировать этот ключ?",
+        f"Сколько раз можно активировать ключ? Выбери вариант "
+        f"или напиши своё число в чат (например 2).",
         reply_markup=kb_share_uses(tpl_id)
     )
 
 
-@router.callback_query(F.data.startswith("sharekey:uses:"))
-async def cb_share_uses(call: CallbackQuery, db: Database):
-    _, _, tpl_id, uses_key = call.data.split(":")
-    await call.answer()
-    await call.message.answer(
-        f"⏳ На какой срок выдать ключ?\n"
-        f"<i>Срок считается с этого момента (дни по 24 часа).</i>",
-        reply_markup=kb_share_days(int(tpl_id), uses_key)
+async def _ask_days(message: Message, state: FSMContext, tpl_id: int, max_uses):
+    """Переход к выбору срока (после выбора активаций кнопкой или текстом)."""
+    await state.set_state(ShareSG.custom_days)
+    await state.update_data(share_tpl_id=tpl_id, share_uses=max_uses)
+    await message.answer(
+        "⏳ На какой срок выдать ключ? Выбери вариант или напиши свой срок в чат: "
+        "<code>13d</code> — дни, <code>6h</code> — часы.",
+        reply_markup=kb_share_days(tpl_id, "x")
     )
 
 
-@router.callback_query(F.data.startswith("sharekey:days:"))
-async def cb_share_days(call: CallbackQuery, db: Database, config):
-    _, _, tpl_id, uses_key, days_key = call.data.split(":")
-    tpl_id = int(tpl_id)
+async def _finalize_share_key(message: Message, state: FSMContext, db: Database,
+                               config, tpl_id: int, max_uses, expires_days,
+                               uses_label: str, days_label: str):
+    """Создаёт копию-ключ и показывает результат. Общая точка для кнопок и текста."""
+    await state.clear()
     tpl = await db.get_custom_template(tpl_id)
-    if not tpl or tpl["owner_id"] != call.from_user.id:
-        await call.answer("Не найдено", show_alert=True)
+    if not tpl:
+        await message.answer("❌ Карточка не найдена.")
         return
-    await call.answer()
-
-    max_uses = KEY_USES_OPTIONS[uses_key][1]
-    expires_days = KEY_DAYS_OPTIONS[days_key][1]
-
     key = _gen_key()
     await db.create_template_key(key, tpl_id, key_type="copy",
                                  max_uses=max_uses, expires_days=expires_days)
     ref_link = f"https://t.me/{config.BOT_USERNAME}?start=tpl_{key[1:]}"
-
-    uses_label = KEY_USES_OPTIONS[uses_key][0]
-    days_label = KEY_DAYS_OPTIONS[days_key][0]
-
-    await call.message.answer(
+    await message.answer(
         f"🔗 <b>Ключ для «{tpl['name']}» создан!</b>\n\n"
         f"🔑 Ключ: <code>{key}</code>\n\n"
         f"🌐 Реф-ссылка:\n<code>{ref_link}</code>\n\n"
         f"📊 Активаций: <b>{uses_label}</b>\n"
         f"⏳ Срок: <b>{days_label}</b>\n\n"
-        f"<i>Управлять ключами и удалять их можно в «🗝 Мои ключи».</i>",
+        f"<i>Управлять ключами можно в «🗝 Мои ключи».</i>",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="🗝 Мои ключи", callback_data=f"mytpl:keys:{tpl_id}")],
             [InlineKeyboardButton(text="« Назад", callback_data=f"mytpl:view:{tpl_id}")],
         ])
     )
+
+
+@router.callback_query(ShareSG.custom_uses, F.data.startswith("sharekey:uses:"))
+async def cb_share_uses(call: CallbackQuery, state: FSMContext, db: Database):
+    _, _, tpl_id, uses_key = call.data.split(":")
+    await call.answer()
+    max_uses = KEY_USES_OPTIONS[uses_key][1]
+    await _ask_days(call.message, state, int(tpl_id), max_uses)
+
+
+@router.message(ShareSG.custom_uses)
+async def cb_share_uses_text(message: Message, state: FSMContext, db: Database):
+    ok, value, err = _parse_uses(message.text or "")
+    if not ok:
+        await message.answer(f"❌ {err}")
+        return
+    data = await state.get_data()
+    tpl_id = data.get("share_tpl_id")
+    await _ask_days(message, state, tpl_id, value)
+
+
+@router.callback_query(ShareSG.custom_days, F.data.startswith("sharekey:days:"))
+async def cb_share_days(call: CallbackQuery, state: FSMContext, db: Database, config):
+    parts = call.data.split(":")
+    tpl_id = int(parts[2])
+    days_key = parts[4]
+    await call.answer()
+    data = await state.get_data()
+    max_uses = data.get("share_uses")
+    expires_days = KEY_DAYS_OPTIONS[days_key][1]
+    uses_label = _uses_label(max_uses)
+    days_label = KEY_DAYS_OPTIONS[days_key][0]
+    await _finalize_share_key(call.message, state, db, config, tpl_id,
+                              max_uses, expires_days, uses_label, days_label)
+
+
+@router.message(ShareSG.custom_days)
+async def cb_share_days_text(message: Message, state: FSMContext, db: Database, config):
+    ok, days, label, err = _parse_duration(message.text or "")
+    if not ok:
+        await message.answer(f"❌ {err}")
+        return
+    data = await state.get_data()
+    tpl_id = data.get("share_tpl_id")
+    max_uses = data.get("share_uses")
+    uses_label = _uses_label(max_uses)
+    await _finalize_share_key(message, state, db, config, tpl_id,
+                              max_uses, days, uses_label, label)
 
 
 @router.callback_query(F.data.startswith("mytpl:del:"))
@@ -579,9 +676,9 @@ async def claim_template(user_id: int, username, key: str, db: Database, bot=Non
     return True, f"✅ Шаблон «{src['name']}» добавлен в твою коллекцию!"
 
 
-@router.message(F.text.regexp(r"^!\w{6,12}$"))
+@router.message(StateFilter(None), F.text.regexp(r"^!\w{6,12}$"))
 async def cb_text_key(message: Message, db: Database, bot):
-    """Ловит ключ вида !abc12xyz написанный прямо в чат."""
+    """Ловит ключ вида !abc12xyz написанный прямо в чат (вне других сценариев)."""
     key = message.text.strip()
     ok, msg = await claim_template(message.from_user.id, message.from_user.username, key, db, bot)
     await message.answer(msg)
