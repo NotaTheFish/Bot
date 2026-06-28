@@ -41,6 +41,7 @@ CREATE TABLE IF NOT EXISTS rvb_custom_templates (
     owner_id BIGINT NOT NULL,
     creator_id BIGINT NOT NULL,
     creator_username TEXT,
+    lineage_id INT,
     name TEXT NOT NULL DEFAULT 'Мой шаблон',
     layout TEXT NOT NULL DEFAULT 'classic',
     font TEXT NOT NULL DEFAULT 'montserrat',
@@ -58,6 +59,10 @@ CREATE TABLE IF NOT EXISTS rvb_custom_templates (
 CREATE TABLE IF NOT EXISTS rvb_template_keys (
     key TEXT PRIMARY KEY,
     template_id INT NOT NULL REFERENCES rvb_custom_templates(id) ON DELETE CASCADE,
+    key_type TEXT NOT NULL DEFAULT 'copy',
+    max_uses INT,
+    uses_count INT NOT NULL DEFAULT 0,
+    expires_at TIMESTAMPTZ,
     used BOOLEAN NOT NULL DEFAULT FALSE,
     used_by BIGINT,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
@@ -136,6 +141,32 @@ class Database:
             await conn.execute("""
                 ALTER TABLE rvb_custom_templates
                 ADD COLUMN IF NOT EXISTS extra_cfg JSONB NOT NULL DEFAULT '{}'
+            """)
+            # Авто-миграция: lineage_id (связь копий с оригиналом для передачи авторства)
+            await conn.execute("""
+                ALTER TABLE rvb_custom_templates
+                ADD COLUMN IF NOT EXISTS lineage_id INT
+            """)
+            # Бэкфилл: у кого lineage_id пустой — ставим равным собственному id
+            await conn.execute("""
+                UPDATE rvb_custom_templates SET lineage_id = id WHERE lineage_id IS NULL
+            """)
+            # Авто-миграция: расширенные поля ключей (лимиты, срок, тип)
+            await conn.execute("""
+                ALTER TABLE rvb_template_keys
+                ADD COLUMN IF NOT EXISTS key_type TEXT NOT NULL DEFAULT 'copy'
+            """)
+            await conn.execute("""
+                ALTER TABLE rvb_template_keys
+                ADD COLUMN IF NOT EXISTS max_uses INT
+            """)
+            await conn.execute("""
+                ALTER TABLE rvb_template_keys
+                ADD COLUMN IF NOT EXISTS uses_count INT NOT NULL DEFAULT 0
+            """)
+            await conn.execute("""
+                ALTER TABLE rvb_template_keys
+                ADD COLUMN IF NOT EXISTS expires_at TIMESTAMPTZ
             """)
             # Авто-миграция: pub_id для продавцов
             await conn.execute("""
@@ -262,7 +293,14 @@ class Database:
                 fields.get("bg_image"),
                 fields.get("is_edited", False),
                 _json.dumps(fields.get("extra_cfg", {})))
-            return dict(row)
+            d = dict(row)
+            # lineage_id: либо наследуем (для копий), либо ставим равным своему id (для оригиналов)
+            lineage = fields.get("lineage_id") or d["id"]
+            await conn.execute(
+                "UPDATE rvb_custom_templates SET lineage_id = $1 WHERE id = $2",
+                lineage, d["id"])
+            d["lineage_id"] = lineage
+            return d
 
     async def get_custom_template(self, template_id: int):
         import json as _json
@@ -347,11 +385,22 @@ class Database:
 
     # ── Template Keys (шаринг) ────────────────────────────────────────────
 
-    async def create_template_key(self, key: str, template_id: int):
+    async def create_template_key(self, key: str, template_id: int,
+                                   key_type: str = "copy",
+                                   max_uses: Optional[int] = None,
+                                   expires_days: Optional[int] = None):
+        """Создаёт ключ. max_uses=None — без лимита; expires_days=None — бессрочно."""
+        expires_at = None
+        if expires_days:
+            # Срок считаем от текущего момента: дни × 24 часа
+            import datetime as _dt
+            expires_at = _dt.datetime.now(_dt.timezone.utc) + _dt.timedelta(days=expires_days)
         async with self.pool.acquire() as conn:
-            await conn.execute(
-                "INSERT INTO rvb_template_keys (key, template_id) VALUES ($1, $2)",
-                key, template_id)
+            await conn.execute("""
+                INSERT INTO rvb_template_keys
+                    (key, template_id, key_type, max_uses, uses_count, expires_at)
+                VALUES ($1, $2, $3, $4, 0, $5)
+            """, key, template_id, key_type, max_uses, expires_at)
 
     async def get_template_key(self, key: str):
         async with self.pool.acquire() as conn:
@@ -359,12 +408,104 @@ class Database:
                 "SELECT * FROM rvb_template_keys WHERE key = $1", key)
             return dict(row) if row else None
 
-    async def use_template_key(self, key: str, used_by: int) -> bool:
+    def _key_status(self, key_row: dict) -> tuple:
+        """Проверяет валидность ключа. Возвращает (ok: bool, reason: str)."""
+        import datetime as _dt
+        # Срок
+        exp = key_row.get("expires_at")
+        if exp is not None:
+            now = _dt.datetime.now(_dt.timezone.utc)
+            if exp.tzinfo is None:
+                exp = exp.replace(tzinfo=_dt.timezone.utc)
+            if now > exp:
+                return False, "expired"
+        # Лимит активаций
+        max_uses = key_row.get("max_uses")
+        if max_uses is not None and key_row.get("uses_count", 0) >= max_uses:
+            return False, "exhausted"
+        return True, "ok"
+
+    async def consume_template_key(self, key: str, used_by: int) -> tuple:
+        """Атомарно использует одну активацию ключа с проверкой лимита и срока.
+        Возвращает (ok, reason)."""
         async with self.pool.acquire() as conn:
-            result = await conn.execute(
-                "UPDATE rvb_template_keys SET used = TRUE, used_by = $1 "
-                "WHERE key = $2 AND used = FALSE", used_by, key)
+            async with conn.transaction():
+                row = await conn.fetchrow(
+                    "SELECT * FROM rvb_template_keys WHERE key = $1 FOR UPDATE", key)
+                if not row:
+                    return False, "not_found"
+                kr = dict(row)
+                ok, reason = self._key_status(kr)
+                if not ok:
+                    return False, reason
+                await conn.execute("""
+                    UPDATE rvb_template_keys
+                    SET uses_count = uses_count + 1,
+                        used = TRUE,
+                        used_by = $1
+                    WHERE key = $2
+                """, used_by, key)
+                return True, "ok"
+
+    async def list_template_keys(self, template_id: int) -> list:
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT * FROM rvb_template_keys WHERE template_id = $1 ORDER BY created_at DESC",
+                template_id)
+            return [dict(r) for r in rows]
+
+    async def delete_template_key(self, key: str, owner_id: int) -> bool:
+        """Удаляет ключ, только если карточка принадлежит owner_id."""
+        async with self.pool.acquire() as conn:
+            result = await conn.execute("""
+                DELETE FROM rvb_template_keys k
+                USING rvb_custom_templates t
+                WHERE k.key = $1 AND k.template_id = t.id AND t.owner_id = $2
+            """, key, owner_id)
             return result.endswith("1")
+
+    async def get_user_template_by_lineage(self, user_id: int, lineage_id: int):
+        """Находит копию шаблона данной линии у конкретного пользователя."""
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT * FROM rvb_custom_templates WHERE owner_id = $1 AND lineage_id = $2 LIMIT 1",
+                user_id, lineage_id)
+            return dict(row) if row else None
+
+    async def has_transfer_key(self, template_id: int) -> bool:
+        """Есть ли уже активный (неиспользованный) ключ передачи авторства."""
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchval("""
+                SELECT 1 FROM rvb_template_keys
+                WHERE template_id = $1 AND key_type = 'transfer' AND used = FALSE
+                LIMIT 1
+            """, template_id)
+            return bool(row)
+
+    async def transfer_authorship(self, lineage_id: int, old_owner_id: int,
+                                   new_owner_id: int, new_username) -> bool:
+        """Передаёт авторство: новый владелец становится создателем своей копии,
+        у старого карточка удаляется, у всех остальных копий обновляется водяной знак."""
+        async with self.pool.acquire() as conn:
+            async with conn.transaction():
+                # Обновляем creator во ВСЕХ копиях этой линии (динамический водяной знак)
+                await conn.execute("""
+                    UPDATE rvb_custom_templates
+                    SET creator_id = $1, creator_username = $2, is_edited = FALSE
+                    WHERE lineage_id = $3
+                """, new_owner_id, new_username, lineage_id)
+                # У нового владельца копия становится «созданной» (owner=creator)
+                await conn.execute("""
+                    UPDATE rvb_custom_templates
+                    SET owner_id = $1
+                    WHERE lineage_id = $2 AND owner_id = $1
+                """, new_owner_id, lineage_id)
+                # Удаляем карточку у старого владельца
+                await conn.execute("""
+                    DELETE FROM rvb_custom_templates
+                    WHERE lineage_id = $1 AND owner_id = $2
+                """, lineage_id, old_owner_id)
+                return True
 
     # ── Client Templates ───────────────────────────────────────────────────
 

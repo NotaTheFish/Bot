@@ -47,9 +47,40 @@ def kb_template_actions(tpl: dict) -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text="✏️ Редактировать", callback_data=f"mytpl:edit:{tpl['id']}")],
     ]
     if _can_share(tpl):
-        rows.append([InlineKeyboardButton(text="🔗 Поделиться", callback_data=f"mytpl:share:{tpl['id']}")])
+        rows.append([InlineKeyboardButton(text="🔗 Поделиться (копия)", callback_data=f"mytpl:share:{tpl['id']}")])
+        rows.append([InlineKeyboardButton(text="👑 Передать авторство", callback_data=f"mytpl:transfer:{tpl['id']}")])
+        rows.append([InlineKeyboardButton(text="🗝 Мои ключи", callback_data=f"mytpl:keys:{tpl['id']}")])
     rows.append([InlineKeyboardButton(text="🗑 Удалить", callback_data=f"mytpl:del:{tpl['id']}")])
     rows.append([InlineKeyboardButton(text="« Назад", callback_data="mytpl:list")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+# Опции для гибких ключей
+KEY_USES_OPTIONS = {
+    "1": ("1 активация", 1),
+    "5": ("5 активаций", 5),
+    "10": ("10 активаций", 10),
+    "inf": ("Без лимита", None),
+}
+KEY_DAYS_OPTIONS = {
+    "1": ("1 день", 1),
+    "7": ("7 дней", 7),
+    "30": ("30 дней", 30),
+    "inf": ("Бессрочно", None),
+}
+
+
+def kb_share_uses(tpl_id: int) -> InlineKeyboardMarkup:
+    rows = [[InlineKeyboardButton(text=label, callback_data=f"sharekey:uses:{tpl_id}:{k}")]
+            for k, (label, _) in KEY_USES_OPTIONS.items()]
+    rows.append([InlineKeyboardButton(text="« Назад", callback_data=f"mytpl:view:{tpl_id}")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def kb_share_days(tpl_id: int, uses_key: str) -> InlineKeyboardMarkup:
+    rows = [[InlineKeyboardButton(text=label, callback_data=f"sharekey:days:{tpl_id}:{uses_key}:{k}")]
+            for k, (label, _) in KEY_DAYS_OPTIONS.items()]
+    rows.append([InlineKeyboardButton(text="« Назад", callback_data=f"mytpl:share:{tpl_id}")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -160,17 +191,57 @@ async def cb_share(call: CallbackQuery, db: Database, config):
         await call.answer("Этот шаблон нельзя share — он чужой", show_alert=True)
         return
     await call.answer()
+    await call.message.answer(
+        f"🔗 <b>Поделиться «{tpl['name']}»</b>\n\n"
+        f"Получатель получит <b>копию</b> карточки (🎁).\n\n"
+        f"Сколько раз можно активировать этот ключ?",
+        reply_markup=kb_share_uses(tpl_id)
+    )
+
+
+@router.callback_query(F.data.startswith("sharekey:uses:"))
+async def cb_share_uses(call: CallbackQuery, db: Database):
+    _, _, tpl_id, uses_key = call.data.split(":")
+    await call.answer()
+    await call.message.answer(
+        f"⏳ На какой срок выдать ключ?\n"
+        f"<i>Срок считается с этого момента (дни по 24 часа).</i>",
+        reply_markup=kb_share_days(int(tpl_id), uses_key)
+    )
+
+
+@router.callback_query(F.data.startswith("sharekey:days:"))
+async def cb_share_days(call: CallbackQuery, db: Database, config):
+    _, _, tpl_id, uses_key, days_key = call.data.split(":")
+    tpl_id = int(tpl_id)
+    tpl = await db.get_custom_template(tpl_id)
+    if not tpl or tpl["owner_id"] != call.from_user.id:
+        await call.answer("Не найдено", show_alert=True)
+        return
+    await call.answer()
+
+    max_uses = KEY_USES_OPTIONS[uses_key][1]
+    expires_days = KEY_DAYS_OPTIONS[days_key][1]
 
     key = _gen_key()
-    await db.create_template_key(key, tpl_id)
+    await db.create_template_key(key, tpl_id, key_type="copy",
+                                 max_uses=max_uses, expires_days=expires_days)
     ref_link = f"https://t.me/{config.BOT_USERNAME}?start=tpl_{key[1:]}"
 
+    uses_label = KEY_USES_OPTIONS[uses_key][0]
+    days_label = KEY_DAYS_OPTIONS[days_key][0]
+
     await call.message.answer(
-        f"🔗 <b>Шаблон «{tpl['name']}» готов к раздаче!</b>\n\n"
-        f"🔑 Ключ (вставить в бота): <code>{key}</code>\n\n"
-        f"🌐 Или реф-ссылка:\n<code>{ref_link}</code>\n\n"
-        f"⚠️ Ключ и ссылка <b>одноразовые</b> — сработают только для одного человека. "
-        f"Для нового получателя сделай новый ключ."
+        f"🔗 <b>Ключ для «{tpl['name']}» создан!</b>\n\n"
+        f"🔑 Ключ: <code>{key}</code>\n\n"
+        f"🌐 Реф-ссылка:\n<code>{ref_link}</code>\n\n"
+        f"📊 Активаций: <b>{uses_label}</b>\n"
+        f"⏳ Срок: <b>{days_label}</b>\n\n"
+        f"<i>Управлять ключами и удалять их можно в «🗝 Мои ключи».</i>",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🗝 Мои ключи", callback_data=f"mytpl:keys:{tpl_id}")],
+            [InlineKeyboardButton(text="« Назад", callback_data=f"mytpl:view:{tpl_id}")],
+        ])
     )
 
 
@@ -189,6 +260,187 @@ async def cb_delete(call: CallbackQuery, db: Database):
         await call.answer("Не удалось удалить", show_alert=True)
 
 
+# ── Передача авторства ─────────────────────────────────────────────────────
+
+@router.callback_query(F.data.startswith("mytpl:transfer:"))
+async def cb_transfer(call: CallbackQuery, db: Database, config):
+    tpl_id = int(call.data.split(":")[2])
+    tpl = await db.get_custom_template(tpl_id)
+    if not tpl or tpl["owner_id"] != call.from_user.id:
+        await call.answer("Не найдено", show_alert=True)
+        return
+    if not _can_share(tpl):
+        await call.answer("Этот шаблон чужой", show_alert=True)
+        return
+    await call.answer()
+
+    # Только один активный ключ передачи на карточку
+    if await db.has_transfer_key(tpl_id):
+        await call.message.answer(
+            f"⚠️ У этой карточки уже есть активный ключ передачи авторства.\n\n"
+            f"Сначала удали его в «🗝 Мои ключи», потом создай новый.",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="🗝 Мои ключи", callback_data=f"mytpl:keys:{tpl_id}")],
+                [InlineKeyboardButton(text="« Назад", callback_data=f"mytpl:view:{tpl_id}")],
+            ])
+        )
+        return
+
+    await call.message.answer(
+        f"👑 <b>Передать авторство «{tpl['name']}»</b>\n\n"
+        f"⚠️ <b>Важно, это действие серьёзное:</b>\n"
+        f"• карточка <b>исчезнет</b> из твоего списка\n"
+        f"• у получателя станет <b>созданной</b> (👑), а не полученной\n"
+        f"• твой водяной знак сменится на нового владельца у <b>всех</b>, кому ты её раздал\n"
+        f"• передать можно <b>только одному</b> человеку\n\n"
+        f"Создать ключ передачи авторства?",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="✅ Да, создать ключ передачи", callback_data=f"transfergen:{tpl_id}")],
+            [InlineKeyboardButton(text="❌ Отмена", callback_data=f"mytpl:view:{tpl_id}")],
+        ])
+    )
+
+
+@router.callback_query(F.data.startswith("transfergen:"))
+async def cb_transfer_gen(call: CallbackQuery, db: Database, config):
+    tpl_id = int(call.data.split(":")[1])
+    tpl = await db.get_custom_template(tpl_id)
+    if not tpl or tpl["owner_id"] != call.from_user.id:
+        await call.answer("Не найдено", show_alert=True)
+        return
+    if await db.has_transfer_key(tpl_id):
+        await call.answer("Ключ передачи уже существует", show_alert=True)
+        return
+    await call.answer()
+
+    key = _gen_key()
+    # Передача: всегда 1 активация, бессрочно
+    await db.create_template_key(key, tpl_id, key_type="transfer",
+                                 max_uses=1, expires_days=None)
+    ref_link = f"https://t.me/{config.BOT_USERNAME}?start=tpl_{key[1:]}"
+
+    await call.message.answer(
+        f"👑 <b>Ключ передачи авторства создан!</b>\n\n"
+        f"🔑 Ключ: <code>{key}</code>\n\n"
+        f"🌐 Реф-ссылка:\n<code>{ref_link}</code>\n\n"
+        f"⚠️ Как только этот ключ активируют — авторство уйдёт навсегда. "
+        f"Передавай только тому, кому доверяешь.\n\n"
+        f"<i>Передумал? Удали ключ в «🗝 Мои ключи».</i>",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🗝 Мои ключи", callback_data=f"mytpl:keys:{tpl_id}")],
+            [InlineKeyboardButton(text="« Назад", callback_data=f"mytpl:view:{tpl_id}")],
+        ])
+    )
+
+
+# ── Управление ключами ─────────────────────────────────────────────────────
+
+def _key_status_label(db: Database, kr: dict) -> str:
+    ok, reason = db._key_status(kr)
+    if not ok:
+        return "истёк" if reason == "expired" else "исчерпан"
+    # Активен — показываем остаток
+    parts = []
+    if kr.get("max_uses") is not None:
+        left = kr["max_uses"] - kr.get("uses_count", 0)
+        parts.append(f"осталось {left}")
+    else:
+        parts.append("без лимита")
+    if kr.get("expires_at"):
+        import datetime as _dt
+        exp = kr["expires_at"]
+        if exp.tzinfo is None:
+            exp = exp.replace(tzinfo=_dt.timezone.utc)
+        delta = exp - _dt.datetime.now(_dt.timezone.utc)
+        hours = max(0, int(delta.total_seconds() // 3600))
+        if hours >= 24:
+            parts.append(f"ещё {hours // 24}д")
+        else:
+            parts.append(f"ещё {hours}ч")
+    else:
+        parts.append("бессрочно")
+    return ", ".join(parts)
+
+
+@router.callback_query(F.data.startswith("mytpl:keys:"))
+async def cb_keys(call: CallbackQuery, db: Database):
+    tpl_id = int(call.data.split(":")[2])
+    tpl = await db.get_custom_template(tpl_id)
+    if not tpl or tpl["owner_id"] != call.from_user.id:
+        await call.answer("Не найдено", show_alert=True)
+        return
+    await call.answer()
+    keys = await db.list_template_keys(tpl_id)
+    if not keys:
+        await call.message.answer(
+            f"🗝 У карточки «{tpl['name']}» пока нет ключей.\n\n"
+            f"Создай ключ через «🔗 Поделиться» или «👑 Передать авторство».",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="« Назад", callback_data=f"mytpl:view:{tpl_id}")]
+            ])
+        )
+        return
+
+    lines = [f"🗝 <b>Ключи карточки «{tpl['name']}»</b>\n"]
+    rows = []
+    for kr in keys:
+        type_emoji = "👑" if kr["key_type"] == "transfer" else "🔗"
+        type_label = "передача" if kr["key_type"] == "transfer" else "копия"
+        status = _key_status_label(db, kr)
+        lines.append(f"{type_emoji} <code>{kr['key']}</code> — {type_label} ({status})")
+        # Кнопка удаления каждого ключа
+        rows.append([InlineKeyboardButton(
+            text=f"🗑 {type_emoji} {kr['key']}",
+            callback_data=f"delkey:{tpl_id}:{kr['key']}"
+        )])
+    lines.append("\n<i>Удали ключ, чтобы мгновенно перекрыть доступ при утечке.</i>")
+    rows.append([InlineKeyboardButton(text="« Назад", callback_data=f"mytpl:view:{tpl_id}")])
+    await call.message.answer("\n".join(lines),
+                              reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
+
+
+@router.callback_query(F.data.startswith("delkey:"))
+async def cb_del_key(call: CallbackQuery, db: Database):
+    _, tpl_id, key = call.data.split(":", 2)
+    tpl_id = int(tpl_id)
+    ok = await db.delete_template_key(key, call.from_user.id)
+    if ok:
+        await call.answer("🗑 Ключ удалён")
+    else:
+        await call.answer("Не удалось удалить", show_alert=True)
+    # Обновляем список ключей
+    keys = await db.list_template_keys(tpl_id)
+    tpl = await db.get_custom_template(tpl_id)
+    if not keys:
+        try:
+            await call.message.edit_text(
+                f"🗝 У карточки «{tpl['name'] if tpl else ''}» больше нет ключей.",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="« Назад", callback_data=f"mytpl:view:{tpl_id}")]
+                ]))
+        except Exception:
+            pass
+        return
+    lines = [f"🗝 <b>Ключи карточки «{tpl['name']}»</b>\n"]
+    rows = []
+    for kr in keys:
+        type_emoji = "👑" if kr["key_type"] == "transfer" else "🔗"
+        type_label = "передача" if kr["key_type"] == "transfer" else "копия"
+        status = _key_status_label(db, kr)
+        lines.append(f"{type_emoji} <code>{kr['key']}</code> — {type_label} ({status})")
+        rows.append([InlineKeyboardButton(
+            text=f"🗑 {type_emoji} {kr['key']}",
+            callback_data=f"delkey:{tpl_id}:{kr['key']}"
+        )])
+    lines.append("\n<i>Удали ключ, чтобы мгновенно перекрыть доступ при утечке.</i>")
+    rows.append([InlineKeyboardButton(text="« Назад", callback_data=f"mytpl:view:{tpl_id}")])
+    try:
+        await call.message.edit_text("\n".join(lines),
+                                     reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
+    except Exception:
+        pass
+
+
 # ── Получение по ключу ─────────────────────────────────────────────────────
 
 @router.callback_query(F.data == "mytpl:bykey")
@@ -202,27 +454,70 @@ async def cb_bykey(call: CallbackQuery, state: FSMContext):
 
 
 async def claim_template(user_id: int, username, key: str, db: Database) -> tuple[bool, str]:
-    """Активирует ключ, создаёт копию шаблона для пользователя."""
+    """Активирует ключ. Тип 'copy' — создаёт копию; 'transfer' — передаёт авторство."""
     key_row = await db.get_template_key(key)
     if not key_row:
         return False, "❌ Ключ не найден."
-    if key_row["used"]:
-        return False, "❌ Этот ключ уже использован."
 
-    # Лимит
-    count = await db.count_custom_templates(user_id)
-    if count >= 15:
-        return False, "❌ У тебя уже 15 шаблонов — это максимум."
+    # Проверяем статус ключа (срок и лимит) ДО действий
+    ok, reason = db._key_status(key_row)
+    if not ok:
+        if reason == "expired":
+            return False, "❌ Срок действия этого ключа истёк."
+        return False, "❌ Этот ключ исчерпал лимит активаций."
 
     src = await db.get_custom_template(key_row["template_id"])
     if not src:
         return False, "❌ Оригинальный шаблон не найден."
 
-    # Создаём копию: owner=получатель, creator=оригинальный создатель, водяной знак сохраняется
+    # ── Передача авторства ──
+    if key_row["key_type"] == "transfer":
+        # Нельзя передать самому себе
+        if src["owner_id"] == user_id:
+            return False, "❌ Нельзя передать авторство самому себе."
+        # Атомарно используем ключ
+        used_ok, used_reason = await db.consume_template_key(key, user_id)
+        if not used_ok:
+            return False, "❌ Ключ уже недействителен."
+        old_owner = src["owner_id"]
+        lineage = src.get("lineage_id") or src["id"]
+        # Если у получателя ещё нет копии этой линии — создаём (станет «созданной»)
+        existing = await db.get_user_template_by_lineage(user_id, lineage)
+        if not existing:
+            await db.create_custom_template(
+                owner_id=user_id, creator_id=user_id, creator_username=username,
+                lineage_id=lineage,
+                name=src["name"], layout=src["layout"], font=src["font"],
+                title_font=src.get("title_font", "caveat"),
+                text_color=src["text_color"], accent_color=src["accent_color"],
+                bg_color=src["bg_color"], bg_image=src["bg_image"],
+                extra_cfg=src.get("extra_cfg") or {}, is_edited=False,
+            )
+        # Переносим авторство: водяной знак у всех копий → новый владелец,
+        # у старого владельца карточка удаляется
+        await db.transfer_authorship(lineage, old_owner, user_id, username)
+        return True, (f"👑 Тебе передали авторство карточки «{src['name']}»!\n"
+                      f"Теперь она твоя — отображается как созданная, без чужого водяного знака.")
+
+    # ── Обычная копия ──
+    count = await db.count_custom_templates(user_id)
+    if count >= 15:
+        return False, "❌ У тебя уже 15 шаблонов — это максимум."
+
+    # Атомарно используем активацию
+    used_ok, used_reason = await db.consume_template_key(key, user_id)
+    if not used_ok:
+        if used_reason == "expired":
+            return False, "❌ Срок действия ключа истёк."
+        return False, "❌ Ключ исчерпал лимит активаций."
+
+    # Создаём копию: owner=получатель, creator=оригинальный создатель,
+    # lineage наследуется — чтобы при передаче авторства водяной знак обновился и здесь
     await db.create_custom_template(
         owner_id=user_id,
         creator_id=src["creator_id"],
         creator_username=src["creator_username"],
+        lineage_id=src.get("lineage_id") or src["id"],
         name=src["name"],
         layout=src["layout"],
         font=src["font"],
@@ -234,7 +529,6 @@ async def claim_template(user_id: int, username, key: str, db: Database) -> tupl
         extra_cfg=src.get("extra_cfg") or {},
         is_edited=False,
     )
-    await db.use_template_key(key, user_id)
     return True, f"✅ Шаблон «{src['name']}» добавлен в твою коллекцию!"
 
 
