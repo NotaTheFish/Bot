@@ -437,6 +437,22 @@ async def cb_ban_process(message: Message, state: FSMContext, db: Database, bot,
         return
 
     await db.ban_user(user_id, username)
+
+    # Сразу уведомляем забаненного и убираем у него reply-клавиатуру
+    from aiogram.types import ReplyKeyboardRemove
+    admin_un = config.ADMIN_USERNAME
+    contact = f"@{admin_un}" if admin_un else "администратору"
+    try:
+        await bot.send_message(
+            user_id,
+            f"🚫 Вы были забанены в этом боте.\nДля разбана напишите {contact}.",
+            reply_markup=ReplyKeyboardRemove()
+        )
+        # Помечаем что уже уведомили — чтобы middleware не дублировал
+        await db.mark_ban_notified(user_id)
+    except Exception as e:
+        logger.info(f"Не удалось уведомить забаненного {user_id}: {e}")
+
     # Ссылка на аккаунт
     if username:
         url = f"https://t.me/{username}"
@@ -489,13 +505,25 @@ async def cb_ban_list(call: CallbackQuery, db: Database, config):
 
 
 @router.callback_query(F.data.startswith("admin:unban:"))
-async def cb_unban(call: CallbackQuery, db: Database, config):
+async def cb_unban(call: CallbackQuery, db: Database, bot, config):
     if not _is_admin(call.from_user.id, config):
         await call.answer("Недоступно", show_alert=True)
         return
     uid = int(call.data.split(":")[2])
     await db.unban_user(uid)
     await call.answer("✅ Разбанен")
+
+    # Уведомляем разбаненного и сразу возвращаем reply-клавиатуру
+    from keyboards import kb_main_reply
+    try:
+        await bot.send_message(
+            uid,
+            "✅ Вы были разбанены! Снова можете пользоваться ботом.\n\n"
+            "Нажми кнопку ниже или /start чтобы продолжить 👇",
+            reply_markup=kb_main_reply()
+        )
+    except Exception as e:
+        logger.info(f"Не удалось уведомить разбаненного {uid}: {e}")
     # Обновляем список
     banned = await db.get_banned_users()
     if not banned:

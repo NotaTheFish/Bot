@@ -207,20 +207,32 @@ async def _send_or_update_preview(message_or_call, state: FSMContext, db: Databa
 
 
 async def _refresh_preview_in_place(call: CallbackQuery, state: FSMContext, db: Database,
-                                    keyboard=None):
+                                    keyboard=None, expect_menu=None):
     """Перерисовывает превью в существующем сообщении.
     keyboard=None — возвращает главное меню конструктора;
-    иначе оставляет переданную клавиатуру (например меню выбора цвета),
-    чтобы можно было удобно перебирать варианты подряд."""
+    иначе оставляет переданную клавиатуру (например меню выбора цвета).
+    expect_menu — имя меню, которое должно быть активным; если за время рендера
+    пользователь нажал «Назад» (active_menu изменился), клавиатура не перезаписывается."""
     data = await state.get_data()
     cfg = data["cfg"]
     bot_username = data.get("bot_username", "reviewbot")
     preview_id = data.get("preview_msg_id")
     chat_id = call.message.chat.id
 
-    kb = keyboard if keyboard is not None else kb_constructor_main()
-
+    # Рендерим (медленно) ДО финального выбора клавиатуры
     png = await render_preview(cfg, bot_username)
+
+    # После рендера перечитываем состояние — мог измениться active_menu
+    if expect_menu is not None:
+        fresh = await state.get_data()
+        if fresh.get("active_menu") != expect_menu:
+            # Пользователь ушёл из этого меню (нажал «Назад») — не навязываем меню параметра
+            kb = kb_constructor_main()
+        else:
+            kb = keyboard if keyboard is not None else kb_constructor_main()
+    else:
+        kb = keyboard if keyboard is not None else kb_constructor_main()
+
     media = InputMediaPhoto(
         media=BufferedInputFile(png, filename="preview.png"),
         caption="🎨 <b>Конструктор карточки</b>\n\nНастраивай элементы — превью обновляется вживую."
@@ -325,6 +337,8 @@ async def cb_open_menu(call: CallbackQuery, state: FSMContext):
     title, options = MENU_MAP[field]
     data = await state.get_data()
     preview_id = data.get("preview_msg_id")
+    # Запоминаем активное меню (для защиты от гонки с «Назад»)
+    await state.update_data(active_menu=field)
     # Цветовые палитры — в 2 колонки, чтобы меню было компактным
     color_fields = {"text_color", "accent_color", "bg_color"}
     cols = 2 if field in color_fields else 1
@@ -384,6 +398,8 @@ async def cb_set_option(call: CallbackQuery, state: FSMContext, db: Database):
         changed = False
 
     await state.update_data(cfg=cfg)
+    # Помечаем что сейчас активно меню этого параметра (для защиты от гонки с «Назад»)
+    await state.update_data(active_menu=field)
     if not changed:
         await call.answer("Уже выбрано ✓")
     else:
@@ -395,7 +411,10 @@ async def cb_set_option(call: CallbackQuery, state: FSMContext, db: Database):
         color_fields = {"text_color", "accent_color", "bg_color"}
         cols = 2 if field in color_fields else 1
         same_menu = _kb_options(field, options, cols=cols)
-        await _refresh_preview_in_place(call, state, db, keyboard=same_menu)
+        # Передаём ожидаемое имя меню — если юзер успел нажать «Назад»,
+        # рендер не перезапишет клавиатуру обратно
+        await _refresh_preview_in_place(call, state, db, keyboard=same_menu,
+                                        expect_menu=field)
     else:
         await _refresh_preview_in_place(call, state, db)
 
@@ -461,9 +480,12 @@ async def cb_apply_preset(call: CallbackQuery, state: FSMContext, db: Database):
 @router.callback_query(ConstructorSG.building, F.data == "con:back")
 async def cb_back_to_preview(call: CallbackQuery, state: FSMContext, db: Database):
     await call.answer()
+    # Помечаем что пользователь ушёл в главное меню — даже если рендер параметра
+    # ещё идёт, он увидит active_menu="main" и не перезапишет клавиатуру
+    await state.update_data(active_menu="main")
     data = await state.get_data()
     preview_id = data.get("preview_msg_id")
-    # Просто возвращаем главное меню на превью-сообщение
+    # Возвращаем главное меню на превью-сообщение
     if preview_id:
         try:
             await call.bot.edit_message_reply_markup(
