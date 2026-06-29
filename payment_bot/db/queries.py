@@ -74,6 +74,17 @@ async def close_deal(deal_id: int):
         )
 
 
+async def cancel_deal_by_client(deal_id: int) -> bool:
+    """Client cancels their own waiting deal. Returns True if cancelled."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        result = await conn.execute(
+            "UPDATE pt_deals SET status = 'EXPIRED' WHERE id = $1 AND status = 'WAITING_PAYMENT'",
+            deal_id
+        )
+        return result.endswith("1")
+
+
 async def expire_overdue_deals() -> list:
     pool = await get_pool()
     async with pool.acquire() as conn:

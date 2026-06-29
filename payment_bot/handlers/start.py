@@ -138,6 +138,6 @@ async def _handle_deal_token(message: Message, token: str):
         f"💳 <b>Оплата сделки</b>\n\n"
         f"Сумма: <b>{deal['base_price_usd']:.2f} USD</b>\n\n"
         f"Выберите вашу валюту:",
-        reply_markup=currency_keyboard(currencies),
+        reply_markup=currency_keyboard(currencies, deal_id=deal["id"]),
         parse_mode="HTML",
     )

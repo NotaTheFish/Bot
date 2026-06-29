@@ -64,7 +64,7 @@ def confirm_close_keyboard(deal_id: int) -> InlineKeyboardMarkup:
 
 # ─── CURRENCY SELECTION ───────────────────────────────────────────────────────
 
-def currency_keyboard(available_currencies: list[str]) -> InlineKeyboardMarkup:
+def currency_keyboard(available_currencies: list[str], deal_id: int = None) -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
     currency_labels = {
         "RUB": "🇷🇺 Рубли (RUB)",
@@ -80,6 +80,11 @@ def currency_keyboard(available_currencies: list[str]) -> InlineKeyboardMarkup:
         builder.row(InlineKeyboardButton(
             text=label,
             callback_data=f"pay:currency:{currency}"
+        ))
+    if deal_id is not None:
+        builder.row(InlineKeyboardButton(
+            text="❌ Отменить сделку",
+            callback_data=f"client:cancel:{deal_id}"
         ))
     return builder.as_markup()
 

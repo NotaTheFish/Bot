@@ -111,7 +111,8 @@ async def cb_admin_key_create(call: CallbackQuery):
 
     await log_event("admin_key_created", {"token": token}, admin_id=admin["id"])
 
-    bot_username = call.bot.username or "YOUR_BOT"
+    from payment_bot.handlers.deals import _bot_username
+    bot_username = _bot_username or "YOUR_BOT"
     link = f"https://t.me/{bot_username}?start={token}"
 
     await safe_edit(

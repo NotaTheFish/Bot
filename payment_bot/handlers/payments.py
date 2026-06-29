@@ -164,6 +164,63 @@ async def cb_pay_done(call: CallbackQuery):
     await call.answer()
 
 
+# ─── CLIENT CANCELS DEAL ──────────────────────────────────────────────────────
+
+@router.callback_query(F.data.startswith("client:cancel:"))
+async def cb_client_cancel(call: CallbackQuery):
+    from payment_bot.db.queries import cancel_deal_by_client, log_event
+
+    deal_id = int(call.data.split(":")[-1])
+    deal = await get_deal_by_id(deal_id)
+
+    if not deal:
+        await call.answer("Сделка не найдена.")
+        return
+
+    # Verify this client owns the deal
+    tg_id = call.from_user.id
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        user = await conn.fetchrow(
+            "SELECT * FROM pt_users WHERE telegram_id = $1", tg_id
+        )
+    if not user or deal["client_id"] != user["id"]:
+        await call.answer("Это не ваша сделка.")
+        return
+
+    cancelled = await cancel_deal_by_client(deal_id)
+    if not cancelled:
+        await call.answer("Сделку нельзя отменить (возможно, она уже оплачена).")
+        return
+
+    await log_event("deal_cancelled_by_client", {"telegram_id": tg_id}, deal_id=deal_id)
+
+    await safe_edit(
+        call,
+        "❌ Сделка отменена.\n\nЕсли передумаете — запросите новую ссылку у продавца."
+    )
+    await call.answer()
+
+    # Notify admin
+    try:
+        async with pool.acquire() as conn:
+            admin_user = await conn.fetchrow(
+                """
+                SELECT u.telegram_id FROM pt_admins a
+                JOIN pt_users u ON u.id = a.user_id
+                WHERE a.id = $1
+                """,
+                deal["admin_id"]
+            )
+        if admin_user:
+            await call.bot.send_message(
+                admin_user["telegram_id"],
+                f"❌ Клиент отменил сделку #{deal_id} ({deal['base_price_usd']:.2f} USD)."
+            )
+    except Exception as e:
+        logger.warning(f"Could not notify admin of cancellation: {e}")
+
+
 # ─── WEBHOOK PROCESSING ───────────────────────────────────────────────────────
 
 async def process_webhook_payment(
