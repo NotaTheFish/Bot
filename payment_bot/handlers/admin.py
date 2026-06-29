@@ -25,6 +25,13 @@ logger = logging.getLogger(__name__)
 router = Router()
 
 
+async def safe_edit(call: CallbackQuery, text: str, **kwargs):
+    try:
+        await call.message.edit_text(text, **kwargs)
+    except Exception:
+        pass
+
+
 # ─── BALANCE ──────────────────────────────────────────────────────────────────
 
 @router.callback_query(F.data == "balance:my")
@@ -38,7 +45,8 @@ async def cb_balance_my(call: CallbackQuery):
     balance = await get_admin_balance(admin["id"])
     provider = admin["aggregator"] or "не настроен"
 
-    await call.message.edit_text(
+    await safe_edit(
+        call,
         f"💵 <b>Ваш баланс</b>\n\n"
         f"Накоплено: <b>{balance:.2f} USD</b>\n"
         f"Агрегатор: {provider}\n\n"
@@ -57,7 +65,8 @@ async def cb_balance_subadmins(call: CallbackQuery):
 
     rows = await get_all_sub_admins_total_volume()
     if not rows:
-        await call.message.edit_text(
+        await safe_edit(
+            call,
             "📊 Суб-администраторов пока нет.",
             reply_markup=main_admin_menu(),
         )
@@ -67,7 +76,8 @@ async def cb_balance_subadmins(call: CallbackQuery):
     total = sum(float(r["total_usd"]) for r in rows)
     lines = [f"👤 #{r['telegram_id']}: {float(r['total_usd']):.2f} USD" for r in rows]
 
-    await call.message.edit_text(
+    await safe_edit(
+        call,
         f"📊 <b>Оборот суб-администраторов</b>\n\n"
         + "\n".join(lines)
         + f"\n\n<b>Итого: {total:.2f} USD</b>",
@@ -104,7 +114,8 @@ async def cb_admin_key_create(call: CallbackQuery):
     bot_username = call.bot.username or "YOUR_BOT"
     link = f"https://t.me/{bot_username}?start={token}"
 
-    await call.message.edit_text(
+    await safe_edit(
+        call,
         f"🔑 <b>Ключ суб-администратора создан</b>\n\n"
         f"Одноразовая ссылка (действует 24 часа):\n"
         f"<code>{link}</code>\n\n"
@@ -130,7 +141,8 @@ async def cb_aggregator_setup(call: CallbackQuery):
         text += f"Поддерживаемые валюты: {', '.join(currencies)}\n\n"
     text += "Выберите агрегатор:"
 
-    await call.message.edit_text(
+    await safe_edit(
+        call,
         text,
         reply_markup=aggregator_choice_keyboard(),
         parse_mode="HTML",
@@ -165,7 +177,8 @@ async def cb_aggregator_choose(call: CallbackQuery, state: FSMContext):
         ),
     }
 
-    await call.message.edit_text(
+    await safe_edit(
+        call,
         instructions.get(provider, "Введите API-ключ:"),
         reply_markup=cancel_keyboard(),
         parse_mode="HTML",
@@ -184,7 +197,6 @@ async def fsm_aggregator_api_key(message: Message, state: FSMContext):
     provider = data["provider"]
 
     if provider == "lava":
-        # Lava doesn't need shop_id separately — finish here
         await _save_aggregator(message, state, provider, api_key, {})
         return
 

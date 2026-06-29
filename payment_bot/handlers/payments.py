@@ -1,6 +1,6 @@
 import logging
 from aiogram import Router, F
-from aiogram.types import CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import CallbackQuery, InlineKeyboardButton
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from payment_bot.db.queries import (
@@ -8,16 +8,21 @@ from payment_bot.db.queries import (
     confirm_payment, set_deal_paid, get_rate, log_event,
     get_payment_by_external_tx,
 )
-from payment_bot.db.queries_users import get_admin_by_telegram_id
 from payment_bot.db.pool import get_pool
 from payment_bot.services.aggregators import get_aggregator, AggregatorError, CURRENCY_MAP
 from payment_bot.utils.crypto import decrypt
 from payment_bot.utils.tokens import generate_idempotency_key
-from payment_bot.keyboards.kb import payment_done_keyboard
 import json
 
 logger = logging.getLogger(__name__)
 router = Router()
+
+
+async def safe_edit(call: CallbackQuery, text: str, **kwargs):
+    try:
+        await call.message.edit_text(text, **kwargs)
+    except Exception:
+        pass
 
 
 # ─── CURRENCY SELECTION ───────────────────────────────────────────────────────
@@ -49,7 +54,8 @@ async def cb_pay_currency(call: CallbackQuery):
         )
 
     if not admin or not admin["aggregator"]:
-        await call.message.edit_text(
+        await safe_edit(
+            call,
             "❌ Продавец ещё не настроил способ приёма оплаты. Свяжитесь с ним напрямую."
         )
         await call.answer()
@@ -61,7 +67,6 @@ async def cb_pay_currency(call: CallbackQuery):
         await call.answer(f"Валюта {currency} не поддерживается.")
         return
 
-    # Convert USD → local currency
     rate = await get_rate(currency)
     if not rate:
         await call.answer("Ошибка получения курса валют.")
@@ -72,21 +77,19 @@ async def cb_pay_currency(call: CallbackQuery):
 
     await set_deal_currency(deal["id"], currency)
 
-    # Decrypt aggregator credentials
     try:
         agg_data = json.loads(admin["aggregator_data"] or "{}")
         agg_data["api_key"] = decrypt(admin["aggregator_key"])
         aggregator = get_aggregator(provider, agg_data)
     except Exception as e:
         logger.error(f"Aggregator init error: {e}")
-        await call.message.edit_text("❌ Ошибка настройки оплаты. Обратитесь к продавцу.")
+        await safe_edit(call, "❌ Ошибка настройки оплаты. Обратитесь к продавцу.")
         await call.answer()
         return
 
     order_id = f"deal_{deal['id']}_{generate_idempotency_key(deal['id'], provider)[-8:]}"
     idempotency_key = generate_idempotency_key(deal["id"], provider)
 
-    # Create payment record
     await create_payment(
         deal_id=deal["id"],
         provider=provider,
@@ -96,7 +99,6 @@ async def cb_pay_currency(call: CallbackQuery):
         idempotency_key=idempotency_key,
     )
 
-    # Create invoice
     try:
         invoice = await aggregator.create_invoice(
             amount=amount_local,
@@ -105,7 +107,10 @@ async def cb_pay_currency(call: CallbackQuery):
         )
     except AggregatorError as e:
         logger.error(f"Invoice creation failed: {e}")
-        await call.message.edit_text("❌ Не удалось создать счёт. Попробуйте другой способ оплаты или свяжитесь с продавцом.")
+        await safe_edit(
+            call,
+            "❌ Не удалось создать счёт. Попробуйте другой способ оплаты или свяжитесь с продавцом."
+        )
         await call.answer()
         return
 
@@ -128,7 +133,8 @@ async def cb_pay_currency(call: CallbackQuery):
         callback_data=f"pay:done:{deal['id']}"
     ))
 
-    await call.message.edit_text(
+    await safe_edit(
+        call,
         f"💳 <b>Оплата</b>\n\n"
         f"Сумма: <b>{amount_local:.2f} {symbol}</b>\n"
         f"({amount_usd:.2f} USD)\n\n"
@@ -150,14 +156,15 @@ async def cb_pay_done(call: CallbackQuery):
         await call.answer("Статус сделки изменился.")
         return
 
-    await call.message.edit_text(
+    await safe_edit(
+        call,
         "⏳ Спасибо! Ожидаем подтверждения платежа от платёжной системы.\n\n"
         "Это обычно занимает несколько секунд. Вы получите уведомление автоматически."
     )
     await call.answer()
 
 
-# ─── WEBHOOK PROCESSING (called from aiohttp webhook handler) ─────────────────
+# ─── WEBHOOK PROCESSING ───────────────────────────────────────────────────────
 
 async def process_webhook_payment(
     bot,
@@ -165,18 +172,9 @@ async def process_webhook_payment(
     payload: dict,
     signature: str = "",
 ) -> bool:
-    """
-    Process incoming payment webhook from aggregator.
-    Returns True if payment was successfully confirmed.
-    """
-    from payment_bot.db.pool import get_pool
-    import json
-
-    # Parse the webhook payload
     try:
         pool = await get_pool()
 
-        # Find matching payment by order_id or external_tx
         parsed = _parse_by_provider(provider, payload)
         if not parsed:
             logger.warning(f"Could not parse webhook from {provider}")
@@ -190,7 +188,6 @@ async def process_webhook_payment(
             logger.info(f"Non-success webhook from {provider}: {status}")
             return False
 
-        # Find deal by order_id pattern (deal_{id}_...)
         deal_id = _extract_deal_id(order_id)
         if not deal_id:
             logger.warning(f"Could not extract deal_id from order_id: {order_id}")
@@ -203,19 +200,17 @@ async def process_webhook_payment(
 
         if deal["status"] == "CLOSED":
             logger.info(f"Deal {deal_id} already closed, ignoring webhook")
-            return True  # idempotent OK
+            return True
 
         if deal["status"] not in ("WAITING_PAYMENT",):
             logger.warning(f"Deal {deal_id} in unexpected status: {deal['status']}")
             return False
 
-        # Check for duplicate external_tx_id
         existing = await get_payment_by_external_tx(external_tx_id)
         if existing:
             logger.info(f"Duplicate webhook, tx already processed: {external_tx_id}")
-            return True  # idempotent
+            return True
 
-        # Find pending payment record
         async with pool.acquire() as conn:
             payment = await conn.fetchrow(
                 "SELECT * FROM pt_payments WHERE deal_id = $1 AND status = 'pending'",
@@ -226,7 +221,6 @@ async def process_webhook_payment(
             logger.warning(f"No pending payment for deal {deal_id}")
             return False
 
-        # Verify amount (allow 1% tolerance)
         expected = float(payment["amount_original"])
         received = float(parsed["amount"])
         if received < expected * 0.99:
@@ -238,7 +232,6 @@ async def process_webhook_payment(
             )
             return False
 
-        # Confirm payment
         confirmed = await confirm_payment(
             idempotency_key=payment["idempotency_key"],
             external_tx_id=external_tx_id,
@@ -246,7 +239,6 @@ async def process_webhook_payment(
         if not confirmed:
             return False
 
-        # Update deal status
         await set_deal_paid(deal_id)
 
         await log_event(
@@ -255,7 +247,6 @@ async def process_webhook_payment(
             deal_id=deal_id,
         )
 
-        # Notify client
         if deal["client_id"]:
             try:
                 async with pool.acquire() as conn:
@@ -274,7 +265,6 @@ async def process_webhook_payment(
             except Exception as e:
                 logger.warning(f"Could not notify client: {e}")
 
-        # Notify admin
         try:
             async with pool.acquire() as conn:
                 admin_user = await conn.fetchrow(
@@ -325,7 +315,7 @@ def _parse_by_provider(provider: str, payload: dict) -> dict | None:
                 "order_id": payload.get("MERCHANT_ORDER_ID", ""),
                 "external_tx_id": payload.get("intid", ""),
                 "amount": float(payload.get("AMOUNT", 0)),
-                "status": "success",  # FK only sends confirmed webhooks
+                "status": "success",
             }
     except Exception:
         return None
@@ -334,7 +324,6 @@ def _parse_by_provider(provider: str, payload: dict) -> dict | None:
 
 def _extract_deal_id(order_id: str) -> int | None:
     try:
-        # pattern: deal_{id}_...
         parts = order_id.split("_")
         if parts[0] == "deal" and len(parts) >= 2:
             return int(parts[1])

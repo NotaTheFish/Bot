@@ -19,7 +19,6 @@ from payment_bot.utils.tokens import generate_invite_token, deal_expires_at
 logger = logging.getLogger(__name__)
 router = Router()
 
-BOT_USERNAME_PLACEHOLDER = "YOUR_BOT_USERNAME"  # replaced at runtime via bot.get_me()
 _bot_username: str = ""
 
 
@@ -28,11 +27,19 @@ def set_bot_username(username: str):
     _bot_username = username
 
 
+async def safe_edit(call: CallbackQuery, text: str, **kwargs):
+    try:
+        await call.message.edit_text(text, **kwargs)
+    except Exception:
+        pass
+
+
 # ─── CREATE DEAL ──────────────────────────────────────────────────────────────
 
 @router.callback_query(F.data == "deal:create")
 async def cb_deal_create(call: CallbackQuery, state: FSMContext):
-    await call.message.edit_text(
+    await safe_edit(
+        call,
         "💰 <b>Создание сделки</b>\n\n"
         "Введите сумму в USD (например: <code>50</code> или <code>12.50</code>):",
         reply_markup=cancel_keyboard(),
@@ -77,7 +84,7 @@ async def fsm_deal_amount(message: Message, state: FSMContext):
         admin_id=admin["id"],
     )
 
-    bot_username = _bot_username or BOT_USERNAME_PLACEHOLDER
+    bot_username = _bot_username or "YOUR_BOT_USERNAME"
     invite_link = f"https://t.me/{bot_username}?start={token}"
 
     await message.answer(
@@ -108,7 +115,8 @@ async def cb_deal_list(call: CallbackQuery):
     deals = await get_admin_deals(admin["id"], status=status)
 
     if not deals:
-        await call.message.edit_text(
+        await safe_edit(
+            call,
             "📋 Сделок не найдено.",
             reply_markup=deal_filter_keyboard(),
         )
@@ -135,7 +143,8 @@ async def cb_deal_list(call: CallbackQuery):
     if len(deals) > 20:
         text += f"\n\n<i>Показано 20 из {len(deals)}</i>"
 
-    await call.message.edit_text(
+    await safe_edit(
+        call,
         text,
         reply_markup=deal_filter_keyboard(),
         parse_mode="HTML",
@@ -174,7 +183,8 @@ async def cb_deal_view(call: CallbackQuery):
     if deal["closed_at"]:
         text += f"Закрыта: {deal['closed_at'].strftime('%d.%m.%Y %H:%M')}\n"
 
-    await call.message.edit_text(
+    await safe_edit(
+        call,
         text,
         reply_markup=deal_actions_keyboard(deal["id"], deal["status"]),
         parse_mode="HTML",
@@ -192,7 +202,8 @@ async def cb_deal_close_prompt(call: CallbackQuery):
         await call.answer("Сделка не может быть закрыта.")
         return
 
-    await call.message.edit_text(
+    await safe_edit(
+        call,
         f"⚠️ Вы уверены, что хотите закрыть сделку <b>#{deal_id}</b> "
         f"на сумму <b>{deal['base_price_usd']:.2f} USD</b>?\n\n"
         f"Это действие необратимо. Убедитесь, что товар уже передан клиенту.",
@@ -221,7 +232,6 @@ async def cb_deal_close_confirm(call: CallbackQuery):
         admin_id=admin["id"],
     )
 
-    # Notify client
     if deal["client_id"]:
         try:
             from payment_bot.db.pool import get_pool
@@ -240,7 +250,8 @@ async def cb_deal_close_confirm(call: CallbackQuery):
             logger.warning(f"Could not notify client: {e}")
 
     is_main = tg_id == settings.MAIN_ADMIN_ID
-    await call.message.edit_text(
+    await safe_edit(
+        call,
         f"🔒 Сделка #{deal_id} закрыта.\n"
         f"💵 {deal['base_price_usd']:.2f} USD зачислено в баланс.",
         reply_markup=main_admin_menu() if is_main else sub_admin_menu(),
@@ -255,7 +266,8 @@ async def cb_menu_main(call: CallbackQuery, state: FSMContext):
     await state.clear()
     tg_id = call.from_user.id
     is_main = tg_id == settings.MAIN_ADMIN_ID
-    await call.message.edit_text(
+    await safe_edit(
+        call,
         "👑 <b>Панель администратора</b>" if is_main else "🛠 <b>Панель администратора</b>",
         reply_markup=main_admin_menu() if is_main else sub_admin_menu(),
         parse_mode="HTML",
