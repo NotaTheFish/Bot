@@ -5,11 +5,11 @@ from aiogram.types import Message
 
 from database import db
 from keyboards.kb import channels_kb
+from services.giveaway_service import prepare_channels
 
 logger = logging.getLogger(__name__)
 router = Router()
 
-# Matches !anykey! at the start or anywhere in a message
 TRIGGER_RE = re.compile(r'!([a-zA-Zа-яА-ЯёЁ0-9_-]+)!', re.IGNORECASE)
 
 
@@ -29,24 +29,11 @@ async def chat_key_trigger(message: Message, bot: Bot):
     if not g:
         return
 
-    channels = await db.get_channels(g['id'])
-
-    # Fix missing chat_title — fetch from Telegram if stored as ID
-    fixed_channels = []
-    for ch in channels:
-        title = ch.get('chat_title', '')
-        if not title or title.lstrip('-').isdigit():
-            try:
-                chat_info = await bot.get_chat(ch['chat_id'])
-                title = chat_info.title or str(ch['chat_id'])
-                await db.update_channel_title(ch['id'], title)
-            except Exception:
-                title = str(ch['chat_id'])
-        fixed_channels.append({**ch, 'chat_title': title})
-
-    kb = channels_kb(fixed_channels, g['id'])
+    channels = await prepare_channels(bot, g['id'])
+    kb = channels_kb(channels, g['id'])
 
     try:
-        await message.answer(g['announcement'], reply_markup=kb)
+        sent = await message.answer(g['announcement'], reply_markup=kb)
+        await db.add_published_message(g['id'], sent.chat.id, sent.message_id)
     except Exception as e:
         logger.error(f"Failed to send giveaway announcement: {e}")

@@ -10,7 +10,11 @@ from aiogram.filters import Command
 from database import db
 from keyboards.kb import (
     main_menu_kb, giveaway_menu_kb, giveaway_list_kb,
-    channels_kb, confirm_kb, channel_select_kb
+    channels_kb, confirm_kb, edit_menu_kb, channels_edit_kb
+)
+from services.giveaway_service import (
+    publish_announcement, sync_published_messages, refresh_all_invite_links,
+    check_user_subscriptions, revalidate_participants, prepare_channels,
 )
 
 logger = logging.getLogger(__name__)
@@ -36,38 +40,34 @@ class CreateGiveaway(StatesGroup):
     key = State()
     announcement = State()
     prize_places = State()
-    prizes = State()          # collecting prizes one by one
-    channels = State()        # collecting channel IDs one by one
-
-
-class SelectGiveaway(StatesGroup):
-    waiting = State()
+    prizes = State()
+    channels = State()
 
 
 class PublishGiveaway(StatesGroup):
     channel_id = State()
 
 
+class EditAnnouncement(StatesGroup):
+    waiting_text = State()
+
+
+class EditPrizes(StatesGroup):
+    prize_places = State()
+    prizes = State()
+
+
+class EditChannels(StatesGroup):
+    adding = State()
+
+
 # ── Helpers ───────────────────────────────────────────────────────────────────
-
-async def check_subscriptions(bot: Bot, user_id: int, channels: list[dict]) -> list[dict]:
-    """Returns list of channels the user is NOT subscribed to."""
-    not_subscribed = []
-    for ch in channels:
-        try:
-            member = await bot.get_chat_member(ch['chat_id'], user_id)
-            if member.status in ('left', 'kicked', 'banned'):
-                not_subscribed.append(ch)
-        except Exception as e:
-            logger.warning(f"Cannot check subscription for chat {ch['chat_id']}: {e}")
-            not_subscribed.append(ch)
-    return not_subscribed
-
 
 async def giveaway_info_text(g: dict) -> str:
     prizes = await db.get_prizes(g['id'])
     channels = await db.get_channels(g['id'])
     count = await db.get_participant_count(g['id'])
+    eligible = await db.get_participant_count(g['id'], only_eligible=True)
 
     status_map = {'active': '🟢 Активен', 'cancelled': '🔴 Отменён', 'finished': '🏁 Завершён'}
     status = status_map.get(g['status'], g['status'])
@@ -78,11 +78,15 @@ async def giveaway_info_text(g: dict) -> str:
     )
     channels_text = "\n".join(f"  • {ch['chat_title']}" for ch in channels) or "  (нет каналов)"
 
+    unsub_note = ""
+    if count != eligible:
+        unsub_note = f" (из них отписалось: {count - eligible})"
+
     return (
         f"🎯 <b>{g['title']}</b>\n"
         f"🔑 Ключ: <code>!{g['key']}!</code>\n"
         f"📊 Статус: {status}\n"
-        f"👥 Участников: <b>{count}</b>\n\n"
+        f"👥 Участников: <b>{count}</b>{unsub_note}\n\n"
         f"🏆 Призовые места:\n{prizes_text}\n\n"
         f"📡 Каналы:\n{channels_text}"
     )
@@ -149,6 +153,23 @@ async def back_to_list(message: Message, state: FSMContext):
         return
     await state.clear()
     await message.answer("Главное меню:", reply_markup=main_menu_kb())
+
+
+@router.message(F.text == "◀️ Назад к конкурсу")
+async def back_to_giveaway(message: Message, state: FSMContext):
+    if not is_admin(message.from_user.id):
+        return
+    data = await state.get_data()
+    giveaway_id = data.get("current_giveaway_id")
+    if not giveaway_id:
+        await message.answer("Главное меню:", reply_markup=main_menu_kb())
+        return
+    g = await db.get_giveaway_by_id(giveaway_id)
+    if not g:
+        await message.answer("Главное меню:", reply_markup=main_menu_kb())
+        return
+    text = await giveaway_info_text(g)
+    await message.answer(text, reply_markup=giveaway_menu_kb())
 
 
 # ── Создание конкурса ─────────────────────────────────────────────────────────
@@ -235,7 +256,6 @@ async def process_prizes(message: Message, state: FSMContext):
             f"{place_emoji(current_place)} Что получает победитель <b>{current_place} места</b>?"
         )
     else:
-        # All prizes collected → move to channels
         await state.set_state(CreateGiveaway.channels)
         await state.update_data(channels_collected=[])
         await message.answer(
@@ -245,6 +265,47 @@ async def process_prizes(message: Message, state: FSMContext):
             "Важно: бот должен быть добавлен в эти каналы с правами администратора.\n\n"
             "Когда добавишь все каналы — напиши <code>готово</code>."
         )
+
+
+async def resolve_chat_from_message(message: Message, bot: Bot) -> tuple[int | None, str | None]:
+    """Extract (chat_id, chat_title) from a forwarded message, sender_chat, forward_origin, or manual ID."""
+    if message.forward_from_chat:
+        return message.forward_from_chat.id, message.forward_from_chat.title
+    if message.sender_chat:
+        return message.sender_chat.id, message.sender_chat.title
+    if hasattr(message, 'forward_origin') and message.forward_origin:
+        origin = message.forward_origin
+        if hasattr(origin, 'chat') and origin.chat:
+            return origin.chat.id, origin.chat.title
+    if message.text:
+        raw = message.text.strip()
+        try:
+            return int(raw), None
+        except ValueError:
+            return None, None
+    return None, None
+
+
+async def verify_bot_in_chat(bot: Bot, chat_id: int) -> tuple[bool, str | None]:
+    """Returns (ok, invite_link_or_error). Checks bot is admin and gets an invite link
+    WITHOUT rotating an existing primary link (only generates if needed)."""
+    try:
+        bot_info = await bot.get_me()
+        member = await bot.get_chat_member(chat_id, bot_info.id)
+        if member.status not in ('administrator', 'creator'):
+            return False, "Бот не является администратором в этом чате."
+    except Exception as e:
+        logger.error(f"get_chat_member({chat_id}) failed: {e}")
+        return False, f"Бот не найден в чате. Ошибка: {e}"
+
+    # Try to create an invite link only now (this is a NEW giveaway channel, so safe to create once)
+    try:
+        invite_link = await bot.export_chat_invite_link(chat_id)
+        return True, invite_link
+    except Exception as e:
+        logger.warning(f"export_chat_invite_link({chat_id}) failed: {e}")
+        numeric = str(chat_id).replace("-100", "").lstrip("-")
+        return True, f"https://t.me/c/{numeric}"
 
 
 @router.message(CreateGiveaway.channels)
@@ -257,7 +318,6 @@ async def process_channels(message: Message, state: FSMContext, bot: Bot):
             await message.answer("❌ Добавь хотя бы один канал или чат.")
             return
 
-        # Save everything to DB
         giveaway_id = await db.create_giveaway(
             title=data['title'],
             key=data['key'],
@@ -281,78 +341,24 @@ async def process_channels(message: Message, state: FSMContext, bot: Bot):
         )
         return
 
-    # Try to get chat_id from forwarded message or text
-    chat_id = None
-    chat_title = None
-    invite_link = None
-
-    # Case 1: forwarded from channel (standard)
-    if message.forward_from_chat:
-        chat_id = message.forward_from_chat.id
-        chat_title = message.forward_from_chat.title
-    # Case 2: sender_chat — channel post forwarded with hidden origin
-    elif message.sender_chat:
-        chat_id = message.sender_chat.id
-        chat_title = message.sender_chat.title
-    # Case 3: forward_origin for newer Telegram clients
-    elif hasattr(message, 'forward_origin') and message.forward_origin:
-        origin = message.forward_origin
-        if hasattr(origin, 'chat') and origin.chat:
-            chat_id = origin.chat.id
-            chat_title = origin.chat.title
-    # Case 4: manual numeric ID
-    elif message.text:
-        raw = message.text.strip()
-        try:
-            chat_id = int(raw)
-        except ValueError:
-            await message.answer(
-                "❌ Не понял. Перешли сообщение из канала или введи числовой ID.\n"
-                "Когда добавишь все каналы — напиши <code>готово</code>."
-            )
-            return
+    chat_id, chat_title = await resolve_chat_from_message(message, bot)
 
     if chat_id is None:
         await message.answer(
-            "❌ Не удалось определить чат.\n"
-            "Попробуй переслать сообщение или ввести ID вручную."
+            "❌ Не понял. Перешли сообщение из канала или введи числовой ID.\n"
+            "Когда добавишь все каналы — напиши <code>готово</code>."
         )
         return
 
-    # Get invite link (don't use get_chat — it crashes on new Telegram reaction types)
-    # Instead use export_chat_invite_link directly to verify bot is admin
-    try:
-        invite_link_fresh = await bot.export_chat_invite_link(chat_id)
-        invite_link = invite_link_fresh
-    except Exception as e:
-        logger.warning(f"export_chat_invite_link({chat_id}) failed: {e}")
-        # Bot may not be admin or not in chat
-        # Try to verify membership via get_chat_member of the bot itself
-        try:
-            bot_info = await bot.get_me()
-            member = await bot.get_chat_member(chat_id, bot_info.id)
-            if member.status not in ('administrator', 'creator'):
-                await message.answer(
-                    f"❌ Бот не является администратором в чате <code>{chat_id}</code>\n"
-                    "Выдай боту права администратора и попробуй снова."
-                )
-                return
-            # Bot is in chat but can't create invite link — use fallback
-            numeric = str(chat_id).replace("-100", "").lstrip("-")
-            invite_link = f"https://t.me/c/{numeric}"
-        except Exception as e2:
-            logger.error(f"get_chat_member({chat_id}) failed: {e2}")
-            await message.answer(
-                f"❌ Бот не найден в чате <code>{chat_id}</code>\n"
-                "Убедись что бот добавлен в канал/чат с правами администратора."
-            )
-            return
+    ok, result = await verify_bot_in_chat(bot, chat_id)
+    if not ok:
+        await message.answer(f"❌ {result}")
+        return
+    invite_link = result
 
-    # If chat_title not set from forwarded message — use ID as fallback
     if not chat_title:
         chat_title = str(chat_id)
 
-    # Check for duplicates
     if any(ch['chat_id'] == chat_id for ch in channels_collected):
         await message.answer(f"⚠️ Чат <b>{chat_title}</b> уже добавлен.")
         return
@@ -405,40 +411,17 @@ async def process_publish_channel(message: Message, state: FSMContext, bot: Bot)
     data = await state.get_data()
     giveaway_id = data.get("current_giveaway_id")
 
-    target_chat_id = None
-    if message.forward_from_chat:
-        target_chat_id = message.forward_from_chat.id
-    elif message.text:
-        try:
-            target_chat_id = int(message.text.strip())
-        except ValueError:
-            await message.answer("❌ Введи числовой ID канала или перешли сообщение.")
-            return
-
-    g = await db.get_giveaway_by_id(giveaway_id)
-    channels = await db.get_channels(giveaway_id)
-
-    # Fix missing chat_title for channels added by ID
-    fixed_channels = []
-    for ch in channels:
-        title = ch.get('chat_title', '')
-        if not title or title.lstrip('-').isdigit():
-            try:
-                chat_info = await bot.get_chat(ch['chat_id'])
-                title = chat_info.title or str(ch['chat_id'])
-                await db.update_channel_title(ch['id'], title)
-            except Exception:
-                title = str(ch['chat_id'])
-        fixed_channels.append({**ch, 'chat_title': title})
-
-    text = g['announcement']
-    kb = channels_kb(fixed_channels, giveaway_id)
+    target_chat_id, _ = await resolve_chat_from_message(message, bot)
+    if target_chat_id is None:
+        await message.answer("❌ Введи числовой ID канала или перешли сообщение.")
+        return
 
     try:
-        await bot.send_message(target_chat_id, text, reply_markup=kb)
+        await publish_announcement(bot, giveaway_id, target_chat_id)
         await state.set_state(None)
         await message.answer(
-            f"✅ Объявление опубликовано в чат <code>{target_chat_id}</code>!",
+            f"✅ Объявление опубликовано в чат <code>{target_chat_id}</code>!\n\n"
+            "Если позже изменишь текст, призы или каналы — это сообщение обновится автоматически.",
             reply_markup=giveaway_menu_kb()
         )
     except Exception as e:
@@ -447,10 +430,229 @@ async def process_publish_channel(message: Message, state: FSMContext, bot: Bot)
         )
 
 
+# ── Редактирование конкурса ───────────────────────────────────────────────────
+
+@router.message(F.text == "✏️ Редактировать")
+async def edit_menu(message: Message, state: FSMContext):
+    if not is_admin(message.from_user.id):
+        return
+    data = await state.get_data()
+    giveaway_id = data.get("current_giveaway_id")
+    if not giveaway_id:
+        await message.answer("❌ Сначала выбери конкурс.")
+        return
+    await message.answer(
+        "✏️ Что хочешь изменить?\n\n"
+        "Все изменения автоматически применятся к уже опубликованным объявлениям.",
+        reply_markup=edit_menu_kb()
+    )
+
+
+@router.message(F.text == "📝 Изменить текст")
+async def edit_text_start(message: Message, state: FSMContext):
+    if not is_admin(message.from_user.id):
+        return
+    data = await state.get_data()
+    giveaway_id = data.get("current_giveaway_id")
+    if not giveaway_id:
+        await message.answer("❌ Сначала выбери конкурс.")
+        return
+    g = await db.get_giveaway_by_id(giveaway_id)
+    await state.set_state(EditAnnouncement.waiting_text)
+    await message.answer(
+        f"Текущий текст объявления:\n\n{g['announcement']}\n\n"
+        "Пришли новый текст объявления:"
+    )
+
+
+@router.message(EditAnnouncement.waiting_text)
+async def edit_text_process(message: Message, state: FSMContext, bot: Bot):
+    data = await state.get_data()
+    giveaway_id = data.get("current_giveaway_id")
+
+    await db.update_giveaway_text(giveaway_id, message.text.strip())
+    await state.set_state(None)
+
+    await message.answer("✅ Текст обновлён. Обновляю опубликованные сообщения...")
+    await sync_published_messages(bot, giveaway_id)
+
+    g = await db.get_giveaway_by_id(giveaway_id)
+    text = await giveaway_info_text(g)
+    await message.answer(text, reply_markup=giveaway_menu_kb())
+
+
+@router.message(F.text == "🏆 Изменить призы")
+async def edit_prizes_start(message: Message, state: FSMContext):
+    if not is_admin(message.from_user.id):
+        return
+    data = await state.get_data()
+    giveaway_id = data.get("current_giveaway_id")
+    if not giveaway_id:
+        await message.answer("❌ Сначала выбери конкурс.")
+        return
+    await state.set_state(EditPrizes.prize_places)
+    await message.answer(
+        "Сколько теперь призовых мест? Введи число (например: <code>3</code>):"
+    )
+
+
+@router.message(EditPrizes.prize_places)
+async def edit_prizes_places(message: Message, state: FSMContext):
+    try:
+        places = int(message.text.strip())
+        if places < 1 or places > 20:
+            raise ValueError
+    except ValueError:
+        await message.answer("❌ Введи корректное число от 1 до 20:")
+        return
+
+    await state.update_data(new_prize_places=places, new_prizes_collected=[], new_current_place=1)
+    await state.set_state(EditPrizes.prizes)
+    await message.answer(
+        f"{place_emoji(1)} Что получает победитель <b>1 места</b>?"
+    )
+
+
+@router.message(EditPrizes.prizes)
+async def edit_prizes_collect(message: Message, state: FSMContext, bot: Bot):
+    data = await state.get_data()
+    prizes_collected: list = data.get("new_prizes_collected", [])
+    current_place: int = data.get("new_current_place", 1)
+    total_places: int = data.get("new_prize_places", 1)
+    giveaway_id = data.get("current_giveaway_id")
+
+    prizes_collected.append({"place": current_place, "description": message.text.strip()})
+    current_place += 1
+    await state.update_data(new_prizes_collected=prizes_collected, new_current_place=current_place)
+
+    if current_place <= total_places:
+        await message.answer(
+            f"{place_emoji(current_place)} Что получает победитель <b>{current_place} места</b>?"
+        )
+    else:
+        await db.replace_prizes(giveaway_id, prizes_collected)
+        await state.set_state(None)
+        await message.answer("✅ Призы обновлены. Обновляю опубликованные сообщения...")
+        await sync_published_messages(bot, giveaway_id)
+
+        g = await db.get_giveaway_by_id(giveaway_id)
+        text = await giveaway_info_text(g)
+        await message.answer(text, reply_markup=giveaway_menu_kb())
+
+
+@router.message(F.text == "📡 Изменить каналы")
+async def edit_channels_start(message: Message, state: FSMContext):
+    if not is_admin(message.from_user.id):
+        return
+    data = await state.get_data()
+    giveaway_id = data.get("current_giveaway_id")
+    if not giveaway_id:
+        await message.answer("❌ Сначала выбери конкурс.")
+        return
+
+    channels = await db.get_channels(giveaway_id)
+    await message.answer(
+        "📡 Текущие каналы — нажми чтобы удалить:",
+        reply_markup=channels_edit_kb(channels)
+    )
+    await state.set_state(EditChannels.adding)
+    await message.answer(
+        "Чтобы добавить новый канал — перешли сообщение из него или введи ID.\n"
+        "Когда закончишь — напиши <code>готово</code>."
+    )
+
+
+@router.callback_query(F.data.startswith("del_channel:"))
+async def del_channel(callback: CallbackQuery, state: FSMContext, bot: Bot):
+    if not is_admin(callback.from_user.id):
+        return
+    channel_id = int(callback.data.split(":")[1])
+    await db.delete_channel(channel_id)
+
+    data = await state.get_data()
+    giveaway_id = data.get("current_giveaway_id")
+    if giveaway_id:
+        await sync_published_messages(bot, giveaway_id)
+
+    await callback.answer("🗑 Канал удалён", show_alert=True)
+    channels = await db.get_channels(giveaway_id) if giveaway_id else []
+    try:
+        await callback.message.edit_reply_markup(reply_markup=channels_edit_kb(channels))
+    except Exception:
+        pass
+
+
+@router.message(EditChannels.adding)
+async def edit_channels_add(message: Message, state: FSMContext, bot: Bot):
+    data = await state.get_data()
+    giveaway_id = data.get("current_giveaway_id")
+
+    if message.text and message.text.strip().lower() in ("готово", "done"):
+        await state.set_state(None)
+        await sync_published_messages(bot, giveaway_id)
+        g = await db.get_giveaway_by_id(giveaway_id)
+        text = await giveaway_info_text(g)
+        await message.answer("✅ Готово! Сообщения обновлены.", reply_markup=giveaway_menu_kb())
+        await message.answer(text)
+        return
+
+    chat_id, chat_title = await resolve_chat_from_message(message, bot)
+    if chat_id is None:
+        await message.answer(
+            "❌ Не понял. Перешли сообщение из канала или введи числовой ID.\n"
+            "Или напиши <code>готово</code>."
+        )
+        return
+
+    existing = await db.get_channels(giveaway_id)
+    if any(ch['chat_id'] == chat_id for ch in existing):
+        await message.answer("⚠️ Этот чат уже добавлен в конкурс.")
+        return
+
+    ok, result = await verify_bot_in_chat(bot, chat_id)
+    if not ok:
+        await message.answer(f"❌ {result}")
+        return
+
+    if not chat_title:
+        chat_title = str(chat_id)
+
+    await db.add_channel(giveaway_id, chat_id, chat_title, result)
+    await message.answer(
+        f"✅ Добавлен: <b>{chat_title}</b>\n"
+        "Перешли ещё одно сообщение или введи ID, либо напиши <code>готово</code>."
+    )
+
+
+# ── Обновить ссылки ───────────────────────────────────────────────────────────
+
+@router.message(F.text == "🔄 Обновить ссылки")
+async def refresh_links(message: Message, state: FSMContext, bot: Bot):
+    if not is_admin(message.from_user.id):
+        return
+    data = await state.get_data()
+    giveaway_id = data.get("current_giveaway_id")
+    if not giveaway_id:
+        await message.answer("❌ Сначала выбери конкурс.")
+        return
+
+    await message.answer("🔄 Обновляю пригласительные ссылки и опубликованные сообщения...")
+    try:
+        updated = await refresh_all_invite_links(bot, giveaway_id)
+        names = "\n".join(f"  • {ch['chat_title']}" for ch in updated)
+        await message.answer(
+            f"✅ Ссылки обновлены для {len(updated)} каналов:\n{names}\n\n"
+            "Старые ссылки на эти каналы перестанут работать — это нормально, "
+            "новые кнопки в объявлениях уже актуальны."
+        )
+    except Exception as e:
+        await message.answer(f"❌ Ошибка при обновлении: {e}")
+
+
 # ── Участники ─────────────────────────────────────────────────────────────────
 
 @router.message(F.text == "👥 Участники")
-async def show_participants(message: Message, state: FSMContext):
+async def show_participants(message: Message, state: FSMContext, bot: Bot):
     if not is_admin(message.from_user.id):
         return
     data = await state.get_data()
@@ -459,17 +661,31 @@ async def show_participants(message: Message, state: FSMContext):
         await message.answer("❌ Сначала выбери конкурс.")
         return
     count = await db.get_participant_count(giveaway_id)
+    eligible = await db.get_participant_count(giveaway_id, only_eligible=True)
     g = await db.get_giveaway_by_id(giveaway_id)
+
     await message.answer(
         f"👥 Конкурс «{g['title']}»\n"
-        f"Участников: <b>{count}</b>"
+        f"Всего участников: <b>{count}</b>\n"
+        f"С активной подпиской: <b>{eligible}</b>\n"
+        f"Отписалось: <b>{count - eligible}</b>\n\n"
+        "🔍 Проверяю подписки прямо сейчас..."
     )
+    result = await revalidate_participants(bot, giveaway_id, ADMIN_ID)
+    if result['newly_unsubscribed'] == 0 and result['resubscribed'] == 0:
+        await message.answer("✅ Изменений не найдено — все подписки актуальны.")
+    else:
+        await message.answer(
+            f"Проверено: {result['checked']}\n"
+            f"Новых отписавшихся: {result['newly_unsubscribed']}\n"
+            f"Вернулись: {result['resubscribed']}"
+        )
 
 
 # ── Завершить конкурс ─────────────────────────────────────────────────────────
 
 @router.message(F.text == "✅ Завершить конкурс")
-async def finish_giveaway_confirm(message: Message, state: FSMContext):
+async def finish_giveaway_confirm(message: Message, state: FSMContext, bot: Bot):
     if not is_admin(message.from_user.id):
         return
     data = await state.get_data()
@@ -478,14 +694,18 @@ async def finish_giveaway_confirm(message: Message, state: FSMContext):
         await message.answer("❌ Сначала выбери конкурс.")
         return
     g = await db.get_giveaway_by_id(giveaway_id)
-    count = await db.get_participant_count(giveaway_id)
     prizes = await db.get_prizes(giveaway_id)
+
+    await message.answer("🔍 Финальная проверка подписок перед розыгрышем...")
+    await revalidate_participants(bot, giveaway_id, ADMIN_ID)
+
+    eligible = await db.get_participant_count(giveaway_id, only_eligible=True)
 
     await message.answer(
         f"❓ Завершить конкурс «{g['title']}»?\n"
-        f"Участников: <b>{count}</b>\n"
+        f"Участников с активной подпиской: <b>{eligible}</b>\n"
         f"Призовых мест: <b>{len(prizes)}</b>\n\n"
-        "Будут случайно выбраны победители.",
+        "Будут случайно выбраны победители среди подписанных участников.",
         reply_markup=confirm_kb("finish", giveaway_id)
     )
 
@@ -496,11 +716,11 @@ async def do_finish_giveaway(callback: CallbackQuery, state: FSMContext, bot: Bo
         return
     giveaway_id = int(callback.data.split(":")[1])
     g = await db.get_giveaway_by_id(giveaway_id)
-    participants = await db.get_participants(giveaway_id)
+    participants = await db.get_participants(giveaway_id, only_eligible=True)
     prizes = await db.get_prizes(giveaway_id)
 
     if not participants:
-        await callback.message.edit_text("❌ Нет участников для розыгрыша.")
+        await callback.message.edit_text("❌ Нет участников с активной подпиской для розыгрыша.")
         return
 
     places_count = min(len(prizes), len(participants))
@@ -613,7 +833,7 @@ async def handle_participate(callback: CallbackQuery, bot: Bot):
 
     user = callback.from_user
     channels = await db.get_channels(giveaway_id)
-    not_subscribed = await check_subscriptions(bot, user.id, channels)
+    not_subscribed = await check_user_subscriptions(bot, user.id, channels)
 
     if not_subscribed:
         ch_list = "\n".join(f"• {ch['chat_title']}" for ch in not_subscribed)

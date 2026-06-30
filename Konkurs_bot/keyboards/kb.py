@@ -20,12 +20,38 @@ def main_menu_kb() -> ReplyKeyboardMarkup:
 def giveaway_menu_kb() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[
-            [KeyboardButton(text="📢 Запустить в канале"), KeyboardButton(text="✅ Завершить конкурс")],
-            [KeyboardButton(text="❌ Отменить конкурс"), KeyboardButton(text="👥 Участники")],
+            [KeyboardButton(text="📢 Запустить в канале"), KeyboardButton(text="✏️ Редактировать")],
+            [KeyboardButton(text="✅ Завершить конкурс"), KeyboardButton(text="❌ Отменить конкурс")],
+            [KeyboardButton(text="🔄 Обновить ссылки"), KeyboardButton(text="👥 Участники")],
             [KeyboardButton(text="🗑 Удалить конкурс"), KeyboardButton(text="◀️ Назад к списку")],
         ],
         resize_keyboard=True
     )
+
+
+def edit_menu_kb() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text="📝 Изменить текст"), KeyboardButton(text="🏆 Изменить призы")],
+            [KeyboardButton(text="📡 Изменить каналы")],
+            [KeyboardButton(text="◀️ Назад к конкурсу")],
+        ],
+        resize_keyboard=True
+    )
+
+
+def channels_edit_kb(channels: list[dict]) -> InlineKeyboardMarkup:
+    """Shows current channels with a delete button each, plus an 'add channel' option."""
+    builder = InlineKeyboardBuilder()
+    for ch in channels:
+        title = ch.get('chat_title') or str(ch['chat_id'])
+        builder.row(
+            InlineKeyboardButton(
+                text=f"🗑 Удалить: {title}",
+                callback_data=f"del_channel:{ch['id']}"
+            )
+        )
+    return builder.as_markup()
 
 
 # ── Inline keyboards ──────────────────────────────────────────────────────────

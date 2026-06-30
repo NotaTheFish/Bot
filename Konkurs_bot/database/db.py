@@ -50,6 +50,8 @@ async def init_db():
                 username TEXT,
                 full_name TEXT,
                 joined_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                is_unsubscribed BOOLEAN NOT NULL DEFAULT FALSE,
+                unsubscribed_from TEXT,
                 UNIQUE(giveaway_id, user_id)
             );
 
@@ -62,6 +64,22 @@ async def init_db():
                 place INTEGER NOT NULL,
                 prize TEXT NOT NULL
             );
+
+            CREATE TABLE IF NOT EXISTS published_messages (
+                id SERIAL PRIMARY KEY,
+                giveaway_id INTEGER NOT NULL REFERENCES giveaways(id) ON DELETE CASCADE,
+                chat_id BIGINT NOT NULL,
+                message_id BIGINT NOT NULL,
+                published_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+        """)
+
+        # Migrations for existing tables (safe no-ops if columns already exist)
+        await conn.execute("""
+            ALTER TABLE participants ADD COLUMN IF NOT EXISTS is_unsubscribed BOOLEAN NOT NULL DEFAULT FALSE;
+        """)
+        await conn.execute("""
+            ALTER TABLE participants ADD COLUMN IF NOT EXISTS unsubscribed_from TEXT;
         """)
 
 
@@ -117,6 +135,14 @@ async def update_giveaway_status(giveaway_id: int, status: str):
         )
 
 
+async def update_giveaway_text(giveaway_id: int, announcement: str):
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "UPDATE giveaways SET announcement = $1 WHERE id = $2", announcement, giveaway_id
+        )
+
+
 async def key_exists(key: str) -> bool:
     pool = await get_pool()
     async with pool.acquire() as conn:
@@ -144,6 +170,23 @@ async def get_prizes(giveaway_id: int) -> list[dict]:
         return [dict(r) for r in rows]
 
 
+async def replace_prizes(giveaway_id: int, prizes: list[dict]):
+    """Delete all prizes for a giveaway and insert new ones. prizes = [{'place':1,'description':'...'}]"""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            await conn.execute("DELETE FROM prizes WHERE giveaway_id = $1", giveaway_id)
+            for p in prizes:
+                await conn.execute(
+                    "INSERT INTO prizes (giveaway_id, place, description) VALUES ($1, $2, $3)",
+                    giveaway_id, p['place'], p['description']
+                )
+            await conn.execute(
+                "UPDATE giveaways SET prize_places = $1 WHERE id = $2",
+                len(prizes), giveaway_id
+            )
+
+
 # ── Channels ──────────────────────────────────────────────────────────────────
 
 async def add_channel(giveaway_id: int, chat_id: int, chat_title: str, invite_link: str):
@@ -164,6 +207,28 @@ async def get_channels(giveaway_id: int) -> list[dict]:
         return [dict(r) for r in rows]
 
 
+async def delete_channel(channel_id: int):
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute("DELETE FROM channels WHERE id = $1", channel_id)
+
+
+async def update_channel_title(channel_id: int, title: str):
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "UPDATE channels SET chat_title = $1 WHERE id = $2", title, channel_id
+        )
+
+
+async def update_channel_invite_link(channel_id: int, invite_link: str):
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "UPDATE channels SET invite_link = $1 WHERE id = $2", invite_link, channel_id
+        )
+
+
 # ── Participants ──────────────────────────────────────────────────────────────
 
 async def add_participant(giveaway_id: int, user_id: int, username: str, full_name: str) -> bool:
@@ -179,22 +244,54 @@ async def add_participant(giveaway_id: int, user_id: int, username: str, full_na
             return False
 
 
-async def get_participants(giveaway_id: int) -> list[dict]:
+async def get_participants(giveaway_id: int, only_eligible: bool = False) -> list[dict]:
     pool = await get_pool()
     async with pool.acquire() as conn:
-        rows = await conn.fetch(
-            "SELECT * FROM participants WHERE giveaway_id = $1", giveaway_id
-        )
+        if only_eligible:
+            rows = await conn.fetch(
+                "SELECT * FROM participants WHERE giveaway_id = $1 AND is_unsubscribed = FALSE",
+                giveaway_id
+            )
+        else:
+            rows = await conn.fetch(
+                "SELECT * FROM participants WHERE giveaway_id = $1", giveaway_id
+            )
         return [dict(r) for r in rows]
 
 
-async def get_participant_count(giveaway_id: int) -> int:
+async def get_participant_count(giveaway_id: int, only_eligible: bool = False) -> int:
     pool = await get_pool()
     async with pool.acquire() as conn:
-        row = await conn.fetchrow(
-            "SELECT COUNT(*) AS cnt FROM participants WHERE giveaway_id = $1", giveaway_id
-        )
+        if only_eligible:
+            row = await conn.fetchrow(
+                "SELECT COUNT(*) AS cnt FROM participants WHERE giveaway_id = $1 AND is_unsubscribed = FALSE",
+                giveaway_id
+            )
+        else:
+            row = await conn.fetchrow(
+                "SELECT COUNT(*) AS cnt FROM participants WHERE giveaway_id = $1", giveaway_id
+            )
         return row['cnt']
+
+
+async def mark_participant_unsubscribed(giveaway_id: int, user_id: int, channel_title: str):
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "UPDATE participants SET is_unsubscribed = TRUE, unsubscribed_from = $1 "
+            "WHERE giveaway_id = $2 AND user_id = $3",
+            channel_title, giveaway_id, user_id
+        )
+
+
+async def mark_participant_resubscribed(giveaway_id: int, user_id: int):
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "UPDATE participants SET is_unsubscribed = FALSE, unsubscribed_from = NULL "
+            "WHERE giveaway_id = $1 AND user_id = $2",
+            giveaway_id, user_id
+        )
 
 
 # ── Delete ───────────────────────────────────────────────────────────────────
@@ -226,9 +323,21 @@ async def get_winners(giveaway_id: int) -> list[dict]:
         return [dict(r) for r in rows]
 
 
-async def update_channel_title(channel_id: int, title: str):
+# ── Published messages (for live-editing announcements) ───────────────────────
+
+async def add_published_message(giveaway_id: int, chat_id: int, message_id: int):
     pool = await get_pool()
     async with pool.acquire() as conn:
         await conn.execute(
-            "UPDATE channels SET chat_title = $1 WHERE id = $2", title, channel_id
+            "INSERT INTO published_messages (giveaway_id, chat_id, message_id) VALUES ($1, $2, $3)",
+            giveaway_id, chat_id, message_id
         )
+
+
+async def get_published_messages(giveaway_id: int) -> list[dict]:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT * FROM published_messages WHERE giveaway_id = $1", giveaway_id
+        )
+        return [dict(r) for r in rows]
