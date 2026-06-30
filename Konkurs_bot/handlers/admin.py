@@ -1,5 +1,4 @@
 import os
-import random
 import logging
 from aiogram import Router, F, Bot
 from aiogram.types import Message, CallbackQuery
@@ -10,11 +9,13 @@ from aiogram.filters import Command
 from database import db
 from keyboards.kb import (
     main_menu_kb, giveaway_menu_kb, giveaway_list_kb,
-    channels_kb, confirm_kb, edit_menu_kb, channels_edit_kb
+    channels_kb, confirm_kb, edit_menu_kb, channels_edit_kb,
+    strikes_list_kb, strike_manage_kb, disqualified_list_kb,
 )
 from services.giveaway_service import (
     publish_announcement, sync_published_messages, refresh_all_invite_links,
     check_user_subscriptions, revalidate_participants, prepare_channels,
+    finalize_subscription_check, pick_weighted_winners,
 )
 
 logger = logging.getLogger(__name__)
@@ -696,16 +697,19 @@ async def finish_giveaway_confirm(message: Message, state: FSMContext, bot: Bot)
     g = await db.get_giveaway_by_id(giveaway_id)
     prizes = await db.get_prizes(giveaway_id)
 
-    await message.answer("🔍 Финальная проверка подписок перед розыгрышем...")
-    await revalidate_participants(bot, giveaway_id, ADMIN_ID)
+    await message.answer("🔍 Финальная проверка подписок. Кто вышел из каналов — получит страйк...")
+    result = await finalize_subscription_check(bot, giveaway_id, ADMIN_ID)
 
     eligible = await db.get_participant_count(giveaway_id, only_eligible=True)
+    struck_count = len(result.get('struck', []))
 
     await message.answer(
         f"❓ Завершить конкурс «{g['title']}»?\n"
         f"Участников с активной подпиской: <b>{eligible}</b>\n"
+        f"Получили страйк сейчас: <b>{struck_count}</b>\n"
         f"Призовых мест: <b>{len(prizes)}</b>\n\n"
-        "Будут случайно выбраны победители среди подписанных участников.",
+        "Победители выбираются случайно среди подписанных участников, "
+        "с учётом веса по страйкам (чем больше страйков — тем ниже шанс).",
         reply_markup=confirm_kb("finish", giveaway_id)
     )
 
@@ -723,8 +727,13 @@ async def do_finish_giveaway(callback: CallbackQuery, state: FSMContext, bot: Bo
         await callback.message.edit_text("❌ Нет участников с активной подпиской для розыгрыша.")
         return
 
-    places_count = min(len(prizes), len(participants))
-    winners_pool = random.sample(participants, places_count)
+    winners_pool = await pick_weighted_winners(participants, len(prizes))
+
+    if not winners_pool:
+        await callback.message.edit_text(
+            "❌ Не удалось выбрать победителей — все оставшиеся участники забанены (3 страйка)."
+        )
+        return
 
     result_lines = [f"🏆 <b>Итоги конкурса «{g['title']}»</b>\n"]
     for i, winner in enumerate(winners_pool):
@@ -832,6 +841,16 @@ async def handle_participate(callback: CallbackQuery, bot: Bot):
         return
 
     user = callback.from_user
+
+    # Ban check — "black window"
+    if await db.is_user_banned(user.id):
+        await callback.answer(
+            "⛔️ Вы были забанены из-за слишком частого нарушения правил.\n\n"
+            "Участие в конкурсах этого бота для вас закрыто.",
+            show_alert=True
+        )
+        return
+
     channels = await db.get_channels(giveaway_id)
     not_subscribed = await check_user_subscriptions(bot, user.id, channels)
 
@@ -848,6 +867,195 @@ async def handle_participate(callback: CallbackQuery, bot: Bot):
     added = await db.add_participant(giveaway_id, user.id, username, full_name)
 
     if added:
-        await callback.answer("🎉 Ты зарегистрирован как участник!", show_alert=True)
+        strikes = await db.get_strike_count(user.id)
+        if strikes > 0:
+            await callback.answer(
+                f"🎉 Ты зарегистрирован!\n\n"
+                f"⚠️ У тебя {strikes}/3 страйков — шанс на победу снижен. "
+                f"Не выходи из каналов до конца конкурса!",
+                show_alert=True
+            )
+        else:
+            await callback.answer("🎉 Ты зарегистрирован как участник!", show_alert=True)
     else:
         await callback.answer("✅ Ты уже участвуешь в этом конкурсе.", show_alert=True)
+
+
+# ── Страйки и баны ────────────────────────────────────────────────────────────
+
+@router.message(F.text == "⚖️ Страйки и баны")
+async def show_strikes(message: Message, state: FSMContext):
+    if not is_admin(message.from_user.id):
+        return
+    await state.clear()
+    users = await db.get_all_strikes()
+    if not users:
+        await message.answer(
+            "✅ Пока нет пользователей со страйками или банами.",
+            reply_markup=main_menu_kb()
+        )
+        return
+    await message.answer(
+        "⚖️ <b>Пользователи со страйками</b>\n\n"
+        "Формат: имя — страйки/3 (🚫 = бан)\n"
+        "Нажми на пользователя для управления:",
+        reply_markup=strikes_list_kb(users)
+    )
+
+
+@router.callback_query(F.data.startswith("strike_manage:"))
+async def strike_manage(callback: CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        return
+    user_id = int(callback.data.split(":")[1])
+    rec = await db.get_user_strikes(user_id)
+    if not rec:
+        await callback.answer("Пользователь не найден.", show_alert=True)
+        return
+
+    uname = f"@{rec['username']}" if rec['username'] else (rec['full_name'] or str(user_id))
+    ban_status = "🚫 Забанен" if rec['is_banned'] else "✅ Не забанен"
+    await callback.message.edit_text(
+        f"⚖️ <b>{uname}</b>\n\n"
+        f"Страйков: <b>{rec['strikes']}/3</b>\n"
+        f"Статус: {ban_status}\n\n"
+        "Выбери действие:",
+        reply_markup=strike_manage_kb(user_id, rec['is_banned'])
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("strike_remove:"))
+async def strike_remove(callback: CallbackQuery, bot: Bot):
+    if not is_admin(callback.from_user.id):
+        return
+    user_id = int(callback.data.split(":")[1])
+    rec = await db.remove_strike(user_id)
+    await callback.answer("➖ Страйк снят", show_alert=True)
+
+    if rec:
+        uname = f"@{rec['username']}" if rec['username'] else (rec['full_name'] or str(user_id))
+        ban_status = "🚫 Забанен" if rec['is_banned'] else "✅ Не забанен"
+        await callback.message.edit_text(
+            f"⚖️ <b>{uname}</b>\n\n"
+            f"Страйков: <b>{rec['strikes']}/3</b>\n"
+            f"Статус: {ban_status}\n\n"
+            "Выбери действие:",
+            reply_markup=strike_manage_kb(user_id, rec['is_banned'])
+        )
+        # Notify user
+        try:
+            await bot.send_message(
+                user_id,
+                f"✅ Администратор снял вам один страйк.\n"
+                f"Текущее количество: {rec['strikes']}/3"
+            )
+        except Exception:
+            pass
+
+
+@router.callback_query(F.data.startswith("strike_unban:"))
+async def strike_unban(callback: CallbackQuery, bot: Bot):
+    if not is_admin(callback.from_user.id):
+        return
+    user_id = int(callback.data.split(":")[1])
+    await db.unban_user(user_id)
+    rec = await db.get_user_strikes(user_id)
+    await callback.answer("✅ Бан снят", show_alert=True)
+
+    if rec:
+        uname = f"@{rec['username']}" if rec['username'] else (rec['full_name'] or str(user_id))
+        await callback.message.edit_text(
+            f"⚖️ <b>{uname}</b>\n\n"
+            f"Страйков: <b>{rec['strikes']}/3</b>\n"
+            f"Статус: ✅ Не забанен\n\n"
+            "Выбери действие:",
+            reply_markup=strike_manage_kb(user_id, False)
+        )
+        try:
+            await bot.send_message(
+                user_id,
+                "✅ Администратор снял с вас бан. Вы снова можете участвовать в конкурсах!"
+            )
+        except Exception:
+            pass
+
+
+@router.callback_query(F.data == "strike_back")
+async def strike_back(callback: CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        return
+    users = await db.get_all_strikes()
+    if not users:
+        await callback.message.edit_text("✅ Пользователей со страйками больше нет.")
+        await callback.answer()
+        return
+    await callback.message.edit_text(
+        "⚖️ <b>Пользователи со страйками</b>\n\n"
+        "Формат: имя — страйки/3 (🚫 = бан)\n"
+        "Нажми на пользователя для управления:",
+        reply_markup=strikes_list_kb(users)
+    )
+    await callback.answer()
+
+
+# ── Вернуть выбывших (re-qualify) ─────────────────────────────────────────────
+
+@router.message(F.text == "↩️ Вернуть выбывших")
+async def show_disqualified(message: Message, state: FSMContext):
+    if not is_admin(message.from_user.id):
+        return
+    data = await state.get_data()
+    giveaway_id = data.get("current_giveaway_id")
+    if not giveaway_id:
+        await message.answer("❌ Сначала выбери конкурс.")
+        return
+
+    dq = await db.get_disqualified_participants(giveaway_id)
+    # also include those marked unsubscribed (left but maybe came back)
+    all_participants = await db.get_participants(giveaway_id)
+    dropped = [p for p in all_participants if p.get('is_disqualified') or p.get('is_unsubscribed')]
+
+    if not dropped:
+        await message.answer("✅ В этом конкурсе нет выбывших участников.")
+        return
+
+    await message.answer(
+        "↩️ <b>Выбывшие участники этого конкурса</b>\n\n"
+        "Нажми, чтобы вернуть участника в розыгрыш.\n"
+        "(Возврат не снимает глобальный страйк — для этого используй «⚖️ Страйки и баны»)",
+        reply_markup=disqualified_list_kb(dropped)
+    )
+
+
+@router.callback_query(F.data.startswith("requalify:"))
+async def requalify(callback: CallbackQuery, bot: Bot):
+    if not is_admin(callback.from_user.id):
+        return
+    parts = callback.data.split(":")
+    giveaway_id = int(parts[1])
+    user_id = int(parts[2])
+
+    await db.requalify_participant(giveaway_id, user_id)
+    await callback.answer("↩️ Участник возвращён в конкурс", show_alert=True)
+
+    # Refresh the list
+    all_participants = await db.get_participants(giveaway_id)
+    dropped = [p for p in all_participants if p.get('is_disqualified') or p.get('is_unsubscribed')]
+    try:
+        if dropped:
+            await callback.message.edit_reply_markup(reply_markup=disqualified_list_kb(dropped))
+        else:
+            await callback.message.edit_text("✅ Все выбывшие возвращены в конкурс.")
+    except Exception:
+        pass
+
+    g = await db.get_giveaway_by_id(giveaway_id)
+    try:
+        await bot.send_message(
+            user_id,
+            f"✅ Администратор вернул вас в конкурс «{g['title']}». "
+            f"Убедитесь, что подписаны на все каналы!"
+        )
+    except Exception:
+        pass

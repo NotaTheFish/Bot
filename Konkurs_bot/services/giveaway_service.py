@@ -196,3 +196,100 @@ async def revalidate_participants(bot: Bot, giveaway_id: int, admin_id: int) -> 
         "newly_unsubscribed": len(newly_unsubscribed),
         "resubscribed": len(resubscribed),
     }
+
+
+# ── Final check at giveaway end: assign strikes + disqualify ───────────────────
+
+async def finalize_subscription_check(bot: Bot, giveaway_id: int, admin_id: int) -> dict:
+    """
+    Run ONLY when the admin finishes a giveaway.
+    Anyone who left a channel now gets a strike (global) AND is disqualified from THIS giveaway.
+    Returns a summary for the admin.
+    """
+    g = await db.get_giveaway_by_id(giveaway_id)
+    if not g:
+        return {"struck": []}
+
+    channels = await db.get_channels(giveaway_id)
+    participants = await db.get_participants(giveaway_id)
+
+    struck = []  # (participant, channel_names, new_strike_record)
+
+    for p in participants:
+        # Skip already-disqualified people (don't double-strike)
+        if p.get('is_disqualified'):
+            continue
+        missing = await check_user_subscriptions(bot, p['user_id'], channels)
+        if missing:
+            channel_names = ", ".join(ch.get('chat_title') or str(ch['chat_id']) for ch in missing)
+            await db.disqualify_participant(giveaway_id, p['user_id'])
+            rec = await db.add_strike(p['user_id'], p['username'], p['full_name'])
+            struck.append((p, channel_names, rec))
+
+    # Notify struck users
+    for p, channel_names, rec in struck:
+        try:
+            if rec['is_banned']:
+                await bot.send_message(
+                    p['user_id'],
+                    "⛔️ <b>Вы были забанены</b>\n\n"
+                    "Из-за слишком частого нарушения правил (3 страйка) "
+                    "вы лишены права участвовать в любых конкурсах этого бота."
+                )
+            else:
+                await bot.send_message(
+                    p['user_id'],
+                    f"⚠️ <b>Вы получили страйк</b>\n\n"
+                    f"Вы покинули: {channel_names} до окончания конкурса «{g['title']}».\n"
+                    f"Вы дисквалифицированы из этого конкурса.\n\n"
+                    f"Текущее количество страйков: <b>{rec['strikes']}/3</b>\n"
+                    f"Чем больше страйков — тем ниже шанс победы в будущих конкурсах. "
+                    f"При 3 страйках — полный бан."
+                )
+        except Exception as e:
+            logger.info(f"Could not notify struck user {p['user_id']}: {e}")
+
+    # Admin summary
+    if struck:
+        lines = [f"⚖️ <b>Страйки по итогам «{g['title']}»</b>\n"]
+        for p, channel_names, rec in struck:
+            uname = f"@{p['username']}" if p['username'] else p['full_name']
+            ban_note = " 🚫 БАН" if rec['is_banned'] else ""
+            lines.append(f"  • {uname} — страйк {rec['strikes']}/3{ban_note} (вышел из {channel_names})")
+        try:
+            await bot.send_message(admin_id, "\n".join(lines))
+        except Exception as e:
+            logger.warning(f"Could not send strike summary to admin: {e}")
+
+    return {"struck": struck}
+
+
+async def pick_weighted_winners(participants: list[dict], places_count: int) -> list[dict]:
+    """
+    Pick winners using strike-based weights.
+    Each participant's chance is scaled by db.strike_weight(global_strikes).
+    Banned / 3-strike users have weight 0 and can't win.
+    """
+    import random as _random
+
+    pool = []
+    weights = []
+    for p in participants:
+        strikes = await db.get_strike_count(p['user_id'])
+        w = db.strike_weight(strikes)
+        if w > 0:
+            pool.append(p)
+            weights.append(w)
+
+    winners = []
+    available = list(pool)
+    available_weights = list(weights)
+
+    for _ in range(min(places_count, len(available))):
+        chosen = _random.choices(available, weights=available_weights, k=1)[0]
+        idx = available.index(chosen)
+        winners.append(chosen)
+        available.pop(idx)
+        available_weights.pop(idx)
+
+    return winners

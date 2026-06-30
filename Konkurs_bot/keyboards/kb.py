@@ -12,6 +12,7 @@ def main_menu_kb() -> ReplyKeyboardMarkup:
         keyboard=[
             [KeyboardButton(text="➕ Создать конкурс")],
             [KeyboardButton(text="📋 Мои конкурсы"), KeyboardButton(text="🏆 Выбрать конкурс")],
+            [KeyboardButton(text="⚖️ Страйки и баны")],
         ],
         resize_keyboard=True
     )
@@ -23,7 +24,8 @@ def giveaway_menu_kb() -> ReplyKeyboardMarkup:
             [KeyboardButton(text="📢 Запустить в канале"), KeyboardButton(text="✏️ Редактировать")],
             [KeyboardButton(text="✅ Завершить конкурс"), KeyboardButton(text="❌ Отменить конкурс")],
             [KeyboardButton(text="🔄 Обновить ссылки"), KeyboardButton(text="👥 Участники")],
-            [KeyboardButton(text="🗑 Удалить конкурс"), KeyboardButton(text="◀️ Назад к списку")],
+            [KeyboardButton(text="↩️ Вернуть выбывших"), KeyboardButton(text="🗑 Удалить конкурс")],
+            [KeyboardButton(text="◀️ Назад к списку")],
         ],
         resize_keyboard=True
     )
@@ -106,6 +108,50 @@ def channel_select_kb(channels: list[dict], giveaway_id: int) -> InlineKeyboardM
             InlineKeyboardButton(
                 text=f"📢 {ch['chat_title']}",
                 callback_data=f"publish_to:{giveaway_id}:{ch['chat_id']}"
+            )
+        )
+    return builder.as_markup()
+
+
+def strikes_list_kb(users: list[dict]) -> InlineKeyboardMarkup:
+    """One row per flagged user with their strike count; tapping opens management."""
+    builder = InlineKeyboardBuilder()
+    for u in users:
+        uname = f"@{u['username']}" if u.get('username') else (u.get('full_name') or str(u['user_id']))
+        ban = " 🚫" if u.get('is_banned') else ""
+        builder.row(
+            InlineKeyboardButton(
+                text=f"{uname} — {u['strikes']}/3{ban}",
+                callback_data=f"strike_manage:{u['user_id']}"
+            )
+        )
+    return builder.as_markup()
+
+
+def strike_manage_kb(user_id: int, is_banned: bool) -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    builder.row(
+        InlineKeyboardButton(text="➖ Снять страйк", callback_data=f"strike_remove:{user_id}")
+    )
+    if is_banned:
+        builder.row(
+            InlineKeyboardButton(text="✅ Снять бан", callback_data=f"strike_unban:{user_id}")
+        )
+    builder.row(
+        InlineKeyboardButton(text="◀️ Назад к списку", callback_data="strike_back")
+    )
+    return builder.as_markup()
+
+
+def disqualified_list_kb(participants: list[dict]) -> InlineKeyboardMarkup:
+    """List disqualified participants with a 'return to giveaway' button each."""
+    builder = InlineKeyboardBuilder()
+    for p in participants:
+        uname = f"@{p['username']}" if p.get('username') else (p.get('full_name') or str(p['user_id']))
+        builder.row(
+            InlineKeyboardButton(
+                text=f"↩️ Вернуть: {uname}",
+                callback_data=f"requalify:{p['giveaway_id']}:{p['user_id']}"
             )
         )
     return builder.as_markup()

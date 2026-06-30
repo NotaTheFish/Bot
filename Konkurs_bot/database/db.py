@@ -52,7 +52,17 @@ async def init_db():
                 joined_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 is_unsubscribed BOOLEAN NOT NULL DEFAULT FALSE,
                 unsubscribed_from TEXT,
+                is_disqualified BOOLEAN NOT NULL DEFAULT FALSE,
                 UNIQUE(giveaway_id, user_id)
+            );
+
+            CREATE TABLE IF NOT EXISTS user_strikes (
+                user_id BIGINT PRIMARY KEY,
+                username TEXT,
+                full_name TEXT,
+                strikes INTEGER NOT NULL DEFAULT 0,
+                is_banned BOOLEAN NOT NULL DEFAULT FALSE,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
 
             CREATE TABLE IF NOT EXISTS winners (
@@ -80,6 +90,9 @@ async def init_db():
         """)
         await conn.execute("""
             ALTER TABLE participants ADD COLUMN IF NOT EXISTS unsubscribed_from TEXT;
+        """)
+        await conn.execute("""
+            ALTER TABLE participants ADD COLUMN IF NOT EXISTS is_disqualified BOOLEAN NOT NULL DEFAULT FALSE;
         """)
 
 
@@ -249,7 +262,8 @@ async def get_participants(giveaway_id: int, only_eligible: bool = False) -> lis
     async with pool.acquire() as conn:
         if only_eligible:
             rows = await conn.fetch(
-                "SELECT * FROM participants WHERE giveaway_id = $1 AND is_unsubscribed = FALSE",
+                "SELECT * FROM participants WHERE giveaway_id = $1 "
+                "AND is_unsubscribed = FALSE AND is_disqualified = FALSE",
                 giveaway_id
             )
         else:
@@ -264,7 +278,8 @@ async def get_participant_count(giveaway_id: int, only_eligible: bool = False) -
     async with pool.acquire() as conn:
         if only_eligible:
             row = await conn.fetchrow(
-                "SELECT COUNT(*) AS cnt FROM participants WHERE giveaway_id = $1 AND is_unsubscribed = FALSE",
+                "SELECT COUNT(*) AS cnt FROM participants WHERE giveaway_id = $1 "
+                "AND is_unsubscribed = FALSE AND is_disqualified = FALSE",
                 giveaway_id
             )
         else:
@@ -339,5 +354,134 @@ async def get_published_messages(giveaway_id: int) -> list[dict]:
     async with pool.acquire() as conn:
         rows = await conn.fetch(
             "SELECT * FROM published_messages WHERE giveaway_id = $1", giveaway_id
+        )
+        return [dict(r) for r in rows]
+
+
+# ── Strikes & bans ────────────────────────────────────────────────────────────
+
+# Strike severity → weight multiplier applied when picking winners in FUTURE giveaways.
+# 0 strikes = full chance, 1 = -15%, 2 = -50%, 3+ = banned (0 chance).
+STRIKE_BAN_THRESHOLD = 3
+
+
+def strike_weight(strikes: int) -> float:
+    """Win-chance multiplier based on global strike count."""
+    if strikes <= 0:
+        return 1.0
+    if strikes == 1:
+        return 0.85   # -15%
+    if strikes == 2:
+        return 0.50   # -50%
+    return 0.0        # 3+ → no chance (also banned)
+
+
+async def get_user_strikes(user_id: int) -> dict | None:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow("SELECT * FROM user_strikes WHERE user_id = $1", user_id)
+        return dict(row) if row else None
+
+
+async def get_strike_count(user_id: int) -> int:
+    rec = await get_user_strikes(user_id)
+    return rec['strikes'] if rec else 0
+
+
+async def is_user_banned(user_id: int) -> bool:
+    rec = await get_user_strikes(user_id)
+    return bool(rec and rec['is_banned'])
+
+
+async def add_strike(user_id: int, username: str, full_name: str) -> dict:
+    """Increment a user's global strike count. Auto-bans at threshold. Returns updated record."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """
+            INSERT INTO user_strikes (user_id, username, full_name, strikes, updated_at)
+            VALUES ($1, $2, $3, 1, CURRENT_TIMESTAMP)
+            ON CONFLICT (user_id) DO UPDATE
+              SET strikes = user_strikes.strikes + 1,
+                  username = EXCLUDED.username,
+                  full_name = EXCLUDED.full_name,
+                  updated_at = CURRENT_TIMESTAMP
+            """,
+            user_id, username, full_name
+        )
+        # Auto-ban if at/over threshold
+        await conn.execute(
+            "UPDATE user_strikes SET is_banned = TRUE WHERE user_id = $1 AND strikes >= $2",
+            user_id, STRIKE_BAN_THRESHOLD
+        )
+        row = await conn.fetchrow("SELECT * FROM user_strikes WHERE user_id = $1", user_id)
+        return dict(row)
+
+
+async def remove_strike(user_id: int) -> dict | None:
+    """Decrement strike count by 1 (not below 0). Lifts ban if dropping below threshold."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "UPDATE user_strikes SET strikes = GREATEST(strikes - 1, 0), updated_at = CURRENT_TIMESTAMP "
+            "WHERE user_id = $1",
+            user_id
+        )
+        await conn.execute(
+            "UPDATE user_strikes SET is_banned = FALSE WHERE user_id = $1 AND strikes < $2",
+            user_id, STRIKE_BAN_THRESHOLD
+        )
+        row = await conn.fetchrow("SELECT * FROM user_strikes WHERE user_id = $1", user_id)
+        return dict(row) if row else None
+
+
+async def unban_user(user_id: int):
+    """Lift the ban flag without changing strike count."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "UPDATE user_strikes SET is_banned = FALSE, updated_at = CURRENT_TIMESTAMP WHERE user_id = $1",
+            user_id
+        )
+
+
+async def get_all_strikes() -> list[dict]:
+    """Everyone with at least one strike, ordered by strike count desc."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT * FROM user_strikes WHERE strikes > 0 OR is_banned = TRUE ORDER BY strikes DESC, updated_at DESC"
+        )
+        return [dict(r) for r in rows]
+
+
+# ── Disqualification (per-giveaway) ───────────────────────────────────────────
+
+async def disqualify_participant(giveaway_id: int, user_id: int):
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "UPDATE participants SET is_disqualified = TRUE WHERE giveaway_id = $1 AND user_id = $2",
+            giveaway_id, user_id
+        )
+
+
+async def requalify_participant(giveaway_id: int, user_id: int):
+    """Admin manually re-admits a participant to a giveaway they were dropped from."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "UPDATE participants SET is_disqualified = FALSE, is_unsubscribed = FALSE, unsubscribed_from = NULL "
+            "WHERE giveaway_id = $1 AND user_id = $2",
+            giveaway_id, user_id
+        )
+
+
+async def get_disqualified_participants(giveaway_id: int) -> list[dict]:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT * FROM participants WHERE giveaway_id = $1 AND is_disqualified = TRUE",
+            giveaway_id
         )
         return [dict(r) for r in rows]
