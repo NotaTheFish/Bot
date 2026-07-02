@@ -389,9 +389,34 @@ def _kb_proof_done(n: int):
     ]])
 
 
+async def _upsert_status(message: Message, state: FSMContext, state_key: str,
+                          text: str, kb=None):
+    """Единое статус-сообщение: редактирует существующее; если не вышло —
+    шлёт новое и снимает клавиатуру со старого (чтобы не осталось мёртвых кнопок).
+    Вызывать ТОЛЬКО под _proof_lock."""
+    data = await state.get_data()
+    status_id = data.get(state_key)
+    if status_id:
+        try:
+            await message.bot.edit_message_text(
+                text, chat_id=message.chat.id, message_id=status_id, reply_markup=kb)
+            return
+        except Exception:
+            pass
+    sent = await message.answer(text, reply_markup=kb)
+    if status_id:
+        # Старое сообщение не отредактировалось — убираем с него кнопку
+        try:
+            await message.bot.edit_message_reply_markup(
+                chat_id=message.chat.id, message_id=status_id, reply_markup=None)
+        except Exception:
+            pass
+    await state.update_data(**{state_key: sent.message_id})
+
+
 async def _add_proof_photo(message: Message, state: FSMContext, bot):
-    """Скачивает фото и атомарно добавляет в пруфы.
-    Возвращает (список b64, надо_ли_продолжать) — True ровно один раз при достижении лимита."""
+    """Скачивает фото, атомарно добавляет в пруфы и обновляет единый статус.
+    Возвращает (список b64, надо_ли_продолжать) — True ровно один раз при лимите."""
     import base64
     b64 = None
     try:
@@ -413,25 +438,13 @@ async def _add_proof_photo(message: Message, state: FSMContext, bot):
             await state.update_data(proofs_b64=proofs, proofs_done=True)
             return proofs, True
         await state.update_data(proofs_b64=proofs)
+        # Статус обновляем ПОД ЛОКОМ — иначе альбом плодит несколько сообщений
+        if proofs:
+            await _upsert_status(
+                message, state, "proof_status_msg_id",
+                f"📸 Добавлено <b>{len(proofs)}/{MAX_PROOFS}</b>. Пришли ещё или жми «Готово».",
+                _kb_proof_done(len(proofs)))
         return proofs, False
-
-
-async def _update_proof_status(message: Message, state: FSMContext, proofs: list):
-    """Показывает/обновляет статус «Добавлено N/5» одним сообщением (без спама)."""
-    data = await state.get_data()
-    status_id = data.get("proof_status_msg_id")
-    text = (f"📸 Добавлено <b>{len(proofs)}/{MAX_PROOFS}</b>. "
-            f"Пришли ещё или жми «Готово».")
-    kb = _kb_proof_done(len(proofs))
-    if status_id:
-        try:
-            await message.bot.edit_message_text(
-                text, chat_id=message.chat.id, message_id=status_id, reply_markup=kb)
-            return
-        except Exception:
-            pass
-    sent = await message.answer(text, reply_markup=kb)
-    await state.update_data(proof_status_msg_id=sent.message_id)
 
 
 async def _proceed_after_proofs(event, state: FSMContext, db: Database, bot, config):
@@ -476,8 +489,6 @@ async def step_enter_text_with_photo(message: Message, state: FSMContext, db: Da
     proofs, proceed = await _add_proof_photo(message, state, bot)
     if proceed:
         await _proceed_after_proofs(message, state, db, bot, config)
-        return
-    await _update_proof_status(message, state, proofs)
 
 
 @router.message(ReviewSG.enter_text)
@@ -510,9 +521,6 @@ async def step_enter_proof(message: Message, state: FSMContext, db: Database, bo
     if proceed:
         # Лимит достигнут — продолжаем автоматически (ровно один раз)
         await _proceed_after_proofs(message, state, db, bot, config)
-        return
-    if proofs:
-        await _update_proof_status(message, state, proofs)
 
 
 @router.callback_query(ReviewSG.enter_proof, F.data == "review:proof_done")
@@ -532,8 +540,8 @@ async def step_enter_proof_wrong(message: Message, state: FSMContext):
     data = await state.get_data()
     n = len(data.get("proofs_b64", []))
     if n:
-        await message.answer(f"📸 Отправь фото (добавлено {n}/{MAX_PROOFS}) или жми «Готово».",
-                             reply_markup=_kb_proof_done(n))
+        # Кнопка «Готово» живёт в статус-сообщении — не плодим вторую
+        await message.answer(f"📸 Отправь фото или жми «Готово» выше (добавлено {n}/{MAX_PROOFS}).")
     else:
         await message.answer("📸 Отправь именно фото, либо нажми «Пропустить».", reply_markup=_kb_skip_proof())
 
@@ -656,7 +664,8 @@ async def cb_proofedit(call: CallbackQuery, state: FSMContext, db: Database):
     await call.answer()
     await state.set_state(ProofEditSG.waiting)
     await state.update_data(pe_review_id=review_id, pe_needed=needed,
-                            pe_collected=[], pe_card_msg_id=call.message.message_id)
+                            pe_collected=[], pe_card_msg_id=call.message.message_id,
+                            pe_done=False, pe_status_msg_id=None)
     word = "фото" if needed == 1 else f"{needed} фото"
     await call.message.answer(
         f"🖼 Пришли <b>{word}</b> — они заменят текущие пруфы на карточке.\n"
@@ -692,7 +701,10 @@ async def pe_photo(message: Message, state: FSMContext, db: Database, bot, confi
         collected.append(b64)
         if len(collected) < needed:
             await state.update_data(pe_collected=collected)
-            await message.answer(f"📸 <b>{len(collected)}/{needed}</b> — жду ещё.")
+            # Единый статус (редактируется, а не плодит сообщения при альбоме)
+            await _upsert_status(
+                message, state, "pe_status_msg_id",
+                f"📸 <b>{len(collected)}/{needed}</b> — жду ещё.")
             return
         # Все собраны — помечаем и выходим из-под лока на генерацию
         await state.update_data(pe_collected=collected, pe_done=True)
@@ -710,6 +722,12 @@ async def pe_photo(message: Message, state: FSMContext, db: Database, bot, confi
         await message.answer("❌ Продавец не найден.")
         return
 
+    pe_status_id = data.get("pe_status_msg_id")
+    if pe_status_id:
+        try:
+            await bot.delete_message(message.chat.id, pe_status_id)
+        except Exception:
+            pass
     status = await message.answer("⏳ Перегенерирую карточку...")
     avatar_bytes = await _get_avatar_bytes(bot, review["buyer_id"])
     proofs = [base64.b64decode(p) for p in collected]
