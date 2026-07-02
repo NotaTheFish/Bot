@@ -83,6 +83,7 @@ CREATE TABLE IF NOT EXISTS rvb_reviews (
     card_file_id TEXT,
     status TEXT NOT NULL DEFAULT 'pending',
     show_buyer_button BOOLEAN NOT NULL DEFAULT TRUE,
+    proof_count INT NOT NULL DEFAULT 0,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
@@ -215,6 +216,10 @@ class Database:
             await conn.execute("""
                 ALTER TABLE rvb_reviews
                 ADD COLUMN IF NOT EXISTS show_buyer_button BOOLEAN NOT NULL DEFAULT TRUE
+            """)
+            await conn.execute("""
+                ALTER TABLE rvb_reviews
+                ADD COLUMN IF NOT EXISTS proof_count INT NOT NULL DEFAULT 0
             """)
             # Авто-миграция: таблица каналов продавцов
             await conn.execute("""
@@ -669,18 +674,34 @@ class Database:
         self, seller_id: int, buyer_id: int, buyer_name: str,
         buyer_username: Optional[str], review_text: str,
         item_bought: str, stars: int, template_used: str,
-        card_file_id: Optional[str] = None, show_buyer_button: bool = True
+        card_file_id: Optional[str] = None, show_buyer_button: bool = True,
+        proof_count: int = 0
     ) -> dict:
         async with self.pool.acquire() as conn:
             row = await conn.fetchrow("""
                 INSERT INTO rvb_reviews
                     (seller_id, buyer_id, buyer_name, buyer_username,
-                     review_text, item_bought, stars, template_used, card_file_id, show_buyer_button)
-                VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+                     review_text, item_bought, stars, template_used, card_file_id,
+                     show_buyer_button, proof_count)
+                VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
                 RETURNING *
             """, seller_id, buyer_id, buyer_name, buyer_username,
-                review_text, item_bought, stars, template_used, card_file_id, show_buyer_button)
+                review_text, item_bought, stars, template_used, card_file_id,
+                show_buyer_button, proof_count)
             return dict(row)
+
+    async def get_review(self, review_id: int) -> Optional[dict]:
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT * FROM rvb_reviews WHERE id = $1", review_id)
+            return dict(row) if row else None
+
+    async def update_review_card(self, review_id: int, card_file_id: str):
+        """Обновляет file_id карточки (после редактирования пруфа)."""
+        async with self.pool.acquire() as conn:
+            await conn.execute(
+                "UPDATE rvb_reviews SET card_file_id = $1 WHERE id = $2",
+                card_file_id, review_id)
 
     async def get_pending_reviews(self, seller_id: int) -> list:
         async with self.pool.acquire() as conn:

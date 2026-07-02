@@ -159,7 +159,7 @@ async def _get_avatar_bytes(bot, user_id: int):
 
 
 async def _gate_inline_button(event, state: FSMContext, db: Database, bot, config,
-                               text: str, entities, proof_bytes=None):
+                               text: str, entities, proofs=None):
     """Перед финализацией: если продавец выбрал режим «спросить» — спрашиваем
     покупателя про кнопку-ссылку. Иначе сразу финализируем."""
     data = await state.get_data()
@@ -172,7 +172,7 @@ async def _gate_inline_button(event, state: FSMContext, db: Database, bot, confi
         await state.update_data(
             pending_text=text,
             pending_entities=[e.model_dump() for e in entities] if entities else [],
-            pending_proof_b64=base64.b64encode(proof_bytes).decode() if proof_bytes else None,
+            pending_proofs_b64=[base64.b64encode(p).decode() for p in (proofs or [])],
         )
         await state.set_state(ReviewSG.ask_inline_btn)
         from aiogram.types import CallbackQuery as _CQ
@@ -189,7 +189,7 @@ async def _gate_inline_button(event, state: FSMContext, db: Database, bot, confi
 
     # Режимы hidden/shown — кнопка решается в finalize по mode, сразу финализируем
     await finalize_review(event, state, db, bot, config, text=text,
-                          entities=entities, proof_bytes=proof_bytes)
+                          entities=entities, proofs=proofs)
 
 
 @router.callback_query(ReviewSG.ask_inline_btn, F.data.startswith("inlask:"))
@@ -207,14 +207,14 @@ async def cb_inline_ask(call: CallbackQuery, state: FSMContext, db: Database, bo
     text = data.get("pending_text", "")
     raw_entities = data.get("pending_entities", [])
     entities = [MessageEntity(**e) for e in raw_entities] if raw_entities else []
-    proof_b64 = data.get("pending_proof_b64")
-    proof_bytes = base64.b64decode(proof_b64) if proof_b64 else None
+    proofs_b64 = data.get("pending_proofs_b64") or []
+    proofs = [base64.b64decode(p) for p in proofs_b64] or None
     await finalize_review(call, state, db, bot, config, text=text,
-                          entities=entities, proof_bytes=proof_bytes)
+                          entities=entities, proofs=proofs)
 
 
 async def finalize_review(event, state: FSMContext, db: Database, bot, config,
-                          text: str, entities, proof_bytes=None):
+                          text: str, entities, proofs=None):
     """Общая финализация: генерит карточку, шлёт покупателю и продавцу.
     event может быть Message или CallbackQuery."""
     from aiogram.types import CallbackQuery as _CQ
@@ -252,7 +252,7 @@ async def finalize_review(event, state: FSMContext, db: Database, bot, config,
         "bot": bot,
         "bot_username": config.BOT_USERNAME,
         "db": db,
-        "proof_bytes": proof_bytes,
+        "proof_list": proofs or [],
     }
 
     try:
@@ -311,6 +311,7 @@ async def finalize_review(event, state: FSMContext, db: Database, bot, config,
         template_used=data.get("template_id", seller["template_id"]),
         card_file_id=file_id,
         show_buyer_button=show_button,
+        proof_count=len(proofs or []),
     )
     review_id = review_row["id"]
     await state.clear()
@@ -328,6 +329,10 @@ async def finalize_review(event, state: FSMContext, db: Database, bot, config,
             InlineKeyboardButton(text="✅ Принять", callback_data=f"review:accept:{review_id}"),
             InlineKeyboardButton(text="❌ Отклонить", callback_data=f"review:reject:{review_id}"),
         ])
+    # Кнопка редактирования пруфов — только если пруфы есть (безопасность клиента)
+    if proofs:
+        rows.append([InlineKeyboardButton(text="🖼 Редактировать пруф",
+                                          callback_data=f"proofedit:{review_id}")])
     seller_kb = InlineKeyboardMarkup(inline_keyboard=rows) if rows else None
 
     try:
@@ -355,10 +360,100 @@ async def finalize_review(event, state: FSMContext, db: Database, bot, config,
     )
 
 
+MAX_PROOFS = 5
+
+# Локи на пользователя: альбом приходит пачкой конкурентных апдейтов,
+# без лока возможна потеря фото или двойная финализация
+_PROOF_LOCKS: dict = {}
+
+
+def _proof_lock(uid: int) -> asyncio.Lock:
+    lock = _PROOF_LOCKS.get(uid)
+    if lock is None:
+        lock = _PROOF_LOCKS[uid] = asyncio.Lock()
+        if len(_PROOF_LOCKS) > 1000:
+            _PROOF_LOCKS.clear()
+            _PROOF_LOCKS[uid] = lock
+    return lock
+
+
 def _kb_skip_proof():
     return InlineKeyboardMarkup(inline_keyboard=[[
         InlineKeyboardButton(text="⏭ Пропустить", callback_data="review:skip_proof")
     ]])
+
+
+def _kb_proof_done(n: int):
+    return InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text=f"✅ Готово ({n} фото)", callback_data="review:proof_done")
+    ]])
+
+
+async def _add_proof_photo(message: Message, state: FSMContext, bot):
+    """Скачивает фото и атомарно добавляет в пруфы.
+    Возвращает (список b64, надо_ли_продолжать) — True ровно один раз при достижении лимита."""
+    import base64
+    b64 = None
+    try:
+        file = await bot.get_file(message.photo[-1].file_id)
+        buf = await bot.download_file(file.file_path)
+        b64 = base64.b64encode(_compress_proof(buf.read())).decode()
+    except Exception as e:
+        logger.error(f"Не удалось скачать пруф: {e}")
+
+    async with _proof_lock(message.from_user.id):
+        data = await state.get_data()
+        proofs = list(data.get("proofs_b64", []))
+        if data.get("proofs_done") or len(proofs) >= MAX_PROOFS:
+            return proofs, False
+        if b64 is not None:
+            proofs.append(b64)
+        if len(proofs) >= MAX_PROOFS:
+            # Лимит достигнут этим фото — продолжаем ровно один раз
+            await state.update_data(proofs_b64=proofs, proofs_done=True)
+            return proofs, True
+        await state.update_data(proofs_b64=proofs)
+        return proofs, False
+
+
+async def _update_proof_status(message: Message, state: FSMContext, proofs: list):
+    """Показывает/обновляет статус «Добавлено N/5» одним сообщением (без спама)."""
+    data = await state.get_data()
+    status_id = data.get("proof_status_msg_id")
+    text = (f"📸 Добавлено <b>{len(proofs)}/{MAX_PROOFS}</b>. "
+            f"Пришли ещё или жми «Готово».")
+    kb = _kb_proof_done(len(proofs))
+    if status_id:
+        try:
+            await message.bot.edit_message_text(
+                text, chat_id=message.chat.id, message_id=status_id, reply_markup=kb)
+            return
+        except Exception:
+            pass
+    sent = await message.answer(text, reply_markup=kb)
+    await state.update_data(proof_status_msg_id=sent.message_id)
+
+
+async def _proceed_after_proofs(event, state: FSMContext, db: Database, bot, config):
+    """Собирает текст/entities/пруфы из состояния и идёт дальше по флоу."""
+    import base64
+    from aiogram.types import MessageEntity
+    data = await state.get_data()
+    text = data.get("review_text", "")
+    raw_entities = data.get("review_entities", [])
+    entities = [MessageEntity(**e) for e in raw_entities] if raw_entities else []
+    proofs = [base64.b64decode(p) for p in data.get("proofs_b64", [])] or None
+    # Убираем статус-сообщение с кнопкой «Готово»
+    status_id = data.get("proof_status_msg_id")
+    if status_id:
+        chat_id = event.message.chat.id if hasattr(event, "message") and event.message else event.chat.id
+        try:
+            await bot.delete_message(chat_id, status_id)
+        except Exception:
+            pass
+        await state.update_data(proof_status_msg_id=None)
+    await _gate_inline_button(event, state, db, bot, config,
+                              text=text, entities=entities, proofs=proofs)
 
 
 @router.message(ReviewSG.enter_text, F.photo)
@@ -372,17 +467,17 @@ async def step_enter_text_with_photo(message: Message, state: FSMContext, db: Da
         await message.answer(f"❌ Отзыв слишком длинный ({len(text)} симв.). Максимум {REVIEW_MAX_LEN}.")
         return
 
-    # Скачиваем фото-пруф (самое большое)
-    proof_bytes = None
-    try:
-        file = await bot.get_file(message.photo[-1].file_id)
-        buf = await bot.download_file(file.file_path)
-        proof_bytes = _compress_proof(buf.read())
-    except Exception as e:
-        logger.error(f"Не удалось скачать пруф: {e}")
-
-    await _gate_inline_button(message, state, db, bot, config,
-                          text=text, entities=message.caption_entities, proof_bytes=proof_bytes)
+    # Сохраняем текст и первый пруф, даём добрать ещё фото (до 5)
+    await state.update_data(
+        review_text=text,
+        review_entities=[e.model_dump() for e in (message.caption_entities or [])],
+    )
+    await state.set_state(ReviewSG.enter_proof)
+    proofs, proceed = await _add_proof_photo(message, state, bot)
+    if proceed:
+        await _proceed_after_proofs(message, state, db, bot, config)
+        return
+    await _update_proof_status(message, state, proofs)
 
 
 @router.message(ReviewSG.enter_text)
@@ -402,8 +497,8 @@ async def step_enter_text(message: Message, state: FSMContext, db: Database, bot
     await state.update_data(review_text=text, review_entities=[e.model_dump() for e in (message.entities or [])])
     await state.set_state(ReviewSG.enter_proof)
     await message.answer(
-        "📸 Хочешь приложить <b>фото-доказательство сделки</b>?\n\n"
-        "Отправь фото — оно появится прямо в карточке отзыва. "
+        "📸 Хочешь приложить <b>фото-доказательства сделки</b>?\n\n"
+        "Отправь до 5 фото — они появятся прямо в карточке отзыва. "
         "Или нажми «Пропустить».",
         reply_markup=_kb_skip_proof()
     )
@@ -411,29 +506,36 @@ async def step_enter_text(message: Message, state: FSMContext, db: Database, bot
 
 @router.message(ReviewSG.enter_proof, F.photo)
 async def step_enter_proof(message: Message, state: FSMContext, db: Database, bot, config):
-    data = await state.get_data()
-    text = data.get("review_text", "")
+    proofs, proceed = await _add_proof_photo(message, state, bot)
+    if proceed:
+        # Лимит достигнут — продолжаем автоматически (ровно один раз)
+        await _proceed_after_proofs(message, state, db, bot, config)
+        return
+    if proofs:
+        await _update_proof_status(message, state, proofs)
 
-    proof_bytes = None
-    try:
-        file = await bot.get_file(message.photo[-1].file_id)
-        buf = await bot.download_file(file.file_path)
-        proof_bytes = _compress_proof(buf.read())
-    except Exception as e:
-        logger.error(f"Не удалось скачать пруф: {e}")
 
-    # Восстанавливаем entities
-    from aiogram.types import MessageEntity
-    raw_entities = data.get("review_entities", [])
-    entities = [MessageEntity(**e) for e in raw_entities] if raw_entities else []
-
-    await _gate_inline_button(message, state, db, bot, config,
-                          text=text, entities=entities, proof_bytes=proof_bytes)
+@router.callback_query(ReviewSG.enter_proof, F.data == "review:proof_done")
+async def cb_proof_done(call: CallbackQuery, state: FSMContext, db: Database, bot, config):
+    await call.answer()
+    async with _proof_lock(call.from_user.id):
+        data = await state.get_data()
+        if data.get("proofs_done"):
+            return
+        await state.update_data(proofs_done=True)
+    # Используем call — нужен реальный from_user покупателя
+    await _proceed_after_proofs(call, state, db, bot, config)
 
 
 @router.message(ReviewSG.enter_proof)
 async def step_enter_proof_wrong(message: Message, state: FSMContext):
-    await message.answer("📸 Отправь именно фото, либо нажми «Пропустить».", reply_markup=_kb_skip_proof())
+    data = await state.get_data()
+    n = len(data.get("proofs_b64", []))
+    if n:
+        await message.answer(f"📸 Отправь фото (добавлено {n}/{MAX_PROOFS}) или жми «Готово».",
+                             reply_markup=_kb_proof_done(n))
+    else:
+        await message.answer("📸 Отправь именно фото, либо нажми «Пропустить».", reply_markup=_kb_skip_proof())
 
 
 @router.callback_query(ReviewSG.enter_proof, F.data == "review:skip_proof")
@@ -443,14 +545,8 @@ async def cb_skip_proof(call: CallbackQuery, state: FSMContext, db: Database, bo
         await call.message.edit_reply_markup(reply_markup=None)
     except Exception:
         pass
-    data = await state.get_data()
-    text = data.get("review_text", "")
-    from aiogram.types import MessageEntity
-    raw_entities = data.get("review_entities", [])
-    entities = [MessageEntity(**e) for e in raw_entities] if raw_entities else []
     # Используем call (не call.message) — нужен реальный from_user покупателя
-    await _gate_inline_button(call, state, db, bot, config,
-                          text=text, entities=entities, proof_bytes=None)
+    await _proceed_after_proofs(call, state, db, bot, config)
 
 
 # ── Принять / Отклонить отзыв (публикация в канал) ────────────────────────
@@ -538,3 +634,177 @@ async def cb_review_reject(call: CallbackQuery, bot: Bot, db: Database):
     except Exception:
         pass
     await call.answer("Отзыв отклонён")
+
+
+# ── Редактирование пруфов продавцом (безопасность клиентов) ────────────────
+
+class ProofEditSG(StatesGroup):
+    waiting = State()
+
+
+@router.callback_query(F.data.startswith("proofedit:"))
+async def cb_proofedit(call: CallbackQuery, state: FSMContext, db: Database):
+    review_id = int(call.data.split(":")[1])
+    review = await db.get_review(review_id)
+    if not review or review["seller_id"] != call.from_user.id:
+        await call.answer("Недоступно", show_alert=True)
+        return
+    needed = review.get("proof_count") or 0
+    if needed <= 0:
+        await call.answer("У этого отзыва нет пруфов", show_alert=True)
+        return
+    await call.answer()
+    await state.set_state(ProofEditSG.waiting)
+    await state.update_data(pe_review_id=review_id, pe_needed=needed,
+                            pe_collected=[], pe_card_msg_id=call.message.message_id)
+    word = "фото" if needed == 1 else f"{needed} фото"
+    await call.message.answer(
+        f"🖼 Пришли <b>{word}</b> — они заменят текущие пруфы на карточке.\n"
+        f"/cancel — отмена."
+    )
+
+
+@router.message(ProofEditSG.waiting, F.text == "/cancel")
+async def pe_cancel(message: Message, state: FSMContext):
+    await state.clear()
+    await message.answer("Отменено. Карточка не изменена.")
+
+
+@router.message(ProofEditSG.waiting, F.photo)
+async def pe_photo(message: Message, state: FSMContext, db: Database, bot, config):
+    import base64
+    b64 = None
+    try:
+        file = await bot.get_file(message.photo[-1].file_id)
+        buf = await bot.download_file(file.file_path)
+        b64 = base64.b64encode(_compress_proof(buf.read())).decode()
+    except Exception as e:
+        logger.error(f"Не удалось скачать фото для замены пруфа: {e}")
+        await message.answer("⚠️ Не удалось загрузить фото, пришли ещё раз.")
+        return
+
+    async with _proof_lock(message.from_user.id):
+        data = await state.get_data()
+        if data.get("pe_done"):
+            return
+        collected = list(data.get("pe_collected", []))
+        needed = data["pe_needed"]
+        collected.append(b64)
+        if len(collected) < needed:
+            await state.update_data(pe_collected=collected)
+            await message.answer(f"📸 <b>{len(collected)}/{needed}</b> — жду ещё.")
+            return
+        # Все собраны — помечаем и выходим из-под лока на генерацию
+        await state.update_data(pe_collected=collected, pe_done=True)
+
+    # Все фото собраны — перегенерируем карточку
+    review_id = data["pe_review_id"]
+    card_msg_id = data.get("pe_card_msg_id")
+    await state.clear()
+    review = await db.get_review(review_id)
+    if not review:
+        await message.answer("❌ Отзыв не найден.")
+        return
+    seller = await db.get_seller(review["seller_id"])
+    if not seller:
+        await message.answer("❌ Продавец не найден.")
+        return
+
+    status = await message.answer("⏳ Перегенерирую карточку...")
+    avatar_bytes = await _get_avatar_bytes(bot, review["buyer_id"])
+    proofs = [base64.b64decode(p) for p in collected]
+    buyer_name = review["buyer_name"] or "Покупатель"
+
+    card_data = {
+        "shop_name": seller["shop_name"],
+        "seller_tag": f"@{seller['username']}" if seller.get("username") else f"ID: {seller['id']}",
+        "buyer_name": buyer_name,
+        "buyer_initials": "".join(w[0].upper() for w in buyer_name.split() if w)[:2],
+        "review_text": review["review_text"],
+        "item_bought": review.get("item_bought", ""),
+        "stars": review.get("stars", 0),
+        "stars_mode": seller["stars_mode"],
+        "template_id": review.get("template_used") or seller["template_id"],
+        "avatar_bytes": avatar_bytes,
+        "entities": [],
+        "bot": bot,
+        "bot_username": config.BOT_USERNAME,
+        "db": db,
+        "proof_list": proofs,
+    }
+    try:
+        img_bytes = await generate_card(card_data)
+    except Exception as e:
+        await status.edit_text(f"❌ Ошибка генерации: {e}")
+        return
+
+    # Восстанавливаем подпись и клавиатуру карточки
+    stars_line = "★" * review.get("stars", 0) if review.get("stars", 0) > 0 else ""
+    caption_parts = [f"<b>{seller['shop_name']}</b>"]
+    if stars_line:
+        caption_parts.append(stars_line)
+    caption_parts.append(f"\n<i>«{review['review_text']}»</i>")
+    caption_parts.append(f"\n— {buyer_name}")
+    review_caption = "\n".join(caption_parts)
+
+    buyer_username = review.get("buyer_username")
+    buyer_url = f"https://t.me/{buyer_username}" if buyer_username else f"tg://user?id={review['buyer_id']}"
+    ch = await db.get_seller_channel(seller["id"])
+    channel_verified = ch and ch["verified"]
+
+    rows = []
+    if review.get("show_buyer_button", True):
+        rows.append([InlineKeyboardButton(text=f"👤 {buyer_name}", url=buyer_url)])
+    if channel_verified and review.get("status") == "pending":
+        rows.append([
+            InlineKeyboardButton(text="✅ Принять", callback_data=f"review:accept:{review_id}"),
+            InlineKeyboardButton(text="❌ Отклонить", callback_data=f"review:reject:{review_id}"),
+        ])
+    rows.append([InlineKeyboardButton(text="🖼 Редактировать пруф",
+                                      callback_data=f"proofedit:{review_id}")])
+    kb = InlineKeyboardMarkup(inline_keyboard=rows)
+
+    # Пробуем заменить фото прямо в исходном сообщении с карточкой
+    from aiogram.types import InputMediaPhoto
+    new_file_id = None
+    edited = False
+    if card_msg_id:
+        try:
+            edited_msg = await bot.edit_message_media(
+                chat_id=message.chat.id, message_id=card_msg_id,
+                media=InputMediaPhoto(
+                    media=BufferedInputFile(img_bytes, filename="review.png"),
+                    caption=f"⭐ Новый отзыв!\n\n{review_caption}",
+                    parse_mode="HTML",
+                ),
+                reply_markup=kb,
+            )
+            new_file_id = edited_msg.photo[-1].file_id if edited_msg.photo else None
+            edited = True
+        except Exception as e:
+            logger.info(f"Не удалось отредактировать карточку на месте: {e}")
+
+    if not edited:
+        # Фолбэк — шлём новую карточку
+        sent = await message.answer_photo(
+            BufferedInputFile(img_bytes, filename="review.png"),
+            caption=f"⭐ Новый отзыв!\n\n{review_caption}",
+            reply_markup=kb,
+        )
+        new_file_id = sent.photo[-1].file_id if sent.photo else None
+
+    if new_file_id:
+        await db.update_review_card(review_id, new_file_id)
+
+    try:
+        await status.delete()
+    except Exception:
+        pass
+    await message.answer("✅ Пруфы заменены, карточка обновлена.")
+
+
+@router.message(ProofEditSG.waiting)
+async def pe_wrong(message: Message, state: FSMContext):
+    data = await state.get_data()
+    left = data["pe_needed"] - len(data.get("pe_collected", []))
+    await message.answer(f"📸 Жду фото ({left} шт.) или /cancel.")

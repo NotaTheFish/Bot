@@ -340,15 +340,13 @@ async def cb_top_sellers(call: CallbackQuery, db: Database, config):
     medals = ["🥇", "🥈", "🥉"]
     for i, s in enumerate(top):
         place = medals[i] if i < 3 else f"{i+1}."
-        uname = f"@{s['username']}" if s.get("username") else "без юзернейма"
+        uname = f"@{s['username']}" if s.get("username") else f"ID <code>{s['id']}</code>"
         lines.append(f"{place} <b>{s['shop_name']}</b> ({uname}) — {s['review_count']} отзывов")
-        # Кнопка-ссылка на аккаунт продавца
+        # Кнопка-ссылка только если есть юзернейм: tg://user?id= Telegram
+        # отклоняет (BUTTON_USER_INVALID), если юзер не писал боту
         if s.get("username"):
-            url = f"https://t.me/{s['username']}"
-        else:
-            url = f"tg://user?id={s['id']}"
-        btn_text = f"{place} {s['shop_name']}"[:60]
-        rows.append([InlineKeyboardButton(text=btn_text, url=url)])
+            btn_text = f"{place} {s['shop_name']}"[:60]
+            rows.append([InlineKeyboardButton(text=btn_text, url=f"https://t.me/{s['username']}")])
 
     rows.append([InlineKeyboardButton(text="« Назад", callback_data="admin:home")])
     await call.message.answer(
@@ -453,22 +451,40 @@ async def cb_ban_process(message: Message, state: FSMContext, db: Database, bot,
     except Exception as e:
         logger.info(f"Не удалось уведомить забаненного {user_id}: {e}")
 
-    # Ссылка на аккаунт
+    # Ссылка на аккаунт — только по юзернейму (tg://user?id= вызывает BUTTON_USER_INVALID)
+    rows = []
     if username:
-        url = f"https://t.me/{username}"
         who = f"@{username} (ID <code>{user_id}</code>)"
+        rows.append([InlineKeyboardButton(text="👤 Открыть профиль", url=f"https://t.me/{username}")])
     else:
-        url = f"tg://user?id={user_id}"
         who = f"ID <code>{user_id}</code>"
+    rows.append([InlineKeyboardButton(text="« Назад", callback_data="admin:bans")])
 
     banned = await db.get_banned_users()
     await message.answer(
         f"✅ Забанен: {who}",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="👤 Открыть профиль", url=url)],
-            [InlineKeyboardButton(text="« Назад", callback_data="admin:bans")],
-        ])
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=rows)
     )
+
+
+def _build_ban_list(banned: list):
+    """Собирает текст и клавиатуру списка банов.
+    Кнопка профиля — только по юзернейму (tg://user?id= даёт BUTTON_USER_INVALID)."""
+    lines = ["🚫 <b>Забаненные пользователи</b>\n"]
+    rows = []
+    for b in banned[:20]:
+        uname = f"@{b['username']}" if b.get("username") else "без юзернейма"
+        lines.append(f"• <code>{b['id']}</code> ({uname})")
+        btns = []
+        if b.get("username"):
+            btns.append(InlineKeyboardButton(text=f"👤 {uname}"[:30],
+                                             url=f"https://t.me/{b['username']}"))
+        btns.append(InlineKeyboardButton(text=f"✅ Разбан {b['id']}"[:30],
+                                         callback_data=f"admin:unban:{b['id']}"))
+        rows.append(btns)
+    lines.append("\n<i>У кого нет юзернейма — профиль по ID через поиск.</i>")
+    rows.append([InlineKeyboardButton(text="« Назад", callback_data="admin:bans")])
+    return "\n".join(lines), InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 @router.callback_query(F.data == "admin:ban_list")
@@ -484,24 +500,8 @@ async def cb_ban_list(call: CallbackQuery, db: Database, config):
                 [InlineKeyboardButton(text="« Назад", callback_data="admin:bans")]
             ]))
         return
-
-    lines = ["🚫 <b>Забаненные пользователи</b>\n"]
-    rows = []
-    for b in banned[:20]:
-        uname = f"@{b['username']}" if b.get("username") else "без юзернейма"
-        lines.append(f"• <code>{b['id']}</code> ({uname})")
-        # Кнопки: открыть профиль + разбанить
-        if b.get("username"):
-            url = f"https://t.me/{b['username']}"
-        else:
-            url = f"tg://user?id={b['id']}"
-        rows.append([
-            InlineKeyboardButton(text=f"👤 {uname}"[:30], url=url),
-            InlineKeyboardButton(text="✅ Разбан", callback_data=f"admin:unban:{b['id']}"),
-        ])
-    rows.append([InlineKeyboardButton(text="« Назад", callback_data="admin:bans")])
-    await call.message.answer("\n".join(lines),
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
+    text, kb = _build_ban_list(banned)
+    await call.message.answer(text, reply_markup=kb)
 
 
 @router.callback_query(F.data.startswith("admin:unban:"))
@@ -535,22 +535,8 @@ async def cb_unban(call: CallbackQuery, db: Database, bot, config):
         except Exception:
             pass
         return
-    lines = ["🚫 <b>Забаненные пользователи</b>\n"]
-    rows = []
-    for b in banned[:20]:
-        uname = f"@{b['username']}" if b.get("username") else "без юзернейма"
-        lines.append(f"• <code>{b['id']}</code> ({uname})")
-        if b.get("username"):
-            url = f"https://t.me/{b['username']}"
-        else:
-            url = f"tg://user?id={b['id']}"
-        rows.append([
-            InlineKeyboardButton(text=f"👤 {uname}"[:30], url=url),
-            InlineKeyboardButton(text="✅ Разбан", callback_data=f"admin:unban:{b['id']}"),
-        ])
-    rows.append([InlineKeyboardButton(text="« Назад", callback_data="admin:bans")])
+    text, kb = _build_ban_list(banned)
     try:
-        await call.message.edit_text("\n".join(lines),
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
+        await call.message.edit_text(text, reply_markup=kb)
     except Exception:
         pass

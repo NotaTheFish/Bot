@@ -488,15 +488,34 @@ def _render_html(html: str) -> bytes:
     return png
 
 
-def _inject_proof(html: str, proof_b64: str, accent: str = "#c9a84c") -> str:
-    """Встраивает блок с фото-пруфом перед watermark/закрытием карточки."""
+def _proof_imgs_html(proof_b64_list: list, accent: str) -> str:
+    """HTML для 1–5 пруфов: одно фото — во всю ширину, несколько — сетка по 2 в ряд."""
+    if len(proof_b64_list) == 1:
+        return (f'<img src="data:image/png;base64,{proof_b64_list[0]}" '
+                f'style="width:100%;border-radius:10px;border:1px solid {accent}44;display:block;">')
+    imgs = "".join(
+        f'<img src="data:image/png;base64,{b64}" '
+        f'style="width:calc(50% - 3px);border-radius:10px;border:1px solid {accent}44;'
+        f'display:block;object-fit:cover;">'
+        for b64 in proof_b64_list
+    )
+    return f'<div style="display:flex;flex-wrap:wrap;gap:6px;justify-content:center;">{imgs}</div>'
+
+
+def _inject_proof(html: str, proofs, accent: str = "#c9a84c") -> str:
+    """Встраивает блок с фото-пруфами (1–5) перед watermark/закрытием карточки.
+    proofs — строка base64 (один) или список base64."""
+    proof_list = [proofs] if isinstance(proofs, str) else list(proofs)
+    if not proof_list:
+        return html
+    label = "Доказательство сделки" if len(proof_list) == 1 else "Доказательства сделки"
     proof_block = f"""<div style="margin-top:4px;">
   <div style="font-family:'Montserrat',sans-serif;font-size:12px;color:{accent};letter-spacing:.08em;text-transform:uppercase;margin:18px 0 12px;display:flex;align-items:center;gap:8px;">
     <span style="flex:1;height:1px;background:{accent}33;"></span>
-    📸 Доказательство сделки
+    📸 {label}
     <span style="flex:1;height:1px;background:{accent}33;"></span>
   </div>
-  <img src="data:image/png;base64,{proof_b64}" style="width:100%;border-radius:10px;border:1px solid {accent}44;display:block;">
+  {_proof_imgs_html(proof_list, accent)}
 </div>"""
     # Вставляем перед watermark если есть, иначе перед последним </div> карточки
     if '<div class="wm"' in html:
@@ -523,10 +542,13 @@ async def generate_card(data: dict) -> bytes:
     else:
         data["review_text_html"] = _sanitize_text_for_html(data.get("review_text", ""))
 
-    # Пруф-фото (если есть) — base64
-    proof_b64 = None
-    if data.get("proof_bytes"):
-        proof_b64 = base64.b64encode(data["proof_bytes"]).decode()
+    # Пруф-фото (1–5) — base64. proof_list (список bytes) приоритетнее,
+    # proof_bytes (один) — для обратной совместимости.
+    proof_b64_list = []
+    if data.get("proof_list"):
+        proof_b64_list = [base64.b64encode(p).decode() for p in data["proof_list"][:5]]
+    elif data.get("proof_bytes"):
+        proof_b64_list = [base64.b64encode(data["proof_bytes"]).decode()]
 
     template_id = data.get("template_id", "classic_gold")
 
@@ -556,20 +578,20 @@ async def generate_card(data: dict) -> bytes:
                     "stars": data.get("stars", 0),
                     "avatar_bytes": data.get("avatar_bytes"),
                     "bot_username": data.get("bot_username", "reviewbot"),
-                    "proof_b64": proof_b64,
+                    "proof_b64_list": proof_b64_list,
                     "accent_color_for_proof": ctpl["accent_color"],
                 }
                 return await render_with_data(cfg, cdata)
 
     builder = HTML_BUILDERS.get(template_id, html_classic_gold)
     html = builder(data)
-    if proof_b64:
+    if proof_b64_list:
         # Подбираем акцент под шаблон
         accents = {
             "classic_gold": "#c9a84c", "retro_paper": "#c8a96e",
             "dark_slate": "#58a6ff", "clean_white": "#444",
             "sketch_paper": "#a07840",
         }
-        html = _inject_proof(html, proof_b64, accents.get(template_id, "#c9a84c"))
+        html = _inject_proof(html, proof_b64_list, accents.get(template_id, "#c9a84c"))
     loop = asyncio.get_event_loop()
     return await loop.run_in_executor(None, _render_html, html)
