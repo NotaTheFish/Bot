@@ -501,11 +501,28 @@ async def cb_back_to_preview(call: CallbackQuery, state: FSMContext, db: Databas
 
 @router.message(ConstructorSG.enter_bg_image, F.photo)
 async def cb_bg_image(message: Message, state: FSMContext, db: Database, bot):
-    import base64
+    import base64, io
     photo = message.photo[-1]
+    if photo.file_size and photo.file_size > 10 * 1024 * 1024:
+        await message.answer("⚠️ Картинка слишком большая (макс 10 МБ). Пришли поменьше.")
+        return
     file = await bot.get_file(photo.file_id)
     buf = await bot.download_file(file.file_path)
     raw = buf.read()
+    # Защита от decompression-бомб + пережатие фона до разумного размера
+    try:
+        from PIL import Image
+        Image.MAX_IMAGE_PIXELS = 40_000_000
+        im = Image.open(io.BytesIO(raw)); im.load()
+        im = im.convert("RGB")
+        if max(im.size) > 1600:
+            im.thumbnail((1600, 1600), Image.LANCZOS)
+        out = io.BytesIO()
+        im.save(out, format="JPEG", quality=85, optimize=True)
+        raw = out.getvalue()
+    except Exception:
+        await message.answer("⚠️ Не удалось обработать картинку. Пришли другую.")
+        return
     b64 = base64.b64encode(raw).decode()
 
     data = await state.get_data()
@@ -552,7 +569,9 @@ async def _process_logo(message: Message, state: FSMContext, db: Database, raw: 
     import base64, io
     try:
         from PIL import Image
-        im = Image.open(io.BytesIO(raw)).convert("RGBA")  # RGBA сохраняет альфа-канал
+        Image.MAX_IMAGE_PIXELS = 40_000_000
+        im = Image.open(io.BytesIO(raw)); im.load()
+        im = im.convert("RGBA")  # RGBA сохраняет альфа-канал
         im.thumbnail((240, 240), Image.LANCZOS)
         out = io.BytesIO()
         im.save(out, format="PNG", optimize=True)  # PNG сохраняет прозрачность

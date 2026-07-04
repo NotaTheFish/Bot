@@ -53,11 +53,17 @@ async def main():
     dp["config"] = config
 
     # Мидлварь блокировки забаненных — на сообщения, колбэки и инлайн
-    from middlewares import BanMiddleware
+    from middlewares import BanMiddleware, ThrottlingMiddleware
     ban_mw = BanMiddleware(db, config)
     dp.message.middleware(ban_mw)
     dp.callback_query.middleware(ban_mw)
     dp.inline_query.middleware(ban_mw)
+
+    # Троттлинг — ПОСЛЕ бана (сначала отсекаем забаненных, потом лимитируем частоту)
+    throttle_mw = ThrottlingMiddleware(db, config)
+    dp.message.middleware(throttle_mw)
+    dp.callback_query.middleware(throttle_mw)
+    dp.inline_query.middleware(throttle_mw)
 
     dp.include_router(admin.router)
     dp.include_router(start.router)

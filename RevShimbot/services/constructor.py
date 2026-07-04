@@ -397,13 +397,14 @@ def build_html(cfg: dict, data: dict) -> str:
     _needs_pad = (_rd_key != "sharp") or (_sh_key != "none") or (_bd_key == "glow")
     frame_pad = "28px" if _needs_pad else "0px"
 
+    import html as _html
     stars = _stars(data["stars"]) if data.get("stars", 0) > 0 else ""
-    shop = data["shop_name"]
-    seller_tag = data.get("seller_tag", "") if vis["show_seller_tag"] else ""
+    shop = _html.escape(str(data["shop_name"]))
+    seller_tag = _html.escape(str(data.get("seller_tag", ""))) if vis["show_seller_tag"] else ""
     review = data["review_text"]
-    name = data["buyer_name"]
-    initials = data["buyer_initials"]
-    item = data.get("item_bought", "") if vis["show_item"] else ""
+    name = _html.escape(str(data["buyer_name"]))
+    initials = _html.escape(str(data["buyer_initials"]))
+    item = _html.escape(str(data.get("item_bought", ""))) if vis["show_item"] else ""
     date = _date_msk() if vis["show_date"] else ""
     creator_wm = _watermark_html(cfg.get("creator_username"), cfg.get("is_edited", False))
     bot_username = data.get("bot_username", "reviewbot")

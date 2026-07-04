@@ -384,6 +384,35 @@ async def cb_bans(call: CallbackQuery, state: FSMContext, db: Database, config):
     )
 
 
+@router.callback_query(F.data.startswith("admin:ban_seller:"))
+async def cb_ban_seller(call: CallbackQuery, db: Database, bot, config):
+    """Быстрый бан продавца из алерта о накрутке."""
+    if not _is_admin(call.from_user.id, config):
+        await call.answer("Недоступно", show_alert=True)
+        return
+    seller_id = int(call.data.split(":")[2])
+    seller = await db.get_seller(seller_id)
+    uname = seller.get("username") if seller else None
+    await db.ban_user(seller_id, uname, reason="накрутка отзывов")
+    await call.answer("🚫 Продавец забанен")
+    # Уведомляем забаненного
+    from aiogram.types import ReplyKeyboardRemove
+    admin_un = config.ADMIN_USERNAME
+    contact = f"@{admin_un}" if admin_un else "администратору"
+    try:
+        await bot.send_message(seller_id,
+            f"🚫 Вы заблокированы за подозрение в накрутке отзывов.\nПо вопросам — {contact}.",
+            reply_markup=ReplyKeyboardRemove())
+        await db.mark_ban_notified(seller_id)
+    except Exception:
+        pass
+    try:
+        await call.message.edit_reply_markup(reply_markup=None)
+    except Exception:
+        pass
+    await call.message.answer(f"✅ Продавец (ID <code>{seller_id}</code>) забанен за накрутку.")
+
+
 @router.callback_query(F.data == "admin:ban_add")
 async def cb_ban_add(call: CallbackQuery, state: FSMContext, config):
     if not _is_admin(call.from_user.id, config):
@@ -474,7 +503,19 @@ def _build_ban_list(banned: list):
     rows = []
     for b in banned[:20]:
         uname = f"@{b['username']}" if b.get("username") else "без юзернейма"
-        lines.append(f"• <code>{b['id']}</code> ({uname})")
+        # Метка типа бана: авто-флуд с таймером или вечный админ-бан
+        tag = ""
+        if b.get("reason") == "autoflood":
+            tag = " 🤖флуд"
+        if b.get("expires_at"):
+            import datetime as _dt
+            exp = b["expires_at"]
+            if exp.tzinfo is None:
+                exp = exp.replace(tzinfo=_dt.timezone.utc)
+            left = exp - _dt.datetime.now(_dt.timezone.utc)
+            hrs = max(0, int(left.total_seconds() // 3600))
+            tag += f" ⏳{hrs}ч"
+        lines.append(f"• <code>{b['id']}</code> ({uname}){tag}")
         btns = []
         if b.get("username"):
             btns.append(InlineKeyboardButton(text=f"👤 {uname}"[:30],

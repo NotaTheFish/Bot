@@ -424,6 +424,14 @@ async def on_chosen_inline_result(chosen, bot, db: Database, config):
         logger.error(f"Не удалось сохранить инлайн-отзыв: {e}")
         return
 
+    # Детектор накрутки — тот же, что в основном флоу
+    if seller:
+        try:
+            from handlers.review import _check_review_spike
+            await _check_review_spike(db, bot, config, seller)
+        except Exception:
+            pass
+
     stars_line = "★" * stars if stars > 0 else ""
     caption_parts = [f"<b>{_esc(seller['shop_name'] if seller else '')}</b>"]
     if stars_line:

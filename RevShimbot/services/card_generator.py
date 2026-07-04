@@ -608,6 +608,12 @@ async def generate_card(data: dict) -> bytes:
                 return await render_with_data(cfg, cdata)
 
     builder = HTML_BUILDERS.get(template_id, html_classic_gold)
+    # Эскейпим пользовательские строки для стандартных шаблонов
+    # (кастомный путь эскейпит внутри build_html; review_text — через _sanitize отдельно)
+    import html as _html_esc
+    for _f in ("shop_name", "buyer_name", "item_bought", "seller_tag", "buyer_initials"):
+        if data.get(_f):
+            data[_f] = _html_esc.escape(str(data[_f]))
     html = builder(data)
     if proof_b64_list:
         # Подбираем акцент под шаблон

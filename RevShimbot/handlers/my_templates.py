@@ -565,11 +565,37 @@ async def cb_bykey(call: CallbackQuery, state: FSMContext):
     )
 
 
+import time as _time_mod
+
+# Анти-брутфорс ключей: uid -> [timestamps неверных попыток]
+_KEY_FAILS: dict = {}
+_KEY_FAIL_LIMIT = 5       # неверных попыток
+_KEY_FAIL_WINDOW = 3600   # за час
+
+
+def _key_attempts_ok(user_id: int) -> bool:
+    """False, если превышен лимит неверных попыток ключа за час."""
+    now = _time_mod.time()
+    fails = [t for t in _KEY_FAILS.get(user_id, []) if now - t < _KEY_FAIL_WINDOW]
+    _KEY_FAILS[user_id] = fails
+    if len(_KEY_FAILS) > 5000:
+        _KEY_FAILS.clear()
+    return len(fails) < _KEY_FAIL_LIMIT
+
+
+def _key_fail(user_id: int):
+    _KEY_FAILS.setdefault(user_id, []).append(_time_mod.time())
+
+
 async def claim_template(user_id: int, username, key: str, db: Database, bot=None) -> tuple[bool, str]:
     """Активирует ключ. Тип 'copy' — создаёт копию; 'transfer' — передаёт авторство.
     bot — если передан, владелец карточки получит уведомление об активации."""
+    # Анти-брутфорс: слишком много неверных ключей за час
+    if not _key_attempts_ok(user_id):
+        return False, "⏳ Слишком много неверных ключей. Попробуй через час."
     key_row = await db.get_template_key(key)
     if not key_row:
+        _key_fail(user_id)
         return False, "❌ Ключ не найден."
 
     # Проверяем статус ключа (срок и лимит) ДО действий

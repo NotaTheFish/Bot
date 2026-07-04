@@ -120,7 +120,9 @@ CREATE TABLE IF NOT EXISTS rvb_banned_users (
     id BIGINT PRIMARY KEY,
     username TEXT,
     banned_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    notified BOOLEAN NOT NULL DEFAULT FALSE
+    notified BOOLEAN NOT NULL DEFAULT FALSE,
+    expires_at TIMESTAMPTZ,
+    reason TEXT
 );
 """
 
@@ -299,6 +301,14 @@ class Database:
                     banned_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                     notified BOOLEAN NOT NULL DEFAULT FALSE
                 )
+            """)
+            await conn.execute("""
+                ALTER TABLE rvb_banned_users
+                ADD COLUMN IF NOT EXISTS expires_at TIMESTAMPTZ
+            """)
+            await conn.execute("""
+                ALTER TABLE rvb_banned_users
+                ADD COLUMN IF NOT EXISTS reason TEXT
             """)
         logger.info("Database initialized")
 
@@ -684,9 +694,21 @@ class Database:
             """, user_id, username, shop_name)
             return dict(row)
 
+    # Разрешённые поля для update_seller — защита от случайного/вредного апдейта
+    _ALLOWED_SELLER_FIELDS = {
+        "shop_name", "username", "template_id", "stars_mode", "stars_value",
+        "item_mode", "item_value", "pub_id", "card_source_mode", "allowed_custom_ids",
+        "inline_button_mode", "inline_template_id", "inline_button_show",
+        "inline_notify_seller", "show_buyer_button", "allow_template_choice",
+    }
+
     async def update_seller(self, user_id: int, **fields) -> Optional[dict]:
         if not fields:
             return await self.get_seller(user_id)
+        # Отсекаем любые поля вне whitelist
+        bad = set(fields) - self._ALLOWED_SELLER_FIELDS
+        if bad:
+            raise ValueError(f"Недопустимые поля update_seller: {bad}")
         import json as _json
         set_parts = []
         values = []
@@ -779,6 +801,30 @@ class Database:
                 SELECT COUNT(*) FROM rvb_reviews
                 WHERE buyer_id = $1 AND created_at > NOW() - INTERVAL '24 hours'
             """, buyer_id) or 0
+
+    async def seller_review_burst(self, seller_id: int) -> tuple:
+        """Возвращает (за_час, за_сутки) число отзывов продавцу — для детектора накрутки."""
+        async with self.pool.acquire() as conn:
+            hour = await conn.fetchval("""
+                SELECT COUNT(*) FROM rvb_reviews
+                WHERE seller_id = $1 AND created_at > NOW() - INTERVAL '1 hour'
+            """, seller_id) or 0
+            day = await conn.fetchval("""
+                SELECT COUNT(*) FROM rvb_reviews
+                WHERE seller_id = $1 AND created_at > NOW() - INTERVAL '24 hours'
+            """, seller_id) or 0
+            return hour, day
+
+    async def get_setting(self, key: str) -> Optional[str]:
+        async with self.pool.acquire() as conn:
+            return await conn.fetchval("SELECT value FROM rvb_settings WHERE key = $1", key)
+
+    async def set_setting(self, key: str, value: str):
+        async with self.pool.acquire() as conn:
+            await conn.execute("""
+                INSERT INTO rvb_settings (key, value) VALUES ($1, $2)
+                ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value
+            """, key, value)
 
     async def get_review(self, review_id: int) -> Optional[dict]:
         async with self.pool.acquire() as conn:
@@ -979,15 +1025,24 @@ class Database:
 
     # ── Баны ───────────────────────────────────────────────────────────────
 
-    async def ban_user(self, user_id: int, username: Optional[str] = None):
+    async def ban_user(self, user_id: int, username: Optional[str] = None,
+                       hours: Optional[int] = None, reason: Optional[str] = None):
+        """Банит юзера. hours=None — навсегда (админ-бан); иначе временный авто-бан."""
+        import datetime as _dt
+        expires = None
+        if hours:
+            expires = _dt.datetime.now(_dt.timezone.utc) + _dt.timedelta(hours=hours)
         async with self.pool.acquire() as conn:
             await conn.execute("""
-                INSERT INTO rvb_banned_users (id, username, banned_at, notified)
-                VALUES ($1, $2, NOW(), FALSE)
+                INSERT INTO rvb_banned_users (id, username, banned_at, notified, expires_at, reason)
+                VALUES ($1, $2, NOW(), FALSE, $3, $4)
                 ON CONFLICT (id) DO UPDATE
                     SET username = COALESCE(EXCLUDED.username, rvb_banned_users.username),
-                        banned_at = NOW()
-            """, user_id, username)
+                        banned_at = NOW(),
+                        expires_at = EXCLUDED.expires_at,
+                        reason = EXCLUDED.reason,
+                        notified = FALSE
+            """, user_id, username, expires, reason)
 
     async def unban_user(self, user_id: int):
         async with self.pool.acquire() as conn:
@@ -995,8 +1050,21 @@ class Database:
 
     async def is_banned(self, user_id: int) -> bool:
         async with self.pool.acquire() as conn:
-            row = await conn.fetchval("SELECT 1 FROM rvb_banned_users WHERE id = $1", user_id)
-            return bool(row)
+            row = await conn.fetchrow(
+                "SELECT expires_at FROM rvb_banned_users WHERE id = $1", user_id)
+            if not row:
+                return False
+            exp = row["expires_at"]
+            if exp is not None:
+                import datetime as _dt
+                now = _dt.datetime.now(_dt.timezone.utc)
+                if exp.tzinfo is None:
+                    exp = exp.replace(tzinfo=_dt.timezone.utc)
+                if now > exp:
+                    # Срок истёк — авто-разбан
+                    await conn.execute("DELETE FROM rvb_banned_users WHERE id = $1", user_id)
+                    return False
+            return True
 
     async def was_ban_notified(self, user_id: int) -> bool:
         """Был ли уже отправлен забаненному ответ «вы забанены»."""
@@ -1014,7 +1082,8 @@ class Database:
     async def get_banned_users(self) -> list:
         async with self.pool.acquire() as conn:
             rows = await conn.fetch(
-                "SELECT id, username, banned_at FROM rvb_banned_users ORDER BY banned_at DESC"
+                "SELECT id, username, banned_at, expires_at, reason "
+                "FROM rvb_banned_users ORDER BY banned_at DESC"
             )
             return [dict(r) for r in rows]
 

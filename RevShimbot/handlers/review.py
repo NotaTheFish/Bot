@@ -154,7 +154,11 @@ def _compress_proof(raw: bytes, max_side: int = 1000) -> bytes:
     try:
         import io
         from PIL import Image
-        im = Image.open(io.BytesIO(raw)).convert("RGB")
+        # Защита от decompression-бомб: гигантские по пикселям картинки отклоняем
+        Image.MAX_IMAGE_PIXELS = 40_000_000  # ~40 Мп — с запасом для честных фото
+        im = Image.open(io.BytesIO(raw))
+        im.load()  # форсим декодирование здесь, чтобы поймать бомбу
+        im = im.convert("RGB")
         if max(im.size) > max_side:
             im.thumbnail((max_side, max_side), Image.LANCZOS)
         out = io.BytesIO()
@@ -162,6 +166,40 @@ def _compress_proof(raw: bytes, max_side: int = 1000) -> bytes:
         return out.getvalue()
     except Exception:
         return raw
+
+
+async def _check_review_spike(db, bot, config, seller):
+    """Детектор накрутки: >15 отзывов/час или >40/сутки продавцу → алерт админу.
+    Только уведомление (не автоблок), не чаще 1 раза в 6 часов на продавца."""
+    try:
+        hour, day = await db.seller_review_burst(seller["id"])
+        if hour <= 15 and day <= 40:
+            return
+        import time as _t
+        skey = f"spike_alert_{seller['id']}"
+        last = await db.get_setting(skey)
+        now = _t.time()
+        if last and now - float(last) < 6 * 3600:
+            return
+        await db.set_setting(skey, str(now))
+        admin_id = config.ADMIN_TG_ID
+        if not admin_id:
+            return
+        uname = f"@{seller['username']}" if seller.get("username") else "без юзернейма"
+        pub = seller.get("pub_id", "?")
+        kb = InlineKeyboardMarkup(inline_keyboard=[[
+            InlineKeyboardButton(text="🚫 Забанить продавца",
+                                 callback_data=f"admin:ban_seller:{seller['id']}")
+        ]])
+        await bot.send_message(
+            admin_id,
+            f"⚠️ <b>Всплеск отзывов у продавца</b>\n\n"
+            f"🏪 {seller['shop_name']} (ID <code>{pub}</code>, {uname})\n"
+            f"📊 За час: <b>{hour}</b> · за сутки: <b>{day}</b>\n\n"
+            f"<i>Возможна накрутка. Проверь список отзывов и уникальных покупателей.</i>",
+            reply_markup=kb)
+    except Exception as e:
+        logger.info(f"Детектор всплеска не сработал: {e}")
 
 
 async def _get_avatar_bytes(bot, user_id: int):
@@ -351,6 +389,9 @@ async def finalize_review(event, state: FSMContext, db: Database, bot, config,
     review_id = review_row["id"]
     await state.clear()
 
+    # Детектор накрутки — алерт админу при подозрительном всплеске
+    await _check_review_spike(db, bot, config, seller)
+
     buyer_url = f"https://t.me/{buyer_username}" if buyer_username else f"tg://user?id={user.id}"
 
     ch = await db.get_seller_channel(seller["id"])
@@ -454,8 +495,14 @@ async def _add_proof_photo(message: Message, state: FSMContext, bot):
     Возвращает (список b64, надо_ли_продолжать) — True ровно один раз при лимите."""
     import base64
     b64 = None
+    # Отсекаем слишком большие фото до скачивания (>10 МБ)
+    photo = message.photo[-1]
+    if photo.file_size and photo.file_size > 10 * 1024 * 1024:
+        await message.answer("⚠️ Фото слишком большое (макс 10 МБ). Пришли поменьше.")
+        data = await state.get_data()
+        return list(data.get("proofs_b64", [])), False
     try:
-        file = await bot.get_file(message.photo[-1].file_id)
+        file = await bot.get_file(photo.file_id)
         buf = await bot.download_file(file.file_path)
         b64 = base64.b64encode(_compress_proof(buf.read())).decode()
     except Exception as e:
@@ -718,8 +765,12 @@ async def pe_cancel(message: Message, state: FSMContext):
 async def pe_photo(message: Message, state: FSMContext, db: Database, bot, config):
     import base64
     b64 = None
+    photo = message.photo[-1]
+    if photo.file_size and photo.file_size > 10 * 1024 * 1024:
+        await message.answer("⚠️ Фото слишком большое (макс 10 МБ). Пришли поменьше.")
+        return
     try:
-        file = await bot.get_file(message.photo[-1].file_id)
+        file = await bot.get_file(photo.file_id)
         buf = await bot.download_file(file.file_path)
         b64 = base64.b64encode(_compress_proof(buf.read())).decode()
     except Exception as e:
