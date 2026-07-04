@@ -504,11 +504,24 @@ def _proof_imgs_html(proof_b64_list: list, accent: str) -> str:
 
 def _inject_verify_code(html: str, code: str, bot_username: str) -> str:
     """Печатает код проверки подлинности внизу карточки.
-    Системная метка — показывается всегда, независимо от водяных знаков."""
-    block = (f'<div style="margin-top:12px;text-align:center;'
-             f'font-family:\'JetBrains Mono\',monospace;font-size:11px;'
-             f'color:#8a8a92;opacity:.9;letter-spacing:.06em;">'
+    ВАЖНО: рендер обрезает картинку по .card/.frame, поэтому код нужно вставить
+    ВНУТРЬ карточки (рядом с водяным знаком), а не перед </body> — иначе он
+    окажется за границей клипа и не попадёт на PNG."""
+    block = (f'<div style="margin-top:10px;text-align:center;'
+             f'font-family:\'JetBrains Mono\',\'Montserrat\',monospace;font-size:11px;'
+             f'color:#8a8a92;opacity:.85;letter-spacing:.04em;">'
              f'ID отзыва: {code} · проверка: @{bot_username}</div>')
+    # 1) Идеально — сразу перед водяным знаком (гарантированно внутри .card)
+    for marker in ('<div class="wm"', '<div class="creator-wm"'):
+        if marker in html:
+            idx = html.find(marker)
+            return html[:idx] + block + html[idx:]
+    # 2) Иначе — перед закрытием контейнера карточки
+    for close_marker in ('</div>\n</body>', '</div></body>'):
+        if close_marker in html:
+            idx = html.rfind(close_marker)
+            return html[:idx] + block + html[idx:]
+    # 3) Фолбэк
     return html.replace("</body>", block + "</body>", 1)
 
 
