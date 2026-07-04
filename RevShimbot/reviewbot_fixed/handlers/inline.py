@@ -60,20 +60,23 @@ async def get_or_generate_card(
     bot,
     config,
     db,
-) -> tuple:
+) -> str | None:
     """
-    Генерирует инлайн-карточку с УНИКАЛЬНЫМ кодом подлинности, грузит в CACHE_CHAT_ID.
-    Возвращает (file_id, verify_code). Кеш по тексту здесь НЕ используется:
-    у каждого отзыва свой код, значит и картинка каждый раз своя.
+    Генерирует карточку, загружает в CACHE_CHAT_ID и возвращает file_id.
+    Если карточка уже была сгенерирована для этого текста — возвращает
+    закешированный file_id из БД (TODO: можно добавить кеш в памяти).
     """
     if not config.CACHE_CHAT_ID:
-        return None, None
+        return None
+
+    # Кеш в памяти — если такую же карточку уже рендерили, отдаём мгновенно
+    ckey = _cache_key(seller, review_text)
+    cached = _INLINE_CARD_CACHE.get(ckey)
+    if cached:
+        return cached
 
     buyer_name = query.from_user.full_name or query.from_user.first_name or "Трейдер"
     buyer_initials = "".join(w[0].upper() for w in buyer_name.split() if w)[:2]
-
-    # Уникальный код — печатается на карточке и позже сохраняется в БД
-    verify_code = await db.reserve_verify_code()
 
     # Аватарку в inline не берём — слишком медленно для живого запроса
     inline_tpl = seller.get("inline_template_id") or seller["template_id"]
@@ -89,7 +92,6 @@ async def get_or_generate_card(
         "template_id": inline_tpl,
         "avatar_bytes": None,
         "bot_username": config.BOT_USERNAME,
-        "verify_code": verify_code,
         "db": db,
     }
 
@@ -97,7 +99,7 @@ async def get_or_generate_card(
         img_bytes = await generate_card(card_data)
     except Exception as e:
         logger.error(f"Card generation failed in inline: {e}")
-        return None, None
+        return None
 
     try:
         sent = await bot.send_photo(
@@ -110,10 +112,14 @@ async def get_or_generate_card(
             await bot.delete_message(config.CACHE_CHAT_ID, sent.message_id)
         except Exception:
             pass
-        return fid, verify_code
+        # Сохраняем в кеш (с простым ограничением размера)
+        if len(_INLINE_CARD_CACHE) >= _INLINE_CACHE_MAX:
+            _INLINE_CARD_CACHE.clear()
+        _INLINE_CARD_CACHE[ckey] = fid
+        return fid
     except Exception as e:
         logger.error(f"Failed to upload card to cache chat: {e}")
-        return None, None
+        return None
 
 
 @router.inline_query()
@@ -261,7 +267,7 @@ async def inline_review(query: InlineQuery, db: Database, bot, config):
 
     # ── СЛУЧАЙ 2: pub_id + текст → карточка отзыва по шаблону продавца ──────
     if seller and config.CACHE_CHAT_ID and review_text:
-        file_id, verify_code = await get_or_generate_card(query, seller, review_text, bot, config, db)
+        file_id = await get_or_generate_card(query, seller, review_text, bot, config, db)
         if file_id:
             stars = "★" * (seller["stars_value"] if seller["stars_mode"] == "fixed" else 5)
             caption = (
@@ -277,27 +283,26 @@ async def inline_review(query: InlineQuery, db: Database, bot, config):
                     InlineKeyboardButton(text=f"👤 {buyer_name}", url=buyer_url)
                 ]])
 
-            # Всегда регистрируем pending — чтобы инлайн-отзыв сохранился в БД
-            # с кодом подлинности (проверяемым). Уведомление продавцу — по флагу.
-            import time as _time
-            r_id = f"notify:{result_id}"
-            _PENDING_INLINE[r_id] = {
-                "seller_id": seller["id"],
-                "buyer_id": query.from_user.id,
-                "buyer_name": buyer_name,
-                "buyer_username": query.from_user.username,
-                "review_text": review_text,
-                "stars": seller["stars_value"] if seller["stars_mode"] == "fixed" else 5,
-                "item_bought": seller["item_value"] if seller["item_mode"] == "fixed" else "",
-                "file_id": file_id,
-                "verify_code": verify_code,
-                "template_id": seller.get("inline_template_id") or seller["template_id"],
-                "notify": seller.get("inline_notify_seller", False),
-                "ts": _time.time(),
-            }
-            if len(_PENDING_INLINE) > _PENDING_MAX:
-                for k in sorted(_PENDING_INLINE, key=lambda x: _PENDING_INLINE[x]["ts"])[:100]:
-                    _PENDING_INLINE.pop(k, None)
+            # Если продавец хочет уведомления — регистрируем данные для chosen_inline_result
+            r_id = result_id
+            if seller.get("inline_notify_seller", False):
+                import time as _time
+                r_id = f"notify:{result_id}"
+                _PENDING_INLINE[r_id] = {
+                    "seller_id": seller["id"],
+                    "buyer_id": query.from_user.id,
+                    "buyer_name": buyer_name,
+                    "buyer_username": query.from_user.username,
+                    "review_text": review_text,
+                    "stars": seller["stars_value"] if seller["stars_mode"] == "fixed" else 5,
+                    "item_bought": seller["item_value"] if seller["item_mode"] == "fixed" else "",
+                    "file_id": file_id,
+                    "template_id": seller.get("inline_template_id") or seller["template_id"],
+                    "ts": _time.time(),
+                }
+                if len(_PENDING_INLINE) > _PENDING_MAX:
+                    for k in sorted(_PENDING_INLINE, key=lambda x: _PENDING_INLINE[x]["ts"])[:100]:
+                        _PENDING_INLINE.pop(k, None)
 
             await _safe_answer(query,
                 results=[
@@ -328,7 +333,7 @@ async def inline_review(query: InlineQuery, db: Database, bot, config):
                 "stars_mode": "buyer_choice", "stars_value": 5,
                 "item_mode": "free", "item_value": "",
             }
-            file_id, _ = await get_or_generate_card(query, fake_seller, review_text, bot, config, db)
+            file_id = await get_or_generate_card(query, fake_seller, review_text, bot, config, db)
             if file_id:
                 await _safe_answer(query,
                     results=[InlineQueryResultCachedPhoto(
@@ -351,7 +356,7 @@ async def inline_review(query: InlineQuery, db: Database, bot, config):
                 "stars_mode": "buyer_choice", "stars_value": 5,
                 "item_mode": "free", "item_value": "",
             }
-            file_id, _ = await get_or_generate_card(query, fake_seller, review_text, bot, config, db)
+            file_id = await get_or_generate_card(query, fake_seller, review_text, bot, config, db)
             if file_id:
                 await _safe_answer(query,
                     results=[InlineQueryResultCachedPhoto(
@@ -391,7 +396,6 @@ async def on_chosen_inline_result(chosen, bot, db: Database, config):
     review_text = pending["review_text"]
     stars = pending["stars"]
     file_id = pending["file_id"]
-    verify_code = pending.get("verify_code")
 
     # Анти-накрутка: те же лимиты, что и в основном флоу (админ — без лимитов)
     if buyer_id != config.ADMIN_TG_ID:
@@ -417,7 +421,6 @@ async def on_chosen_inline_result(chosen, bot, db: Database, config):
             template_used=pending.get("template_id", "classic_gold"),
             card_file_id=file_id,
             show_buyer_button=show_btn,
-            verify_code=verify_code,
         )
         review_id = review_row["id"]
     except Exception as e:
@@ -446,10 +449,6 @@ async def on_chosen_inline_result(chosen, bot, db: Database, config):
             InlineKeyboardButton(text="❌ Отклонить", callback_data=f"review:reject:{review_id}"),
         ])
     seller_kb = InlineKeyboardMarkup(inline_keyboard=rows) if rows else None
-
-    # Уведомление продавцу — только если он его включил. Отзыв в БД сохраняется всегда.
-    if not pending.get("notify", False):
-        return
 
     try:
         await bot.send_photo(
