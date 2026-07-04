@@ -658,5 +658,8 @@ async def render_with_data(cfg: dict, data: dict) -> bytes:
         accent = data.get("accent_color_for_proof", cfg.get("accent_color", "#c9a84c"))
         from services.card_generator import _inject_proof
         html = _inject_proof(html, proofs, accent)
+    if data.get("verify_code"):
+        from services.card_generator import _inject_verify_code
+        html = _inject_verify_code(html, data["verify_code"], data.get("bot_username", "RevShimbot"))
     loop = asyncio.get_event_loop()
     return await loop.run_in_executor(None, _render, html)

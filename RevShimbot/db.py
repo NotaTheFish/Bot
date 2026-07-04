@@ -84,6 +84,7 @@ CREATE TABLE IF NOT EXISTS rvb_reviews (
     status TEXT NOT NULL DEFAULT 'pending',
     show_buyer_button BOOLEAN NOT NULL DEFAULT TRUE,
     proof_count INT NOT NULL DEFAULT 0,
+    verify_code TEXT UNIQUE,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
@@ -122,6 +123,15 @@ CREATE TABLE IF NOT EXISTS rvb_banned_users (
     notified BOOLEAN NOT NULL DEFAULT FALSE
 );
 """
+
+
+# Crockford Base32: без I, L, O, U — не путается при чтении с карточки
+_VERIFY_ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
+
+
+def _gen_verify_code() -> str:
+    import secrets
+    return "RSB-" + "".join(secrets.choice(_VERIFY_ALPHABET) for _ in range(8))
 
 
 class Database:
@@ -221,6 +231,27 @@ class Database:
                 ALTER TABLE rvb_reviews
                 ADD COLUMN IF NOT EXISTS proof_count INT NOT NULL DEFAULT 0
             """)
+            # Авто-миграция: уникальный код проверки подлинности отзыва
+            await conn.execute("""
+                ALTER TABLE rvb_reviews
+                ADD COLUMN IF NOT EXISTS verify_code TEXT UNIQUE
+            """)
+            await conn.execute("""
+                CREATE INDEX IF NOT EXISTS rvb_reviews_verify_idx
+                ON rvb_reviews(verify_code)
+            """)
+            # Бэкфилл кодов для старых отзывов
+            old_rows = await conn.fetch(
+                "SELECT id FROM rvb_reviews WHERE verify_code IS NULL")
+            for _r in old_rows:
+                for _attempt in range(5):
+                    try:
+                        await conn.execute(
+                            "UPDATE rvb_reviews SET verify_code = $1 WHERE id = $2",
+                            _gen_verify_code(), _r["id"])
+                        break
+                    except Exception:
+                        continue
             # Авто-миграция: таблица каналов продавцов
             await conn.execute("""
                 CREATE TABLE IF NOT EXISTS rvb_seller_channels (
@@ -675,20 +706,79 @@ class Database:
         buyer_username: Optional[str], review_text: str,
         item_bought: str, stars: int, template_used: str,
         card_file_id: Optional[str] = None, show_buyer_button: bool = True,
-        proof_count: int = 0
+        proof_count: int = 0, verify_code: Optional[str] = None
     ) -> dict:
         async with self.pool.acquire() as conn:
+            last_err = None
+            for _ in range(3):
+                code = verify_code or _gen_verify_code()
+                try:
+                    row = await conn.fetchrow("""
+                        INSERT INTO rvb_reviews
+                            (seller_id, buyer_id, buyer_name, buyer_username,
+                             review_text, item_bought, stars, template_used, card_file_id,
+                             show_buyer_button, proof_count, verify_code)
+                        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+                        RETURNING *
+                    """, seller_id, buyer_id, buyer_name, buyer_username,
+                        review_text, item_bought, stars, template_used, card_file_id,
+                        show_buyer_button, proof_count, code)
+                    return dict(row)
+                except Exception as e:
+                    # Коллизия кода (вероятность ~0) — регенерируем и пробуем ещё
+                    last_err = e
+                    verify_code = None
+            raise last_err
+
+    async def reserve_verify_code(self) -> str:
+        """Генерирует код, свободный на момент проверки (для печати на карточке ДО сохранения)."""
+        async with self.pool.acquire() as conn:
+            for _ in range(5):
+                code = _gen_verify_code()
+                exists = await conn.fetchval(
+                    "SELECT 1 FROM rvb_reviews WHERE verify_code = $1", code)
+                if not exists:
+                    return code
+            return _gen_verify_code()
+
+    async def get_review_by_code(self, code: str) -> Optional[dict]:
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT * FROM rvb_reviews WHERE verify_code = $1", code.upper())
+            return dict(row) if row else None
+
+    async def get_shop_stats(self, seller_id: int) -> dict:
+        """Публичная статистика продавца — источник правды против накрутки."""
+        async with self.pool.acquire() as conn:
             row = await conn.fetchrow("""
-                INSERT INTO rvb_reviews
-                    (seller_id, buyer_id, buyer_name, buyer_username,
-                     review_text, item_bought, stars, template_used, card_file_id,
-                     show_buyer_button, proof_count)
-                VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
-                RETURNING *
-            """, seller_id, buyer_id, buyer_name, buyer_username,
-                review_text, item_bought, stars, template_used, card_file_id,
-                show_buyer_button, proof_count)
-            return dict(row)
+                SELECT COUNT(*) AS total,
+                       COUNT(DISTINCT buyer_id) AS unique_buyers,
+                       ROUND(AVG(stars)::numeric, 1) AS avg_stars,
+                       MIN(created_at) AS first_at,
+                       MAX(created_at) AS last_at
+                FROM rvb_reviews WHERE seller_id = $1
+            """, seller_id)
+            return dict(row) if row else {"total": 0, "unique_buyers": 0,
+                                          "avg_stars": None, "first_at": None, "last_at": None}
+
+    async def has_recent_review(self, buyer_id: int, seller_id: int, hours: int = 6) -> bool:
+        """Дедуп: покупатель уже оставлял отзыв этому продавцу за последние N часов."""
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchval("""
+                SELECT 1 FROM rvb_reviews
+                WHERE buyer_id = $1 AND seller_id = $2
+                  AND created_at > NOW() - ($3 || ' hours')::interval
+                LIMIT 1
+            """, buyer_id, seller_id, str(hours))
+            return bool(row)
+
+    async def count_reviews_24h(self, buyer_id: int) -> int:
+        """Сколько отзывов оставил аккаунт за сутки (по всем продавцам)."""
+        async with self.pool.acquire() as conn:
+            return await conn.fetchval("""
+                SELECT COUNT(*) FROM rvb_reviews
+                WHERE buyer_id = $1 AND created_at > NOW() - INTERVAL '24 hours'
+            """, buyer_id) or 0
 
     async def get_review(self, review_id: int) -> Optional[dict]:
         async with self.pool.acquire() as conn:

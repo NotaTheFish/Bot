@@ -502,6 +502,16 @@ def _proof_imgs_html(proof_b64_list: list, accent: str) -> str:
     return f'<div style="display:flex;flex-wrap:wrap;gap:6px;justify-content:center;">{imgs}</div>'
 
 
+def _inject_verify_code(html: str, code: str, bot_username: str) -> str:
+    """Печатает код проверки подлинности внизу карточки.
+    Системная метка — показывается всегда, независимо от водяных знаков."""
+    block = (f'<div style="margin-top:12px;text-align:center;'
+             f'font-family:\'JetBrains Mono\',monospace;font-size:11px;'
+             f'color:#8a8a92;opacity:.9;letter-spacing:.06em;">'
+             f'ID отзыва: {code} · проверка: @{bot_username}</div>')
+    return html.replace("</body>", block + "</body>", 1)
+
+
 def _inject_proof(html: str, proofs, accent: str = "#c9a84c") -> str:
     """Встраивает блок с фото-пруфами (1–5) перед watermark/закрытием карточки.
     proofs — строка base64 (один) или список base64."""
@@ -579,6 +589,7 @@ async def generate_card(data: dict) -> bytes:
                     "avatar_bytes": data.get("avatar_bytes"),
                     "bot_username": data.get("bot_username", "reviewbot"),
                     "proof_b64_list": proof_b64_list,
+                    "verify_code": data.get("verify_code"),
                     "accent_color_for_proof": ctpl["accent_color"],
                 }
                 return await render_with_data(cfg, cdata)
@@ -593,5 +604,7 @@ async def generate_card(data: dict) -> bytes:
             "sketch_paper": "#a07840",
         }
         html = _inject_proof(html, proof_b64_list, accents.get(template_id, "#c9a84c"))
+    if data.get("verify_code"):
+        html = _inject_verify_code(html, data["verify_code"], data.get("bot_username", "RevShimbot"))
     loop = asyncio.get_event_loop()
     return await loop.run_in_executor(None, _render_html, html)

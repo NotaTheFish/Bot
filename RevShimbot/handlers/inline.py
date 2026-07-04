@@ -1,5 +1,6 @@
 import hashlib
 import logging
+import asyncio
 from aiogram import Router
 from aiogram.types import (
     InlineQuery,
@@ -26,6 +27,16 @@ _INLINE_CACHE_MAX = 500
 # Ожидающие инлайн-отзывы для уведомления продавца (когда покупатель реально отправит)
 _PENDING_INLINE: dict[str, dict] = {}
 _PENDING_MAX = 500
+
+# Дебаунс инлайна: рендерим только когда юзер перестал печатать
+_LAST_INLINE_Q: dict[int, str] = {}
+_DEBOUNCE_SEC = 1.3
+
+import html as _html_mod
+
+
+def _esc(t) -> str:
+    return _html_mod.escape(str(t or ""))
 
 
 def _cache_key(seller: dict, review_text: str) -> str:
@@ -96,6 +107,11 @@ async def get_or_generate_card(
             photo=BufferedInputFile(img_bytes, filename="review_cache.png"),
         )
         fid = sent.photo[-1].file_id
+        # Чистим кеш-чат: file_id остаётся валидным после удаления сообщения
+        try:
+            await bot.delete_message(config.CACHE_CHAT_ID, sent.message_id)
+        except Exception:
+            pass
         # Сохраняем в кеш (с простым ограничением размера)
         if len(_INLINE_CARD_CACHE) >= _INLINE_CACHE_MAX:
             _INLINE_CARD_CACHE.clear()
@@ -116,6 +132,17 @@ async def inline_review(query: InlineQuery, db: Database, bot, config):
     # не показываем инлайн-панель, чтобы можно было отправить @username как текст.
     if not text:
         await _safe_answer(query, results=[], cache_time=1)
+        return
+
+    # Дебаунс: Telegram шлёт запрос почти на каждый символ — ждём паузу в наборе.
+    # Рендерим только самый свежий запрос, устаревшие молча умирают.
+    _uid = query.from_user.id
+    _LAST_INLINE_Q[_uid] = query.id
+    if len(_LAST_INLINE_Q) > 2000:
+        _LAST_INLINE_Q.clear()
+        _LAST_INLINE_Q[_uid] = query.id
+    await asyncio.sleep(_DEBOUNCE_SEC)
+    if _LAST_INLINE_Q.get(_uid) != query.id:
         return
 
     buyer_name = query.from_user.full_name or "Трейдер"
@@ -179,6 +206,10 @@ async def inline_review(query: InlineQuery, db: Database, bot, config):
                     photo=BufferedInputFile(img, filename="invite.png"),
                 )
                 file_id = sent.photo[-1].file_id
+                try:
+                    await bot.delete_message(config.CACHE_CHAT_ID, sent.message_id)
+                except Exception:
+                    pass
             except Exception as e:
                 logger.error(f"Invite card failed: {e}")
                 file_id = None
@@ -188,7 +219,7 @@ async def inline_review(query: InlineQuery, db: Database, bot, config):
                     InlineKeyboardButton(text="✍️ Написать отзыв в боте", url=ref_link)
                 ]])
                 caption = (
-                    f"⭐️ <b>{seller['shop_name']}</b> просит оставить отзыв!\n\n"
+                    f"⭐️ <b>{_esc(seller['shop_name'])}</b> просит оставить отзыв!\n\n"
                     f"Нажми кнопку ниже, чтобы написать красивый отзыв.\n\n"
                     f"💡 <i>Быстрее: напиши прямо в чате "
                     f"<code>@{config.BOT_USERNAME} {seller['pub_id']} твой отзыв</code> "
@@ -223,7 +254,7 @@ async def inline_review(query: InlineQuery, db: Database, bot, config):
                     reply_markup=kb,
                     input_message_content=InputTextMessageContent(
                         message_text=(
-                            f"⭐️ <b>{seller['shop_name']}</b> просит оставить отзыв!\n\n"
+                            f"⭐️ <b>{_esc(seller['shop_name'])}</b> просит оставить отзыв!\n\n"
                             f"💡 Быстрее: <code>@{config.BOT_USERNAME} {seller['pub_id']} твой отзыв</code>"
                         ),
                         parse_mode="HTML",
@@ -240,8 +271,8 @@ async def inline_review(query: InlineQuery, db: Database, bot, config):
         if file_id:
             stars = "★" * (seller["stars_value"] if seller["stars_mode"] == "fixed" else 5)
             caption = (
-                f"<b>{seller['shop_name']}</b>\n{stars}\n\n"
-                f"<i>«{review_text}»</i>\n\n— {buyer_name}"
+                f"<b>{_esc(seller['shop_name'])}</b>\n{stars}\n\n"
+                f"<i>«{_esc(review_text)}»</i>\n\n— {_esc(buyer_name)}"
             )
             # Кнопка-ссылка на покупателя, если продавец её включил для инлайн
             inline_kb = None
@@ -307,7 +338,7 @@ async def inline_review(query: InlineQuery, db: Database, bot, config):
                 await _safe_answer(query,
                     results=[InlineQueryResultCachedPhoto(
                         id=result_id, photo_file_id=file_id,
-                        caption=f"<i>«{review_text}»</i>\n\n— {buyer_name}",
+                        caption=f"<i>«{_esc(review_text)}»</i>\n\n— {_esc(buyer_name)}",
                         parse_mode="HTML", title="⭐️ Отправить карточку отзыва",
                         description=review_text[:100],
                     )],
@@ -330,7 +361,7 @@ async def inline_review(query: InlineQuery, db: Database, bot, config):
                 await _safe_answer(query,
                     results=[InlineQueryResultCachedPhoto(
                         id=result_id, photo_file_id=file_id,
-                        caption=f"<i>«{review_text}»</i>\n\n— {buyer_name}",
+                        caption=f"<i>«{_esc(review_text)}»</i>\n\n— {_esc(buyer_name)}",
                         parse_mode="HTML", title="⭐️ Отправить карточку отзыва",
                         description=review_text[:100],
                     )],
@@ -366,6 +397,15 @@ async def on_chosen_inline_result(chosen, bot, db: Database, config):
     stars = pending["stars"]
     file_id = pending["file_id"]
 
+    # Анти-накрутка: те же лимиты, что и в основном флоу (админ — без лимитов)
+    if buyer_id != config.ADMIN_TG_ID:
+        if await db.has_recent_review(buyer_id, seller_id, hours=6):
+            logger.info(f"Инлайн-отзыв {buyer_id}->{seller_id} отклонён: дедуп 6ч")
+            return
+        if await db.count_reviews_24h(buyer_id) >= 10:
+            logger.info(f"Инлайн-отзыв {buyer_id} отклонён: суточный лимит")
+            return
+
     # Сохраняем отзыв в БД — чтобы работали принять/отклонить
     try:
         seller = await db.get_seller(seller_id)
@@ -388,11 +428,11 @@ async def on_chosen_inline_result(chosen, bot, db: Database, config):
         return
 
     stars_line = "★" * stars if stars > 0 else ""
-    caption_parts = [f"<b>{seller['shop_name'] if seller else ''}</b>"]
+    caption_parts = [f"<b>{_esc(seller['shop_name'] if seller else '')}</b>"]
     if stars_line:
         caption_parts.append(stars_line)
-    caption_parts.append(f"\n<i>«{review_text}»</i>")
-    caption_parts.append(f"\n— {buyer_name}")
+    caption_parts.append(f"\n<i>«{_esc(review_text)}»</i>")
+    caption_parts.append(f"\n— {_esc(buyer_name)}")
     caption = "\n".join(caption_parts)
 
     buyer_url = f"https://t.me/{buyer_username}" if buyer_username else f"tg://user?id={buyer_id}"

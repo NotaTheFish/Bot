@@ -1,6 +1,6 @@
 from aiogram import Router, F
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
-from aiogram.filters import CommandStart, Command
+from aiogram.filters import CommandStart, Command, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 
@@ -45,6 +45,7 @@ def kb_start_menu(has_seller: bool = False, has_client: bool = False) -> InlineK
     if has_client:
         rows.append([InlineKeyboardButton(text="🎨 Мой клиентский шаблон", callback_data="menu:myclienttemplate")])
 
+    rows.append([InlineKeyboardButton(text="🔎 Проверить продавца", callback_data="menu:verify")])
     rows.append([InlineKeyboardButton(text="👤 Профиль", callback_data="menu:profile")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
@@ -845,3 +846,158 @@ async def cb_cancel(call: CallbackQuery, state: FSMContext, db: Database):
     has_client = bool(await db.get_client_template(call.from_user.id))
     await call.message.answer("❌ Отменено.", reply_markup=kb_start_menu(has_seller, has_client))
     await call.answer()
+
+
+# ── Проверка подлинности: продавец по ID или отзыв по коду с карточки ───────
+
+class VerifySG(StatesGroup):
+    waiting = State()
+
+
+_VERIFY_HITS: dict = {}  # user_id -> [timestamps] — лимит 10 проверок/час
+
+
+def _verify_allowed(uid: int, admin_id: int) -> bool:
+    import time
+    if admin_id and uid == admin_id:
+        return True
+    now = time.time()
+    hits = [t for t in _VERIFY_HITS.get(uid, []) if now - t < 3600]
+    if len(hits) >= 10:
+        _VERIFY_HITS[uid] = hits
+        return False
+    hits.append(now)
+    if len(_VERIFY_HITS) > 5000:
+        _VERIFY_HITS.clear()
+    _VERIFY_HITS[uid] = hits
+    return True
+
+
+def _mask_name(name: str) -> str:
+    """Маскирует имя: хватает для сверки, бесполезно для сбора данных."""
+    def m(w):
+        if len(w) <= 2:
+            return w[0] + "*"
+        return w[0] + "*" * (len(w) - 2) + w[-1]
+    return " ".join(m(w) for w in (name or "?").split())
+
+
+_STATUS_LABELS = {
+    "pending": "⏳ ожидает решения продавца",
+    "accepted": "✅ принят продавцом",
+    "rejected": "❌ отклонён продавцом",
+}
+
+
+async def _answer_verify(message: Message, db: Database, config, raw: str):
+    """Разбирает ввод: код отзыва (RSB-XXXXXXXX) или ID продавца (до 4 символов)."""
+    import re as _re
+    import html as _h
+    t = (raw or "").strip().upper().replace(" ", "")
+
+    kb_again = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔎 Проверить ещё", callback_data="menu:verify")],
+        [InlineKeyboardButton(text="« Меню", callback_data="menu:back")],
+    ])
+
+    # Код отзыва с карточки
+    m = _re.fullmatch(r"(?:RSB-?)?([0-9A-HJKMNP-TV-Z]{8})", t)
+    if m:
+        review = await db.get_review_by_code("RSB-" + m.group(1))
+        if not review:
+            await message.answer(
+                "❌ <b>Код не найден.</b>\n\n"
+                "Такой отзыв этим ботом не выдавался — вероятно, карточка поддельная.",
+                reply_markup=kb_again)
+            return
+        seller = await db.get_seller(review["seller_id"])
+        shop = _h.escape(seller["shop_name"]) if seller else "?"
+        pub = seller.get("pub_id") if seller else None
+        stars = "★" * review.get("stars", 0) or "—"
+        date = review["created_at"].strftime("%d.%m.%Y")
+        status = _STATUS_LABELS.get(review.get("status"), review.get("status") or "—")
+        await message.answer(
+            f"✅ <b>Отзыв настоящий</b> — выдан этим ботом.\n\n"
+            f"🏪 Магазин: <b>{shop}</b>" + (f" (ID <code>{pub}</code>)" if pub else "") + "\n"
+            f"⭐ Оценка: {stars}\n"
+            f"📅 Дата: {date}\n"
+            f"👤 Покупатель: {_h.escape(_mask_name(review.get('buyer_name') or ''))}\n"
+            f"📌 Статус: {status}",
+            reply_markup=kb_again)
+        return
+
+    # ID продавца
+    if _re.fullmatch(r"[A-Z0-9]{1,4}", t):
+        seller = await db.get_seller_by_pubid(t)
+        if not seller:
+            await message.answer(
+                f"❌ Продавец с ID <code>{_h.escape(t)}</code> в боте не найден.",
+                reply_markup=kb_again)
+            return
+        stats = await db.get_shop_stats(seller["id"])
+        ch = await db.get_seller_channel(seller["id"])
+        avg = stats.get("avg_stars")
+        first = stats["first_at"].strftime("%d.%m.%Y") if stats.get("first_at") else "—"
+        last = stats["last_at"].strftime("%d.%m.%Y") if stats.get("last_at") else "—"
+        await message.answer(
+            f"🏪 <b>{_h.escape(seller['shop_name'])}</b> (ID <code>{seller['pub_id']}</code>)\n\n"
+            f"📊 Отзывов выдано ботом: <b>{stats['total']}</b>\n"
+            f"👥 Уникальных покупателей: <b>{stats['unique_buyers']}</b>\n"
+            f"⭐ Средняя оценка: <b>{avg if avg is not None else '—'}</b>\n"
+            f"📅 Первый отзыв: {first} · Последний: {last}\n"
+            f"📢 Канал отзывов: {'подключён ✅' if (ch and ch['verified']) else 'не подключён'}\n\n"
+            f"<i>Если продавец заявляет больше отзывов, чем выдал бот, — "
+            f"это повод насторожиться. Проверяй коды на карточках.</i>",
+            reply_markup=kb_again)
+        return
+
+    await message.answer(
+        "🤔 Не понял формат. Пришли:\n"
+        "• <b>ID продавца</b> — до 4 букв/цифр, например <code>SHIM</code>\n"
+        "• или <b>код отзыва</b> с карточки, например <code>RSB-7K3MPQ92</code>")
+
+
+@router.callback_query(F.data == "menu:verify")
+async def cb_verify(call: CallbackQuery, state: FSMContext, config):
+    await call.answer()
+    if not _verify_allowed(call.from_user.id, config.ADMIN_TG_ID):
+        await call.message.answer("⏳ Слишком много проверок. Попробуй через час.")
+        return
+    await state.set_state(VerifySG.waiting)
+    await call.message.answer(
+        "🔎 <b>Проверка подлинности</b>\n\n"
+        "Пришли <b>ID продавца</b> (например <code>SHIM</code>) — покажу его настоящую "
+        "статистику из бота.\n\n"
+        "Или пришли <b>код отзыва</b> с карточки (например <code>RSB-7K3MPQ92</code>) — "
+        "проверю, выдавал ли бот такой отзыв."
+    )
+
+
+@router.message(VerifySG.waiting, F.text)
+async def verify_input(message: Message, state: FSMContext, db: Database, config):
+    await state.clear()
+    if not _verify_allowed(message.from_user.id, config.ADMIN_TG_ID):
+        await message.answer("⏳ Слишком много проверок. Попробуй через час.")
+        return
+    await _answer_verify(message, db, config, message.text)
+
+
+@router.message(Command("check"))
+async def cmd_check(message: Message, db: Database, config):
+    if not _verify_allowed(message.from_user.id, config.ADMIN_TG_ID):
+        await message.answer("⏳ Слишком много проверок. Попробуй через час.")
+        return
+    args = message.text.split(maxsplit=1)
+    if len(args) < 2:
+        await message.answer("Использование: <code>/check RSB-XXXXXXXX</code> или <code>/check SHIM</code>")
+        return
+    await _answer_verify(message, db, config, args[1])
+
+
+@router.message(StateFilter(None), F.text.regexp(r"(?i)^rsb-?[0-9a-hjkmnp-tv-z]{8}$"))
+async def bare_code_check(message: Message, db: Database, config):
+    """Голый код с карточки, отправленный в личку — проверяем сразу."""
+    if not _verify_allowed(message.from_user.id, config.ADMIN_TG_ID):
+        await message.answer("⏳ Слишком много проверок. Попробуй через час.")
+        return
+    await _answer_verify(message, db, config, message.text)

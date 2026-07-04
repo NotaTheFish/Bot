@@ -5,6 +5,12 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 import logging
 import asyncio
+import html as _html_mod
+
+
+def _esc(t) -> str:
+    """Эскейп пользовательского текста для caption с parse_mode=HTML."""
+    return _html_mod.escape(str(t or ""))
 
 from db import Database
 from keyboards import kb_buyer_stars, kb_templates, kb_cancel
@@ -25,6 +31,18 @@ class ReviewSG(StatesGroup):
 
 
 async def start_review_flow(message: Message, seller: dict, state: FSMContext, db: Database):
+    # Ранняя проверка анти-накрутки — чтобы не заставлять печатать отзыв зря
+    from config import Config
+    _cfg = Config()
+    if message.from_user.id != _cfg.ADMIN_TG_ID:
+        if await db.has_recent_review(message.from_user.id, seller["id"], hours=6):
+            await message.answer(
+                "⏳ Ты уже оставлял отзыв этому продавцу недавно.\n"
+                "Повторный отзыв — через 6 часов после предыдущего.")
+            return
+        if await db.count_reviews_24h(message.from_user.id) >= 10:
+            await message.answer("⛔ Дневной лимит отзывов исчерпан. Возвращайся завтра!")
+            return
     await state.update_data(seller=seller, mode="buyer")
 
     shop = seller["shop_name"]
@@ -233,9 +251,24 @@ async def finalize_review(event, state: FSMContext, db: Database, bot, config,
     buyer_name = user.full_name or user.first_name or "Покупатель"
     buyer_username = user.username
 
+    # Анти-накрутка: 1 отзыв продавцу в 6 часов + суточный лимит (админ — без лимитов для тестов)
+    if user.id != config.ADMIN_TG_ID:
+        if await db.has_recent_review(user.id, seller["id"], hours=6):
+            await answer("⏳ Ты уже оставлял отзыв этому продавцу недавно.\n"
+                         "Повторный отзыв — через 6 часов после предыдущего.")
+            await state.clear()
+            return
+        if await db.count_reviews_24h(user.id) >= 10:
+            await answer("⛔ Дневной лимит отзывов исчерпан. Возвращайся завтра!")
+            await state.clear()
+            return
+
     avatar_bytes = await _get_avatar_bytes(bot, user.id)
 
     await answer("⏳ Генерирую карточку...")
+
+    # Резервируем код подлинности ДО генерации — он печатается на карточке
+    verify_code = await db.reserve_verify_code()
 
     card_data = {
         "shop_name": seller["shop_name"],
@@ -244,6 +277,7 @@ async def finalize_review(event, state: FSMContext, db: Database, bot, config,
         "buyer_initials": "".join(w[0].upper() for w in buyer_name.split() if w)[:2],
         "review_text": text,
         "item_bought": data.get("item_bought", ""),
+        "verify_code": verify_code,
         "stars": data.get("stars", 0),
         "stars_mode": seller["stars_mode"],
         "template_id": data.get("template_id", seller["template_id"]),
@@ -268,11 +302,11 @@ async def finalize_review(event, state: FSMContext, db: Database, bot, config,
     )
 
     stars_line = "★" * data.get("stars", 0) if data.get("stars", 0) > 0 else ""
-    caption_parts = [f"<b>{seller['shop_name']}</b>"]
+    caption_parts = [f"<b>{_esc(seller['shop_name'])}</b>"]
     if stars_line:
         caption_parts.append(stars_line)
-    caption_parts.append(f"\n<i>«{text}»</i>")
-    caption_parts.append(f"\n— {buyer_name}")
+    caption_parts.append(f"\n<i>«{_esc(text)}»</i>")
+    caption_parts.append(f"\n— {_esc(buyer_name)}")
     review_caption = "\n".join(caption_parts)
 
     sent = None
@@ -312,6 +346,7 @@ async def finalize_review(event, state: FSMContext, db: Database, bot, config,
         card_file_id=file_id,
         show_buyer_button=show_button,
         proof_count=len(proofs or []),
+        verify_code=verify_code,
     )
     review_id = review_row["id"]
     await state.clear()
@@ -595,11 +630,11 @@ async def cb_review_accept(call: CallbackQuery, bot: Bot, db: Database):
 
     # Строим подпись идентично основному флоу
     stars_line = "★" * row["stars"] if row["stars"] > 0 else ""
-    caption_parts = [f"<b>{shop_name}</b>"]
+    caption_parts = [f"<b>{_esc(shop_name)}</b>"]
     if stars_line:
         caption_parts.append(stars_line)
-    caption_parts.append(f"\n<i>«{row['review_text']}»</i>")
-    caption_parts.append(f"\n— {buyer_name}")
+    caption_parts.append(f"\n<i>«{_esc(row['review_text'])}»</i>")
+    caption_parts.append(f"\n— {_esc(buyer_name)}")
     caption = "\n".join(caption_parts)
 
     try:
@@ -749,6 +784,7 @@ async def pe_photo(message: Message, state: FSMContext, db: Database, bot, confi
         "bot_username": config.BOT_USERNAME,
         "db": db,
         "proof_list": proofs,
+        "verify_code": review.get("verify_code"),
     }
     try:
         img_bytes = await generate_card(card_data)
@@ -758,11 +794,11 @@ async def pe_photo(message: Message, state: FSMContext, db: Database, bot, confi
 
     # Восстанавливаем подпись и клавиатуру карточки
     stars_line = "★" * review.get("stars", 0) if review.get("stars", 0) > 0 else ""
-    caption_parts = [f"<b>{seller['shop_name']}</b>"]
+    caption_parts = [f"<b>{_esc(seller['shop_name'])}</b>"]
     if stars_line:
         caption_parts.append(stars_line)
-    caption_parts.append(f"\n<i>«{review['review_text']}»</i>")
-    caption_parts.append(f"\n— {buyer_name}")
+    caption_parts.append(f"\n<i>«{_esc(review['review_text'])}»</i>")
+    caption_parts.append(f"\n— {_esc(buyer_name)}")
     review_caption = "\n".join(caption_parts)
 
     buyer_username = review.get("buyer_username")
