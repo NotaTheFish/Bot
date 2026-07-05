@@ -19,11 +19,6 @@ router = Router()
 logger = logging.getLogger(__name__)
 
 # Кеш сгенерированных карточек в памяти: ключ -> file_id.
-# Инлайн-запрос должен ответить за ~10 сек, а рендер Playwright медленный,
-# поэтому одинаковые/повторные запросы берём из кеша мгновенно.
-_INLINE_CARD_CACHE: dict[str, str] = {}
-_INLINE_CACHE_MAX = 500
-
 # Ожидающие инлайн-отзывы для уведомления продавца (когда покупатель реально отправит)
 _PENDING_INLINE: dict[str, dict] = {}
 _PENDING_MAX = 500
@@ -37,11 +32,6 @@ import html as _html_mod
 
 def _esc(t) -> str:
     return _html_mod.escape(str(t or ""))
-
-
-def _cache_key(seller: dict, review_text: str) -> str:
-    raw = f"{seller.get('template_id')}|{seller.get('inline_template_id')}|{seller.get('shop_name')}|{seller.get('stars_mode')}|{seller.get('stars_value')}|{seller.get('item_mode')}|{seller.get('item_value')}|{review_text}"
-    return hashlib.sha256(raw.encode()).hexdigest()
 
 
 async def _safe_answer(query: InlineQuery, **kwargs):

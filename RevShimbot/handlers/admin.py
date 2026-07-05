@@ -32,6 +32,7 @@ def kb_admin_main() -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text="🏆 Топ продавцов", callback_data="admin:topsellers")],
         [InlineKeyboardButton(text="📣 Управление рекламой", callback_data="admin:ads")],
         [InlineKeyboardButton(text="🚫 Баны", callback_data="admin:bans")],
+        [InlineKeyboardButton(text="📋 Журнал действий", callback_data="admin:log")],
         [InlineKeyboardButton(text="« Назад", callback_data="menu:back")],
     ])
 
@@ -244,6 +245,9 @@ async def cb_ad_send(call: CallbackQuery, state: FSMContext, db: Database, bot, 
         await asyncio.sleep(0.05)
 
     kind_label = "Рассылка" if kind == "broadcast" else "Закреп"
+    await db.log_admin_action(
+        "broadcast" if kind == "broadcast" else "pin",
+        f"доставлено={sent}, заблок={blocked}, ошибок={failed}")
     # После операции показываем актуальную клавиатуру (с кнопкой открепа если закрепили)
     has_pins = await db.has_ad_pins()
     await status.edit_text(
@@ -308,6 +312,7 @@ async def cb_ad_unpin_go(call: CallbackQuery, db: Database, bot, config):
 
     # Чистим записи о закрепах — реклама больше не закреплена
     await db.clear_ad_pins()
+    await db.log_admin_action("unpin", f"откреплено={done}, ошибок={failed}")
 
     await status.edit_text(
         f"✅ <b>Открепление завершено</b>\n\n"
@@ -318,6 +323,37 @@ async def cb_ad_unpin_go(call: CallbackQuery, db: Database, bot, config):
 
 
 # ── Топ продавцов ──────────────────────────────────────────────────────────
+
+@router.callback_query(F.data == "admin:log")
+async def cb_admin_log(call: CallbackQuery, db: Database, config):
+    if not _is_admin(call.from_user.id, config):
+        await call.answer("Недоступно", show_alert=True)
+        return
+    await call.answer()
+    entries = await db.get_admin_log(20)
+    if not entries:
+        await call.message.answer(
+            "📋 Журнал пуст.",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="« Назад", callback_data="admin:home")]
+            ]))
+        return
+    labels = {
+        "ban": "🚫 Бан", "unban": "✅ Разбан", "ban_seller": "🚫 Бан продавца",
+        "broadcast": "📢 Рассылка", "pin": "📌 Закреп", "unpin": "📌❌ Откреп",
+    }
+    lines = ["📋 <b>Журнал действий</b> (последние 20)\n"]
+    for e in entries:
+        when = e["created_at"].strftime("%d.%m %H:%M")
+        label = labels.get(e["action"], e["action"])
+        det = f" — {e['details']}" if e.get("details") else ""
+        lines.append(f"<code>{when}</code> {label}{det}")
+    await call.message.answer(
+        "\n".join(lines),
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="« Назад", callback_data="admin:home")]
+        ]))
+
 
 @router.callback_query(F.data == "admin:topsellers")
 async def cb_top_sellers(call: CallbackQuery, db: Database, config):
@@ -394,6 +430,7 @@ async def cb_ban_seller(call: CallbackQuery, db: Database, bot, config):
     seller = await db.get_seller(seller_id)
     uname = seller.get("username") if seller else None
     await db.ban_user(seller_id, uname, reason="накрутка отзывов")
+    await db.log_admin_action("ban_seller", f"seller={seller_id} (накрутка)")
     await call.answer("🚫 Продавец забанен")
     # Уведомляем забаненного
     from aiogram.types import ReplyKeyboardRemove
@@ -464,6 +501,7 @@ async def cb_ban_process(message: Message, state: FSMContext, db: Database, bot,
         return
 
     await db.ban_user(user_id, username)
+    await db.log_admin_action("ban", f"user={user_id} (@{username or '—'})")
 
     # Сразу уведомляем забаненного и убираем у него reply-клавиатуру
     from aiogram.types import ReplyKeyboardRemove
@@ -552,6 +590,7 @@ async def cb_unban(call: CallbackQuery, db: Database, bot, config):
         return
     uid = int(call.data.split(":")[2])
     await db.unban_user(uid)
+    await db.log_admin_action("unban", f"user={uid}")
     await call.answer("✅ Разбанен")
 
     # Уведомляем разбаненного и сразу возвращаем reply-клавиатуру

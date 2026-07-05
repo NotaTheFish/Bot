@@ -124,6 +124,12 @@ CREATE TABLE IF NOT EXISTS rvb_banned_users (
     expires_at TIMESTAMPTZ,
     reason TEXT
 );
+CREATE TABLE IF NOT EXISTS rvb_admin_log (
+    id SERIAL PRIMARY KEY,
+    action TEXT NOT NULL,
+    details TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
 """
 
 
@@ -309,6 +315,14 @@ class Database:
             await conn.execute("""
                 ALTER TABLE rvb_banned_users
                 ADD COLUMN IF NOT EXISTS reason TEXT
+            """)
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS rvb_admin_log (
+                    id SERIAL PRIMARY KEY,
+                    action TEXT NOT NULL,
+                    details TEXT,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                )
             """)
         logger.info("Database initialized")
 
@@ -825,6 +839,21 @@ class Database:
                 INSERT INTO rvb_settings (key, value) VALUES ($1, $2)
                 ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value
             """, key, value)
+
+    # ── Журнал действий админа (append-only) ───────────────────────────────
+
+    async def log_admin_action(self, action: str, details: str = ""):
+        async with self.pool.acquire() as conn:
+            await conn.execute(
+                "INSERT INTO rvb_admin_log (action, details) VALUES ($1, $2)",
+                action, details)
+
+    async def get_admin_log(self, limit: int = 20) -> list:
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT action, details, created_at FROM rvb_admin_log "
+                "ORDER BY created_at DESC LIMIT $1", limit)
+            return [dict(r) for r in rows]
 
     async def get_review(self, review_id: int) -> Optional[dict]:
         async with self.pool.acquire() as conn:

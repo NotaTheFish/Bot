@@ -605,6 +605,9 @@ async def cb_edit_field(call: CallbackQuery, db: Database, state: FSMContext, co
         await call.message.answer("📦 Режим «Что купил»:", reply_markup=kb_item_mode(data.get("item_mode")))
     elif field == "cards":
         seller = await db.get_seller(call.from_user.id)
+        if not seller:
+            await call.answer("Сначала настрой шаблон", show_alert=True)
+            return
         from keyboards import kb_card_source, CARD_SOURCE_LABELS
         cur_label = CARD_SOURCE_LABELS.get(seller.get("card_source_mode", "standard"))
         await call.message.answer(
@@ -618,6 +621,9 @@ async def cb_edit_field(call: CallbackQuery, db: Database, state: FSMContext, co
         )
     elif field == "inlinebtn":
         seller = await db.get_seller(call.from_user.id)
+        if not seller:
+            await call.answer("Сначала настрой шаблон", show_alert=True)
+            return
         from keyboards import kb_inline_button, INLINE_BTN_LABELS
         cur_label = INLINE_BTN_LABELS.get(seller.get("inline_button_mode", "shown"))
         await call.message.answer(
@@ -635,6 +641,9 @@ async def cb_edit_field(call: CallbackQuery, db: Database, state: FSMContext, co
         )
     elif field == "inlinecfg":
         seller = await db.get_seller(call.from_user.id)
+        if not seller:
+            await call.answer("Сначала настрой шаблон", show_alert=True)
+            return
         from keyboards import kb_inline_config
         itid = seller.get("inline_template_id") or seller["template_id"]
         if itid.startswith("custom_"):

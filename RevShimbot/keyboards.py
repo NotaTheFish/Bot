@@ -76,12 +76,6 @@ def kb_allow_template_choice(current: bool = False) -> InlineKeyboardMarkup:
     ]])
 
 
-def kb_setup_done() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(inline_keyboard=[[
-        InlineKeyboardButton(text="✅ Готово — получить ссылку", callback_data="setup:done")
-    ]])
-
-
 def kb_back_to_menu() -> InlineKeyboardMarkup:
     """Кнопка возврата в меню продавца — для информационных экранов."""
     return InlineKeyboardMarkup(inline_keyboard=[

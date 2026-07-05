@@ -6,7 +6,7 @@ from aiogram.fsm.state import State, StatesGroup
 from db import Database
 from keyboards import (
     kb_templates, kb_stars_mode, kb_stars_value,
-    kb_item_mode, kb_allow_template_choice, kb_setup_done, kb_seller_menu
+    kb_item_mode, kb_allow_template_choice, kb_seller_menu
 )
 from utils.helpers import get_ref_link
 

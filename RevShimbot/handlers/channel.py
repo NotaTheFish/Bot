@@ -110,7 +110,7 @@ async def on_bot_added_to_channel(event: ChatMemberUpdated, bot: Bot, db: Databa
 
     key = _gen_key()
     await db.set_seller_channel(seller_id, channel_id, channel_title, key)
-    logger.info(f"Канал сохранён, ключ={key}, отправляю продавцу {seller_id}")
+    logger.info(f"Канал сохранён, отправляю ключ продавцу {seller_id}")
 
     try:
         await bot.send_message(
