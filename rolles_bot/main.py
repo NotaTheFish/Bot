@@ -11,7 +11,7 @@ from aiogram.filters import Command, ChatMemberUpdatedFilter, IS_NOT_MEMBER, MEM
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
-from database import db
+from database import db, COOLDOWN_MAX
 from config import settings
 
 logging.basicConfig(level=logging.INFO)
@@ -19,6 +19,21 @@ logger = logging.getLogger(__name__)
 
 bot = Bot(token=settings.BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
+
+
+# ─────────────────────────────────────────
+# Middleware: авто-обновление username
+# ─────────────────────────────────────────
+@dp.message.outer_middleware()
+async def update_username_middleware(handler, message, data):
+    """При каждом сообщении в группе обновляет username отправителя в БД."""
+    if message.chat.type in ("group", "supergroup") and message.from_user:
+        await db.update_member_username(
+            message.chat.id,
+            message.from_user.id,
+            message.from_user.username  # None если нет username — тоже обновляем
+        )
+    return await handler(message, data)
 
 
 # ─────────────────────────────────────────
@@ -104,30 +119,34 @@ async def is_chat_bot_admin(chat_id: int, user_id: int) -> bool:
     return await db.is_bot_admin(chat_id, user_id)
 
 
-def build_mentions(members: list[dict]) -> tuple[str, list[MessageEntity]]:
+CHUNK_SIZE = 90  # максимум entities в одном сообщении (с запасом от лимита 100)
+
+
+def build_mention_chunks(members: list[dict], header: str) -> list[tuple[str, list[MessageEntity]]]:
     """
-    Строит строку упоминаний и список entities для text_mention.
-    Возвращает (text, entities). Entities работают без username — уведомление гарантировано.
+    Разбивает участников на чанки по CHUNK_SIZE и строит сообщения с entities.
+    Возвращает список (text, entities) — каждый элемент = одно сообщение.
     """
-    parts = []
-    entities = []
-    offset = 0
-    for m in members:
-        if m.get("username"):
-            mention = f"@{m['username']}"
-            parts.append(mention)
-            offset += len(mention) + 1  # +1 пробел
-        else:
-            name = f"участник{m['user_id']}"
+    chunks = [members[i:i + CHUNK_SIZE] for i in range(0, len(members), CHUNK_SIZE)]
+    result = []
+    for i, chunk in enumerate(chunks):
+        prefix = header if i == 0 else ""
+        parts = []
+        entities = []
+        offset = len(prefix)
+        for m in chunk:
+            display = f"@{m['username']}" if m.get("username") else "участник"
             entities.append(MessageEntity(
                 type="text_mention",
                 offset=offset,
-                length=len(name),
-                user=User(id=m["user_id"], is_bot=False, first_name=name)
+                length=len(display),
+                user=User(id=m["user_id"], is_bot=False, first_name=display)
             ))
-            parts.append(name)
-            offset += len(name) + 1
-    return " ".join(parts), entities
+            parts.append(display)
+            offset += len(display) + 1
+        text = prefix + " ".join(parts)
+        result.append((text, entities))
+    return result
 
 
 async def get_active_chat_id(user_id: int, state: FSMContext) -> int | None:
@@ -466,25 +485,26 @@ async def join_leave_clan(message: Message):
     clan_name = text[3:].strip()  # убираем +шк / -шк
     chat_id = message.chat.id
     user_id = message.from_user.id
-    username = message.from_user.username or message.from_user.full_name
+    real_username = message.from_user.username  # только настоящий @ник или None
+    display_name = f"@{real_username}" if real_username else message.from_user.full_name
 
     clan = await db.get_clan(chat_id, clan_name)
     if not clan:
-        await message.reply(f"❌ Клан *{clan_name}* не найден.", parse_mode="HTML")
+        await message.reply(f"❌ Клан <b>{clan_name}</b> не найден.", parse_mode="HTML")
         return
 
     if action == "+":
-        added = await db.add_member(chat_id, clan_name, user_id, username)
+        added = await db.add_member(chat_id, clan_name, user_id, real_username)
         if added:
-            await message.reply(f"✅ @{username} вступил в клан *{clan_name}*!", parse_mode="HTML")
+            await message.reply(f"✅ {display_name} вступил в клан <b>{clan_name}</b>!", parse_mode="HTML")
         else:
-            await message.reply(f"ℹ️ Ты уже в клане *{clan_name}*.", parse_mode="HTML")
+            await message.reply(f"ℹ️ Ты уже в клане <b>{clan_name}</b>.", parse_mode="HTML")
     else:
         removed = await db.remove_member(chat_id, clan_name, user_id)
         if removed:
-            await message.reply(f"👋 @{username} покинул клан *{clan_name}*.", parse_mode="HTML")
+            await message.reply(f"👋 {display_name} покинул клан <b>{clan_name}</b>.", parse_mode="HTML")
         else:
-            await message.reply(f"ℹ️ Ты не состоишь в клане *{clan_name}*.", parse_mode="HTML")
+            await message.reply(f"ℹ️ Ты не состоишь в клане <b>{clan_name}</b>.", parse_mode="HTML")
 
 
 # ─────────────────────────────────────────
@@ -514,14 +534,28 @@ async def trigger_summon(message: Message):
     text = message.text.strip()
     trigger = text[1:].lower()
     chat_id = message.chat.id
+    user_id = message.from_user.id
 
     clans = await db.get_clans_by_trigger(chat_id, trigger)
     if not clans:
         return  # не наш триггер — молчим
 
+    # Кулдаун — только для не-админов
+    if not await is_chat_bot_admin(chat_id, user_id):
+        allowed, remaining = await db.check_cooldown(chat_id, user_id)
+        if not allowed:
+            mins = remaining // 60
+            secs = remaining % 60
+            await message.reply(
+                f"⏳ Ты уже созывал {COOLDOWN_MAX} раза за 10 минут. "
+                f"Подожди ещё {mins}м {secs}с.",
+                parse_mode="HTML"
+            )
+            return
+
     # Собираем участников из всех кланов, дедуплицируем по user_id
     seen_ids: set[int] = set()
-    clan_members: dict[str, list] = {}  # clan_name -> members
+    clan_members: dict[str, list] = {}
 
     for clan in clans:
         members = await db.get_clan_members(chat_id, clan["name"])
@@ -531,31 +565,35 @@ async def trigger_summon(message: Message):
             seen_ids.update(m["user_id"] for m in unique)
 
     if not clan_members:
-        names = ", ".join(f"*{c['name']}*" for c in clans)
-        await message.reply(f"👥 Кланы {names} пусты.", parse_mode="HTML")
+        await message.reply("👥 Кланы пусты.", parse_mode="HTML")
         return
 
     caller = f"@{message.from_user.username}" if message.from_user.username else message.from_user.full_name
-
-    # Собираем всех участников в один список (уже дедуплицированы)
+    clan_labels = ", ".join(clan_members.keys())
     all_members = [m for members in clan_members.values() for m in members]
-    clan_labels = []
-    for clan_name in clan_members:
-        clan_labels.append(clan_name)
+    total = len(all_members)
 
-    mentions_text, entities = build_mentions(all_members)
+    header = f"📣 Сбор [{clan_labels}]! (позвал {caller})\n"
+    chunks = build_mention_chunks(all_members, header)
 
-    header = f"📣 Сбор [{', '.join(clan_labels)}]! (позвал {caller})\n"
-    full_text = header + mentions_text
+    first = True
+    for chunk_text, chunk_entities in chunks:
+        if first:
+            sent = await message.reply(chunk_text, entities=chunk_entities)
+            first = False
+        else:
+            await message.answer(chunk_text, entities=chunk_entities)
 
-    # Сдвигаем offset entities на длину header
-    header_len = len(header)
-    shifted = [
-        MessageEntity(type=e.type, offset=e.offset + header_len, length=e.length, user=e.user)
-        for e in entities
-    ]
-
-    await message.reply(full_text, entities=shifted)
+    # Счётчик отправленных
+    if len(chunks) > 1:
+        await message.answer(f"📨 Отправлено: {total} участников ({len(chunks)} сообщения)")
+    else:
+        # Дописываем счётчик к первому сообщению через edit
+        try:
+            new_text = chunks[0][0] + f"\n📨 {total} уч."
+            await sent.edit_text(new_text, entities=chunks[0][1])
+        except Exception:
+            pass
 
 
 # ─────────────────────────────────────────
@@ -576,15 +614,60 @@ async def summon_all(message: Message):
         await message.reply("👥 В базе нет участников кланов.")
         return
 
-    mentions_text, entities = build_mentions(members)
     header = f"📣 Всеобщий сбор! (позвал {caller})\n"
-    full_text = header + mentions_text
-    header_len = len(header)
-    shifted = [
-        MessageEntity(type=e.type, offset=e.offset + header_len, length=e.length, user=e.user)
-        for e in entities
-    ]
-    await message.reply(full_text, entities=shifted)
+    chunks = build_mention_chunks(members, header)
+    total = len(members)
+
+    first = True
+    for chunk_text, chunk_entities in chunks:
+        if first:
+            sent = await message.reply(chunk_text, entities=chunk_entities)
+            first = False
+        else:
+            await message.answer(chunk_text, entities=chunk_entities)
+
+    if len(chunks) > 1:
+        await message.answer(f"📨 Отправлено: {total} участников ({len(chunks)} сообщения)")
+    else:
+        try:
+            new_text = chunks[0][0] + f"\n📨 {total} уч."
+            await sent.edit_text(new_text, entities=chunks[0][1])
+        except Exception:
+            pass
+
+
+# ─────────────────────────────────────────
+# Чистка призраков: !чистка (бот-админы)
+# ─────────────────────────────────────────
+@dp.message(F.chat.type.in_({"group", "supergroup"}), F.text.regexp(r"(?i)^!чистка$"))
+async def cleanup_ghosts(message: Message):
+    chat_id = message.chat.id
+    user_id = message.from_user.id
+
+    if not await is_chat_bot_admin(chat_id, user_id):
+        return
+
+    status_msg = await message.reply("🔍 Проверяю участников кланов...")
+
+    all_members = await db.get_all_chat_members_tg(chat_id)
+    removed = 0
+
+    for m in all_members:
+        try:
+            member = await bot.get_chat_member(chat_id, m["user_id"])
+            if member.status in ("left", "kicked"):
+                count = await db.remove_member_from_all_clans(chat_id, m["user_id"])
+                removed += count
+        except Exception:
+            # Пользователь не найден — тоже удаляем
+            count = await db.remove_member_from_all_clans(chat_id, m["user_id"])
+            removed += count
+
+    await status_msg.edit_text(
+        f"✅ Чистка завершена.\n"
+        f"Удалено записей: <b>{removed}</b>",
+        parse_mode="HTML"
+    )
 
 
 # ─────────────────────────────────────────

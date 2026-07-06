@@ -4,6 +4,9 @@ database.py — слой работы с PostgreSQL через asyncpg.
 import asyncpg
 from config import settings
 
+COOLDOWN_SECONDS = 600  # 10 минут
+COOLDOWN_MAX = 3        # максимум созывов за период
+
 
 class Database:
     def __init__(self):
@@ -46,6 +49,13 @@ class Database:
                     chat_id BIGINT NOT NULL,
                     used    BOOLEAN NOT NULL DEFAULT FALSE
                 );
+                CREATE TABLE IF NOT EXISTS shimm_cooldowns (
+                    chat_id  BIGINT NOT NULL,
+                    user_id  BIGINT NOT NULL,
+                    count    INTEGER NOT NULL DEFAULT 1,
+                    reset_at TIMESTAMPTZ NOT NULL,
+                    PRIMARY KEY(chat_id, user_id)
+                );
             """)
 
     # ── Чаты ──────────────────────────────────────────────────
@@ -70,14 +80,16 @@ class Database:
     # ── Кланы ─────────────────────────────────────────────────
     async def create_clan(self, chat_id: int, name: str, triggers: list[str]) -> dict | None:
         async with self.pool.acquire() as conn:
-            row = await conn.fetchrow(
-                "INSERT INTO shimm_clans(chat_id, name) VALUES($1,$2) "
-                "ON CONFLICT(chat_id, name) DO NOTHING "
-                "RETURNING id",
+            exists = await conn.fetchval(
+                "SELECT id FROM shimm_clans WHERE chat_id=$1 AND LOWER(name)=LOWER($2)",
                 chat_id, name
             )
-            if row is None:
-                return None  # клан с таким именем уже существует
+            if exists:
+                return None
+            row = await conn.fetchrow(
+                "INSERT INTO shimm_clans(chat_id, name) VALUES($1,$2) RETURNING id",
+                chat_id, name
+            )
             clan_id = row["id"]
             for t in triggers:
                 await conn.execute(
@@ -116,6 +128,12 @@ class Database:
 
     async def rename_clan(self, chat_id: int, old_name: str, new_name: str) -> bool:
         async with self.pool.acquire() as conn:
+            exists = await conn.fetchval(
+                "SELECT id FROM shimm_clans WHERE chat_id=$1 AND LOWER(name)=LOWER($2) AND LOWER(name)!=LOWER($3)",
+                chat_id, new_name, old_name
+            )
+            if exists:
+                return False
             result = await conn.execute(
                 "UPDATE shimm_clans SET name=$1 WHERE chat_id=$2 AND LOWER(name)=LOWER($3)",
                 new_name, chat_id, old_name
@@ -170,7 +188,7 @@ class Database:
         return result.split()[-1] != "0"
 
     async def get_clans_by_trigger(self, chat_id: int, trigger: str) -> list[dict]:
-        """Все кланы, у которых есть данный триггер."""
+        """Все кланы с данным триггером."""
         async with self.pool.acquire() as conn:
             rows = await conn.fetch(
                 """
@@ -184,7 +202,7 @@ class Database:
         return [{"id": r["id"], "name": r["name"]} for r in rows]
 
     # ── Участники ─────────────────────────────────────────────
-    async def add_member(self, chat_id: int, clan_name: str, user_id: int, username: str) -> bool:
+    async def add_member(self, chat_id: int, clan_name: str, user_id: int, username: str | None) -> bool:
         clan = await self.get_clan(chat_id, clan_name)
         if not clan:
             return False
@@ -221,8 +239,18 @@ class Database:
             )
         return [dict(r) for r in rows]
 
+    async def update_member_username(self, chat_id: int, user_id: int, username: str | None):
+        """Обновляет username участника во всех его кланах этого чата."""
+        async with self.pool.acquire() as conn:
+            await conn.execute(
+                """UPDATE shimm_members SET username=$1
+                WHERE user_id=$2
+                AND clan_id IN (SELECT id FROM shimm_clans WHERE chat_id=$3)""",
+                username, user_id, chat_id
+            )
+
     async def get_all_chat_members_tg(self, chat_id: int) -> list[dict]:
-        """Для !все — все уникальные участники кланов этого чата."""
+        """Все уникальные участники кланов этого чата."""
         async with self.pool.acquire() as conn:
             rows = await conn.fetch(
                 """
@@ -234,6 +262,69 @@ class Database:
                 chat_id
             )
         return [dict(r) for r in rows]
+
+    async def remove_member_from_all_clans(self, chat_id: int, user_id: int) -> int:
+        """Удаляет участника из всех кланов чата. Возвращает количество удалённых записей."""
+        async with self.pool.acquire() as conn:
+            result = await conn.execute(
+                """DELETE FROM shimm_members
+                WHERE user_id=$1
+                AND clan_id IN (SELECT id FROM shimm_clans WHERE chat_id=$2)""",
+                user_id, chat_id
+            )
+        return int(result.split()[-1])
+
+    # ── Кулдаун ───────────────────────────────────────────────
+    async def check_cooldown(self, chat_id: int, user_id: int) -> tuple[bool, int]:
+        """
+        Проверяет и увеличивает счётчик созывов.
+        Возвращает (allowed, remaining_seconds).
+        allowed=True если лимит не превышен.
+        """
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT count, reset_at FROM shimm_cooldowns WHERE chat_id=$1 AND user_id=$2",
+                chat_id, user_id
+            )
+            now_ts = "NOW()"
+
+            if row is None or f"reset_at < NOW()" and True:
+                # Проверяем истёк ли период
+                if row is not None:
+                    expired = await conn.fetchval(
+                        "SELECT reset_at < NOW() FROM shimm_cooldowns WHERE chat_id=$1 AND user_id=$2",
+                        chat_id, user_id
+                    )
+                else:
+                    expired = True
+
+                if expired:
+                    # Сброс счётчика
+                    await conn.execute(
+                        """INSERT INTO shimm_cooldowns(chat_id, user_id, count, reset_at)
+                        VALUES($1,$2,1, NOW() + INTERVAL '10 minutes')
+                        ON CONFLICT(chat_id, user_id) DO UPDATE
+                        SET count=1, reset_at=NOW() + INTERVAL '10 minutes'""",
+                        chat_id, user_id
+                    )
+                    return True, 0
+
+            # Период активен
+            count = row["count"]
+            if count >= COOLDOWN_MAX:
+                remaining = await conn.fetchval(
+                    "SELECT EXTRACT(EPOCH FROM (reset_at - NOW()))::int FROM shimm_cooldowns "
+                    "WHERE chat_id=$1 AND user_id=$2",
+                    chat_id, user_id
+                )
+                return False, max(0, remaining or 0)
+
+            # Увеличиваем счётчик
+            await conn.execute(
+                "UPDATE shimm_cooldowns SET count=count+1 WHERE chat_id=$1 AND user_id=$2",
+                chat_id, user_id
+            )
+            return True, 0
 
     # ── Бот-админы чата ───────────────────────────────────────
     async def is_bot_admin(self, chat_id: int, user_id: int) -> bool:
@@ -261,7 +352,7 @@ class Database:
     # ── Ключи доступа ─────────────────────────────────────────
     async def create_key(self, chat_id: int) -> str:
         import secrets
-        key = secrets.token_hex(4).upper()  # напр. A1B2C3D4
+        key = secrets.token_hex(4).upper()
         async with self.pool.acquire() as conn:
             await conn.execute(
                 "INSERT INTO shimm_keys(key, chat_id) VALUES($1,$2) "
@@ -271,7 +362,7 @@ class Database:
         return key
 
     async def use_key(self, key: str, chat_id: int) -> bool:
-        """Активировать ключ. True если ключ валиден, привязан к этому чату и не использован."""
+        """True если ключ валиден, привязан к этому чату и не использован."""
         async with self.pool.acquire() as conn:
             row = await conn.fetchrow(
                 "SELECT chat_id, used FROM shimm_keys WHERE key=$1",
