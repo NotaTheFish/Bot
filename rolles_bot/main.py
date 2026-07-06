@@ -5,7 +5,7 @@ from aiogram import Bot, Dispatcher, F
 from aiogram.types import (
     Message, CallbackQuery,
     InlineKeyboardMarkup, InlineKeyboardButton,
-    ChatMemberUpdated
+    ChatMemberUpdated, MessageEntity, User
 )
 from aiogram.filters import Command, ChatMemberUpdatedFilter, IS_NOT_MEMBER, MEMBER, ADMINISTRATOR
 from aiogram.fsm.context import FSMContext
@@ -102,6 +102,32 @@ async def is_chat_bot_admin(chat_id: int, user_id: int) -> bool:
     if user_id == settings.ADMIN_ID:
         return True
     return await db.is_bot_admin(chat_id, user_id)
+
+
+def build_mentions(members: list[dict]) -> tuple[str, list[MessageEntity]]:
+    """
+    Строит строку упоминаний и список entities для text_mention.
+    Возвращает (text, entities). Entities работают без username — уведомление гарантировано.
+    """
+    parts = []
+    entities = []
+    offset = 0
+    for m in members:
+        if m.get("username"):
+            mention = f"@{m['username']}"
+            parts.append(mention)
+            offset += len(mention) + 1  # +1 пробел
+        else:
+            name = f"участник{m['user_id']}"
+            entities.append(MessageEntity(
+                type="text_mention",
+                offset=offset,
+                length=len(name),
+                user=User(id=m["user_id"], is_bot=False, first_name=name)
+            ))
+            parts.append(name)
+            offset += len(name) + 1
+    return " ".join(parts), entities
 
 
 async def get_active_chat_id(user_id: int, state: FSMContext) -> int | None:
@@ -511,16 +537,25 @@ async def trigger_summon(message: Message):
 
     caller = f"@{message.from_user.username}" if message.from_user.username else message.from_user.full_name
 
-    lines = [f"📣 Сбор! (позвал {caller})"]
-    for clan_name, members in clan_members.items():
-        mentions = " ".join(
-            f"@{m['username']}" if m.get("username")
-            else f'<a href="tg://user?id={m["user_id"]}">участник</a>'
-            for m in members
-        )
-        lines.append(f"<b>{clan_name}</b>: {mentions}")
+    # Собираем всех участников в один список (уже дедуплицированы)
+    all_members = [m for members in clan_members.values() for m in members]
+    clan_labels = []
+    for clan_name in clan_members:
+        clan_labels.append(clan_name)
 
-    await message.reply("\n".join(lines), parse_mode="HTML")
+    mentions_text, entities = build_mentions(all_members)
+
+    header = f"📣 Сбор [{', '.join(clan_labels)}]! (позвал {caller})\n"
+    full_text = header + mentions_text
+
+    # Сдвигаем offset entities на длину header
+    header_len = len(header)
+    shifted = [
+        MessageEntity(type=e.type, offset=e.offset + header_len, length=e.length, user=e.user)
+        for e in entities
+    ]
+
+    await message.reply(full_text, entities=shifted)
 
 
 # ─────────────────────────────────────────
@@ -541,12 +576,15 @@ async def summon_all(message: Message):
         await message.reply("👥 В базе нет участников кланов.")
         return
 
-    mentions = " ".join(
-        f"@{m['username']}" if m.get("username")
-        else f'<a href="tg://user?id={m["user_id"]}">участник</a>'
-        for m in members
-    )
-    await message.reply(f"📣 Всеобщий сбор! (позвал {caller})\n{mentions}", parse_mode="HTML")
+    mentions_text, entities = build_mentions(members)
+    header = f"📣 Всеобщий сбор! (позвал {caller})\n"
+    full_text = header + mentions_text
+    header_len = len(header)
+    shifted = [
+        MessageEntity(type=e.type, offset=e.offset + header_len, length=e.length, user=e.user)
+        for e in entities
+    ]
+    await message.reply(full_text, entities=shifted)
 
 
 # ─────────────────────────────────────────

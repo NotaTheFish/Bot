@@ -190,7 +190,9 @@ class Database:
             return False
         async with self.pool.acquire() as conn:
             result = await conn.execute(
-                "INSERT INTO shimm_members(clan_id, user_id, username) VALUES($1,$2,$3) ON CONFLICT DO NOTHING",
+                """INSERT INTO shimm_members(clan_id, user_id, username) VALUES($1,$2,$3)
+                ON CONFLICT(clan_id, user_id) DO UPDATE SET username=EXCLUDED.username
+                WHERE shimm_members.username IS DISTINCT FROM EXCLUDED.username""",
                 clan["id"], user_id, username
             )
         return result.split()[-1] != "0"
