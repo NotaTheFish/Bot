@@ -17,6 +17,69 @@ from keyboards import kb_buyer_stars, kb_templates, kb_cancel
 from constants import REVIEW_MAX_LEN, REVIEW_SOFT_LEN
 from services.card_generator import generate_card
 
+
+def _render_number_text(template: str, number: int) -> str:
+    """Подставляет номер в шаблон. {n} — номер.
+    Шаблон уже хранится как HTML (html_text от пользователя с прем-эмодзи и форматированием),
+    поэтому эскейпить его не нужно — только подставляем номер."""
+    tpl = template or "Отзыв №{n}"
+    return tpl.replace("{n}", str(number))
+
+
+async def _place_review_number(bot, db, config, seller_id: int, review_id: int,
+                               channel_id: int, channel_msg_id: int, ch: dict) -> bool:
+    """Ставит номер отзыву: вычисляет (умный последний), постит сообщение-номер,
+    записывает в БД. Возвращает True если поставлен."""
+    try:
+        cache_chat = getattr(config, "CACHE_CHAT_ID", None)
+        # Умный последний: если самый большой номер указывает на отзыв,
+        # которого уже нет в канале — переиспользуем его номер.
+        last = await db.get_last_number_entry(seller_id)
+        reuse_number = None
+        if last and last.get("channel_msg_id"):
+            alive = await _msg_alive(bot, channel_id, last["channel_msg_id"], cache_chat)
+            if not alive:
+                # Последний отзыв удалён — освобождаем его номер и подчищаем его сообщение-номер
+                reuse_number = last["number"]
+                if last.get("number_msg_id"):
+                    try:
+                        await bot.delete_message(channel_id, last["number_msg_id"])
+                    except Exception:
+                        pass
+                await db.delete_number_entry(last["id"])
+
+        number = reuse_number if reuse_number is not None else await db.next_review_number(seller_id)
+
+        text = _render_number_text(ch.get("numbering_template", "Отзыв №{n}"), number)
+        sent = await bot.send_message(channel_id, text, parse_mode="HTML")
+        await db.record_review_number(seller_id, review_id, number,
+                                      channel_msg_id, sent.message_id)
+        return True
+    except Exception as e:
+        logger.error(f"Не удалось поставить номер отзыву {review_id}: {e}")
+        return False
+
+
+async def _msg_alive(bot, chat_id: int, message_id: int, cache_chat_id) -> bool:
+    """Проверяет, существует ли сообщение в канале. Надёжно: пытаемся скопировать
+    в кеш-чат и сразу удаляем копию. Если оригинал удалён — Telegram бросит ошибку.
+    Если кеш-чат не задан — считаем живым (не рискуем удалять номер зря)."""
+    if not cache_chat_id:
+        return True
+    try:
+        copied = await bot.copy_message(
+            chat_id=cache_chat_id, from_chat_id=chat_id, message_id=message_id)
+        try:
+            await bot.delete_message(cache_chat_id, copied.message_id)
+        except Exception:
+            pass
+        return True
+    except Exception as e:
+        msg = str(e).lower()
+        if "not found" in msg or "to copy" in msg or "message_id_invalid" in msg:
+            return False
+        return True  # прочие ошибки — не рискуем, считаем живым
+
 logger = logging.getLogger(__name__)
 router = Router()
 
@@ -642,7 +705,7 @@ async def cb_skip_proof(call: CallbackQuery, state: FSMContext, db: Database, bo
 # ── Принять / Отклонить отзыв (публикация в канал) ────────────────────────
 
 @router.callback_query(F.data.startswith("review:accept:"))
-async def cb_review_accept(call: CallbackQuery, bot: Bot, db: Database):
+async def cb_review_accept(call: CallbackQuery, bot: Bot, db: Database, config):
     review_id = int(call.data.split(":", 2)[2])
     seller_id = call.from_user.id
 
@@ -685,7 +748,7 @@ async def cb_review_accept(call: CallbackQuery, bot: Bot, db: Database):
     caption = "\n".join(caption_parts)
 
     try:
-        await bot.send_photo(
+        posted = await bot.send_photo(
             chat_id=ch["channel_id"],
             photo=file_id,
             caption=caption,
@@ -698,6 +761,25 @@ async def cb_review_accept(call: CallbackQuery, bot: Bot, db: Database):
 
     await db.set_review_status(review_id, "accepted")
 
+    # ── Нумерация ──
+    mode = ch.get("numbering_mode", "off")
+    if mode == "auto":
+        await _place_review_number(bot, db, config, seller_id, review_id,
+                                   ch["channel_id"], posted.message_id, ch)
+    elif mode == "ask":
+        # Спрашиваем продавца в ЛС — ставить ли номер этому отзыву
+        try:
+            await bot.send_message(
+                seller_id,
+                "🔢 Добавить номер этому отзыву в канале?",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+                    InlineKeyboardButton(text="✅ Да",
+                        callback_data=f"num:yes:{review_id}:{posted.message_id}"),
+                    InlineKeyboardButton(text="❌ Нет", callback_data="num:no"),
+                ]]))
+        except Exception:
+            pass
+
     # Убираем кнопки из текущего сообщения или удаляем его
     try:
         if call.message.photo:
@@ -709,6 +791,51 @@ async def cb_review_accept(call: CallbackQuery, bot: Bot, db: Database):
         pass
 
     await call.answer("✅ Опубликовано в канале!")
+
+
+@router.callback_query(F.data == "num:no")
+async def cb_num_no(call: CallbackQuery):
+    await call.answer("Ок, без номера")
+    try:
+        await call.message.delete()
+    except Exception:
+        pass
+
+
+@router.callback_query(F.data.startswith("num:yes:"))
+async def cb_num_yes(call: CallbackQuery, bot: Bot, db: Database, config):
+    parts = call.data.split(":")
+    review_id = int(parts[2])
+    channel_msg_id = int(parts[3])
+    seller_id = call.from_user.id
+
+    ch = await db.get_seller_channel(seller_id)
+    if not ch or not ch["verified"]:
+        await call.answer("Канал не подключён", show_alert=True)
+        try:
+            await call.message.delete()
+        except Exception:
+            pass
+        return
+
+    # Проверяем, жив ли отзыв в канале — вдруг продавец успел удалить
+    cache_chat = getattr(config, "CACHE_CHAT_ID", None)
+    alive = await _msg_alive(bot, ch["channel_id"], channel_msg_id, cache_chat)
+    if not alive:
+        await call.answer("Отзыв уже удалён из канала", show_alert=True)
+        try:
+            await call.message.delete()
+        except Exception:
+            pass
+        return
+
+    ok = await _place_review_number(bot, db, config, seller_id, review_id,
+                                    ch["channel_id"], channel_msg_id, ch)
+    await call.answer("✅ Номер добавлен" if ok else "Не удалось добавить номер")
+    try:
+        await call.message.delete()
+    except Exception:
+        pass
 
 
 @router.callback_query(F.data.startswith("review:reject"))

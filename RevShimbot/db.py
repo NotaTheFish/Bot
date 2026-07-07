@@ -97,6 +97,18 @@ CREATE TABLE IF NOT EXISTS rvb_seller_channels (
     verified BOOLEAN NOT NULL DEFAULT FALSE,
     verify_key TEXT,
     verified_at TIMESTAMPTZ,
+    numbering_mode TEXT NOT NULL DEFAULT 'off',
+    numbering_start INT NOT NULL DEFAULT 1,
+    numbering_template TEXT NOT NULL DEFAULT 'Отзыв №{n}',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE TABLE IF NOT EXISTS rvb_review_numbers (
+    id SERIAL PRIMARY KEY,
+    seller_id BIGINT NOT NULL,
+    review_id INT,
+    number INT NOT NULL,
+    channel_msg_id BIGINT,
+    number_msg_id BIGINT,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 CREATE TABLE IF NOT EXISTS rvb_bot_users (
@@ -323,6 +335,34 @@ class Database:
                     details TEXT,
                     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
                 )
+            """)
+            # Авто-миграция: нумерация отзывов в канале
+            await conn.execute("""
+                ALTER TABLE rvb_seller_channels
+                ADD COLUMN IF NOT EXISTS numbering_mode TEXT NOT NULL DEFAULT 'off'
+            """)
+            await conn.execute("""
+                ALTER TABLE rvb_seller_channels
+                ADD COLUMN IF NOT EXISTS numbering_start INT NOT NULL DEFAULT 1
+            """)
+            await conn.execute("""
+                ALTER TABLE rvb_seller_channels
+                ADD COLUMN IF NOT EXISTS numbering_template TEXT NOT NULL DEFAULT 'Отзыв №{n}'
+            """)
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS rvb_review_numbers (
+                    id SERIAL PRIMARY KEY,
+                    seller_id BIGINT NOT NULL,
+                    review_id INT,
+                    number INT NOT NULL,
+                    channel_msg_id BIGINT,
+                    number_msg_id BIGINT,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                )
+            """)
+            await conn.execute("""
+                CREATE INDEX IF NOT EXISTS rvb_review_numbers_seller_idx
+                ON rvb_review_numbers(seller_id, number)
             """)
         logger.info("Database initialized")
 
@@ -923,6 +963,75 @@ class Database:
                 "SELECT * FROM rvb_seller_channels WHERE seller_id = $1", seller_id
             )
             return dict(row) if row else None
+
+    # ── Нумерация отзывов в канале ────────────────────────────────────────
+
+    async def set_numbering(self, seller_id: int, **fields):
+        """Обновляет настройки нумерации (mode/start/template)."""
+        allowed = {"numbering_mode", "numbering_start", "numbering_template"}
+        bad = set(fields) - allowed
+        if bad:
+            raise ValueError(f"Недопустимые поля нумерации: {bad}")
+        if not fields:
+            return
+        sets, vals = [], []
+        for i, (k, v) in enumerate(fields.items(), start=1):
+            sets.append(f"{k} = ${i}")
+            vals.append(v)
+        vals.append(seller_id)
+        async with self.pool.acquire() as conn:
+            await conn.execute(
+                f"UPDATE rvb_seller_channels SET {', '.join(sets)} WHERE seller_id = ${len(vals)}",
+                *vals)
+
+    async def next_review_number(self, seller_id: int) -> int:
+        """Вычисляет номер для нового отзыва по «умной» модели:
+        обычно max(number)+1, но если последний номер был удалён (запись помечена
+        deleted или физически удалена) — переиспользует освободившийся хвост.
+        Здесь просто: следующий = max(number)+1, старт = numbering_start при первом.
+        Переиспользование последнего реализуется через release_last_number при удалении."""
+        async with self.pool.acquire() as conn:
+            ch = await conn.fetchrow(
+                "SELECT numbering_start FROM rvb_seller_channels WHERE seller_id = $1",
+                seller_id)
+            start = (ch["numbering_start"] if ch else 1) or 1
+            max_num = await conn.fetchval(
+                "SELECT MAX(number) FROM rvb_review_numbers WHERE seller_id = $1",
+                seller_id)
+            if max_num is None:
+                return start
+            return max(max_num + 1, start)
+
+    async def record_review_number(self, seller_id: int, review_id: int, number: int,
+                                   channel_msg_id: int, number_msg_id: int):
+        async with self.pool.acquire() as conn:
+            await conn.execute("""
+                INSERT INTO rvb_review_numbers
+                    (seller_id, review_id, number, channel_msg_id, number_msg_id)
+                VALUES ($1, $2, $3, $4, $5)
+            """, seller_id, review_id, number, channel_msg_id, number_msg_id)
+
+    async def get_review_number_by_review(self, review_id: int) -> Optional[dict]:
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT * FROM rvb_review_numbers WHERE review_id = $1", review_id)
+            return dict(row) if row else None
+
+    async def get_last_number_entry(self, seller_id: int) -> Optional[dict]:
+        """Запись с самым большим номером — для проверки «умного последнего»."""
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow("""
+                SELECT * FROM rvb_review_numbers
+                WHERE seller_id = $1
+                ORDER BY number DESC LIMIT 1
+            """, seller_id)
+            return dict(row) if row else None
+
+    async def delete_number_entry(self, entry_id: int):
+        """Удаляет запись о номере (когда последний номер освобождается)."""
+        async with self.pool.acquire() as conn:
+            await conn.execute(
+                "DELETE FROM rvb_review_numbers WHERE id = $1", entry_id)
 
     async def get_seller_by_channel(self, channel_id: int) -> Optional[dict]:
         """Найти продавца по channel_id (для my_chat_member апдейта)."""

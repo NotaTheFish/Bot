@@ -331,6 +331,9 @@ async def cb_profile(call: CallbackQuery, db: Database, config):
                 callback_data="menu:pending"
             )
         ])
+        profile_kb_rows.append([
+            InlineKeyboardButton(text="🔢 Нумерация отзывов", callback_data="numbering:menu")
+        ])
     profile_kb_rows.append([InlineKeyboardButton(text="« Назад", callback_data="menu:back")])
 
     # Кнопка админки — только для админа
@@ -633,9 +636,6 @@ async def cb_edit_field(call: CallbackQuery, db: Database, state: FSMContext, co
             "• <b>Спрятать</b> — кнопки не будет\n"
             "• <b>Включить</b> — кнопка всегда добавляется\n"
             "• <b>Спросить клиента</b> — у покупателя спросят, хочет ли он ссылку на себя\n\n"
-            "🔔 <b>Уведомления о чат-отзывах</b> — когда покупатель пишет отзыв прямо в "
-            "чате через <code>@" + config.BOT_USERNAME + " ID текст</code>, бот пришлёт тебе "
-            "карточку в ЛС с кнопками «Принять / Отклонить», как при обычном отзыве.\n\n"
             f"Сейчас: <b>{cur_label}</b>",
             reply_markup=kb_inline_button(seller)
         )
@@ -660,7 +660,10 @@ async def cb_edit_field(call: CallbackQuery, db: Database, state: FSMContext, co
             f"<code>@{config.BOT_USERNAME} ID текст</code>, он не может выбрать карточку — "
             "используется карточка по умолчанию.\n\n"
             f"🎨 Сейчас: <b>{tpl_name}</b>\n\n"
-            "Здесь можно задать отдельную карточку и решить, показывать ли ссылку на покупателя.",
+            "Здесь можно задать отдельную карточку и решить, показывать ли ссылку на покупателя.\n\n"
+            "🔔 <b>Уведомления о чат-отзывах</b> — когда покупатель оставляет отзыв инлайном, "
+            "бот пришлёт тебе карточку в ЛС с кнопками «Принять / Отклонить», как при обычном отзыве. "
+            "Обычные отзывы (через реф-ссылку) приходят всегда — этот тумблер только для инлайна.",
             reply_markup=kb_inline_config(seller)
         )
 
@@ -731,18 +734,6 @@ async def cb_inline_button_mode(call: CallbackQuery, db: Database):
         await call.answer("Сначала настрой шаблон", show_alert=True)
         return
 
-    if action == "notifytoggle":
-        new_val = not seller.get("inline_notify_seller", False)
-        await db.update_seller(call.from_user.id, inline_notify_seller=new_val)
-        await call.answer("🔔 Уведомления включены" if new_val else "🔕 Уведомления выключены")
-        seller = await db.get_seller(call.from_user.id)
-        from keyboards import kb_inline_button
-        try:
-            await call.message.edit_reply_markup(reply_markup=kb_inline_button(seller))
-        except Exception:
-            pass
-        return
-
     if action not in ("hidden", "shown", "ask"):
         await call.answer()
         return
@@ -768,6 +759,18 @@ async def cb_inline_config(call: CallbackQuery, db: Database, state: FSMContext)
         new_val = not seller.get("inline_button_show", True)
         await db.update_seller(call.from_user.id, inline_button_show=new_val)
         await call.answer("✅ Обновлено")
+        seller = await db.get_seller(call.from_user.id)
+        from keyboards import kb_inline_config
+        try:
+            await call.message.edit_reply_markup(reply_markup=kb_inline_config(seller))
+        except Exception:
+            pass
+        return
+
+    if action == "notifytoggle":
+        new_val = not seller.get("inline_notify_seller", False)
+        await db.update_seller(call.from_user.id, inline_notify_seller=new_val)
+        await call.answer("🔔 Уведомления включены" if new_val else "🔕 Уведомления выключены")
         seller = await db.get_seller(call.from_user.id)
         from keyboards import kb_inline_config
         try:
