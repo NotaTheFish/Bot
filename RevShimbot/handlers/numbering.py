@@ -10,6 +10,60 @@ from db import Database
 router = Router()
 logger = logging.getLogger(__name__)
 
+
+def _apply_number_to_template(tpl: str, entities_json, number: int):
+    """Подставляет номер в {n} и сдвигает entities под новую длину.
+    Возвращает (готовый_текст, список_entities_dict). Премиум-эмодзи (custom_emoji)
+    и форматирование сохраняются со сдвигом позиций.
+
+    В Telegram entity offset/length считаются в UTF-16 code units, а не в python-символах.
+    Поэтому все вычисления делаем в UTF-16."""
+    import json as _json
+    ph = "{n}"
+    num_str = str(number)
+    idx = tpl.find(ph)
+    if idx < 0:
+        # нет плейсхолдера — вернём как есть
+        result = tpl
+    else:
+        result = tpl[:idx] + num_str + tpl[idx + len(ph):]
+
+    ents = []
+    if entities_json:
+        try:
+            ents = _json.loads(entities_json) if isinstance(entities_json, str) else entities_json
+        except Exception:
+            ents = []
+    if not ents or idx < 0:
+        return result, ents
+
+    # Сдвиг в UTF-16 единицах
+    def u16len(s):
+        return len(s.encode("utf-16-le")) // 2
+
+    ph_start_u16 = u16len(tpl[:idx])
+    ph_len_u16 = u16len(ph)
+    num_len_u16 = u16len(num_str)
+    delta = num_len_u16 - ph_len_u16  # насколько сдвинулись позиции после {n}
+
+    shifted = []
+    for e in ents:
+        e = dict(e)
+        off = e.get("offset", 0)
+        length = e.get("length", 0)
+        # entity целиком после плейсхолдера — сдвигаем
+        if off >= ph_start_u16 + ph_len_u16:
+            e["offset"] = off + delta
+        # entity до плейсхолдера — не трогаем
+        elif off + length <= ph_start_u16:
+            pass
+        else:
+            # entity пересекает {n} — редкий случай (юзер выделил {n} целиком форматированием)
+            # растягиваем длину на дельту
+            e["length"] = length + delta
+        shifted.append(e)
+    return result, shifted
+
 MODE_LABELS = {
     "off": "🚫 Выключена",
     "auto": "⚡ Авто (сразу после отзыва)",
@@ -38,6 +92,7 @@ def _kb_numbering(ch: dict) -> InlineKeyboardMarkup:
 
 
 def _numbering_text(ch: dict) -> str:
+    import html as _h
     mode = ch.get("numbering_mode", "off")
     start = ch.get("numbering_start", 1)
     tpl = ch.get("numbering_template", "Отзыв №{n}")
@@ -47,10 +102,11 @@ def _numbering_text(ch: dict) -> str:
         "Бот может нумеровать каждый отзыв, который ты публикуешь в канал кнопкой «Принять».\n\n"
         f"• <b>Режим:</b> {MODE_LABELS.get(mode, mode)}\n"
         f"• <b>Стартовый номер:</b> {start}\n"
-        f"• <b>Шаблон:</b> <code>{tpl}</code>\n"
-        f"• <b>Пример:</b> {preview}\n\n"
+        f"• <b>Шаблон:</b> <code>{_h.escape(tpl)}</code>\n"
+        f"• <b>Пример:</b> {_h.escape(preview)}\n\n"
         "<i>Номер ставится отдельным сообщением после карточки. Если удалить последний "
-        "отзыв, его номер переиспользуется. Удаления из середины оставляют пропуск.</i>"
+        "отзыв, его номер переиспользуется. Удаления из середины оставляют пропуск. "
+        "Премиум-эмодзи в шаблоне сохраняются.</i>"
     )
 
 
@@ -149,8 +205,10 @@ async def num_tpl_cancel(message: Message, state: FSMContext):
 
 @router.message(NumberingSG.enter_template)
 async def num_tpl_input(message: Message, state: FSMContext, db: Database):
-    # Берём HTML-текст с сохранением премиум-эмодзи и форматирования
-    tpl = message.html_text if message.text else ""
+    import json as _json
+    # Храним СЫРОЙ текст + entities (премиум-эмодзи = custom_emoji entity,
+    # они не работают через parse_mode=HTML, только через entities напрямую)
+    tpl = message.text or ""
     if not tpl.strip():
         await message.answer("Пустой шаблон. Пришли текст или /cancel.")
         return
@@ -163,8 +221,21 @@ async def num_tpl_input(message: Message, state: FSMContext, db: Database):
     if len(tpl) > 300:
         await message.answer("Слишком длинный шаблон (макс 300 символов).")
         return
+    # Сериализуем entities (если есть — жирный, эмодзи, ссылки и т.п.)
+    entities_json = None
+    if message.entities:
+        entities_json = _json.dumps([e.model_dump(exclude_none=True) for e in message.entities])
     await state.clear()
-    await db.set_numbering(message.from_user.id, numbering_template=tpl)
-    preview = tpl.replace("{n}", "501")
-    await message.answer(f"✅ Шаблон сохранён.\nПример: {preview}", parse_mode="HTML")
+    await db.set_numbering(message.from_user.id,
+                           numbering_template=tpl,
+                           numbering_entities=entities_json)
+    # Превью: показываем как будет выглядеть (с реальными entities)
+    preview_text, preview_entities = _apply_number_to_template(tpl, entities_json, 501)
+    await message.answer("✅ Шаблон сохранён. Пример:")
+    from aiogram.types import MessageEntity
+    ents = [MessageEntity(**e) for e in (preview_entities or [])] if preview_entities else None
+    try:
+        await message.answer(preview_text, entities=ents)
+    except Exception:
+        await message.answer(preview_text)
     await _show_menu(message, db, message.from_user.id)

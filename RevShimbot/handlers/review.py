@@ -18,14 +18,6 @@ from constants import REVIEW_MAX_LEN, REVIEW_SOFT_LEN
 from services.card_generator import generate_card
 
 
-def _render_number_text(template: str, number: int) -> str:
-    """Подставляет номер в шаблон. {n} — номер.
-    Шаблон уже хранится как HTML (html_text от пользователя с прем-эмодзи и форматированием),
-    поэтому эскейпить его не нужно — только подставляем номер."""
-    tpl = template or "Отзыв №{n}"
-    return tpl.replace("{n}", str(number))
-
-
 async def _place_review_number(bot, db, config, seller_id: int, review_id: int,
                                channel_id: int, channel_msg_id: int, ch: dict) -> bool:
     """Ставит номер отзыву: вычисляет (умный последний), постит сообщение-номер,
@@ -50,8 +42,17 @@ async def _place_review_number(bot, db, config, seller_id: int, review_id: int,
 
         number = reuse_number if reuse_number is not None else await db.next_review_number(seller_id)
 
-        text = _render_number_text(ch.get("numbering_template", "Отзыв №{n}"), number)
-        sent = await bot.send_message(channel_id, text, parse_mode="HTML")
+        # Собираем текст номера с entities (премиум-эмодзи, форматирование)
+        from handlers.numbering import _apply_number_to_template
+        tpl = ch.get("numbering_template", "Отзыв №{n}")
+        ents_json = ch.get("numbering_entities")
+        text, ents_dicts = _apply_number_to_template(tpl, ents_json, number)
+        from aiogram.types import MessageEntity
+        entities = [MessageEntity(**e) for e in ents_dicts] if ents_dicts else None
+        if entities:
+            sent = await bot.send_message(channel_id, text, entities=entities)
+        else:
+            sent = await bot.send_message(channel_id, text)
         await db.record_review_number(seller_id, review_id, number,
                                       channel_msg_id, sent.message_id)
         return True
@@ -396,11 +397,23 @@ async def finalize_review(event, state: FSMContext, db: Database, bot, config,
         await answer(f"❌ Ошибка генерации карточки: {e}")
         return
 
-    await answer(
-        f"✅ Вот твоя карточка отзыва!\n\n"
-        f"Отправь её продавцу <b>{seller['shop_name']}</b> в личные сообщения. "
-        f"При пересылке можешь скрыть «переслано от...»"
-    )
+    # Проверяем, есть ли у продавца подключённый канал — от этого зависит,
+    # что советовать покупателю: слать в ЛС или ждать публикации ботом
+    seller_ch = await db.get_seller_channel(seller["id"])
+    seller_has_channel = bool(seller_ch and seller_ch["verified"])
+
+    if seller_has_channel:
+        await answer(
+            f"✅ Вот твоя карточка отзыва!\n\n"
+            f"Она отправлена продавцу <b>{seller['shop_name']}</b> — он опубликует её "
+            f"в своём канале отзывов. Ничего пересылать не нужно 👍"
+        )
+    else:
+        await answer(
+            f"✅ Вот твоя карточка отзыва!\n\n"
+            f"Отправь её продавцу <b>{seller['shop_name']}</b> в личные сообщения. "
+            f"При пересылке можешь скрыть «переслано от...»"
+        )
 
     stars_line = "★" * data.get("stars", 0) if data.get("stars", 0) > 0 else ""
     caption_parts = [f"<b>{_esc(seller['shop_name'])}</b>"]
@@ -457,8 +470,8 @@ async def finalize_review(event, state: FSMContext, db: Database, bot, config,
 
     buyer_url = f"https://t.me/{buyer_username}" if buyer_username else f"tg://user?id={user.id}"
 
-    ch = await db.get_seller_channel(seller["id"])
-    channel_verified = ch and ch["verified"]
+    ch = seller_ch
+    channel_verified = seller_has_channel
 
     rows = []
     if show_button:
