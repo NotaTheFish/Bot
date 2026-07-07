@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import re
+import time
 from aiogram import Bot, Dispatcher, F
 from aiogram.types import (
     Message, CallbackQuery,
@@ -119,13 +120,78 @@ async def is_chat_bot_admin(chat_id: int, user_id: int) -> bool:
     return await db.is_bot_admin(chat_id, user_id)
 
 
+# Флаг активной синхронизации — set chat_id
+syncing_chats: set[int] = set()
+
+
+async def sync_members_bg(chat_id: int):
+    """
+    Фоновая синхронизация участников кланов.
+    Запускается после каждого созыва через create_task.
+    - обновляет username
+    - удаляет left/kicked
+    - игнорирует сетевые ошибки (не удаляет при таймауте)
+    """
+    if chat_id in syncing_chats:
+        return  # уже синхронизируется
+    syncing_chats.add(chat_id)
+    t_start = time.monotonic()
+    updated = 0
+    removed = 0
+    errors = 0
+    sem = asyncio.Semaphore(20)
+
+    try:
+        # Снимок списка — работаем с копией
+        members_snapshot = list(await db.get_all_chat_members_tg(chat_id))
+
+        async def process_member(m):
+            nonlocal updated, removed, errors
+            async with sem:
+                try:
+                    tg_member = await bot.get_chat_member(chat_id, m["user_id"])
+                    status = tg_member.status
+
+                    if status in ("left", "kicked"):
+                        await db.remove_member_from_all_clans(chat_id, m["user_id"])
+                        removed += 1
+                    elif status in ("member", "administrator", "creator", "restricted"):
+                        # Получаем актуальный username
+                        new_username = tg_member.user.username if tg_member.user else m.get("username")
+                        if new_username != m.get("username"):
+                            await db.update_member_username(chat_id, m["user_id"], new_username)
+                            updated += 1
+                except asyncio.TimeoutError:
+                    errors += 1  # сетевая ошибка — не трогаем
+                except Exception as e:
+                    err_str = str(e).lower()
+                    if "user not found" in err_str or "chat not found" in err_str:
+                        await db.remove_member_from_all_clans(chat_id, m["user_id"])
+                        removed += 1
+                    else:
+                        errors += 1  # прочие ошибки — не трогаем
+
+        await asyncio.gather(*[process_member(m) for m in members_snapshot])
+
+    except Exception:
+        logger.exception(f"sync_members_bg failed for chat {chat_id}")
+    finally:
+        syncing_chats.discard(chat_id)
+        elapsed = time.monotonic() - t_start
+        logger.info(
+            f"[sync] chat={chat_id} updated={updated} removed={removed} "
+            f"errors={errors} time={elapsed:.1f}s"
+        )
+
+
 CHUNK_SIZE = 90  # максимум entities в одном сообщении (с запасом от лимита 100)
 
 
 def build_mention_chunks(members: list[dict], header: str) -> list[tuple[str, list[MessageEntity]]]:
     """
-    Разбивает участников на чанки по CHUNK_SIZE и строит сообщения с entities.
-    Возвращает список (text, entities) — каждый элемент = одно сообщение.
+    Разбивает участников на чанки и строит сообщения.
+    - Есть username → просто @username текстом (Telegram сам шлёт уведомление)
+    - Нет username → text_mention entity по user_id
     """
     chunks = [members[i:i + CHUNK_SIZE] for i in range(0, len(members), CHUNK_SIZE)]
     result = []
@@ -133,17 +199,25 @@ def build_mention_chunks(members: list[dict], header: str) -> list[tuple[str, li
         prefix = header if i == 0 else ""
         parts = []
         entities = []
+        # offset считаем в символах (не байтах) — aiogram сам конвертирует
         offset = len(prefix)
         for m in chunk:
-            display = f"@{m['username']}" if m.get("username") else "участник"
-            entities.append(MessageEntity(
-                type="text_mention",
-                offset=offset,
-                length=len(display),
-                user=User(id=m["user_id"], is_bot=False, first_name=display)
-            ))
-            parts.append(display)
-            offset += len(display) + 1
+            if m.get("username"):
+                # Просто текст — Telegram сам распознаёт @username и шлёт уведомление
+                display = f"@{m['username']}"
+                parts.append(display)
+                offset += len(display) + 1
+            else:
+                # Нет username — text_mention по user_id
+                display = "участник"
+                entities.append(MessageEntity(
+                    type="text_mention",
+                    offset=offset,
+                    length=len(display),
+                    user=User(id=m["user_id"], is_bot=False, first_name=display)
+                ))
+                parts.append(display)
+                offset += len(display) + 1
         text = prefix + " ".join(parts)
         result.append((text, entities))
     return result
@@ -588,12 +662,14 @@ async def trigger_summon(message: Message):
     if len(chunks) > 1:
         await message.answer(f"📨 Отправлено: {total} участников ({len(chunks)} сообщения)")
     else:
-        # Дописываем счётчик к первому сообщению через edit
         try:
             new_text = chunks[0][0] + f"\n📨 {total} уч."
             await sent.edit_text(new_text, entities=chunks[0][1])
         except Exception:
             pass
+
+    # Фоновая синхронизация после отправки
+    asyncio.create_task(sync_members_bg(chat_id))
 
 
 # ─────────────────────────────────────────
@@ -635,6 +711,9 @@ async def summon_all(message: Message):
         except Exception:
             pass
 
+    # Фоновая синхронизация после отправки
+    asyncio.create_task(sync_members_bg(chat_id))
+
 
 # ─────────────────────────────────────────
 # Чистка призраков: !чистка (бот-админы)
@@ -649,23 +728,45 @@ async def cleanup_ghosts(message: Message):
 
     status_msg = await message.reply("🔍 Проверяю участников кланов...")
 
-    all_members = await db.get_all_chat_members_tg(chat_id)
+    members_snapshot = list(await db.get_all_chat_members_tg(chat_id))
+    updated = 0
     removed = 0
+    errors = 0
+    sem = asyncio.Semaphore(20)
+    t_start = time.monotonic()
 
-    for m in all_members:
-        try:
-            member = await bot.get_chat_member(chat_id, m["user_id"])
-            if member.status in ("left", "kicked"):
-                count = await db.remove_member_from_all_clans(chat_id, m["user_id"])
-                removed += count
-        except Exception:
-            # Пользователь не найден — тоже удаляем
-            count = await db.remove_member_from_all_clans(chat_id, m["user_id"])
-            removed += count
+    async def check_one(m):
+        nonlocal updated, removed, errors
+        async with sem:
+            try:
+                tg_member = await bot.get_chat_member(chat_id, m["user_id"])
+                status = tg_member.status
+                if status in ("left", "kicked"):
+                    await db.remove_member_from_all_clans(chat_id, m["user_id"])
+                    removed += 1
+                elif status in ("member", "administrator", "creator", "restricted"):
+                    new_username = tg_member.user.username if tg_member.user else m.get("username")
+                    if new_username != m.get("username"):
+                        await db.update_member_username(chat_id, m["user_id"], new_username)
+                        updated += 1
+            except asyncio.TimeoutError:
+                errors += 1
+            except Exception as e:
+                err_str = str(e).lower()
+                if "user not found" in err_str or "chat not found" in err_str:
+                    await db.remove_member_from_all_clans(chat_id, m["user_id"])
+                    removed += 1
+                else:
+                    errors += 1
+
+    await asyncio.gather(*[check_one(m) for m in members_snapshot])
+    elapsed = time.monotonic() - t_start
 
     await status_msg.edit_text(
-        f"✅ Чистка завершена.\n"
-        f"Удалено записей: <b>{removed}</b>",
+        f"✅ Чистка завершена за {elapsed:.1f}с\n"
+        f"Обновлено username: <b>{updated}</b>\n"
+        f"Удалено участников: <b>{removed}</b>\n"
+        f"Ошибок API: <b>{errors}</b>",
         parse_mode="HTML"
     )
 
