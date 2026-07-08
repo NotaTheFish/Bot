@@ -24,6 +24,10 @@ CREATE TABLE IF NOT EXISTS rvb_sellers (
     inline_template_id TEXT,
     inline_button_show BOOLEAN NOT NULL DEFAULT TRUE,
     inline_notify_seller BOOLEAN NOT NULL DEFAULT FALSE,
+    anon_mode TEXT NOT NULL DEFAULT 'off',
+    anon_nickname TEXT NOT NULL DEFAULT 'Анонимный покупатель',
+    anon_avatar TEXT,
+    inline_anon BOOLEAN NOT NULL DEFAULT FALSE,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
@@ -84,6 +88,7 @@ CREATE TABLE IF NOT EXISTS rvb_reviews (
     status TEXT NOT NULL DEFAULT 'pending',
     show_buyer_button BOOLEAN NOT NULL DEFAULT TRUE,
     proof_count INT NOT NULL DEFAULT 0,
+    is_anonymous BOOLEAN NOT NULL DEFAULT FALSE,
     verify_code TEXT UNIQUE,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
@@ -234,6 +239,23 @@ class Database:
                 ALTER TABLE rvb_sellers
                 ADD COLUMN IF NOT EXISTS inline_notify_seller BOOLEAN NOT NULL DEFAULT FALSE
             """)
+            # Авто-миграция: анонимные отзывы
+            await conn.execute("""
+                ALTER TABLE rvb_sellers
+                ADD COLUMN IF NOT EXISTS anon_mode TEXT NOT NULL DEFAULT 'off'
+            """)
+            await conn.execute("""
+                ALTER TABLE rvb_sellers
+                ADD COLUMN IF NOT EXISTS anon_nickname TEXT NOT NULL DEFAULT 'Анонимный покупатель'
+            """)
+            await conn.execute("""
+                ALTER TABLE rvb_sellers
+                ADD COLUMN IF NOT EXISTS anon_avatar TEXT
+            """)
+            await conn.execute("""
+                ALTER TABLE rvb_sellers
+                ADD COLUMN IF NOT EXISTS inline_anon BOOLEAN NOT NULL DEFAULT FALSE
+            """)
             # Авто-миграция: verified_at для каналов
             await conn.execute("""
                 ALTER TABLE rvb_seller_channels
@@ -251,6 +273,10 @@ class Database:
             await conn.execute("""
                 ALTER TABLE rvb_reviews
                 ADD COLUMN IF NOT EXISTS proof_count INT NOT NULL DEFAULT 0
+            """)
+            await conn.execute("""
+                ALTER TABLE rvb_reviews
+                ADD COLUMN IF NOT EXISTS is_anonymous BOOLEAN NOT NULL DEFAULT FALSE
             """)
             # Авто-миграция: уникальный код проверки подлинности отзыва
             await conn.execute("""
@@ -759,6 +785,7 @@ class Database:
         "item_mode", "item_value", "pub_id", "card_source_mode", "allowed_custom_ids",
         "inline_button_mode", "inline_template_id", "inline_button_show",
         "inline_notify_seller", "show_buyer_button", "allow_template_choice",
+        "anon_mode", "anon_nickname", "anon_avatar", "inline_anon",
     }
 
     async def update_seller(self, user_id: int, **fields) -> Optional[dict]:
@@ -787,7 +814,8 @@ class Database:
         buyer_username: Optional[str], review_text: str,
         item_bought: str, stars: int, template_used: str,
         card_file_id: Optional[str] = None, show_buyer_button: bool = True,
-        proof_count: int = 0, verify_code: Optional[str] = None
+        proof_count: int = 0, verify_code: Optional[str] = None,
+        is_anonymous: bool = False
     ) -> dict:
         async with self.pool.acquire() as conn:
             last_err = None
@@ -798,12 +826,12 @@ class Database:
                         INSERT INTO rvb_reviews
                             (seller_id, buyer_id, buyer_name, buyer_username,
                              review_text, item_bought, stars, template_used, card_file_id,
-                             show_buyer_button, proof_count, verify_code)
-                        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+                             show_buyer_button, proof_count, verify_code, is_anonymous)
+                        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
                         RETURNING *
                     """, seller_id, buyer_id, buyer_name, buyer_username,
                         review_text, item_bought, stars, template_used, card_file_id,
-                        show_buyer_button, proof_count, code)
+                        show_buyer_button, proof_count, code, is_anonymous)
                     return dict(row)
                 except Exception as e:
                     # Коллизия кода (вероятность ~0) — регенерируем и пробуем ещё

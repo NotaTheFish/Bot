@@ -667,6 +667,154 @@ async def cb_edit_field(call: CallbackQuery, db: Database, state: FSMContext, co
             reply_markup=kb_inline_config(seller)
         )
 
+    elif field == "anon":
+        seller = await db.get_seller(call.from_user.id)
+        if not seller:
+            await call.answer("Сначала настрой шаблон", show_alert=True)
+            return
+        from keyboards import kb_anon_settings
+        mode = seller.get("anon_mode", "off")
+        nick = seller.get("anon_nickname") or "Анонимный покупатель"
+        has_avatar = bool(seller.get("anon_avatar"))
+        import html as _hh
+        mode_lbl = {"off": "🚫 Выключены", "on": "✅ Всегда анонимно",
+                    "ask": "❓ Спрашивать клиента"}.get(mode, mode)
+        await call.message.answer(
+            "🕵️ <b>Анонимные отзывы</b>\n\n"
+            "Клиент может оставить отзыв анонимно — в карточке и канале не будет "
+            "его имени и аватара. Ты как продавец всё равно видишь, кто оставил отзыв.\n\n"
+            "• <b>Выключены</b> — все отзывы с именем\n"
+            "• <b>Всегда анонимно</b> — все отзывы анонимны\n"
+            "• <b>Спрашивать</b> — клиент сам решает при отзыве\n\n"
+            f"Сейчас: <b>{mode_lbl}</b>\n"
+            f"Ник анонима: <b>{_hh.escape(nick)}</b>\n"
+            f"Аватар анонима: {'задан ✅' if has_avatar else 'по умолчанию (❓)'}\n\n"
+            "<i>Ник и аватар анонима настраиваются в конструкторе карточек → "
+            "«Отображение анон клиента».</i>",
+            reply_markup=kb_anon_settings(seller)
+        )
+
+
+class AnonSG(StatesGroup):
+    enter_nick = State()
+    enter_avatar = State()
+
+
+@router.callback_query(F.data.startswith("anonset:"))
+async def cb_anon_set(call: CallbackQuery, state: FSMContext, db: Database):
+    action = call.data.split(":")[1]
+    seller = await db.get_seller(call.from_user.id)
+    if not seller:
+        await call.answer("Сначала настрой шаблон", show_alert=True)
+        return
+
+    if action in ("off", "on", "ask"):
+        await db.update_seller(call.from_user.id, anon_mode=action)
+        await call.answer("✅ Режим анонимности обновлён")
+        seller = await db.get_seller(call.from_user.id)
+        from keyboards import kb_anon_settings
+        try:
+            await call.message.edit_reply_markup(reply_markup=kb_anon_settings(seller))
+        except Exception:
+            pass
+        return
+
+    if action == "nick":
+        await call.answer()
+        await state.set_state(AnonSG.enter_nick)
+        await call.message.answer(
+            "✏️ Пришли ник для анонимного покупателя.\n\n"
+            "Он будет показан вместо имени клиента в анонимных отзывах. "
+            "Например: <code>Анонимный покупатель</code>, <code>Тайный клиент</code>, "
+            "<code>Таинственный грибоман</code>.\n\n"
+            "Отправь /cancel чтобы отменить."
+        )
+        return
+
+    if action == "avatar":
+        await call.answer()
+        await state.set_state(AnonSG.enter_avatar)
+        await call.message.answer(
+            "🖼 Пришли картинку — она станет аватаром анонимного покупателя.\n\n"
+            "Лучше квадратное изображение (например, значок гриба 🍄 или маска). "
+            "Если не задавать — на аватаре будет знак вопроса.\n\n"
+            "Отправь /cancel чтобы отменить."
+        )
+        return
+
+    if action == "avatar_reset":
+        await db.update_seller(call.from_user.id, anon_avatar=None)
+        await call.answer("🗑 Аватар сброшен")
+        seller = await db.get_seller(call.from_user.id)
+        from keyboards import kb_anon_settings
+        try:
+            await call.message.edit_reply_markup(reply_markup=kb_anon_settings(seller))
+        except Exception:
+            pass
+        return
+
+    await call.answer()
+
+
+@router.message(AnonSG.enter_nick, F.text == "/cancel")
+async def anon_nick_cancel(message: Message, state: FSMContext):
+    await state.clear()
+    await message.answer("Отменено.")
+
+
+@router.message(AnonSG.enter_nick, F.text)
+async def anon_nick_input(message: Message, state: FSMContext, db: Database):
+    nick = message.text.strip()
+    if len(nick) > 40:
+        await message.answer("Слишком длинный ник (макс 40 символов). Попробуй короче.")
+        return
+    await state.clear()
+    await db.update_seller(message.from_user.id, anon_nickname=nick)
+    import html as _hh
+    await message.answer(f"✅ Ник анонима: <b>{_hh.escape(nick)}</b>")
+
+
+@router.message(AnonSG.enter_avatar, F.text == "/cancel")
+async def anon_avatar_cancel(message: Message, state: FSMContext):
+    await state.clear()
+    await message.answer("Отменено.")
+
+
+@router.message(AnonSG.enter_avatar, F.photo)
+async def anon_avatar_input(message: Message, state: FSMContext, db: Database, bot):
+    import base64, io
+    photo = message.photo[-1]
+    if photo.file_size and photo.file_size > 10 * 1024 * 1024:
+        await message.answer("⚠️ Картинка слишком большая (макс 10 МБ). Пришли поменьше.")
+        return
+    try:
+        file = await bot.get_file(photo.file_id)
+        buf = await bot.download_file(file.file_path)
+        raw = buf.read()
+        from PIL import Image
+        Image.MAX_IMAGE_PIXELS = 40_000_000
+        im = Image.open(io.BytesIO(raw)); im.load()
+        im = im.convert("RGB")
+        # Квадратный кроп по центру + ресайз
+        w, h = im.size
+        side = min(w, h)
+        im = im.crop(((w - side) // 2, (h - side) // 2, (w + side) // 2, (h + side) // 2))
+        im.thumbnail((256, 256), Image.LANCZOS)
+        out = io.BytesIO()
+        im.save(out, format="JPEG", quality=85, optimize=True)
+        b64 = base64.b64encode(out.getvalue()).decode()
+    except Exception:
+        await message.answer("⚠️ Не удалось обработать картинку. Пришли другую.")
+        return
+    await state.clear()
+    await db.update_seller(message.from_user.id, anon_avatar=b64)
+    await message.answer("✅ Аватар анонима сохранён!")
+
+
+@router.message(AnonSG.enter_avatar)
+async def anon_avatar_wrong(message: Message):
+    await message.answer("Пришли именно картинку (фото) или /cancel.")
+
 
 @router.callback_query(F.data.startswith("cardsrc:"))
 async def cb_card_source(call: CallbackQuery, db: Database):
@@ -756,9 +904,27 @@ async def cb_inline_config(call: CallbackQuery, db: Database, state: FSMContext)
         return
 
     if action == "btntoggle":
+        # Если инлайн-анон включён — ссылку на покупателя включать нельзя
+        if seller.get("inline_anon", False):
+            await call.answer("При анонимных инлайн-отзывах ссылка на покупателя недоступна",
+                              show_alert=True)
+            return
         new_val = not seller.get("inline_button_show", True)
         await db.update_seller(call.from_user.id, inline_button_show=new_val)
         await call.answer("✅ Обновлено")
+        seller = await db.get_seller(call.from_user.id)
+        from keyboards import kb_inline_config
+        try:
+            await call.message.edit_reply_markup(reply_markup=kb_inline_config(seller))
+        except Exception:
+            pass
+        return
+
+    if action == "anontoggle":
+        new_val = not seller.get("inline_anon", False)
+        await db.update_seller(call.from_user.id, inline_anon=new_val)
+        await call.answer("🕵️ Инлайн-отзывы теперь анонимны" if new_val
+                          else "👤 Инлайн-отзывы с именем")
         seller = await db.get_seller(call.from_user.id)
         from keyboards import kb_inline_config
         try:
@@ -928,12 +1094,16 @@ async def _answer_verify(message: Message, db: Database, config, raw: str):
         stars = "★" * review.get("stars", 0) or "—"
         date = review["created_at"].strftime("%d.%m.%Y")
         status = _STATUS_LABELS.get(review.get("status"), review.get("status") or "—")
+        if review.get("is_anonymous"):
+            buyer_line = "👤 Покупатель: 🕵️ анонимный отзыв"
+        else:
+            buyer_line = f"👤 Покупатель: {_h.escape(_mask_name(review.get('buyer_name') or ''))}"
         await message.answer(
             f"✅ <b>Отзыв настоящий</b> — выдан этим ботом.\n\n"
             f"🏪 Магазин: <b>{shop}</b>" + (f" (ID <code>{pub}</code>)" if pub else "") + "\n"
             f"⭐ Оценка: {stars}\n"
             f"📅 Дата: {date}\n"
-            f"👤 Покупатель: {_h.escape(_mask_name(review.get('buyer_name') or ''))}\n"
+            f"{buyer_line}\n"
             f"📌 Статус: {status}",
             reply_markup=kb_again)
         return

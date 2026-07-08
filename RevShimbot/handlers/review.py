@@ -42,17 +42,17 @@ async def _place_review_number(bot, db, config, seller_id: int, review_id: int,
 
         number = reuse_number if reuse_number is not None else await db.next_review_number(seller_id)
 
-        # Собираем текст номера с entities (премиум-эмодзи, форматирование)
-        from handlers.numbering import _apply_number_to_template
+        # Текст номера в HTML — премиум-эмодзи через <tg-emoji> сохраняются
+        from handlers.numbering import _render_number_html
         tpl = ch.get("numbering_template", "Отзыв №{n}")
-        ents_json = ch.get("numbering_entities")
-        text, ents_dicts = _apply_number_to_template(tpl, ents_json, number)
-        from aiogram.types import MessageEntity
-        entities = [MessageEntity(**e) for e in ents_dicts] if ents_dicts else None
-        if entities:
-            sent = await bot.send_message(channel_id, text, entities=entities)
-        else:
-            sent = await bot.send_message(channel_id, text)
+        text = _render_number_html(tpl, number)
+        try:
+            sent = await bot.send_message(channel_id, text, parse_mode="HTML")
+        except Exception:
+            import re as _re
+            plain = _re.sub(r'<tg-emoji[^>]*>|</tg-emoji>', '', text)
+            plain = _re.sub(r'<[^>]+>', '', plain)
+            sent = await bot.send_message(channel_id, plain)
         await db.record_review_number(seller_id, review_id, number,
                                       channel_msg_id, sent.message_id)
         return True
@@ -91,6 +91,7 @@ class ReviewSG(StatesGroup):
     enter_item = State()
     enter_text = State()
     enter_proof = State()
+    ask_anon = State()
     ask_inline_btn = State()
 
 
@@ -278,6 +279,74 @@ async def _get_avatar_bytes(bot, user_id: int):
     return None
 
 
+async def _gate_anon(event, state: FSMContext, db: Database, bot, config,
+                     text: str, entities, proofs=None):
+    """Первый гейт: анонимность. Если режим 'ask' — спрашиваем клиента.
+    Если 'on' — сразу анон (кнопку профиля пропускаем). Если 'off' — идём к гейту кнопки."""
+    data = await state.get_data()
+    seller = data["seller"]
+    mode = seller.get("anon_mode", "off")
+
+    if mode == "on":
+        await state.update_data(is_anonymous=True)
+        await finalize_review(event, state, db, bot, config, text=text,
+                              entities=entities, proofs=proofs)
+        return
+
+    if mode == "ask":
+        import base64
+        await state.update_data(
+            pending_text=text,
+            pending_entities=[e.model_dump() for e in entities] if entities else [],
+            pending_proofs_b64=[base64.b64encode(p).decode() for p in (proofs or [])],
+        )
+        await state.set_state(ReviewSG.ask_anon)
+        from aiogram.types import CallbackQuery as _CQ
+        answer = event.message.answer if isinstance(event, _CQ) else event.answer
+        await answer(
+            "🕵️ Хочешь оставить отзыв <b>анонимно</b>?\n\n"
+            "В карточке не будет твоего имени и аватара — вместо них "
+            "будет анонимный профиль. Продавец всё равно увидит, что отзыв от тебя.",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+                InlineKeyboardButton(text="🕵️ Да, анонимно", callback_data="anon:yes"),
+                InlineKeyboardButton(text="👤 Нет, с именем", callback_data="anon:no"),
+            ]])
+        )
+        return
+
+    await state.update_data(is_anonymous=False)
+    await _gate_inline_button(event, state, db, bot, config,
+                              text=text, entities=entities, proofs=proofs)
+
+
+@router.callback_query(ReviewSG.ask_anon, F.data.startswith("anon:"))
+async def cb_anon_ask(call: CallbackQuery, state: FSMContext, db: Database, bot, config):
+    choice = call.data.split(":")[1]
+    await call.answer()
+    try:
+        await call.message.edit_reply_markup(reply_markup=None)
+    except Exception:
+        pass
+    is_anon = (choice == "yes")
+    await state.update_data(is_anonymous=is_anon)
+
+    import base64
+    from aiogram.types import MessageEntity
+    data = await state.get_data()
+    text = data.get("pending_text", "")
+    raw_entities = data.get("pending_entities", [])
+    entities = [MessageEntity(**e) for e in raw_entities] if raw_entities else []
+    proofs_b64 = data.get("pending_proofs_b64") or []
+    proofs = [base64.b64decode(p) for p in proofs_b64] or None
+
+    if is_anon:
+        await finalize_review(call, state, db, bot, config, text=text,
+                              entities=entities, proofs=proofs)
+    else:
+        await _gate_inline_button(call, state, db, bot, config,
+                                  text=text, entities=entities, proofs=proofs)
+
+
 async def _gate_inline_button(event, state: FSMContext, db: Database, bot, config,
                                text: str, entities, proofs=None):
     """Перед финализацией: если продавец выбрал режим «спросить» — спрашиваем
@@ -372,18 +441,37 @@ async def finalize_review(event, state: FSMContext, db: Database, bot, config,
     # Резервируем код подлинности ДО генерации — он печатается на карточке
     verify_code = await db.reserve_verify_code()
 
+    # Анонимность: подменяем отображаемое имя и аватар (реальные — сохраняем в БД для продавца)
+    is_anon = bool(data.get("is_anonymous", False))
+    if is_anon:
+        display_name = seller.get("anon_nickname") or "Анонимный покупатель"
+        anon_av = seller.get("anon_avatar")  # base64 или None
+        if anon_av:
+            import base64 as _b64
+            try:
+                display_avatar = _b64.b64decode(anon_av)
+            except Exception:
+                display_avatar = None
+        else:
+            display_avatar = None  # генератор нарисует заглушку с инициалами/знаком
+        display_initials = "?"
+    else:
+        display_name = buyer_name
+        display_avatar = avatar_bytes
+        display_initials = "".join(w[0].upper() for w in buyer_name.split() if w)[:2]
+
     card_data = {
         "shop_name": seller["shop_name"],
         "seller_tag": f"@{seller['username']}" if seller.get("username") else f"ID: {seller['id']}",
-        "buyer_name": buyer_name,
-        "buyer_initials": "".join(w[0].upper() for w in buyer_name.split() if w)[:2],
+        "buyer_name": display_name,
+        "buyer_initials": display_initials,
         "review_text": text,
         "item_bought": data.get("item_bought", ""),
         "verify_code": verify_code,
         "stars": data.get("stars", 0),
         "stars_mode": seller["stars_mode"],
         "template_id": data.get("template_id", seller["template_id"]),
-        "avatar_bytes": avatar_bytes,
+        "avatar_bytes": display_avatar,
         "entities": entities or [],
         "bot": bot,
         "bot_username": config.BOT_USERNAME,
@@ -420,7 +508,7 @@ async def finalize_review(event, state: FSMContext, db: Database, bot, config,
     if stars_line:
         caption_parts.append(stars_line)
     caption_parts.append(f"\n<i>«{_esc(text)}»</i>")
-    caption_parts.append(f"\n— {_esc(buyer_name)}")
+    caption_parts.append(f"\n— {_esc(display_name)}")
     review_caption = "\n".join(caption_parts)
 
     sent = None
@@ -440,7 +528,9 @@ async def finalize_review(event, state: FSMContext, db: Database, bot, config,
 
     # Решаем, показывать ли кнопку-ссылку на покупателя (нужно ДО сохранения)
     btn_mode = seller.get("inline_button_mode", "shown")
-    if btn_mode == "hidden":
+    if is_anon:
+        show_button = False  # анон → кнопки профиля нет никогда
+    elif btn_mode == "hidden":
         show_button = False
     elif btn_mode == "ask":
         show_button = data.get("buyer_wants_button", False)
@@ -461,6 +551,7 @@ async def finalize_review(event, state: FSMContext, db: Database, bot, config,
         show_buyer_button=show_button,
         proof_count=len(proofs or []),
         verify_code=verify_code,
+        is_anonymous=is_anon,
     )
     review_id = review_row["id"]
     await state.clear()
@@ -487,11 +578,18 @@ async def finalize_review(event, state: FSMContext, db: Database, bot, config,
                                           callback_data=f"proofedit:{review_id}")])
     seller_kb = InlineKeyboardMarkup(inline_keyboard=rows) if rows else None
 
+    # Продавцу показываем РЕАЛЬНОЕ имя даже при анон-отзыве (для контроля накрутки)
+    seller_caption = f"⭐ Новый отзыв!\n\n{review_caption}"
+    if is_anon:
+        real_tag = f"@{buyer_username}" if buyer_username else f"<a href='tg://user?id={user.id}'>{_esc(buyer_name)}</a>"
+        seller_caption += (f"\n\n🕵️ <i>Отзыв анонимный</i> — в канале имя скрыто.\n"
+                           f"Настоящий автор (видно только тебе): {real_tag}")
+
     try:
         await bot.send_photo(
             chat_id=seller["id"],
             photo=BufferedInputFile(img_bytes, filename="review.png"),
-            caption=(f"⭐ Новый отзыв!\n\n{review_caption}"),
+            caption=seller_caption,
             reply_markup=seller_kb,
             parse_mode="HTML",
         )
@@ -623,8 +721,8 @@ async def _proceed_after_proofs(event, state: FSMContext, db: Database, bot, con
         except Exception:
             pass
         await state.update_data(proof_status_msg_id=None)
-    await _gate_inline_button(event, state, db, bot, config,
-                              text=text, entities=entities, proofs=proofs)
+    await _gate_anon(event, state, db, bot, config,
+                     text=text, entities=entities, proofs=proofs)
 
 
 @router.message(ReviewSG.enter_text, F.photo)

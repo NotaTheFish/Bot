@@ -114,6 +114,7 @@ def kb_template_view(seller: dict) -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text="🎴 Карточки для отзывов", callback_data="edit:cards")],
         [InlineKeyboardButton(text="🔘 Управление инлайн-кнопкой", callback_data="edit:inlinebtn")],
         [InlineKeyboardButton(text="💬 Отзывы через личку (инлайн)", callback_data="edit:inlinecfg")],
+        [InlineKeyboardButton(text="🕵️ Анонимные отзывы", callback_data="edit:anon")],
     ]
     pub_id = seller.get("pub_id")
     if pub_id:
@@ -194,15 +195,41 @@ def kb_inline_button(seller: dict) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
+def kb_anon_settings(seller: dict) -> InlineKeyboardMarkup:
+    """Настройки анонимных отзывов: режим off/on/ask + ник и аватар анона."""
+    mode = seller.get("anon_mode", "off")
+    labels = {"off": "🚫 Выключены", "on": "✅ Всегда анонимно", "ask": "❓ Спрашивать клиента"}
+    rows = []
+    for key, label in labels.items():
+        mark = "✅ " if mode == key else ""
+        rows.append([InlineKeyboardButton(text=f"{mark}{label}", callback_data=f"anonset:{key}")])
+    rows.append([InlineKeyboardButton(text="✏️ Ник анонима", callback_data="anonset:nick")])
+    has_av = bool(seller.get("anon_avatar"))
+    rows.append([InlineKeyboardButton(
+        text="🖼 Аватар анонима" + (" ✅" if has_av else ""),
+        callback_data="anonset:avatar")])
+    if has_av:
+        rows.append([InlineKeyboardButton(text="🗑 Сбросить аватар", callback_data="anonset:avatar_reset")])
+    rows.append([InlineKeyboardButton(text="« Назад", callback_data="menu:mytemplate")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
 def kb_inline_config(seller: dict) -> InlineKeyboardMarkup:
-    """Настройки отзывов через личку/инлайн: карточка по умолчанию + кнопка-ссылка + уведомления."""
+    """Настройки отзывов через личку/инлайн: карточка + кнопка-ссылка + уведомления + анон."""
     btn_on = seller.get("inline_button_show", True)
-    btn_label = "✅ Ссылка на покупателя: ВКЛ" if btn_on else "⬜️ Ссылка на покупателя: ВЫКЛ"
+    anon_on = seller.get("inline_anon", False)
+    # Если анон включён — ссылка на покупателя физически невозможна, показываем это
+    if anon_on:
+        btn_label = "🔒 Ссылка на покупателя: недоступна (анон)"
+    else:
+        btn_label = "✅ Ссылка на покупателя: ВКЛ" if btn_on else "⬜️ Ссылка на покупателя: ВЫКЛ"
     notify_on = seller.get("inline_notify_seller", False)
     notify_label = "🔔 Уведомления о чат-отзывах: ВКЛ" if notify_on else "🔕 Уведомления о чат-отзывах: ВЫКЛ"
+    anon_label = "🕵️ Анонимные инлайн-отзывы: ВКЛ" if anon_on else "👤 Анонимные инлайн-отзывы: ВЫКЛ"
     rows = [
         [InlineKeyboardButton(text="🎨 Карточка по умолчанию", callback_data="inlcfg:tpl")],
         [InlineKeyboardButton(text=btn_label, callback_data="inlcfg:btntoggle")],
+        [InlineKeyboardButton(text=anon_label, callback_data="inlcfg:anontoggle")],
         [InlineKeyboardButton(text=notify_label, callback_data="inlcfg:notifytoggle")],
         [InlineKeyboardButton(text="« Назад", callback_data="menu:mytemplate")],
     ]

@@ -62,6 +62,23 @@ async def get_or_generate_card(
     buyer_name = query.from_user.full_name or query.from_user.first_name or "Трейдер"
     buyer_initials = "".join(w[0].upper() for w in buyer_name.split() if w)[:2]
 
+    # Инлайн-анонимность: подменяем имя/аватар анонимным профилем продавца
+    is_anon = bool(seller.get("inline_anon", False))
+    if is_anon:
+        buyer_name = seller.get("anon_nickname") or "Анонимный покупатель"
+        buyer_initials = "?"
+        anon_av = seller.get("anon_avatar")
+        if anon_av:
+            import base64 as _b64
+            try:
+                anon_avatar_bytes = _b64.b64decode(anon_av)
+            except Exception:
+                anon_avatar_bytes = None
+        else:
+            anon_avatar_bytes = None
+    else:
+        anon_avatar_bytes = None
+
     # Уникальный код — печатается на карточке и позже сохраняется в БД
     verify_code = await db.reserve_verify_code()
 
@@ -77,7 +94,7 @@ async def get_or_generate_card(
         "stars": seller["stars_value"] if seller["stars_mode"] == "fixed" else 5,
         "stars_mode": seller["stars_mode"],
         "template_id": inline_tpl,
-        "avatar_bytes": None,
+        "avatar_bytes": anon_avatar_bytes,
         "bot_username": config.BOT_USERNAME,
         "verify_code": verify_code,
         "db": db,
@@ -253,14 +270,16 @@ async def inline_review(query: InlineQuery, db: Database, bot, config):
     if seller and config.CACHE_CHAT_ID and review_text:
         file_id, verify_code = await get_or_generate_card(query, seller, review_text, bot, config, db)
         if file_id:
+            inline_is_anon = bool(seller.get("inline_anon", False))
+            display_name = seller.get("anon_nickname") or "Анонимный покупатель" if inline_is_anon else buyer_name
             stars = "★" * (seller["stars_value"] if seller["stars_mode"] == "fixed" else 5)
             caption = (
                 f"<b>{_esc(seller['shop_name'])}</b>\n{stars}\n\n"
-                f"<i>«{_esc(review_text)}»</i>\n\n— {_esc(buyer_name)}"
+                f"<i>«{_esc(review_text)}»</i>\n\n— {_esc(display_name)}"
             )
-            # Кнопка-ссылка на покупателя, если продавец её включил для инлайн
+            # Кнопка-ссылка на покупателя — только если НЕ анон и включена
             inline_kb = None
-            if seller.get("inline_button_show", True):
+            if not inline_is_anon and seller.get("inline_button_show", True):
                 buyer_uname = query.from_user.username
                 buyer_url = f"https://t.me/{buyer_uname}" if buyer_uname else f"tg://user?id={query.from_user.id}"
                 inline_kb = InlineKeyboardMarkup(inline_keyboard=[[
@@ -283,6 +302,7 @@ async def inline_review(query: InlineQuery, db: Database, bot, config):
                 "verify_code": verify_code,
                 "template_id": seller.get("inline_template_id") or seller["template_id"],
                 "notify": seller.get("inline_notify_seller", False),
+                "is_anon": inline_is_anon,
                 "ts": _time.time(),
             }
             if len(_PENDING_INLINE) > _PENDING_MAX:
@@ -395,7 +415,8 @@ async def on_chosen_inline_result(chosen, bot, db: Database, config):
     # Сохраняем отзыв в БД — чтобы работали принять/отклонить
     try:
         seller = await db.get_seller(seller_id)
-        show_btn = seller.get("inline_button_show", True) if seller else True
+        pend_anon = pending.get("is_anon", False)
+        show_btn = False if pend_anon else (seller.get("inline_button_show", True) if seller else True)
         review_row = await db.save_review(
             seller_id=seller_id,
             buyer_id=buyer_id,
@@ -408,6 +429,7 @@ async def on_chosen_inline_result(chosen, bot, db: Database, config):
             card_file_id=file_id,
             show_buyer_button=show_btn,
             verify_code=verify_code,
+            is_anonymous=pend_anon,
         )
         review_id = review_row["id"]
     except Exception as e:
@@ -449,11 +471,18 @@ async def on_chosen_inline_result(chosen, bot, db: Database, config):
     if not pending.get("notify", False):
         return
 
+    # При анон-инлайн-отзыве показываем продавцу реальное имя с пометкой
+    seller_caption = f"⭐ Новый отзыв (через чат)!\n\n{caption}"
+    if pending.get("is_anon", False):
+        real_tag = f"@{buyer_username}" if buyer_username else f"<a href='tg://user?id={buyer_id}'>{_esc(buyer_name)}</a>"
+        seller_caption += (f"\n\n🕵️ <i>Отзыв анонимный</i> — в канале имя скрыто.\n"
+                           f"Настоящий автор (видно только тебе): {real_tag}")
+
     try:
         await bot.send_photo(
             chat_id=seller_id,
             photo=file_id,
-            caption=f"⭐ Новый отзыв (через чат)!\n\n{caption}",
+            caption=seller_caption,
             reply_markup=seller_kb,
             parse_mode="HTML",
         )
