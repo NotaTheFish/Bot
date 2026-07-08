@@ -416,7 +416,9 @@ async def on_chosen_inline_result(chosen, bot, db: Database, config):
     try:
         seller = await db.get_seller(seller_id)
         pend_anon = pending.get("is_anon", False)
-        show_btn = False if pend_anon else (seller.get("inline_button_show", True) if seller else True)
+        # Кнопка в ЛС продавца — по настройке; в канале при анон убираем
+        show_btn_pm = seller.get("inline_button_show", True) if seller else True
+        show_btn_channel = False if pend_anon else show_btn_pm
         review_row = await db.save_review(
             seller_id=seller_id,
             buyer_id=buyer_id,
@@ -427,7 +429,7 @@ async def on_chosen_inline_result(chosen, bot, db: Database, config):
             stars=stars,
             template_used=pending.get("template_id", "classic_gold"),
             card_file_id=file_id,
-            show_buyer_button=show_btn,
+            show_buyer_button=show_btn_channel,
             verify_code=verify_code,
             is_anonymous=pend_anon,
         )
@@ -445,11 +447,14 @@ async def on_chosen_inline_result(chosen, bot, db: Database, config):
             pass
 
     stars_line = "★" * stars if stars > 0 else ""
+    # Под карточкой — анон-ник при анонимности (как на самой карточке)
+    pend_anon = pending.get("is_anon", False)
+    disp_name = (seller.get("anon_nickname") if seller else None) or "Анонимный покупатель" if pend_anon else buyer_name
     caption_parts = [f"<b>{_esc(seller['shop_name'] if seller else '')}</b>"]
     if stars_line:
         caption_parts.append(stars_line)
     caption_parts.append(f"\n<i>«{_esc(review_text)}»</i>")
-    caption_parts.append(f"\n— {_esc(buyer_name)}")
+    caption_parts.append(f"\n— {_esc(disp_name)}")
     caption = "\n".join(caption_parts)
 
     buyer_url = f"https://t.me/{buyer_username}" if buyer_username else f"tg://user?id={buyer_id}"
@@ -458,7 +463,7 @@ async def on_chosen_inline_result(chosen, bot, db: Database, config):
     channel_verified = ch and ch["verified"]
 
     rows = []
-    if show_btn:
+    if show_btn_pm:
         rows.append([InlineKeyboardButton(text=f"👤 {buyer_name}", url=buyer_url)])
     if channel_verified:
         rows.append([
@@ -475,7 +480,7 @@ async def on_chosen_inline_result(chosen, bot, db: Database, config):
     seller_caption = f"⭐ Новый отзыв (через чат)!\n\n{caption}"
     if pending.get("is_anon", False):
         real_tag = f"@{buyer_username}" if buyer_username else f"<a href='tg://user?id={buyer_id}'>{_esc(buyer_name)}</a>"
-        seller_caption += (f"\n\n🕵️ <i>Отзыв анонимный</i> — в канале имя скрыто.\n"
+        seller_caption += (f"\n\n🕵️ <i>Отзыв анонимный.</i>\n"
                            f"Настоящий автор (видно только тебе): {real_tag}")
 
     try:

@@ -306,7 +306,7 @@ async def _gate_anon(event, state: FSMContext, db: Database, bot, config,
         await answer(
             "🕵️ Хочешь оставить отзыв <b>анонимно</b>?\n\n"
             "В карточке не будет твоего имени и аватара — вместо них "
-            "будет анонимный профиль. Продавец всё равно увидит, что отзыв от тебя.",
+            "будет анонимный профиль.",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
                 InlineKeyboardButton(text="🕵️ Да, анонимно", callback_data="anon:yes"),
                 InlineKeyboardButton(text="👤 Нет, с именем", callback_data="anon:no"),
@@ -526,16 +526,18 @@ async def finalize_review(event, state: FSMContext, db: Database, bot, config,
         await answer("⚠️ Карточка сгенерирована, но не отправилась из-за сети. Попробуй ещё раз.")
         return
 
-    # Решаем, показывать ли кнопку-ссылку на покупателя (нужно ДО сохранения)
+    # Решаем показ кнопки-ссылки. Различаем ДВА места:
+    #  - кнопка в ЛС продавца: показываем всегда по btn_mode (продавцу можно знать клиента)
+    #  - кнопка в КАНАЛЕ (show_buyer_button в БД): при анон убираем
     btn_mode = seller.get("inline_button_mode", "shown")
-    if is_anon:
-        show_button = False  # анон → кнопки профиля нет никогда
-    elif btn_mode == "hidden":
-        show_button = False
+    if btn_mode == "hidden":
+        show_button_pm = False
     elif btn_mode == "ask":
-        show_button = data.get("buyer_wants_button", False)
+        show_button_pm = data.get("buyer_wants_button", False)
     else:  # shown
-        show_button = True
+        show_button_pm = True
+    # В канале кнопки нет при анонимности
+    show_button_channel = False if is_anon else show_button_pm
 
     file_id = sent.photo[-1].file_id if sent.photo else None
     review_row = await db.save_review(
@@ -548,7 +550,7 @@ async def finalize_review(event, state: FSMContext, db: Database, bot, config,
         stars=data.get("stars", 0),
         template_used=data.get("template_id", seller["template_id"]),
         card_file_id=file_id,
-        show_buyer_button=show_button,
+        show_buyer_button=show_button_channel,
         proof_count=len(proofs or []),
         verify_code=verify_code,
         is_anonymous=is_anon,
@@ -565,7 +567,7 @@ async def finalize_review(event, state: FSMContext, db: Database, bot, config,
     channel_verified = seller_has_channel
 
     rows = []
-    if show_button:
+    if show_button_pm:
         rows.append([InlineKeyboardButton(text=f"👤 {buyer_name}", url=buyer_url)])
     if channel_verified:
         rows.append([
@@ -578,11 +580,11 @@ async def finalize_review(event, state: FSMContext, db: Database, bot, config,
                                           callback_data=f"proofedit:{review_id}")])
     seller_kb = InlineKeyboardMarkup(inline_keyboard=rows) if rows else None
 
-    # Продавцу показываем РЕАЛЬНОЕ имя даже при анон-отзыве (для контроля накрутки)
+    # Под карточкой — АНОН-НИК (как на самой карточке). Реальный автор — только пометкой.
     seller_caption = f"⭐ Новый отзыв!\n\n{review_caption}"
     if is_anon:
         real_tag = f"@{buyer_username}" if buyer_username else f"<a href='tg://user?id={user.id}'>{_esc(buyer_name)}</a>"
-        seller_caption += (f"\n\n🕵️ <i>Отзыв анонимный</i> — в канале имя скрыто.\n"
+        seller_caption += (f"\n\n🕵️ <i>Отзыв анонимный.</i>\n"
                            f"Настоящий автор (видно только тебе): {real_tag}")
 
     try:
@@ -828,7 +830,7 @@ async def cb_review_accept(call: CallbackQuery, bot: Bot, db: Database, config):
     # Достаём данные отзыва из БД
     async with db.pool.acquire() as conn:
         row = await conn.fetchrow(
-            "SELECT card_file_id, buyer_name, buyer_username, buyer_id, review_text, stars, show_buyer_button FROM rvb_reviews WHERE id = $1",
+            "SELECT card_file_id, buyer_name, buyer_username, buyer_id, review_text, stars, show_buyer_button, is_anonymous FROM rvb_reviews WHERE id = $1",
             review_id
         )
     if not row or not row["card_file_id"]:
@@ -839,23 +841,30 @@ async def cb_review_accept(call: CallbackQuery, bot: Bot, db: Database, config):
     buyer_name = row["buyer_name"]
     buyer_username = row["buyer_username"]
     buyer_id = row["buyer_id"]
-    # Уважаем выбор покупателя: показывать ли ссылку на него
-    show_btn = row["show_buyer_button"] if row["show_buyer_button"] is not None else True
-    buyer_url = f"https://t.me/{buyer_username}" if buyer_username else f"tg://user?id={buyer_id}"
-    buyer_btn = InlineKeyboardButton(text=f"👤 {buyer_name}", url=buyer_url)
-    channel_kb = InlineKeyboardMarkup(inline_keyboard=[[buyer_btn]]) if show_btn else None
+    is_anon = bool(row["is_anonymous"])
 
-    # Получаем название магазина продавца
+    # Получаем название магазина продавца (нужно и для анон-ника)
     seller = await db.get_seller(seller_id)
     shop_name = seller["shop_name"] if seller else ""
 
-    # Строим подпись идентично основному флоу
+    # Анонимность: в канале показываем анон-ник, кнопку профиля убираем
+    if is_anon:
+        display_name = (seller.get("anon_nickname") if seller else None) or "Анонимный покупатель"
+        channel_kb = None  # никакой ссылки на покупателя
+    else:
+        display_name = buyer_name
+        show_btn = row["show_buyer_button"] if row["show_buyer_button"] is not None else True
+        buyer_url = f"https://t.me/{buyer_username}" if buyer_username else f"tg://user?id={buyer_id}"
+        buyer_btn = InlineKeyboardButton(text=f"👤 {buyer_name}", url=buyer_url)
+        channel_kb = InlineKeyboardMarkup(inline_keyboard=[[buyer_btn]]) if show_btn else None
+
+    # Строим подпись — с анон-ником при анонимности
     stars_line = "★" * row["stars"] if row["stars"] > 0 else ""
     caption_parts = [f"<b>{_esc(shop_name)}</b>"]
     if stars_line:
         caption_parts.append(stars_line)
     caption_parts.append(f"\n<i>«{_esc(row['review_text'])}»</i>")
-    caption_parts.append(f"\n— {_esc(buyer_name)}")
+    caption_parts.append(f"\n— {_esc(display_name)}")
     caption = "\n".join(caption_parts)
 
     try:
@@ -891,11 +900,10 @@ async def cb_review_accept(call: CallbackQuery, bot: Bot, db: Database, config):
         except Exception:
             pass
 
-    # Убираем кнопки из текущего сообщения или удаляем его
+    # Убираем кнопки из текущего сообщения (у продавца в ЛС) или удаляем его
     try:
         if call.message.photo:
-            new_kb = InlineKeyboardMarkup(inline_keyboard=[[buyer_btn]]) if show_btn else None
-            await call.message.edit_reply_markup(reply_markup=new_kb)
+            await call.message.edit_reply_markup(reply_markup=channel_kb)
         else:
             await call.message.delete()
     except Exception:
@@ -1053,21 +1061,39 @@ async def pe_photo(message: Message, state: FSMContext, db: Database, bot, confi
         except Exception:
             pass
     status = await message.answer("⏳ Перегенерирую карточку...")
-    avatar_bytes = await _get_avatar_bytes(bot, review["buyer_id"])
-    proofs = [base64.b64decode(p) for p in collected]
     buyer_name = review["buyer_name"] or "Покупатель"
+    review_is_anon = bool(review.get("is_anonymous"))
+
+    # При анон-отзыве сохраняем анонимность и при перегенерации
+    if review_is_anon:
+        display_name = (seller.get("anon_nickname") if seller else None) or "Анонимный покупатель"
+        display_initials = "?"
+        anon_av = seller.get("anon_avatar")
+        if anon_av:
+            try:
+                display_avatar = base64.b64decode(anon_av)
+            except Exception:
+                display_avatar = None
+        else:
+            display_avatar = None
+    else:
+        display_name = buyer_name
+        display_initials = "".join(w[0].upper() for w in buyer_name.split() if w)[:2]
+        display_avatar = await _get_avatar_bytes(bot, review["buyer_id"])
+
+    proofs = [base64.b64decode(p) for p in collected]
 
     card_data = {
         "shop_name": seller["shop_name"],
         "seller_tag": f"@{seller['username']}" if seller.get("username") else f"ID: {seller['id']}",
-        "buyer_name": buyer_name,
-        "buyer_initials": "".join(w[0].upper() for w in buyer_name.split() if w)[:2],
+        "buyer_name": display_name,
+        "buyer_initials": display_initials,
         "review_text": review["review_text"],
         "item_bought": review.get("item_bought", ""),
         "stars": review.get("stars", 0),
         "stars_mode": seller["stars_mode"],
         "template_id": review.get("template_used") or seller["template_id"],
-        "avatar_bytes": avatar_bytes,
+        "avatar_bytes": display_avatar,
         "entities": [],
         "bot": bot,
         "bot_username": config.BOT_USERNAME,
@@ -1081,13 +1107,13 @@ async def pe_photo(message: Message, state: FSMContext, db: Database, bot, confi
         await status.edit_text(f"❌ Ошибка генерации: {e}")
         return
 
-    # Восстанавливаем подпись и клавиатуру карточки
+    # Восстанавливаем подпись и клавиатуру карточки (анон → анон-ник, без кнопки профиля)
     stars_line = "★" * review.get("stars", 0) if review.get("stars", 0) > 0 else ""
     caption_parts = [f"<b>{_esc(seller['shop_name'])}</b>"]
     if stars_line:
         caption_parts.append(stars_line)
     caption_parts.append(f"\n<i>«{_esc(review['review_text'])}»</i>")
-    caption_parts.append(f"\n— {_esc(buyer_name)}")
+    caption_parts.append(f"\n— {_esc(display_name)}")
     review_caption = "\n".join(caption_parts)
 
     buyer_username = review.get("buyer_username")
@@ -1096,7 +1122,7 @@ async def pe_photo(message: Message, state: FSMContext, db: Database, bot, confi
     channel_verified = ch and ch["verified"]
 
     rows = []
-    if review.get("show_buyer_button", True):
+    if not review_is_anon and review.get("show_buyer_button", True):
         rows.append([InlineKeyboardButton(text=f"👤 {buyer_name}", url=buyer_url)])
     if channel_verified and review.get("status") == "pending":
         rows.append([
