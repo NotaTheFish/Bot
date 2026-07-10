@@ -56,6 +56,8 @@ CREATE TABLE IF NOT EXISTS rvb_custom_templates (
     bg_image TEXT,
     is_edited BOOLEAN NOT NULL DEFAULT FALSE,
     extra_cfg JSONB NOT NULL DEFAULT '{}',
+    anon_nickname TEXT,
+    anon_avatar TEXT,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
@@ -183,6 +185,15 @@ class Database:
             await conn.execute("""
                 ALTER TABLE rvb_custom_templates
                 ADD COLUMN IF NOT EXISTS lineage_id INT
+            """)
+            # Авто-миграция: анон-профиль карточки (nullable = наследуй от продавца)
+            await conn.execute("""
+                ALTER TABLE rvb_custom_templates
+                ADD COLUMN IF NOT EXISTS anon_nickname TEXT
+            """)
+            await conn.execute("""
+                ALTER TABLE rvb_custom_templates
+                ADD COLUMN IF NOT EXISTS anon_avatar TEXT
             """)
             # Бэкфилл: у кого lineage_id пустой — ставим равным собственному id
             await conn.execute("""

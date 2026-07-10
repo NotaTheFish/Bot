@@ -62,12 +62,16 @@ async def get_or_generate_card(
     buyer_name = query.from_user.full_name or query.from_user.first_name or "Трейдер"
     buyer_initials = "".join(w[0].upper() for w in buyer_name.split() if w)[:2]
 
-    # Инлайн-анонимность: подменяем имя/аватар анонимным профилем продавца
+    # Шаблон инлайн-карточки — нужен и для анон-профиля карточки
+    inline_tpl = seller.get("inline_template_id") or seller["template_id"]
+
+    # Инлайн-анонимность: анон-профиль карточки → дефолт продавца
     is_anon = bool(seller.get("inline_anon", False))
     if is_anon:
-        buyer_name = seller.get("anon_nickname") or "Анонимный покупатель"
+        from handlers.review import _resolve_anon_profile
+        anon_nick, anon_av = await _resolve_anon_profile(db, seller, inline_tpl)
+        buyer_name = anon_nick
         buyer_initials = "?"
-        anon_av = seller.get("anon_avatar")
         if anon_av:
             import base64 as _b64
             try:
@@ -82,8 +86,6 @@ async def get_or_generate_card(
     # Уникальный код — печатается на карточке и позже сохраняется в БД
     verify_code = await db.reserve_verify_code()
 
-    # Аватарку в inline не берём — слишком медленно для живого запроса
-    inline_tpl = seller.get("inline_template_id") or seller["template_id"]
     card_data = {
         "shop_name": seller["shop_name"],
         "seller_tag": f"@{seller['username']}" if seller.get("username") else f"ID:{seller['id']}",
@@ -271,7 +273,12 @@ async def inline_review(query: InlineQuery, db: Database, bot, config):
         file_id, verify_code = await get_or_generate_card(query, seller, review_text, bot, config, db)
         if file_id:
             inline_is_anon = bool(seller.get("inline_anon", False))
-            display_name = seller.get("anon_nickname") or "Анонимный покупатель" if inline_is_anon else buyer_name
+            if inline_is_anon:
+                from handlers.review import _resolve_anon_profile
+                _tpl = seller.get("inline_template_id") or seller["template_id"]
+                display_name, _ = await _resolve_anon_profile(db, seller, _tpl)
+            else:
+                display_name = buyer_name
             stars = "★" * (seller["stars_value"] if seller["stars_mode"] == "fixed" else 5)
             caption = (
                 f"<b>{_esc(seller['shop_name'])}</b>\n{stars}\n\n"
@@ -449,7 +456,12 @@ async def on_chosen_inline_result(chosen, bot, db: Database, config):
     stars_line = "★" * stars if stars > 0 else ""
     # Под карточкой — анон-ник при анонимности (как на самой карточке)
     pend_anon = pending.get("is_anon", False)
-    disp_name = (seller.get("anon_nickname") if seller else None) or "Анонимный покупатель" if pend_anon else buyer_name
+    if pend_anon:
+        from handlers.review import _resolve_anon_profile
+        disp_name, _ = await _resolve_anon_profile(
+            db, seller or {}, pending.get("template_id"))
+    else:
+        disp_name = buyer_name
     caption_parts = [f"<b>{_esc(seller['shop_name'] if seller else '')}</b>"]
     if stars_line:
         caption_parts.append(stars_line)

@@ -34,6 +34,8 @@ class ConstructorSG(StatesGroup):
     enter_logo = State()
     enter_name = State()
     enter_key = State()     # ввод ключа для получения шаблона
+    enter_anon_nick = State()
+    enter_anon_avatar = State()
 
 
 def _default_cfg() -> dict:
@@ -75,6 +77,7 @@ def kb_constructor_main() -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text="✅ Бейдж продавца", callback_data="con:menu:verified_badge"),
          InlineKeyboardButton(text="⌜ Орнамент углов", callback_data="con:menu:corner_ornament")],
         [InlineKeyboardButton(text="🖼 Логотип магазина", callback_data="con:menu:logo")],
+        [InlineKeyboardButton(text="🕵️ Анон-профиль карточки", callback_data="con:menu:anon")],
         [InlineKeyboardButton(text="💾 Сохранить шаблон", callback_data="con:save")],
         [InlineKeyboardButton(text="❌ Отмена", callback_data="con:cancel")],
     ])
@@ -157,6 +160,8 @@ async def start_constructor_edit(message: Message, state: FSMContext, db: Databa
         "creator_username": tpl["creator_username"],
         "is_edited": tpl["is_edited"],
         "extra_cfg": tpl.get("extra_cfg") or {},
+        "anon_nickname": tpl.get("anon_nickname"),
+        "anon_avatar": tpl.get("anon_avatar"),
     }
     await state.set_state(ConstructorSG.building)
     await state.update_data(
@@ -278,10 +283,140 @@ MENU_MAP = {
 }
 
 
+@router.callback_query(ConstructorSG.building, F.data.startswith("con:anon:"))
+async def cb_con_anon(call: CallbackQuery, state: FSMContext, db: Database):
+    action = call.data.split(":")[2]
+    await call.answer()
+
+    if action == "nick":
+        await state.set_state(ConstructorSG.enter_anon_nick)
+        await call.message.answer(
+            "✏️ Пришли ник анонима <b>для этой карточки</b>.\n\n"
+            "Например: <code>Хацкер аноним</code>, <code>Безымянный в маске</code>, "
+            "<code>Таинственный грибоман</code>.\n\n"
+            "Отправь /skip чтобы вернуться без изменений."
+        )
+        return
+
+    if action == "avatar":
+        await state.set_state(ConstructorSG.enter_anon_avatar)
+        prompt = await call.message.answer(
+            "🖼 Пришли картинку — аватар анонима <b>для этой карточки</b>.\n\n"
+            "Лучше квадратную. Отправь /skip чтобы вернуться без изменений."
+        )
+        await state.update_data(upload_prompt_id=prompt.message_id)
+        return
+
+    if action == "reset":
+        data = await state.get_data()
+        cfg = data["cfg"]
+        cfg["anon_nickname"] = None
+        cfg["anon_avatar"] = None
+        await state.update_data(cfg=cfg)
+        await call.message.answer(
+            "🗑 Анон-профиль карточки сброшен — будут использоваться настройки продавца."
+        )
+        return
+
+
+@router.message(ConstructorSG.enter_anon_nick, F.text == "/skip")
+async def con_anon_nick_skip(message: Message, state: FSMContext):
+    await state.set_state(ConstructorSG.building)
+    await message.answer("Оставил как было.")
+
+
+@router.message(ConstructorSG.enter_anon_nick, F.text)
+async def con_anon_nick_input(message: Message, state: FSMContext, db: Database):
+    nick = message.text.strip()[:40]
+    if not nick:
+        await message.answer("Пустой ник. Пришли текст или /skip.")
+        return
+    data = await state.get_data()
+    cfg = data["cfg"]
+    cfg["anon_nickname"] = nick
+    await state.update_data(cfg=cfg)
+    await state.set_state(ConstructorSG.building)
+    import html as _hh
+    await message.answer(f"✅ Ник анонима для карточки: <b>{_hh.escape(nick)}</b>\n\n"
+                         "<i>Не забудь сохранить шаблон.</i>")
+
+
+@router.message(ConstructorSG.enter_anon_avatar, F.text == "/skip")
+async def con_anon_avatar_skip(message: Message, state: FSMContext):
+    await state.set_state(ConstructorSG.building)
+    await message.answer("Оставил как было.")
+
+
+@router.message(ConstructorSG.enter_anon_avatar, F.photo)
+async def con_anon_avatar_input(message: Message, state: FSMContext, db: Database, bot):
+    import base64, io
+    photo = message.photo[-1]
+    if photo.file_size and photo.file_size > 10 * 1024 * 1024:
+        await message.answer("⚠️ Картинка слишком большая (макс 10 МБ).")
+        return
+    try:
+        file = await bot.get_file(photo.file_id)
+        buf = await bot.download_file(file.file_path)
+        raw = buf.read()
+        from PIL import Image
+        Image.MAX_IMAGE_PIXELS = 40_000_000
+        im = Image.open(io.BytesIO(raw)); im.load()
+        im = im.convert("RGB")
+        w, h = im.size
+        side = min(w, h)
+        im = im.crop(((w - side) // 2, (h - side) // 2, (w + side) // 2, (h + side) // 2))
+        im.thumbnail((256, 256), Image.LANCZOS)
+        out = io.BytesIO()
+        im.save(out, format="JPEG", quality=85, optimize=True)
+        b64 = base64.b64encode(out.getvalue()).decode()
+    except Exception:
+        await message.answer("⚠️ Не удалось обработать картинку. Пришли другую.")
+        return
+    data = await state.get_data()
+    cfg = data["cfg"]
+    cfg["anon_avatar"] = b64
+    await state.update_data(cfg=cfg)
+    await state.set_state(ConstructorSG.building)
+    await message.answer("✅ Аватар анонима для карточки сохранён.\n\n"
+                         "<i>Не забудь сохранить шаблон.</i>")
+
+
+@router.message(ConstructorSG.enter_anon_avatar)
+async def con_anon_avatar_wrong(message: Message):
+    await message.answer("Пришли именно картинку (фото) или /skip.")
+
+
 @router.callback_query(ConstructorSG.building, F.data.startswith("con:menu:"))
 async def cb_open_menu(call: CallbackQuery, state: FSMContext):
     field = call.data.split(":")[2]
     await call.answer()
+
+    if field == "anon":
+        data = await state.get_data()
+        cfg = data["cfg"]
+        nick = cfg.get("anon_nickname")
+        has_av = bool(cfg.get("anon_avatar"))
+        import html as _hh
+        rows = [
+            [InlineKeyboardButton(text="✏️ Ник анонима для этой карточки",
+                                  callback_data="con:anon:nick")],
+            [InlineKeyboardButton(text="🖼 Аватар анонима" + (" ✅" if has_av else ""),
+                                  callback_data="con:anon:avatar")],
+        ]
+        if nick or has_av:
+            rows.append([InlineKeyboardButton(text="🗑 Сбросить (брать из настроек продавца)",
+                                              callback_data="con:anon:reset")])
+        rows.append([InlineKeyboardButton(text="« Назад", callback_data="con:back")])
+        await call.message.answer(
+            "🕵️ <b>Анон-профиль этой карточки</b>\n\n"
+            "Можно задать ник и аватар анонима <b>отдельно для этой карточки</b>. "
+            "Например, для хакерского стиля — «Хацкер аноним», для хоррора — «Безымянный в маске».\n\n"
+            f"• Ник: <b>{_hh.escape(nick) if nick else 'из настроек продавца'}</b>\n"
+            f"• Аватар: <b>{'задан для карточки' if has_av else 'из настроек продавца'}</b>\n\n"
+            "<i>Если не задавать — берётся то, что настроено в «Мой торговый шаблон» → "
+            "«Анонимные отзывы». Ник и аватар наследуются независимо.</i>",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
+        return
 
     if field == "bg_image":
         await state.set_state(ConstructorSG.enter_bg_image)
@@ -705,6 +840,8 @@ async def cb_save(call: CallbackQuery, state: FSMContext, db: Database):
             "bg_color": cfg["bg_color"],
             "bg_image": cfg.get("bg_image"),
             "extra_cfg": cfg.get("extra_cfg", {}),
+            "anon_nickname": cfg.get("anon_nickname"),
+            "anon_avatar": cfg.get("anon_avatar"),
         }
         # Если редактируем полученный чужой шаблон — становимся владельцем
         if is_received:
@@ -748,6 +885,13 @@ async def cb_save_name(message: Message, state: FSMContext, db: Database):
         extra_cfg=cfg.get("extra_cfg", {}),
         is_edited=False,
     )
+    # Анон-профиль карточки (если задан в конструкторе)
+    if cfg.get("anon_nickname") or cfg.get("anon_avatar"):
+        await db.update_custom_template(
+            tpl["id"],
+            anon_nickname=cfg.get("anon_nickname"),
+            anon_avatar=cfg.get("anon_avatar"),
+        )
     await state.clear()
     await message.answer(
         f"✅ Шаблон <b>«{name}»</b> сохранён!\n\n"

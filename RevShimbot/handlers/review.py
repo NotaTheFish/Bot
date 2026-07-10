@@ -12,6 +12,28 @@ def _esc(t) -> str:
     """Эскейп пользовательского текста для caption с parse_mode=HTML."""
     return _html_mod.escape(str(t or ""))
 
+
+async def _resolve_anon_profile(db, seller: dict, template_id):
+    """Возвращает (anon_nickname, anon_avatar_b64) с иерархией:
+    поле карточки (кастомного шаблона) → поле продавца-дефолт.
+    Каждое поле наследуется независимо."""
+    # Дефолты продавца
+    nick = seller.get("anon_nickname") or "Анонимный покупатель"
+    avatar = seller.get("anon_avatar")  # base64 или None
+
+    # Если шаблон кастомный — проверяем его собственный анон-профиль
+    if isinstance(template_id, str) and template_id.startswith("custom_"):
+        try:
+            ct = await db.get_custom_template(int(template_id.split("_")[1]))
+            if ct:
+                if ct.get("anon_nickname"):
+                    nick = ct["anon_nickname"]
+                if ct.get("anon_avatar"):
+                    avatar = ct["anon_avatar"]
+        except Exception:
+            pass
+    return nick, avatar
+
 from db import Database
 from keyboards import kb_buyer_stars, kb_templates, kb_cancel
 from constants import REVIEW_MAX_LEN, REVIEW_SOFT_LEN
@@ -443,9 +465,11 @@ async def finalize_review(event, state: FSMContext, db: Database, bot, config,
 
     # Анонимность: подменяем отображаемое имя и аватар (реальные — сохраняем в БД для продавца)
     is_anon = bool(data.get("is_anonymous", False))
+    review_template_id = data.get("template_id", seller["template_id"])
     if is_anon:
-        display_name = seller.get("anon_nickname") or "Анонимный покупатель"
-        anon_av = seller.get("anon_avatar")  # base64 или None
+        # Иерархия анон-профиля: карточка (кастом-шаблон) → дефолт продавца
+        anon_nick, anon_av = await _resolve_anon_profile(db, seller, review_template_id)
+        display_name = anon_nick
         if anon_av:
             import base64 as _b64
             try:
@@ -453,7 +477,7 @@ async def finalize_review(event, state: FSMContext, db: Database, bot, config,
             except Exception:
                 display_avatar = None
         else:
-            display_avatar = None  # генератор нарисует заглушку с инициалами/знаком
+            display_avatar = None  # генератор нарисует заглушку со знаком вопроса
         display_initials = "?"
     else:
         display_name = buyer_name
@@ -830,7 +854,7 @@ async def cb_review_accept(call: CallbackQuery, bot: Bot, db: Database, config):
     # Достаём данные отзыва из БД
     async with db.pool.acquire() as conn:
         row = await conn.fetchrow(
-            "SELECT card_file_id, buyer_name, buyer_username, buyer_id, review_text, stars, show_buyer_button, is_anonymous FROM rvb_reviews WHERE id = $1",
+            "SELECT card_file_id, buyer_name, buyer_username, buyer_id, review_text, stars, show_buyer_button, is_anonymous, template_used FROM rvb_reviews WHERE id = $1",
             review_id
         )
     if not row or not row["card_file_id"]:
@@ -847,9 +871,10 @@ async def cb_review_accept(call: CallbackQuery, bot: Bot, db: Database, config):
     seller = await db.get_seller(seller_id)
     shop_name = seller["shop_name"] if seller else ""
 
-    # Анонимность: в канале показываем анон-ник, кнопку профиля убираем
+    # Анонимность: в канале показываем анон-ник (карточка → дефолт продавца), кнопку убираем
     if is_anon:
-        display_name = (seller.get("anon_nickname") if seller else None) or "Анонимный покупатель"
+        anon_nick, _ = await _resolve_anon_profile(db, seller or {}, row.get("template_used"))
+        display_name = anon_nick
         channel_kb = None  # никакой ссылки на покупателя
     else:
         display_name = buyer_name
@@ -1064,11 +1089,12 @@ async def pe_photo(message: Message, state: FSMContext, db: Database, bot, confi
     buyer_name = review["buyer_name"] or "Покупатель"
     review_is_anon = bool(review.get("is_anonymous"))
 
-    # При анон-отзыве сохраняем анонимность и при перегенерации
+    # При анон-отзыве сохраняем анонимность и при перегенерации (карточка → дефолт продавца)
     if review_is_anon:
-        display_name = (seller.get("anon_nickname") if seller else None) or "Анонимный покупатель"
+        _tpl = review.get("template_used") or seller["template_id"]
+        anon_nick, anon_av = await _resolve_anon_profile(db, seller, _tpl)
+        display_name = anon_nick
         display_initials = "?"
-        anon_av = seller.get("anon_avatar")
         if anon_av:
             try:
                 display_avatar = base64.b64decode(anon_av)
