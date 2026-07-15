@@ -19,10 +19,21 @@ from aiogram.fsm.state import State, StatesGroup
 router = Router()
 logger = logging.getLogger(__name__)
 
+import html as _html_mod
+
+
+def _esc(t) -> str:
+    """Эскейп имён шаблонов — они попадают в HTML-сообщения."""
+    return _html_mod.escape(str(t or ""))
+
 
 class ShareSG(StatesGroup):
     custom_uses = State()
     custom_days = State()
+
+
+class RenameSG(StatesGroup):
+    enter_name = State()
 
 
 def _parse_uses(text: str):
@@ -91,6 +102,7 @@ def kb_template_actions(tpl: dict) -> InlineKeyboardMarkup:
     rows = [
         [InlineKeyboardButton(text="👁 Показать карточку", callback_data=f"mytpl:show:{tpl['id']}")],
         [InlineKeyboardButton(text="✏️ Редактировать", callback_data=f"mytpl:edit:{tpl['id']}")],
+        [InlineKeyboardButton(text="🏷 Переименовать", callback_data=f"mytpl:rename:{tpl['id']}")],
     ]
     if _can_share(tpl):
         rows.append([InlineKeyboardButton(text="🔗 Поделиться (копия)", callback_data=f"mytpl:share:{tpl['id']}")])
@@ -191,7 +203,7 @@ async def cb_view(call: CallbackQuery, state: FSMContext, db: Database):
                  "🔒 Нельзя делиться (чужой шаблон, отредактируй чтобы стать владельцем)"
 
     await call.message.answer(
-        f"🎨 <b>{tpl['name']}</b>\n\n"
+        f"🎨 <b>{_esc(tpl['name'])}</b>\n\n"
         f"Раскладка: {layout_name}\n"
         f"Шрифт: {font_name}\n"
         f"Статус: {origin}\n"
@@ -200,6 +212,60 @@ async def cb_view(call: CallbackQuery, state: FSMContext, db: Database):
     )
 
 
+
+
+@router.callback_query(F.data.startswith("mytpl:rename:"))
+async def cb_rename(call: CallbackQuery, state: FSMContext, db: Database):
+    tpl_id = int(call.data.split(":")[2])
+    tpl = await db.get_custom_template(tpl_id)
+    if not tpl or tpl["owner_id"] != call.from_user.id:
+        await call.answer("Не найдено", show_alert=True)
+        return
+    await call.answer()
+    await state.set_state(RenameSG.enter_name)
+    await state.update_data(rename_tpl_id=tpl_id)
+    await call.message.answer(
+        f"🏷 Текущее название: <b>{_esc(tpl['name'])}</b>\n\n"
+        "Пришли новое название (до 40 символов).\n\n"
+        "Отправь /cancel чтобы отменить."
+    )
+
+
+@router.message(RenameSG.enter_name, F.text == "/cancel")
+async def rename_cancel(message: Message, state: FSMContext):
+    await state.clear()
+    await message.answer("Отменено.")
+
+
+@router.message(RenameSG.enter_name, F.text)
+async def rename_input(message: Message, state: FSMContext, db: Database):
+    name = message.text.strip()[:40]
+    if not name:
+        await message.answer("Пустое название. Пришли текст или /cancel.")
+        return
+    data = await state.get_data()
+    tpl_id = data.get("rename_tpl_id")
+    tpl = await db.get_custom_template(tpl_id) if tpl_id else None
+    if not tpl or tpl["owner_id"] != message.from_user.id:
+        await state.clear()
+        await message.answer("Шаблон не найден.")
+        return
+
+    # Предупреждаем о дубле — из-за них и возникает путаница
+    others = await db.list_custom_templates(message.from_user.id)
+    dup = any(t["id"] != tpl_id and (t["name"] or "").lower() == name.lower()
+              for t in (others or []))
+
+    await state.clear()
+    await db.update_custom_template(tpl_id, name=name)
+    warn = ("\n\n⚠️ У тебя уже есть шаблон с таким названием — "
+            "они будут выглядеть одинаково в списке." if dup else "")
+    await message.answer(f"✅ Название: <b>{_esc(name)}</b>{warn}")
+
+    tpl = await db.get_custom_template(tpl_id)
+    await message.answer(
+        f"🎨 <b>{_esc(tpl['name'])}</b>",
+        reply_markup=kb_template_actions(tpl))
 
 
 @router.callback_query(F.data.startswith("mytpl:edit:"))
@@ -232,7 +298,7 @@ async def cb_show(call: CallbackQuery, db: Database, config):
     png = await render_preview(cfg, config.BOT_USERNAME)
     await call.message.answer_photo(
         BufferedInputFile(png, filename="template.png"),
-        caption=f"🎨 <b>{tpl['name']}</b>"
+        caption=f"🎨 <b>{_esc(tpl['name'])}</b>"
     )
 
 
@@ -250,7 +316,7 @@ async def cb_share(call: CallbackQuery, state: FSMContext, db: Database, config)
     await state.set_state(ShareSG.custom_uses)
     await state.update_data(share_tpl_id=tpl_id)
     await call.message.answer(
-        f"🔗 <b>Поделиться «{tpl['name']}»</b>\n\n"
+        f"🔗 <b>Поделиться «{_esc(tpl['name'])}»</b>\n\n"
         f"Получатель получит <b>копию</b> карточки (🎁).\n\n"
         f"Сколько раз можно активировать ключ? Выбери вариант "
         f"или напиши своё число в чат (например 2).",
@@ -283,7 +349,7 @@ async def _finalize_share_key(message: Message, state: FSMContext, db: Database,
                                  max_uses=max_uses, expires_days=expires_days)
     ref_link = f"https://t.me/{config.BOT_USERNAME}?start=tpl_{key[1:]}"
     await message.answer(
-        f"🔗 <b>Ключ для «{tpl['name']}» создан!</b>\n\n"
+        f"🔗 <b>Ключ для «{_esc(tpl['name'])}» создан!</b>\n\n"
         f"🔑 Ключ: <code>{key}</code>\n\n"
         f"🌐 Реф-ссылка:\n<code>{ref_link}</code>\n\n"
         f"📊 Активаций: <b>{uses_label}</b>\n"
@@ -386,7 +452,7 @@ async def cb_transfer(call: CallbackQuery, db: Database, config):
         return
 
     await call.message.answer(
-        f"👑 <b>Передать авторство «{tpl['name']}»</b>\n\n"
+        f"👑 <b>Передать авторство «{_esc(tpl['name'])}»</b>\n\n"
         f"⚠️ <b>Важно, это действие серьёзное:</b>\n"
         f"• карточка <b>исчезнет</b> из твоего списка\n"
         f"• у получателя станет <b>созданной</b> (👑), а не полученной\n"
@@ -466,14 +532,14 @@ def _build_keys_view(db: Database, tpl: dict, tpl_id: int, keys: list,
     """Собирает текст и клавиатуру для экрана «Мои ключи».
     show_links=True — показывает реф-ссылку рядом с каждым ключом."""
     if not keys:
-        text = (f"🗝 У карточки «{tpl['name']}» пока нет ключей.\n\n"
+        text = (f"🗝 У карточки «{_esc(tpl['name'])}» пока нет ключей.\n\n"
                 f"Создай ключ через «🔗 Поделиться» или «👑 Передать авторство».")
         kb = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="« Назад", callback_data=f"mytpl:view:{tpl_id}")]
         ])
         return text, kb
 
-    lines = [f"🗝 <b>Ключи карточки «{tpl['name']}»</b>\n"]
+    lines = [f"🗝 <b>Ключи карточки «{_esc(tpl['name'])}»</b>\n"]
     rows = []
     for kr in keys:
         type_emoji = "👑" if kr["key_type"] == "transfer" else "🔗"

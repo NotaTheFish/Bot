@@ -11,6 +11,13 @@ from constants import TEMPLATES
 
 router = Router()
 
+import html as _html_esc_mod
+
+
+def _h_esc(t) -> str:
+    """Эскейп имён шаблонов/магазинов для HTML-сообщений."""
+    return _html_esc_mod.escape(str(t or ""))
+
 TEMPLATE_NAMES = {
     "classic_gold": "✦ Classic Gold",
     "retro_paper":  "📜 Retro Paper",
@@ -503,7 +510,7 @@ async def cb_mytemplate(call: CallbackQuery, db: Database, config):
     await call.message.answer(
         f"📋 <b>Торговый шаблон — {seller['shop_name']}</b>\n\n"
         f"🆔 Твой ID: <code>{pub_id}</code>\n"
-        f"🎨 Стиль: <b>{tpl}</b>\n"
+        f"🎨 Стиль: <b>{_h_esc(tpl)}</b>\n"
         f"⭐️ Звёзды: <b>{stars_info}</b>\n"
         f"📦 Что купил: <b>{item_info}</b>\n"
         f"🎴 Карточки для отзывов: <b>{card_src}</b>\n"
@@ -533,7 +540,7 @@ async def cb_myclienttemplate(call: CallbackQuery, db: Database):
         tpl = TEMPLATE_NAMES.get(tid, tid)
     await call.message.answer(
         f"🎨 <b>Клиентский шаблон</b>\n\n"
-        f"Стиль карточки: <b>{tpl}</b>\n\n"
+        f"Стиль карточки: <b>{_h_esc(tpl)}</b>\n\n"
         f"Используется когда ты пишешь <code>@RevShimbot текст</code> в чате.\n\n"
         f"Изменить стиль?",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
@@ -662,7 +669,7 @@ async def cb_edit_field(call: CallbackQuery, db: Database, state: FSMContext, co
             "Когда клиент пишет отзыв прямо в чате через "
             f"<code>@{config.BOT_USERNAME} ID текст</code>, он не может выбрать карточку — "
             "используется карточка по умолчанию.\n\n"
-            f"🎨 Сейчас: <b>{tpl_name}</b>\n\n"
+            f"🎨 Сейчас: <b>{_h_esc(tpl_name)}</b>\n\n"
             "Здесь можно задать отдельную карточку и решить, показывать ли ссылку на покупателя.\n\n"
             "🔔 <b>Уведомления о чат-отзывах</b> — когда покупатель оставляет отзыв инлайном, "
             "бот пришлёт тебе карточку в ЛС с кнопками «Принять / Отклонить», как при обычном отзыве. "
