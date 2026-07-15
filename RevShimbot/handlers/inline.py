@@ -1,6 +1,7 @@
 import hashlib
 import logging
 import asyncio
+import time as _time
 from aiogram import Router
 from aiogram.types import (
     InlineQuery,
@@ -244,10 +245,25 @@ async def inline_review(query: InlineQuery, db: Database, bot, config):
                         f"<code>@{config.BOT_USERNAME} {seller['pub_id']} твой отзыв</code> "
                         f"и нажми на всплывающую картинку.</i>"
                     )
+                # Премиум-эмодзи в инлайн-результате Telegram срезает, но повторная
+                # правка сообщения ботом их сохраняет — помечаем результат для
+                # авто-редактирования в on_chosen_inline_result.
+                inv_id = f"invite:{result_id[:24]}"
+                if "<tg-emoji" in caption:
+                    _PENDING_INLINE[inv_id] = {
+                        "caption": caption,
+                        "btn_text": btn_text[:64],
+                        "btn_url": ref_link,
+                        "ts": _time.time(),
+                    }
+                    if len(_PENDING_INLINE) > _PENDING_MAX:
+                        for _k in sorted(_PENDING_INLINE,
+                                         key=lambda k: _PENDING_INLINE[k]["ts"])[:100]:
+                            _PENDING_INLINE.pop(_k, None)
                 await _safe_answer(query,
                     results=[
                         InlineQueryResultCachedPhoto(
-                            id=result_id,
+                            id=inv_id,
                             photo_file_id=file_id,
                             caption=caption,
                             parse_mode="HTML",
@@ -319,7 +335,6 @@ async def inline_review(query: InlineQuery, db: Database, bot, config):
 
             # Всегда регистрируем pending — чтобы инлайн-отзыв сохранился в БД
             # с кодом подлинности (проверяемым). Уведомление продавцу — по флагу.
-            import time as _time
             r_id = f"notify:{result_id}"
             _PENDING_INLINE[r_id] = {
                 "seller_id": seller["id"],
@@ -419,6 +434,27 @@ async def on_chosen_inline_result(chosen, bot, db: Database, config):
     """Срабатывает когда покупатель реально отправил инлайн-карточку.
     Если продавец включил уведомления — шлём ему карточку в ЛС с кнопками."""
     result_id = chosen.result_id
+
+    # Приглашение с премиум-эмодзи: Telegram срезает custom_emoji в инлайн-результате,
+    # но правка сообщения самим ботом их сохраняет. Переписываем caption поверх.
+    if result_id.startswith("invite:"):
+        pend = _PENDING_INLINE.pop(result_id, None)
+        if pend and chosen.inline_message_id:
+            try:
+                # Кнопку пересоздаём — иначе правка снесёт её
+                kb = InlineKeyboardMarkup(inline_keyboard=[[
+                    InlineKeyboardButton(text=pend["btn_text"], url=pend["btn_url"])
+                ]])
+                await bot.edit_message_caption(
+                    inline_message_id=chosen.inline_message_id,
+                    caption=pend["caption"],
+                    parse_mode="HTML",
+                    reply_markup=kb,
+                )
+            except Exception as e:
+                logger.info(f"Не удалось обновить приглашение премиум-эмодзи: {e}")
+        return
+
     if not result_id.startswith("notify:"):
         return
     pending = _PENDING_INLINE.pop(result_id, None)
