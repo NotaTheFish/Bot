@@ -75,6 +75,22 @@ async def _place_review_number(bot, db, config, seller_id: int, review_id: int,
             plain = _re.sub(r'<tg-emoji[^>]*>|</tg-emoji>', '', text)
             plain = _re.sub(r'<[^>]+>', '', plain)
             sent = await bot.send_message(channel_id, plain)
+
+        # Попытка вернуть премиум-эмодзи повторной правкой — тот же приём, что
+        # сработал для инлайн-приглашения. В каналах Telegram может их резать
+        # (ограничение по типу чата), тогда правка просто не изменит сообщение.
+        if "<tg-emoji" in text:
+            try:
+                await bot.edit_message_text(
+                    chat_id=channel_id,
+                    message_id=sent.message_id,
+                    text=text,
+                    parse_mode="HTML",
+                )
+            except Exception as e:
+                # "message is not modified" = премиум срезан и текст совпал → это норма
+                logger.info(f"Правка номера премиум-эмодзи не прошла: {e}")
+
         await db.record_review_number(seller_id, review_id, number,
                                       channel_msg_id, sent.message_id)
         return True
