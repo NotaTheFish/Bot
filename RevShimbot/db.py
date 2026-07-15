@@ -112,6 +112,7 @@ CREATE TABLE IF NOT EXISTS rvb_seller_channels (
     numbering_start INT NOT NULL DEFAULT 1,
     numbering_template TEXT NOT NULL DEFAULT 'Отзыв №{n}',
     numbering_entities TEXT,
+    numbering_forward BOOLEAN NOT NULL DEFAULT FALSE,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 CREATE TABLE IF NOT EXISTS rvb_review_numbers (
@@ -398,6 +399,10 @@ class Database:
             await conn.execute("""
                 ALTER TABLE rvb_seller_channels
                 ADD COLUMN IF NOT EXISTS numbering_entities TEXT
+            """)
+            await conn.execute("""
+                ALTER TABLE rvb_seller_channels
+                ADD COLUMN IF NOT EXISTS numbering_forward BOOLEAN NOT NULL DEFAULT FALSE
             """)
             await conn.execute("""
                 CREATE TABLE IF NOT EXISTS rvb_review_numbers (
@@ -1021,7 +1026,7 @@ class Database:
 
     async def set_numbering(self, seller_id: int, **fields):
         """Обновляет настройки нумерации (mode/start/template)."""
-        allowed = {"numbering_mode", "numbering_start", "numbering_template", "numbering_entities"}
+        allowed = {"numbering_mode", "numbering_start", "numbering_template", "numbering_entities", "numbering_forward"}
         bad = set(fields) - allowed
         if bad:
             raise ValueError(f"Недопустимые поля нумерации: {bad}")

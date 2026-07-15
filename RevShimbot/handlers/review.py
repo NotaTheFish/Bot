@@ -68,28 +68,43 @@ async def _place_review_number(bot, db, config, seller_id: int, review_id: int,
         from handlers.numbering import _render_number_html
         tpl = ch.get("numbering_template", "Отзыв №{n}")
         text = _render_number_html(tpl, number)
-        try:
-            sent = await bot.send_message(channel_id, text, parse_mode="HTML")
-        except Exception:
-            import re as _re
-            plain = _re.sub(r'<tg-emoji[^>]*>|</tg-emoji>', '', text)
-            plain = _re.sub(r'<[^>]+>', '', plain)
-            sent = await bot.send_message(channel_id, plain)
 
-        # Попытка вернуть премиум-эмодзи повторной правкой — тот же приём, что
-        # сработал для инлайн-приглашения. В каналах Telegram может их резать
-        # (ограничение по типу чата), тогда правка просто не изменит сообщение.
-        if "<tg-emoji" in text:
+        sent = None
+        has_premium = "<tg-emoji" in text
+        # Режим пересылки: бот пишет номер в лог-чат (супергруппа — там премиум-эмодзи
+        # разрешены), затем ПЕРЕСЫЛАЕТ в канал. forward копирует entities без повторной
+        # проверки, поэтому премиум может доехать. Минус — пометка «Переслано из…».
+        if has_premium and ch.get("numbering_forward") and cache_chat:
             try:
-                await bot.edit_message_text(
-                    chat_id=channel_id,
-                    message_id=sent.message_id,
-                    text=text,
-                    parse_mode="HTML",
-                )
+                tmp = await bot.send_message(cache_chat, text, parse_mode="HTML")
+                sent = await bot.forward_message(
+                    chat_id=channel_id, from_chat_id=cache_chat,
+                    message_id=tmp.message_id)
+                try:
+                    await bot.delete_message(cache_chat, tmp.message_id)
+                except Exception:
+                    pass
             except Exception as e:
-                # "message is not modified" = премиум срезан и текст совпал → это норма
-                logger.info(f"Правка номера премиум-эмодзи не прошла: {e}")
+                logger.info(f"Пересылка номера через лог-чат не удалась: {e}")
+                sent = None
+
+        if sent is None:
+            try:
+                sent = await bot.send_message(channel_id, text, parse_mode="HTML")
+            except Exception:
+                import re as _re
+                plain = _re.sub(r'<tg-emoji[^>]*>|</tg-emoji>', '', text)
+                plain = _re.sub(r'<[^>]+>', '', plain)
+                sent = await bot.send_message(channel_id, plain)
+
+            # Попытка вернуть премиум повторной правкой (в каналах обычно не проходит)
+            if has_premium:
+                try:
+                    await bot.edit_message_text(
+                        chat_id=channel_id, message_id=sent.message_id,
+                        text=text, parse_mode="HTML")
+                except Exception as e:
+                    logger.info(f"Правка номера премиум-эмодзи не прошла: {e}")
 
         await db.record_review_number(seller_id, review_id, number,
                                       channel_msg_id, sent.message_id)
