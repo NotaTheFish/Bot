@@ -334,6 +334,9 @@ async def cb_profile(call: CallbackQuery, db: Database, config):
         profile_kb_rows.append([
             InlineKeyboardButton(text="🔢 Нумерация отзывов", callback_data="numbering:menu")
         ])
+    profile_kb_rows.append([
+        InlineKeyboardButton(text="📨 Настройка приглашения", callback_data="invite:menu")
+    ])
     profile_kb_rows.append([InlineKeyboardButton(text="« Назад", callback_data="menu:back")])
 
     # Кнопка админки — только для админа

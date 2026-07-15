@@ -187,47 +187,63 @@ async def inline_review(query: InlineQuery, db: Database, bot, config):
         ref_link = f"https://t.me/{config.BOT_USERNAME}?start=seller_{seller['pub_id']}"
 
         if config.CACHE_CHAT_ID:
-            # Генерируем актуальную карточку-превью шаблона продавца
-            preview_data = {
-                "shop_name": seller["shop_name"],
-                "seller_tag": f"@{seller['username']}" if seller.get("username") else f"ID:{seller['pub_id']}",
-                "buyer_name": "Трейдер",
-                "buyer_initials": "ТР",
-                "review_text": "Здесь появится твой отзыв о продавце ✍️",
-                "item_bought": seller["item_value"] if seller["item_mode"] == "fixed" else "",
-                "stars": seller["stars_value"] if seller["stars_mode"] == "fixed" else 5,
-                "stars_mode": seller["stars_mode"],
-                "template_id": seller.get("inline_template_id") or seller["template_id"],
-                "avatar_bytes": None,
-                "bot_username": config.BOT_USERNAME,
-                "db": db,
-            }
-            try:
-                img = await generate_card(preview_data)
-                sent = await bot.send_photo(
-                    chat_id=config.CACHE_CHAT_ID,
-                    photo=BufferedInputFile(img, filename="invite.png"),
-                )
-                file_id = sent.photo[-1].file_id
+            # Своё фото приглашения (хранится как file_id) — используем без генерации
+            custom_photo = seller.get("invite_photo")
+            if custom_photo:
+                file_id = custom_photo
+            else:
+                # Генерируем карточку-превью: шаблон приглашения → инлайн → основной
+                preview_tpl = (seller.get("invite_template_id")
+                               or seller.get("inline_template_id")
+                               or seller["template_id"])
+                preview_data = {
+                    "shop_name": seller["shop_name"],
+                    "seller_tag": f"@{seller['username']}" if seller.get("username") else f"ID:{seller['pub_id']}",
+                    "buyer_name": "Трейдер",
+                    "buyer_initials": "ТР",
+                    "review_text": "Здесь появится твой отзыв о продавце ✍️",
+                    "item_bought": seller["item_value"] if seller["item_mode"] == "fixed" else "",
+                    "stars": seller["stars_value"] if seller["stars_mode"] == "fixed" else 5,
+                    "stars_mode": seller["stars_mode"],
+                    "template_id": preview_tpl,
+                    "avatar_bytes": None,
+                    "bot_username": config.BOT_USERNAME,
+                    "db": db,
+                }
                 try:
-                    await bot.delete_message(config.CACHE_CHAT_ID, sent.message_id)
-                except Exception:
-                    pass
-            except Exception as e:
-                logger.error(f"Invite card failed: {e}")
-                file_id = None
+                    img = await generate_card(preview_data)
+                    sent = await bot.send_photo(
+                        chat_id=config.CACHE_CHAT_ID,
+                        photo=BufferedInputFile(img, filename="invite.png"),
+                    )
+                    file_id = sent.photo[-1].file_id
+                    try:
+                        await bot.delete_message(config.CACHE_CHAT_ID, sent.message_id)
+                    except Exception:
+                        pass
+                except Exception as e:
+                    logger.error(f"Invite card failed: {e}")
+                    file_id = None
 
             if file_id:
+                btn_text = seller.get("invite_button") or "✍️ Написать отзыв в боте"
                 kb = InlineKeyboardMarkup(inline_keyboard=[[
-                    InlineKeyboardButton(text="✍️ Написать отзыв в боте", url=ref_link)
+                    InlineKeyboardButton(text=btn_text[:64], url=ref_link)
                 ]])
-                caption = (
-                    f"⭐️ <b>{_esc(seller['shop_name'])}</b> просит оставить отзыв!\n\n"
-                    f"Нажми кнопку ниже, чтобы написать красивый отзыв.\n\n"
-                    f"💡 <i>Быстрее: напиши прямо в чате "
-                    f"<code>@{config.BOT_USERNAME} {seller['pub_id']} твой отзыв</code> "
-                    f"и нажми на всплывающую картинку.</i>"
-                )
+                custom_text = seller.get("invite_text")
+                if custom_text:
+                    # Свой текст: подставляем плейсхолдеры. Текст уже HTML (с <tg-emoji>)
+                    caption = (custom_text
+                               .replace("{shop}", _esc(seller["shop_name"]))
+                               .replace("{id}", _esc(str(seller["pub_id"]))))
+                else:
+                    caption = (
+                        f"⭐️ <b>{_esc(seller['shop_name'])}</b> просит оставить отзыв!\n\n"
+                        f"Нажми кнопку ниже, чтобы написать красивый отзыв.\n\n"
+                        f"💡 <i>Быстрее: напиши прямо в чате "
+                        f"<code>@{config.BOT_USERNAME} {seller['pub_id']} твой отзыв</code> "
+                        f"и нажми на всплывающую картинку.</i>"
+                    )
                 await _safe_answer(query,
                     results=[
                         InlineQueryResultCachedPhoto(
@@ -245,9 +261,20 @@ async def inline_review(query: InlineQuery, db: Database, bot, config):
                 return
 
         # Фолбэк без CACHE_CHAT_ID — просто текст с кнопкой
+        fb_btn = seller.get("invite_button") or "✍️ Написать отзыв в боте"
         kb = InlineKeyboardMarkup(inline_keyboard=[[
-            InlineKeyboardButton(text="✍️ Написать отзыв в боте", url=ref_link)
+            InlineKeyboardButton(text=fb_btn[:64], url=ref_link)
         ]])
+        fb_custom = seller.get("invite_text")
+        if fb_custom:
+            fb_text = (fb_custom
+                       .replace("{shop}", _esc(seller["shop_name"]))
+                       .replace("{id}", _esc(str(seller["pub_id"]))))
+        else:
+            fb_text = (
+                f"⭐️ <b>{_esc(seller['shop_name'])}</b> просит оставить отзыв!\n\n"
+                f"💡 Быстрее: <code>@{config.BOT_USERNAME} {seller['pub_id']} твой отзыв</code>"
+            )
         await _safe_answer(query,
             results=[
                 InlineQueryResultArticle(
@@ -256,10 +283,7 @@ async def inline_review(query: InlineQuery, db: Database, bot, config):
                     description="Отправь приглашение оставить отзыв",
                     reply_markup=kb,
                     input_message_content=InputTextMessageContent(
-                        message_text=(
-                            f"⭐️ <b>{_esc(seller['shop_name'])}</b> просит оставить отзыв!\n\n"
-                            f"💡 Быстрее: <code>@{config.BOT_USERNAME} {seller['pub_id']} твой отзыв</code>"
-                        ),
+                        message_text=fb_text,
                         parse_mode="HTML",
                     ),
                 )
