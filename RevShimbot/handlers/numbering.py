@@ -39,11 +39,6 @@ def _kb_numbering(ch: dict) -> InlineKeyboardMarkup:
                                       callback_data="numbering:start")])
     rows.append([InlineKeyboardButton(text="✏️ Шаблон текста",
                                       callback_data="numbering:template")])
-    fwd = ch.get("numbering_forward", False)
-    rows.append([InlineKeyboardButton(
-        text=("🔁 Премиум-эмодзи через пересылку: ВКЛ" if fwd
-              else "🔁 Премиум-эмодзи через пересылку: ВЫКЛ"),
-        callback_data="numbering:fwdtoggle")])
     rows.append([InlineKeyboardButton(text="« Назад", callback_data="menu:profile")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
@@ -61,11 +56,9 @@ def _numbering_text(ch: dict) -> str:
         f"• <b>Пример:</b> {preview}\n\n"
         "<i>Номер ставится отдельным сообщением после карточки. Если удалить последний "
         "отзыв, его номер переиспользуется. Удаления из середины оставляют пропуск.</i>\n\n"
-        "🔁 <b>Премиум-эмодзи через пересылку</b> — Telegram запрещает ботам слать "
-        "премиум-эмодзи в каналы. Обход: бот пишет номер в служебный чат и пересылает "
-        "в канал. Тогда премиум может сохраниться, но появится пометка "
-        "«Переслано из…». Работает, только если служебный чат — <b>группа</b> "
-        "(не канал)."
+        "<i>Премиум-эмодзи в шаблоне сохраняются автоматически — для этого бот "
+        "публикует номер через служебный чат, поэтому появляется пометка "
+        "«Переслано из…». Без премиум-эмодзи номер публикуется напрямую, без пометки.</i>"
     )
 
 
@@ -103,21 +96,6 @@ async def cb_numbering_mode(call: CallbackQuery, db: Database):
         return
     await db.set_numbering(call.from_user.id, numbering_mode=mode)
     await call.answer("✅ Режим обновлён")
-    await _show_menu(call.message, db, call.from_user.id, edit=True)
-
-
-@router.callback_query(F.data == "numbering:fwdtoggle")
-async def cb_numbering_fwd(call: CallbackQuery, db: Database):
-    ch = await db.get_seller_channel(call.from_user.id)
-    if not ch or not ch["verified"]:
-        await call.answer("Канал не подключён", show_alert=True)
-        return
-    new_val = not ch.get("numbering_forward", False)
-    await db.set_numbering(call.from_user.id, numbering_forward=new_val)
-    if new_val:
-        await call.answer("🔁 Включено: номер пойдёт через лог-чат", show_alert=True)
-    else:
-        await call.answer("Выключено — номер публикуется напрямую")
     await _show_menu(call.message, db, call.from_user.id, edit=True)
 
 

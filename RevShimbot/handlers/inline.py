@@ -26,7 +26,7 @@ _PENDING_MAX = 500
 
 # Дебаунс инлайна: рендерим только когда юзер перестал печатать
 _LAST_INLINE_Q: dict[int, str] = {}
-_DEBOUNCE_SEC = 1.3
+_DEBOUNCE_SEC = 0.55
 
 import html as _html_mod
 

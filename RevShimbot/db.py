@@ -95,6 +95,7 @@ CREATE TABLE IF NOT EXISTS rvb_reviews (
     show_buyer_button BOOLEAN NOT NULL DEFAULT TRUE,
     proof_count INT NOT NULL DEFAULT 0,
     is_anonymous BOOLEAN NOT NULL DEFAULT FALSE,
+    review_html TEXT,
     verify_code TEXT UNIQUE,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
@@ -297,6 +298,11 @@ class Database:
             await conn.execute("""
                 ALTER TABLE rvb_reviews
                 ADD COLUMN IF NOT EXISTS is_anonymous BOOLEAN NOT NULL DEFAULT FALSE
+            """)
+            # Авто-миграция: HTML-версия текста отзыва (с <tg-emoji> для премиум-эмодзи)
+            await conn.execute("""
+                ALTER TABLE rvb_reviews
+                ADD COLUMN IF NOT EXISTS review_html TEXT
             """)
             # Авто-миграция: уникальный код проверки подлинности отзыва
             await conn.execute("""
@@ -840,7 +846,7 @@ class Database:
         item_bought: str, stars: int, template_used: str,
         card_file_id: Optional[str] = None, show_buyer_button: bool = True,
         proof_count: int = 0, verify_code: Optional[str] = None,
-        is_anonymous: bool = False
+        is_anonymous: bool = False, review_html: Optional[str] = None
     ) -> dict:
         async with self.pool.acquire() as conn:
             last_err = None
@@ -851,12 +857,13 @@ class Database:
                         INSERT INTO rvb_reviews
                             (seller_id, buyer_id, buyer_name, buyer_username,
                              review_text, item_bought, stars, template_used, card_file_id,
-                             show_buyer_button, proof_count, verify_code, is_anonymous)
-                        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+                             show_buyer_button, proof_count, verify_code, is_anonymous,
+                             review_html)
+                        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
                         RETURNING *
                     """, seller_id, buyer_id, buyer_name, buyer_username,
                         review_text, item_bought, stars, template_used, card_file_id,
-                        show_buyer_button, proof_count, code, is_anonymous)
+                        show_buyer_button, proof_count, code, is_anonymous, review_html)
                     return dict(row)
                 except Exception as e:
                     # Коллизия кода (вероятность ~0) — регенерируем и пробуем ещё

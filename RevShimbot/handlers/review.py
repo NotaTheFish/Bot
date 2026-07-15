@@ -71,10 +71,11 @@ async def _place_review_number(bot, db, config, seller_id: int, review_id: int,
 
         sent = None
         has_premium = "<tg-emoji" in text
-        # Режим пересылки: бот пишет номер в лог-чат (супергруппа — там премиум-эмодзи
-        # разрешены), затем ПЕРЕСЫЛАЕТ в канал. forward копирует entities без повторной
-        # проверки, поэтому премиум может доехать. Минус — пометка «Переслано из…».
-        if has_premium and ch.get("numbering_forward") and cache_chat:
+        # Премиум-эмодзи: Telegram запрещает ботам слать их в каналы напрямую.
+        # Обход — написать в лог-чат (группа, там премиум разрешён) и ПЕРЕСЛАТЬ:
+        # forward копирует entities без повторной проверки. Минус — пометка
+        # «Переслано из…», поэтому обычные номера шлём напрямую.
+        if has_premium and cache_chat:
             try:
                 tmp = await bot.send_message(cache_chat, text, parse_mode="HTML")
                 sent = await bot.forward_message(
@@ -96,15 +97,6 @@ async def _place_review_number(bot, db, config, seller_id: int, review_id: int,
                 plain = _re.sub(r'<tg-emoji[^>]*>|</tg-emoji>', '', text)
                 plain = _re.sub(r'<[^>]+>', '', plain)
                 sent = await bot.send_message(channel_id, plain)
-
-            # Попытка вернуть премиум повторной правкой (в каналах обычно не проходит)
-            if has_premium:
-                try:
-                    await bot.edit_message_text(
-                        chat_id=channel_id, message_id=sent.message_id,
-                        text=text, parse_mode="HTML")
-                except Exception as e:
-                    logger.info(f"Правка номера премиум-эмодзи не прошла: {e}")
 
         await db.record_review_number(seller_id, review_id, number,
                                       channel_msg_id, sent.message_id)
@@ -559,10 +551,16 @@ async def finalize_review(event, state: FSMContext, db: Database, bot, config,
         )
 
     stars_line = "★" * data.get("stars", 0) if data.get("stars", 0) > 0 else ""
+    # Текст отзыва в HTML — сохраняет премиум-эмодзи клиента (<tg-emoji>) и форматирование
+    try:
+        from aiogram.utils.text_decorations import html_decoration
+        text_html = html_decoration.unparse(text, entities or [])
+    except Exception:
+        text_html = _esc(text)
     caption_parts = [f"<b>{_esc(seller['shop_name'])}</b>"]
     if stars_line:
         caption_parts.append(stars_line)
-    caption_parts.append(f"\n<i>«{_esc(text)}»</i>")
+    caption_parts.append(f"\n<i>«{text_html}»</i>")
     caption_parts.append(f"\n— {_esc(display_name)}")
     review_caption = "\n".join(caption_parts)
 
@@ -609,6 +607,7 @@ async def finalize_review(event, state: FSMContext, db: Database, bot, config,
         proof_count=len(proofs or []),
         verify_code=verify_code,
         is_anonymous=is_anon,
+        review_html=text_html,
     )
     review_id = review_row["id"]
     await state.clear()
@@ -885,7 +884,7 @@ async def cb_review_accept(call: CallbackQuery, bot: Bot, db: Database, config):
     # Достаём данные отзыва из БД
     async with db.pool.acquire() as conn:
         row = await conn.fetchrow(
-            "SELECT card_file_id, buyer_name, buyer_username, buyer_id, review_text, stars, show_buyer_button, is_anonymous, template_used FROM rvb_reviews WHERE id = $1",
+            "SELECT card_file_id, buyer_name, buyer_username, buyer_id, review_text, stars, show_buyer_button, is_anonymous, template_used, review_html FROM rvb_reviews WHERE id = $1",
             review_id
         )
     if not row or not row["card_file_id"]:
@@ -919,21 +918,51 @@ async def cb_review_accept(call: CallbackQuery, bot: Bot, db: Database, config):
     caption_parts = [f"<b>{_esc(shop_name)}</b>"]
     if stars_line:
         caption_parts.append(stars_line)
-    caption_parts.append(f"\n<i>«{_esc(row['review_text'])}»</i>")
+    # HTML-версия текста сохраняет премиум-эмодзи клиента; фолбэк — эскейп plain-текста
+    _rtext = row.get("review_html") or _esc(row["review_text"])
+    caption_parts.append(f"\n<i>«{_rtext}»</i>")
     caption_parts.append(f"\n— {_esc(display_name)}")
     caption = "\n".join(caption_parts)
 
-    try:
-        posted = await bot.send_photo(
-            chat_id=ch["channel_id"],
-            photo=file_id,
-            caption=caption,
-            reply_markup=channel_kb,
-            parse_mode="HTML",
-        )
-    except Exception as e:
-        await call.answer(f"Ошибка публикации: {e}", show_alert=True)
-        return
+    # Премиум-эмодзи в тексте отзыва: боту нельзя слать их в канал напрямую.
+    # Обход — отправить в лог-чат (группа) и переслать: forward сохраняет entities.
+    cache_chat = getattr(config, "CACHE_CHAT_ID", None)
+    posted = None
+    if "<tg-emoji" in caption and cache_chat:
+        try:
+            tmp = await bot.send_photo(chat_id=cache_chat, photo=file_id,
+                                       caption=caption, parse_mode="HTML")
+            posted = await bot.forward_message(
+                chat_id=ch["channel_id"], from_chat_id=cache_chat,
+                message_id=tmp.message_id)
+            try:
+                await bot.delete_message(cache_chat, tmp.message_id)
+            except Exception:
+                pass
+            # forward не переносит кнопки — возвращаем их отдельной правкой
+            if channel_kb:
+                try:
+                    await bot.edit_message_reply_markup(
+                        chat_id=ch["channel_id"], message_id=posted.message_id,
+                        reply_markup=channel_kb)
+                except Exception as e:
+                    logger.info(f"Кнопку к пересланному отзыву добавить не вышло: {e}")
+        except Exception as e:
+            logger.info(f"Пересылка отзыва через лог-чат не удалась: {e}")
+            posted = None
+
+    if posted is None:
+        try:
+            posted = await bot.send_photo(
+                chat_id=ch["channel_id"],
+                photo=file_id,
+                caption=caption,
+                reply_markup=channel_kb,
+                parse_mode="HTML",
+            )
+        except Exception as e:
+            await call.answer(f"Ошибка публикации: {e}", show_alert=True)
+            return
 
     await db.set_review_status(review_id, "accepted")
 
