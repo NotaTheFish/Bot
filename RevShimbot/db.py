@@ -644,28 +644,37 @@ class Database:
             return bool(row)
 
     async def transfer_authorship(self, lineage_id: int, old_owner_id: int,
-                                   new_owner_id: int, new_username) -> bool:
-        """Передаёт авторство: новый владелец становится создателем своей копии,
-        у старого карточка удаляется, у всех остальных копий обновляется водяной знак."""
+                                   new_owner_id: int, new_username,
+                                   src_id: int = None) -> bool:
+        """Передаёт авторство: карточка ПЕРЕХОДИТ к новому владельцу (не удаляется!),
+        у всех копий линии обновляется водяной знак.
+
+        Важно: раньше карточка удалялась у старого владельца в расчёте на то, что
+        у нового уже есть своя копия линии. Если копии не было (или она была другой —
+        например, старой версией), карточка терялась вместе со всеми правками.
+        Теперь передаваемая карточка просто меняет владельца."""
         async with self.pool.acquire() as conn:
             async with conn.transaction():
                 # Обновляем creator во ВСЕХ копиях этой линии (динамический водяной знак)
                 await conn.execute("""
                     UPDATE rvb_custom_templates
-                    SET creator_id = $1, creator_username = $2, is_edited = FALSE
+                    SET creator_id = $1, creator_username = $2
                     WHERE lineage_id = $3
                 """, new_owner_id, new_username, lineage_id)
-                # У нового владельца копия становится «созданной» (owner=creator)
-                await conn.execute("""
-                    UPDATE rvb_custom_templates
-                    SET owner_id = $1
-                    WHERE lineage_id = $2 AND owner_id = $1
-                """, new_owner_id, lineage_id)
-                # Удаляем карточку у старого владельца
-                await conn.execute("""
-                    DELETE FROM rvb_custom_templates
-                    WHERE lineage_id = $1 AND owner_id = $2
-                """, lineage_id, old_owner_id)
+                # Передаваемая карточка меняет владельца и становится «созданной»
+                if src_id:
+                    await conn.execute("""
+                        UPDATE rvb_custom_templates
+                        SET owner_id = $1, is_edited = FALSE
+                        WHERE id = $2
+                    """, new_owner_id, src_id)
+                else:
+                    # Фолбэк по линии, если id не передан
+                    await conn.execute("""
+                        UPDATE rvb_custom_templates
+                        SET owner_id = $1, is_edited = FALSE
+                        WHERE lineage_id = $2 AND owner_id = $3
+                    """, new_owner_id, lineage_id, old_owner_id)
                 return True
 
     # ── Client Templates ───────────────────────────────────────────────────

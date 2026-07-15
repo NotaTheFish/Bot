@@ -683,41 +683,35 @@ async def claim_template(user_id: int, username, key: str, db: Database, bot=Non
         # Нельзя передать самому себе
         if src["owner_id"] == user_id:
             return False, "❌ Нельзя передать авторство самому себе."
+        # Лимит шаблонов — карточка переедет к получателю, займёт слот
+        if await db.count_custom_templates(user_id) >= 15:
+            return False, "❌ У тебя уже 15 шаблонов — освободи место перед приёмом авторства."
         # Атомарно используем ключ
         used_ok, used_reason = await db.consume_template_key(key, user_id)
         if not used_ok:
             return False, "❌ Ключ уже недействителен."
         old_owner = src["owner_id"]
         lineage = src.get("lineage_id") or src["id"]
-        # Если у получателя ещё нет копии этой линии — создаём (станет «созданной»)
-        existing = await db.get_user_template_by_lineage(user_id, lineage)
-        if not existing:
-            await db.create_custom_template(
-                owner_id=user_id, creator_id=user_id, creator_username=username,
-                lineage_id=lineage,
-                name=src["name"], layout=src["layout"], font=src["font"],
-                title_font=src.get("title_font", "caveat"),
-                text_color=src["text_color"], accent_color=src["accent_color"],
-                bg_color=src["bg_color"], bg_image=src["bg_image"],
-                extra_cfg=src.get("extra_cfg") or {}, is_edited=False,
-            )
-        # Переносим авторство: водяной знак у всех копий → новый владелец,
-        # у старого владельца карточка удаляется
-        await db.transfer_authorship(lineage, old_owner, user_id, username)
+        # Карточка ПЕРЕЕЗЖАЕТ к новому владельцу вместе со всеми правками,
+        # у остальных копий линии обновляется водяной знак.
+        await db.transfer_authorship(lineage, old_owner, user_id, username,
+                                     src_id=src["id"])
         # Уведомляем бывшего владельца, что авторство ушло
         if bot:
             try:
                 await bot.send_message(
                     old_owner,
                     f"👑 <b>Авторство передано</b>\n\n"
-                    f"{who} активировал ключ передачи авторства карточки «{src['name']}».\n\n"
-                    f"Теперь карточка принадлежит ему и пропала из твоего списка. "
-                    f"У всех, кому ты её раздавал, водяной знак сменился на нового владельца."
+                    f"{who} активировал ключ передачи авторства карточки «{_esc(src['name'])}».\n\n"
+                    f"Карточка переехала к нему вместе со всеми настройками и пропала "
+                    f"из твоего списка. У всех, кому ты её раздавал, водяной знак "
+                    f"сменился на нового владельца."
                 )
             except Exception as e:
                 logger.info(f"Не удалось уведомить о передаче {old_owner}: {e}")
-        return True, (f"👑 Тебе передали авторство карточки «{src['name']}»!\n"
-                      f"Теперь она твоя — отображается как созданная, без чужого водяного знака.")
+        return True, (f"👑 Тебе передали авторство карточки «{_esc(src['name'])}»!\n"
+                      f"Она добавлена в твои шаблоны со всеми настройками — "
+                      f"отображается как созданная, без чужого водяного знака.")
 
     # ── Обычная копия ──
     count = await db.count_custom_templates(user_id)
