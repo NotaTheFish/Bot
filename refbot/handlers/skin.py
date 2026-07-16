@@ -15,7 +15,7 @@ from aiogram.types import CallbackQuery, Message
 import db
 import keyboards as kb
 from services import settings, ui
-from services.render import edit as r_edit, render
+from services.render import edit as r_edit, parse_free_pair, render
 
 router = Router()
 
@@ -341,26 +341,26 @@ async def cb_free_add(c: CallbackQuery, state: FSMContext):
 async def free_input(msg: Message, state: FSMContext):
     if not await is_admin(msg.from_user.id):
         return await state.clear()
-    text = (msg.text or "").strip()
-    ce = next((e for e in (msg.entities or []) if e.type == "custom_emoji"), None)
-    if not ce:
-        return await ui.answer(msg, "⚠️ Во втором эмодзи нет премиума. Пришли обычное "
-                                    "эмодзи, потом премиум — одним сообщением.")
-    b = text.encode("utf-16-le")
-    prem_char = b[ce.offset * 2:(ce.offset + ce.length) * 2].decode("utf-16-le")
-    plain = text[:text.find(prem_char)].strip() if prem_char in text else ""
-    if not plain:
-        return await ui.answer(msg, "⚠️ Не вижу обычного эмодзи перед премиумом. "
-                                    "Порядок: сначала обычное, потом премиум.")
-    if len(plain) > 8:
+    plain, cid, err = parse_free_pair(msg.text or "", msg.entities)
+    if err == "no_premium":
+        return await ui.answer(msg, "⚠️ Премиум-эмодзи не найдено. Пришли <b>два</b> эмодзи "
+                                    "одним сообщением: сначала обычное, потом премиум.")
+    if err == "no_plain":
+        return await ui.answer(msg, "⚠️ Перед премиумом нет обычного эмодзи. "
+                                    "Порядок: сначала обычное, потом премиум.\n\n"
+                                    "<i>Если оба эмодзи выглядят одинаково — это нормально, "
+                                    "так и должно быть.</i>")
+    if err == "too_long":
         return await ui.answer(msg, "⚠️ Первым должно быть одно эмодзи, а не текст.")
-    if not await settings.set(f"free.{plain}", ce.custom_emoji_id, msg.from_user.id):
+
+    if not await settings.set(f"free.{plain}", cid, msg.from_user.id):
         return await ui.answer(msg, NO_TABLE)
     await state.clear()
     await db.audit(msg.from_user.id, "skin_free", {"char": plain})
     await ui.answer(
-        msg, f"✅ Замена сохранена: {plain} → премиум\n\n"
-             f"Теперь {plain} везде в боте будет анимированной. Проверь «🧪 Тест».",
+        msg, f"✅ Замена сохранена: {plain} → премиум\n"
+             f"ID: <code>{cid}</code>\n\n"
+             f"Теперь {plain} везде в боте будет анимированной.",
         reply_markup=await kb.skin_menu())
 
 

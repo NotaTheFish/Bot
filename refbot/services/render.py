@@ -75,6 +75,29 @@ def _emoji_entities(text: str, emoji_map: dict[str, str]) -> list[MessageEntity]
     return out
 
 
+def parse_free_pair(text: str, entities) -> tuple[str, str, str]:
+    """
+    Разбирает сообщение вида "<обычное эмодзи><премиум-эмодзи>".
+    -> (обычный_символ, custom_emoji_id, ошибка)
+
+    Границу берём из entity.offset, а НЕ поиском фолбэк-символа в тексте:
+    если у премиума фолбэк совпадает с обычным эмодзи (🚩 + премиум-🚩),
+    поиск найдёт первое вхождение и решит, что обычного эмодзи нет.
+    Берём ПОСЛЕДНИЙ custom_emoji — тогда работает и когда оба эмодзи премиумные.
+    """
+    ces = [e for e in (entities or []) if e.type == "custom_emoji"]
+    if not ces:
+        return "", "", "no_premium"
+    ce = ces[-1]
+    b = text.encode("utf-16-le")
+    plain = b[:ce.offset * 2].decode("utf-16-le").strip()
+    if not plain:
+        return "", "", "no_plain"
+    if len(plain) > 8:
+        return "", "", "too_long"
+    return plain, ce.custom_emoji_id, ""
+
+
 def render(html_text: str, emoji_map: dict[str, str] | None = None):
     """
     -> (text, entities | None)
