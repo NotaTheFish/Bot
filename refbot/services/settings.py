@@ -132,14 +132,30 @@ async def label(slot: str) -> str:
 
 
 async def emoji_map() -> dict[str, str]:
-    """{символ: custom_emoji_id} для всех слотов, где настроен премиум."""
+    """
+    {символ: custom_emoji_id} — из слотов И из свободных замен.
+
+    Свободные замены (free.<символ>) — главная фишка: премиум подставляется ПО СИМВОЛУ,
+    а не по слоту. Замапил 📊 один раз — он станет премиумом в любом сообщении и на
+    любой кнопке, где встретится. Без этого пришлось бы заводить слот под каждое
+    эмодзи в коде и всё равно что-нибудь забыть.
+    """
     s = await load()
     out = {}
     for slot, (_, dflt) in EMOJI_SLOTS.items():
         cid = s.get(f"premium.{slot}")
         if cid:
             out[s.get(f"emoji.{slot}", dflt)] = cid
+    for k, v in s.items():
+        if k.startswith("free."):
+            out[k[5:]] = v
     return out
+
+
+async def free_map() -> dict[str, str]:
+    """Только свободные замены — для списка в админке."""
+    s = await load()
+    return {k[5:]: v for k, v in s.items() if k.startswith("free.")}
 
 
 async def profile_template() -> str:

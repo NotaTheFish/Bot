@@ -29,6 +29,7 @@ class Skin(StatesGroup):
     emoji = State()
     label = State()
     tpl = State()
+    free = State()
 
 
 async def is_admin(uid: int) -> bool:
@@ -71,6 +72,7 @@ async def _render_chat(c: CallbackQuery, cid: int):
     ch = await db.pool().fetchrow("SELECT * FROM rb_chats WHERE chat_id=$1", cid)
     if not ch:
         return await c.answer("Чат не найден.", show_alert=True)
+    sx = await settings.ctx()
     st = await db.pool().fetchrow(
         """
         SELECT count(*) FILTER (WHERE status='paid') paid,
@@ -91,7 +93,7 @@ async def _render_chat(c: CallbackQuery, cid: int):
         f"👥 Рефералов: ✅ {st['paid']} | ⏳ {st['hold']} | ❌ {st['lost']}\n"
         f"💰 Выплачено: 🍄 {st['pm']:,} | 🪙 {st['pc']:,}\n"
         f"🎰 Прокруток: {spins}\n"
-        f"🔗 Реф-ссылок выдано: {links}\n"
+        f"{sx['e_link']} Реф-ссылок выдано: {links}\n"
         f"🧯 Бюджет сегодня: {ch['budget_spent_mush']:,} / {ch['daily_budget_mush']:,} 🍄"
         .replace(",", " "),
         reply_markup=await kb.chat_card(cid, ch["active"]))
@@ -295,6 +297,83 @@ async def cb_sk_default(c: CallbackQuery):
     await _render_skin(c)
 
 
+# ---------- свободные замены ----------
+@router.callback_query(F.data == "sk_free")
+async def cb_free(c: CallbackQuery, state: FSMContext):
+    if await deny(c):
+        return
+    await state.clear()
+    await _render_free(c)
+
+
+async def _render_free(c: CallbackQuery):
+    pairs = await settings.free_map()
+    body = "\n".join(f"  {ch} → <code>{cid}</code>" for ch, cid in pairs.items()) or "  пусто"
+    await ui.edit(
+        c.message,
+        f"♻️ <b>Свободные замены</b>\n\n"
+        f"Мапят <b>любой символ</b> на премиум-эмодзи. Работает везде, где этот символ "
+        f"встретится: в тексте, на кнопках, в рулетке, в админке.\n\n"
+        f"Слоты — только для смысловых вещей (какое эмодзи значит «грибы»). "
+        f"А тут можно заменить хоть 📊, хоть 🔍, хоть 👁 — всё, что попадётся на глаза.\n\n"
+        f"<b>Сейчас ({len(pairs)}):</b>\n{body}",
+        reply_markup=await kb.free_list(pairs))
+    await c.answer()
+
+
+@router.callback_query(F.data == "sk_free_add")
+async def cb_free_add(c: CallbackQuery, state: FSMContext):
+    if await deny(c):
+        return
+    await state.set_state(Skin.free)
+    await ui.edit(
+        c.message,
+        "➕ <b>Новая замена</b>\n\n"
+        "Пришли <b>одним сообщением два эмодзи</b>:\n"
+        "сначала обычное (которое заменяем), потом премиум.\n\n"
+        "Например: <code>📊</code> затем премиум-эмодзи — и любая 📊 в боте "
+        "станет анимированной.",
+        reply_markup=await kb.free_list(await settings.free_map()))
+    await c.answer()
+
+
+@router.message(Skin.free)
+async def free_input(msg: Message, state: FSMContext):
+    if not await is_admin(msg.from_user.id):
+        return await state.clear()
+    text = (msg.text or "").strip()
+    ce = next((e for e in (msg.entities or []) if e.type == "custom_emoji"), None)
+    if not ce:
+        return await ui.answer(msg, "⚠️ Во втором эмодзи нет премиума. Пришли обычное "
+                                    "эмодзи, потом премиум — одним сообщением.")
+    b = text.encode("utf-16-le")
+    prem_char = b[ce.offset * 2:(ce.offset + ce.length) * 2].decode("utf-16-le")
+    plain = text[:text.find(prem_char)].strip() if prem_char in text else ""
+    if not plain:
+        return await ui.answer(msg, "⚠️ Не вижу обычного эмодзи перед премиумом. "
+                                    "Порядок: сначала обычное, потом премиум.")
+    if len(plain) > 8:
+        return await ui.answer(msg, "⚠️ Первым должно быть одно эмодзи, а не текст.")
+    if not await settings.set(f"free.{plain}", ce.custom_emoji_id, msg.from_user.id):
+        return await ui.answer(msg, NO_TABLE)
+    await state.clear()
+    await db.audit(msg.from_user.id, "skin_free", {"char": plain})
+    await ui.answer(
+        msg, f"✅ Замена сохранена: {plain} → премиум\n\n"
+             f"Теперь {plain} везде в боте будет анимированной. Проверь «🧪 Тест».",
+        reply_markup=await kb.skin_menu())
+
+
+@router.callback_query(F.data.startswith("sk_free_del:"))
+async def cb_free_del(c: CallbackQuery):
+    if await deny(c):
+        return
+    ch = c.data.split(":", 1)[1]
+    await settings.unset(f"free.{ch}")
+    await c.answer(f"Замена {ch} убрана.")
+    await _render_free(c)
+
+
 # ---------- шаблон профиля ----------
 @router.callback_query(F.data == "sk_tpl")
 async def cb_sk_tpl(c: CallbackQuery, state: FSMContext):
@@ -404,7 +483,7 @@ async def cb_sk_reset(c: CallbackQuery):
     await ui.edit(c.message, 
         "♻️ Сбросить <b>всю</b> кастомизацию — эмодзи, названия, шаблон?\n\n"
         "<i>Балансы и рефералы не тронутся, только внешний вид.</i>",
-        reply_markup=kb.confirm("sk_reset_yes"))
+        reply_markup=await kb.confirm("sk_reset_yes"))
     await c.answer()
 
 

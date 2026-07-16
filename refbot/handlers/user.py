@@ -204,8 +204,9 @@ async def cb_link(c: CallbackQuery):
         return await c.answer("Пока нет подключённых чатов.", show_alert=True)
     if len(chats) == 1:
         return await _show_link(c, chats[0]["chat_id"])
-    await ui.edit(c.message, 
-        "🔗 <b>Выбери чат</b>\n\n"
+    sx = await settings.ctx()
+    await ui.edit(c.message,
+        f"{sx['e_link']} <b>Выбери чат</b>\n\n"
         "У каждого чата своя ссылка и свой зачёт. Один и тот же друг приносит "
         "награду в <b>каждом</b> чате отдельно — пригласил в первый, потом во второй, "
         "получил дважды.",
@@ -234,11 +235,12 @@ async def _show_link(c: CallbackQuery, chat_id: int):
         FROM rb_referrals WHERE inviter_id=$2 AND chat_id=$3
         """, code, c.from_user.id, chat_id)
     multi = await db.pool().fetchval("SELECT count(*) FROM rb_chats WHERE active") > 1
-    await ui.edit(c.message, 
-        f"🔗 <b>{ch['title']}</b>\n\n"
+    sx = await settings.ctx()
+    await ui.edit(c.message,
+        f"{sx['e_link']} <b>{ch['title']}</b>\n\n"
         f"<code>https://t.me/{me.username}?start={code}</code>\n\n"
         f"👁 Переходов: {st['clicks']}\n"
-        f"✅ Зачислено: {st['paid']}   ⏳ Ждут: {st['hold']}\n\n"
+        f"{sx['e_paid']} Зачислено: {st['paid']}   {sx['e_hold']} Ждут: {st['hold']}\n\n"
         f"<i>Кидай друзьям. Бот выдаст каждому персональный одноразовый инвайт. "
         f"Награда упадёт на удержание сразу, на баланс — через 3 дня.</i>",
         reply_markup=await kb.link_card(multi), disable_web_page_preview=True)
@@ -253,7 +255,8 @@ async def cb_refs(c: CallbackQuery):
     rows = await referrals.my_refs(c.from_user.id)
     sx = await settings.ctx()
     if not rows:
-        await ui.edit(c.message, "👥 Рефералов пока нет.", reply_markup=await kb.back_menu())
+        await ui.edit(c.message, f"{sx['e_refs']} Рефералов пока нет.",
+                      reply_markup=await kb.back_menu())
         return await c.answer()
     lines = []
     for r in rows[:25]:
@@ -265,7 +268,7 @@ async def cb_refs(c: CallbackQuery):
             h = max(0, int(left.total_seconds() // 3600))
             lines.append(f"{sx['e_hold']} {name} — {fmt(r['amount'])} "
                          f"{sx['e_' + r['currency']]} (через {h} ч)")
-    await ui.edit(c.message, "👥 <b>Мои рефералы</b>\n\n" + "\n".join(lines),
+    await ui.edit(c.message, f"{sx['e_refs']} <b>Мои рефералы</b>\n\n" + "\n".join(lines),
                               reply_markup=await kb.back_menu())
     await c.answer()
 

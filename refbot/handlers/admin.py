@@ -163,7 +163,7 @@ async def cb_top(c: CallbackQuery):
         mark = "🚫" if r["banned"] else ""
         lines.append(f"{i}. {mark}{name} — {fmt(r['amount'])} {sx['e_' + r['currency']]} "
                      f"<code>{r['tg_id']}</code>")
-    await ui.edit(c.message, "🏆 <b>Топ-25 по балансу</b>\n\n" + ("\n".join(lines) or "пусто"),
+    await ui.edit(c.message, f"{sx['e_top']} <b>Топ-25 по балансу</b>\n\n" + ("\n".join(lines) or "пусто"),
                               reply_markup=await kb.admin_menu())
     await c.answer()
 
@@ -172,6 +172,7 @@ async def cb_top(c: CallbackQuery):
 async def cb_stats(c: CallbackQuery):
     if not await db.admin_chats(c.from_user.id) and c.from_user.id not in SUPER_ADMINS:
         return await c.answer("Нет доступа.", show_alert=True)
+    sx = await settings.ctx()
     s = await db.pool().fetchrow(
         """
         SELECT
@@ -196,15 +197,15 @@ async def cb_stats(c: CallbackQuery):
         for ch in chats) or "  нет чатов"
     await ui.edit(c.message, 
         f"📊 <b>Сводка</b>\n\n"
-        f"👥 Юзеров: {s['users']} (забанено {s['banned']})\n"
-        f"✅ Рефералов зачислено: {s['paid']}\n"
-        f"⏳ На удержании: {s['hold']}\n"
+        f"{sx['e_refs']} Юзеров: {s['users']} (забанено {s['banned']})\n"
+        f"{sx['e_paid']} Рефералов зачислено: {s['paid']}\n"
+        f"{sx['e_hold']} На удержании: {s['hold']}\n"
         f"🚩 На ручной проверке: {s['flagged']}\n\n"
-        f"💰 <b>Обязательства (на балансах)</b>\n"
-        f"🍄 {fmt(s['m'])} | 🪙 {fmt(s['co'])}\n\n"
-        f"💸 <b>Выведено всего</b>\n"
-        f"🍄 {fmt(s['wm'])} | 🪙 {fmt(s['wc'])}\n\n"
-        f"🧯 <b>Суточный бюджет по чатам</b> 🍄\n{budget}",
+        f"{sx['e_balance']} <b>Обязательства (на балансах)</b>\n"
+        f"{sx['e_mushrooms']} {fmt(s['m'])} | {sx['e_coins']} {fmt(s['co'])}\n\n"
+        f"{sx['e_withdraw']} <b>Выведено всего</b>\n"
+        f"{sx['e_mushrooms']} {fmt(s['wm'])} | {sx['e_coins']} {fmt(s['wc'])}\n\n"
+        f"🧯 <b>Суточный бюджет по чатам</b> {sx['e_mushrooms']}\n{budget}",
         reply_markup=await kb.admin_menu())
     await c.answer()
 
@@ -282,10 +283,12 @@ async def find_input(msg: Message, state: FSMContext):
     hist = "\n".join(f"  {r['created_at']:%d.%m %H:%M} {r['reason']} "
                      f"{r['delta']:+} {sx['e_' + r['currency']]}" for r in led) or "  пусто"
     await ui.answer(msg, 
-        f"👤 <b>{row['first_name']}</b> @{row['username'] or '—'}\n"
+        f"{sx['e_profile']} <b>{row['first_name']}</b> @{row['username'] or '—'}\n"
         f"<code>{row['tg_id']}</code>{' 🚫 БАН' if row['banned'] else ''}\n\n"
-        f"💰 🍄 {fmt(b['mushrooms'])} | 🪙 {fmt(b['coins'])}\n"
-        f"👥 ✅ {st['paid']} | ⏳ {st['hold']} | ❌ {st['lost']}\n"
+        f"{sx['e_balance']} {sx['e_mushrooms']} {fmt(b['mushrooms'])} | "
+        f"{sx['e_coins']} {fmt(b['coins'])}\n"
+        f"{sx['e_refs']} {sx['e_paid']} {st['paid']} | {sx['e_hold']} {st['hold']} | "
+        f"{sx['e_lost']} {st['lost']}\n"
         f"📅 В боте с {row['created_at']:%d.%m.%Y}\n\n"
         f"📜 <b>Последние операции</b>\n{hist}",
         reply_markup=await kb.admin_menu())

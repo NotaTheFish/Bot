@@ -51,13 +51,14 @@ async def push_admin_card(bot, wd: dict):
 
     text = (
         f"💸 <b>ЗАЯВКА НА ВЫВОД #{wd['id']}</b>\n\n"
-        f"👤 {uname} | <code>{wd['tg_id']}</code>\n"
-        f"💰 Сумма: <b>{_fmt(wd['amount'])}</b> {sx['e_' + wd['currency']]} "
+        f"{sx['e_profile']} {uname} | <code>{wd['tg_id']}</code>\n"
+        f"{sx['e_balance']} Сумма: <b>{_fmt(wd['amount'])}</b> {sx['e_' + wd['currency']]} "
         f"{sx['l_' + wd['currency']]}\n"
         f"📊 Баланс: {sx['e_mushrooms']} {_fmt(b['mushrooms'])} | "
         f"{sx['e_coins']} {_fmt(b['coins'])}\n"
-        f"👥 Рефералов: ✅ {stat['paid']} | ⏳ {stat['hold']}\n"
-        f"🎰 Прокруток всего: {spins}\n"
+        f"{sx['e_refs']} Рефералов: {sx['e_paid']} {stat['paid']} | "
+        f"{sx['e_hold']} {stat['hold']}\n"
+        f"{sx['e_roulette']} Прокруток всего: {spins}\n"
         f"🕐 Регистрация в боте: {u['created_at']:%d.%m.%Y}\n\n"
         f"📥 <b>Откуда заработано</b>\n{src or '  —'}\n\n"
         f"⚠️ Сначала <b>отдай валюту в игре</b>, потом жми «Подтвердить».\n"
@@ -65,7 +66,7 @@ async def push_admin_card(bot, wd: dict):
     )
     try:
         m = await ui.send(bot, admin_id, text,
-                          reply_markup=kb.admin_wd_card(wd["id"], wd["version"]))
+                          reply_markup=await kb.admin_wd_card(wd["id"], wd["version"]))
         await db.pool().execute(
             "UPDATE rb_withdrawals SET admin_chat_id=$1, admin_msg_id=$2 WHERE id=$3",
             m.chat.id, m.message_id, wd["id"])
