@@ -12,8 +12,7 @@ from aiogram.filters import ChatMemberUpdatedFilter, IS_MEMBER, IS_NOT_MEMBER
 from aiogram.types import ChatMemberUpdated
 
 import db
-from config import CURRENCY_EMOJI
-from services import referrals
+from services import referrals, settings, ui
 
 router = Router()
 log = logging.getLogger(__name__)
@@ -36,10 +35,11 @@ async def on_join(ev: ChatMemberUpdated, bot: Bot):
     if not ref:
         return
     with contextlib.suppress(Exception):
-        await bot.send_message(
-            ref["inviter_id"],
-            f"👥 <b>+1 реферал</b>: {u.first_name}\n"
-            f"⏳ <b>{ref['amount']:,}</b> {CURRENCY_EMOJI[ref['currency']]} на удержании.\n"
+        s = await settings.ctx()
+        await ui.send(
+            bot, ref["inviter_id"],
+            f"{s['e_refs']} <b>+1 реферал</b>: {u.first_name}\n"
+            f"{s['e_hold']} <b>{ref['amount']:,}</b> {s['e_' + ref['currency']]} на удержании.\n"
             f"Зачислится через 3 дня, если он останется в чате."
             .replace(",", " "))
 
@@ -55,16 +55,17 @@ async def on_leave(ev: ChatMemberUpdated, bot: Bot):
     kind, ref = res
     if kind == "hold_lost":
         with contextlib.suppress(Exception):
-            await bot.send_message(
-                ref["inviter_id"],
-                f"❌ Реферал {u.first_name} вышел из чата.\n"
-                f"<b>{ref['amount']:,}</b> {CURRENCY_EMOJI[ref['currency']]} с удержания сгорели.\n"
+            s = await settings.ctx()
+            await ui.send(
+                bot, ref["inviter_id"],
+                f"{s['e_lost']} Реферал {u.first_name} вышел из чата.\n"
+                f"<b>{ref['amount']:,}</b> {s['e_' + ref['currency']]} с удержания сгорели.\n"
                 f"Если он вернётся — отсчёт 3 дней начнётся заново."
                 .replace(",", " "))
     else:  # burned
         with contextlib.suppress(Exception):
-            await bot.send_message(
-                ref["inviter_id"],
+            await ui.send(
+                bot, ref["inviter_id"],
                 f"⚠️ Реферал {u.first_name} вышел из чата уже ПОСЛЕ выплаты.\n"
                 f"Выплату не отбираем, но за этот аккаунт больше никто и никогда "
                 f"награду не получит.")

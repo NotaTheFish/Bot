@@ -8,9 +8,8 @@ from aiogram.types import CallbackQuery, Message
 
 import db
 import keyboards as kb
-from config import (CURRENCY_EMOJI, CURRENCY_NAME, MIN_WITHDRAW, HOLD_HOURS,
-                    PAYOUT_CHAT_ID, SUPER_ADMINS)
-from services import settings
+from config import MIN_WITHDRAW, HOLD_HOURS, PAYOUT_CHAT_ID, SUPER_ADMINS
+from services import settings, ui
 from services.render import edit as r_edit
 from services import referrals, withdrawals
 from services.notify import push_admin_card, drop_admin_card
@@ -79,11 +78,11 @@ async def start_deeplink(msg: Message, command: CommandObject, state: FSMContext
     url, err = await referrals.issue_invite(
         msg.bot, link["chat_id"], link["inviter_id"], msg.from_user.id)
     if err:
-        return await msg.answer(f"⚠️ {err}")
+        return await ui.answer(msg, f"⚠️ {err}")
 
     await db.pool().execute("UPDATE rb_ref_links SET clicks = clicks + 1 WHERE code = $1", code)
     chat = await db.pool().fetchrow("SELECT title FROM rb_chats WHERE chat_id=$1", link["chat_id"])
-    await msg.answer(
+    await ui.answer(msg, 
         f"🎉 Тебя пригласили в <b>{chat['title']}</b>\n\n"
         f"👇 Твоя <b>персональная одноразовая</b> ссылка (действует 30 минут):\n{url}\n\n"
         f"⚠️ Ссылка работает один раз и только для тебя. Никому не передавай.\n"
@@ -99,14 +98,15 @@ async def start_plain(msg: Message, state: FSMContext):
         return
     u = await db.get_user(msg.from_user.id)
     is_adm = await _is_admin(msg.from_user.id)
-    await msg.answer(
+    sx = await settings.ctx()
+    await ui.answer(msg, 
         f"👋 Привет, {msg.from_user.first_name}!\n\n"
         f"Приглашай людей в чат по своей ссылке и получай валюту.\n"
         f"За каждого реферала: <b>5 000</b> 🍄 или <b>100 000</b> 🪙\n"
         f"Награда зачисляется через <b>{HOLD_HOURS // 24} дня</b> после входа — "
         f"если реферал остался в чате.\n\n"
-        f"Текущая валюта: {CURRENCY_EMOJI[u['currency']]} <b>{CURRENCY_NAME[u['currency']]}</b>",
-        reply_markup=kb.main_menu(u["currency"], is_adm))
+        f"Текущая валюта: {sx['e_' + u['currency']]} <b>{sx['l_' + u['currency']]}</b>",
+        reply_markup=await kb.main_menu(u["currency"], is_adm))
 
 
 @router.callback_query(F.data == "menu")
@@ -116,8 +116,8 @@ async def cb_menu(c: CallbackQuery, state: FSMContext):
         return
     u = await db.get_user(c.from_user.id)
     is_adm = await _is_admin(c.from_user.id)
-    await c.message.edit_text("🏠 <b>Главное меню</b>",
-                              reply_markup=kb.main_menu(u["currency"], is_adm))
+    await ui.edit(c.message, "🏠 <b>Главное меню</b>",
+                              reply_markup=await kb.main_menu(u["currency"], is_adm))
     await c.answer()
 
 
@@ -174,7 +174,7 @@ async def cb_profile(c: CallbackQuery):
         # админ сломал шаблон -> не роняем профиль юзеру, откатываемся на дефолт
         text = settings.DEFAULT_PROFILE.format(**data)
 
-    await r_edit(c.message, text, await settings.emoji_map(), reply_markup=kb.back_menu())
+    await r_edit(c.message, text, await settings.emoji_map(), reply_markup=await kb.back_menu())
     await c.answer()
 
 
@@ -187,9 +187,9 @@ async def cb_toggle(c: CallbackQuery):
     new = "coins" if u["currency"] == "mushrooms" else "mushrooms"
     await db.pool().execute("UPDATE rb_users SET currency=$1 WHERE tg_id=$2", new, c.from_user.id)
     is_adm = await _is_admin(c.from_user.id)
-    await c.message.edit_reply_markup(reply_markup=kb.main_menu(new, is_adm))
+    await c.message.edit_reply_markup(reply_markup=await kb.main_menu(new, is_adm))
     await c.answer(
-        f"Теперь получаешь: {CURRENCY_NAME[new]}\n"
+        f"Теперь получаешь: {await settings.label(new)}\n"
         f"Старый баланс никуда не делся. Уже висящие холды остаются в прежней валюте.",
         show_alert=True)
 
@@ -204,12 +204,12 @@ async def cb_link(c: CallbackQuery):
         return await c.answer("Пока нет подключённых чатов.", show_alert=True)
     if len(chats) == 1:
         return await _show_link(c, chats[0]["chat_id"])
-    await c.message.edit_text(
+    await ui.edit(c.message, 
         "🔗 <b>Выбери чат</b>\n\n"
         "У каждого чата своя ссылка и свой зачёт. Один и тот же друг приносит "
         "награду в <b>каждом</b> чате отдельно — пригласил в первый, потом во второй, "
         "получил дважды.",
-        reply_markup=kb.chat_picker(chats, "lnk"))
+        reply_markup=await kb.chat_picker(chats, "lnk"))
     await c.answer()
 
 
@@ -234,14 +234,14 @@ async def _show_link(c: CallbackQuery, chat_id: int):
         FROM rb_referrals WHERE inviter_id=$2 AND chat_id=$3
         """, code, c.from_user.id, chat_id)
     multi = await db.pool().fetchval("SELECT count(*) FROM rb_chats WHERE active") > 1
-    await c.message.edit_text(
+    await ui.edit(c.message, 
         f"🔗 <b>{ch['title']}</b>\n\n"
         f"<code>https://t.me/{me.username}?start={code}</code>\n\n"
         f"👁 Переходов: {st['clicks']}\n"
         f"✅ Зачислено: {st['paid']}   ⏳ Ждут: {st['hold']}\n\n"
         f"<i>Кидай друзьям. Бот выдаст каждому персональный одноразовый инвайт. "
         f"Награда упадёт на удержание сразу, на баланс — через 3 дня.</i>",
-        reply_markup=kb.link_card(multi), disable_web_page_preview=True)
+        reply_markup=await kb.link_card(multi), disable_web_page_preview=True)
     await c.answer()
 
 
@@ -251,21 +251,22 @@ async def cb_refs(c: CallbackQuery):
     if not await guard(c):
         return
     rows = await referrals.my_refs(c.from_user.id)
+    sx = await settings.ctx()
     if not rows:
-        await c.message.edit_text("👥 Рефералов пока нет.", reply_markup=kb.back_menu())
+        await ui.edit(c.message, "👥 Рефералов пока нет.", reply_markup=await kb.back_menu())
         return await c.answer()
     lines = []
     for r in rows[:25]:
         name = f"@{r['username']}" if r["username"] else (r["first_name"] or r["invitee_id"])
         if r["status"] == "paid":
-            lines.append(f"✅ {name} — {fmt(r['amount'])} {CURRENCY_EMOJI[r['currency']]}")
+            lines.append(f"{sx['e_paid']} {name} — {fmt(r['amount'])} {sx['e_' + r['currency']]}")
         else:
             left = r["hold_until"] - referrals.now()
             h = max(0, int(left.total_seconds() // 3600))
-            lines.append(f"⏳ {name} — {fmt(r['amount'])} {CURRENCY_EMOJI[r['currency']]} "
-                         f"(через {h} ч)")
-    await c.message.edit_text("👥 <b>Мои рефералы</b>\n\n" + "\n".join(lines),
-                              reply_markup=kb.back_menu())
+            lines.append(f"{sx['e_hold']} {name} — {fmt(r['amount'])} "
+                         f"{sx['e_' + r['currency']]} (через {h} ч)")
+    await ui.edit(c.message, "👥 <b>Мои рефералы</b>\n\n" + "\n".join(lines),
+                              reply_markup=await kb.back_menu())
     await c.answer()
 
 
@@ -276,16 +277,19 @@ async def cb_wd_menu(c: CallbackQuery):
         return
     act = await withdrawals.active(c.from_user.id)
     b = await db.balances(c.from_user.id)
-    head = (f"💸 <b>Вывод</b>\n\n"
-            f"Минимум: <b>100 000</b> 🍄 или <b>2 000 000</b> 🪙\n"
-            f"Баланс: 🍄 {fmt(b['mushrooms'])} | 🪙 {fmt(b['coins'])}\n\n")
+    sx = await settings.ctx()
+    head = (f"{sx['e_withdraw']} <b>Вывод</b>\n\n"
+            f"Минимум: <b>{fmt(MIN_WITHDRAW['mushrooms'])}</b> {sx['e_mushrooms']} "
+            f"или <b>{fmt(MIN_WITHDRAW['coins'])}</b> {sx['e_coins']}\n"
+            f"Баланс: {sx['e_mushrooms']} {fmt(b['mushrooms'])} | "
+            f"{sx['e_coins']} {fmt(b['coins'])}\n\n")
     if act:
         head += (f"📌 Активная заявка: <b>{fmt(act['amount'])}</b> "
-                 f"{CURRENCY_EMOJI[act['currency']]}\n"
+                 f"{sx['e_' + act['currency']]}\n"
                  f"Статус: ожидает админа. Пока он не подтвердил — можешь менять или отменить.")
     else:
         head += "Активных заявок нет."
-    await c.message.edit_text(head, reply_markup=kb.wd_menu(bool(act)))
+    await ui.edit(c.message, head, reply_markup=await kb.wd_menu(bool(act)))
     await c.answer()
 
 
@@ -294,8 +298,8 @@ async def cb_wd_amount(c: CallbackQuery, state: FSMContext):
     if not await guard(c):
         return
     await state.set_state(WD.amount)
-    await c.message.edit_text("✍️ Отправь сумму вывода числом.\nНапример: <code>150000</code>",
-                              reply_markup=kb.back_menu())
+    await ui.edit(c.message, "✍️ Отправь сумму вывода числом.\nНапример: <code>150000</code>",
+                              reply_markup=await kb.back_menu())
     await c.answer()
 
 
@@ -305,7 +309,7 @@ async def wd_amount_input(msg: Message, state: FSMContext):
         return
     raw = re.sub(r"[^\d]", "", msg.text or "")
     if not raw:
-        return await msg.answer("Нужно число. Попробуй ещё раз.")
+        return await ui.answer(msg, "Нужно число. Попробуй ещё раз.")
     amount = int(raw)
     u = await db.get_user(msg.from_user.id)
 
@@ -313,29 +317,31 @@ async def wd_amount_input(msg: Message, state: FSMContext):
     if act:
         row, err = await withdrawals.change_amount(msg.from_user.id, amount)
         if err:
-            return await msg.answer(f"⚠️ {err}")
+            return await ui.answer(msg, f"⚠️ {err}")
         # старое сообщение админу удаляем, шлём свежее
         await drop_admin_card(msg.bot, act)
         await push_admin_card(msg.bot, row)
         await state.clear()
-        return await msg.answer(f"✏️ Сумма изменена на <b>{fmt(amount)}</b> "
-                                f"{CURRENCY_EMOJI[row['currency']]}. Админу ушло новое уведомление.",
-                                reply_markup=kb.back_menu())
+        sx = await settings.ctx()
+        return await ui.answer(msg, f"✏️ Сумма изменена на <b>{fmt(amount)}</b> "
+                               f"{sx['e_' + row['currency']]}. Админу ушло новое уведомление.",
+                               reply_markup=await kb.back_menu())
 
     chat_id = await _payout_chat()
     if not chat_id:
-        return await msg.answer("Нет активного чата для вывода.")
+        return await ui.answer(msg, "Нет активного чата для вывода.")
     wid, err = await withdrawals.create(msg.from_user.id, chat_id, u["currency"], amount)
     if err:
-        return await msg.answer(f"⚠️ {err}")
+        return await ui.answer(msg, f"⚠️ {err}")
     row = await db.pool().fetchrow("SELECT * FROM rb_withdrawals WHERE id=$1", wid)
     await push_admin_card(msg.bot, dict(row))
     await state.clear()
-    await msg.answer(
-        f"✅ Заявка создана: <b>{fmt(amount)}</b> {CURRENCY_EMOJI[u['currency']]}\n"
+    sx = await settings.ctx()
+    await ui.answer(msg,
+        f"{sx['e_paid']} Заявка создана: <b>{fmt(amount)}</b> {sx['e_' + u['currency']]}\n"
         f"Админ получил уведомление. Пока он не подтвердил — сумму можно менять или отменить.\n"
         f"Списание произойдёт только в момент подтверждения.",
-        reply_markup=kb.back_menu())
+        reply_markup=await kb.back_menu())
 
 
 @router.callback_query(F.data == "wd_cancel")
@@ -346,6 +352,6 @@ async def cb_wd_cancel(c: CallbackQuery):
     if not row:
         return await c.answer("Активной заявки нет.", show_alert=True)
     await drop_admin_card(c.bot, row)
-    await c.message.edit_text("❌ Заявка отменена. Уведомление у админа удалено.",
-                              reply_markup=kb.back_menu())
+    await ui.edit(c.message, "❌ Заявка отменена. Уведомление у админа удалено.",
+                              reply_markup=await kb.back_menu())
     await c.answer()

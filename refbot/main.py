@@ -9,9 +9,9 @@ from aiogram.fsm.storage.memory import MemoryStorage
 
 import db
 import roulette
-from config import BOT_TOKEN, CURRENCY_EMOJI
+from config import BOT_TOKEN, UNLIMITED_SPIN_IDS
 from handlers import admin, chat_events, roulette_cmd, skin, user
-from services import referrals, settings
+from services import referrals, settings, ui
 
 logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -27,10 +27,11 @@ async def hold_worker(bot: Bot):
         try:
             for p in await referrals.credit_due(bot):
                 with contextlib.suppress(Exception):
-                    await bot.send_message(
-                        p["inviter_id"],
-                        f"✅ <b>Реферал подтверждён!</b>\n"
-                        f"Начислено: <b>{p['amount']:,}</b> {CURRENCY_EMOJI[p['currency']]}\n"
+                    s = await settings.ctx()
+                    await ui.send(
+                        bot, p["inviter_id"],
+                        f"{s['e_paid']} <b>Реферал подтверждён!</b>\n"
+                        f"Начислено: <b>{p['amount']:,}</b> {s['e_' + p['currency']]}\n"
                         f"Баланс: <b>{p['balance']:,}</b>".replace(",", " "))
         except Exception:
             log.exception("hold_worker упал, продолжаю")
@@ -50,6 +51,11 @@ async def main():
 
     log.info("EV рулетки: %.1f 🍄 / %.0f 🪙 за прокрутку",
              roulette.expected_value("mushrooms"), roulette.expected_value("coins"))
+    if UNLIMITED_SPIN_IDS:
+        log.warning("=" * 60)
+        log.warning("ТЕСТОВЫЙ РЕЖИМ: безлимитная рулетка у %s", UNLIMITED_SPIN_IDS)
+        log.warning("Это обход защиты. Очисти UNLIMITED_SPIN_IDS перед боевым запуском.")
+        log.warning("=" * 60)
 
     asyncio.create_task(hold_worker(bot))
     await bot.delete_webhook(drop_pending_updates=True)

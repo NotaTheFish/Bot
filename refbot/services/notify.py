@@ -4,7 +4,8 @@ import logging
 
 import db
 import keyboards as kb
-from config import CURRENCY_EMOJI, CURRENCY_NAME
+from services import settings, ui
+
 
 log = logging.getLogger(__name__)
 
@@ -43,16 +44,18 @@ async def push_admin_card(bot, wd: dict):
     spin_sum = await db.pool().fetchval(
         "SELECT COALESCE(sum(delta),0) FROM rb_ledger "
         "WHERE tg_id=$1 AND reason='roulette' AND currency=$2", wd["tg_id"], wd["currency"]) or 0
-    src = "\n".join(f"  📢 {r['title']}: {_fmt(r['s'])}" for r in origin)
+    sx = await settings.ctx()
+    src = "\n".join(f"  {sx['e_chat']} {r['title']}: {_fmt(r['s'])}" for r in origin)
     if spin_sum:
-        src += f"\n  🎰 Рулетка: {_fmt(spin_sum)}"
+        src += f"\n  {sx['e_roulette']} Рулетка: {_fmt(spin_sum)}"
 
     text = (
         f"💸 <b>ЗАЯВКА НА ВЫВОД #{wd['id']}</b>\n\n"
         f"👤 {uname} | <code>{wd['tg_id']}</code>\n"
-        f"💰 Сумма: <b>{_fmt(wd['amount'])}</b> {CURRENCY_EMOJI[wd['currency']]} "
-        f"{CURRENCY_NAME[wd['currency']]}\n"
-        f"📊 Баланс: 🍄 {_fmt(b['mushrooms'])} | 🪙 {_fmt(b['coins'])}\n"
+        f"💰 Сумма: <b>{_fmt(wd['amount'])}</b> {sx['e_' + wd['currency']]} "
+        f"{sx['l_' + wd['currency']]}\n"
+        f"📊 Баланс: {sx['e_mushrooms']} {_fmt(b['mushrooms'])} | "
+        f"{sx['e_coins']} {_fmt(b['coins'])}\n"
         f"👥 Рефералов: ✅ {stat['paid']} | ⏳ {stat['hold']}\n"
         f"🎰 Прокруток всего: {spins}\n"
         f"🕐 Регистрация в боте: {u['created_at']:%d.%m.%Y}\n\n"
@@ -61,8 +64,8 @@ async def push_admin_card(bot, wd: dict):
         f"Подтверждение = списание с баланса. Отката нет."
     )
     try:
-        m = await bot.send_message(admin_id, text,
-                                   reply_markup=kb.admin_wd_card(wd["id"], wd["version"]))
+        m = await ui.send(bot, admin_id, text,
+                          reply_markup=kb.admin_wd_card(wd["id"], wd["version"]))
         await db.pool().execute(
             "UPDATE rb_withdrawals SET admin_chat_id=$1, admin_msg_id=$2 WHERE id=$3",
             m.chat.id, m.message_id, wd["id"])

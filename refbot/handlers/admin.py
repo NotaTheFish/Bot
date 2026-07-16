@@ -8,8 +8,8 @@ from aiogram.types import CallbackQuery, Message
 
 import db
 import keyboards as kb
-from config import CURRENCY_EMOJI, SUPER_ADMINS
-from services import withdrawals
+from config import SUPER_ADMINS
+from services import settings, withdrawals, ui
 from services.notify import drop_admin_card
 
 router = Router()
@@ -29,10 +29,10 @@ async def bind(msg: Message):
     """Владелец чата пишет /bind в самом чате. Права проверяем у Telegram, не на слово."""
     m = await msg.bot.get_chat_member(msg.chat.id, msg.from_user.id)
     if m.status != "creator" and msg.from_user.id not in SUPER_ADMINS:
-        return await msg.reply("🚫 Привязать чат может только его создатель.")
+        return await ui.reply(msg, "🚫 Привязать чат может только его создатель.")
     me = await msg.bot.get_chat_member(msg.chat.id, (await msg.bot.get_me()).id)
     if not getattr(me, "can_invite_users", False):
-        return await msg.reply("⚠️ Дай боту админку с правом «Пригласительные ссылки» — "
+        return await ui.reply(msg, "⚠️ Дай боту админку с правом «Пригласительные ссылки» — "
                                "без неё реферальная система не работает.")
 
     await db.upsert_user(msg.from_user.id, msg.from_user.username, msg.from_user.first_name)
@@ -45,7 +45,7 @@ async def bind(msg: Message):
         "INSERT INTO rb_admins (chat_id, tg_id, role) VALUES ($1,$2,'owner') "
         "ON CONFLICT (chat_id, tg_id) DO UPDATE SET role='owner'", msg.chat.id, msg.from_user.id)
     await db.audit(msg.from_user.id, "chat_bind", {"chat_id": msg.chat.id})
-    await msg.reply("✅ Чат подключён. Уведомления о выводах будут приходить тебе в ЛС.\n"
+    await ui.reply(msg, "✅ Чат подключён. Уведомления о выводах будут приходить тебе в ЛС.\n"
                     "Добавь других админов: /addadmin @username")
 
 
@@ -54,11 +54,11 @@ async def unbind(msg: Message):
     """Отключить чат прямо из чата. Прогресс сохраняется целиком."""
     row = await db.pool().fetchrow("SELECT * FROM rb_chats WHERE chat_id=$1", msg.chat.id)
     if not row:
-        return await msg.reply("Этот чат и не был привязан.")
+        return await ui.reply(msg, "Этот чат и не был привязан.")
     if msg.from_user.id != row["owner_id"] and msg.from_user.id not in SUPER_ADMINS:
-        return await msg.reply("🚫 Только владелец чата.")
+        return await ui.reply(msg, "🚫 Только владелец чата.")
     if not row["active"]:
-        return await msg.reply("Чат уже отключён. Включить: «🛠 Админка → 📢 Чаты».")
+        return await ui.reply(msg, "Чат уже отключён. Включить: «🛠 Админка → 📢 Чаты».")
     await db.pool().execute(
         "UPDATE rb_chats SET active=FALSE, deactivated_at=now(), deactivated_by=$1 "
         "WHERE chat_id=$2", msg.from_user.id, msg.chat.id)
@@ -67,7 +67,7 @@ async def unbind(msg: Message):
         "SELECT count(*) FILTER (WHERE status='hold') hold, "
         "count(*) FILTER (WHERE status='paid') paid FROM rb_referrals WHERE chat_id=$1",
         msg.chat.id)
-    await msg.reply(
+    await ui.reply(msg, 
         f"⚪️ Чат отключён. Новых начислений и ссылок не будет.\n\n"
         f"<b>Прогресс сохранён полностью:</b>\n"
         f"✅ {st['paid']} выплаченных рефералов\n"
@@ -80,15 +80,15 @@ async def unbind(msg: Message):
 async def addadmin(msg: Message):
     row = await db.pool().fetchrow("SELECT owner_id FROM rb_chats WHERE chat_id=$1", msg.chat.id)
     if not row or (msg.from_user.id != row["owner_id"] and msg.from_user.id not in SUPER_ADMINS):
-        return await msg.reply("🚫 Только владелец чата.")
+        return await ui.reply(msg, "🚫 Только владелец чата.")
     if not msg.reply_to_message:
-        return await msg.reply("Ответь этой командой на сообщение нужного человека.")
+        return await ui.reply(msg, "Ответь этой командой на сообщение нужного человека.")
     target = msg.reply_to_message.from_user
     await db.upsert_user(target.id, target.username, target.first_name)
     await db.pool().execute(
         "INSERT INTO rb_admins (chat_id, tg_id, added_by) VALUES ($1,$2,$3) "
         "ON CONFLICT DO NOTHING", msg.chat.id, target.id, msg.from_user.id)
-    await msg.reply(f"✅ {target.first_name} — админ бота в этом чате.")
+    await ui.reply(msg, f"✅ {target.first_name} — админ бота в этом чате.")
 
 
 # ---------------- баны ----------------
@@ -102,7 +102,7 @@ async def rban(msg: Message, command: CommandObject):
     elif command.args and command.args.split()[0].lstrip("-").isdigit():
         target = int(command.args.split()[0])
     if not target:
-        return await msg.reply("Использование: ответом на сообщение — /rban причина\n"
+        return await ui.reply(msg, "Использование: ответом на сообщение — /rban причина\n"
                                "или /rban <user_id> причина")
     reason = " ".join((command.args or "").split()[1:]) if command.args else ""
     await db.pool().execute(
@@ -118,7 +118,7 @@ async def rban(msg: Message, command: CommandObject):
     if wd:
         await drop_admin_card(msg.bot, dict(wd))
     await db.audit(msg.from_user.id, "ban", {"target": target, "reason": reason})
-    await msg.reply(f"🚫 <code>{target}</code> заблокирован. Холды обнулены, заявка снята.")
+    await ui.reply(msg, f"🚫 <code>{target}</code> заблокирован. Холды обнулены, заявка снята.")
 
 
 @router.message(Command("runban"))
@@ -128,11 +128,11 @@ async def runban(msg: Message, command: CommandObject):
     target = msg.reply_to_message.from_user.id if msg.reply_to_message else \
         (int(command.args) if command.args and command.args.lstrip("-").isdigit() else None)
     if not target:
-        return await msg.reply("Использование: /runban <user_id> или ответом.")
+        return await ui.reply(msg, "Использование: /runban <user_id> или ответом.")
     await db.pool().execute(
         "UPDATE rb_users SET banned=FALSE, ban_reason=NULL WHERE tg_id=$1", target)
     await db.audit(msg.from_user.id, "unban", {"target": target})
-    await msg.reply(f"✅ <code>{target}</code> разблокирован.")
+    await ui.reply(msg, f"✅ <code>{target}</code> разблокирован.")
 
 
 # ---------------- админ-меню ----------------
@@ -140,7 +140,7 @@ async def runban(msg: Message, command: CommandObject):
 async def cb_admin(c: CallbackQuery):
     if not await db.admin_chats(c.from_user.id) and c.from_user.id not in SUPER_ADMINS:
         return await c.answer("Нет доступа.", show_alert=True)
-    await c.message.edit_text("🛠 <b>Админка</b>", reply_markup=kb.admin_menu())
+    await ui.edit(c.message, "🛠 <b>Админка</b>", reply_markup=await kb.admin_menu())
     await c.answer()
 
 
@@ -156,14 +156,15 @@ async def cb_top(c: CallbackQuery):
         ORDER BY (CASE WHEN b.currency='coins' THEN b.amount/20 ELSE b.amount END) DESC
         LIMIT 25
         """)
+    sx = await settings.ctx()
     lines = []
     for i, r in enumerate(rows, 1):
         name = f"@{r['username']}" if r["username"] else (r["first_name"] or str(r["tg_id"]))
         mark = "🚫" if r["banned"] else ""
-        lines.append(f"{i}. {mark}{name} — {fmt(r['amount'])} {CURRENCY_EMOJI[r['currency']]} "
+        lines.append(f"{i}. {mark}{name} — {fmt(r['amount'])} {sx['e_' + r['currency']]} "
                      f"<code>{r['tg_id']}</code>")
-    await c.message.edit_text("🏆 <b>Топ-25 по балансу</b>\n\n" + ("\n".join(lines) or "пусто"),
-                              reply_markup=kb.admin_menu())
+    await ui.edit(c.message, "🏆 <b>Топ-25 по балансу</b>\n\n" + ("\n".join(lines) or "пусто"),
+                              reply_markup=await kb.admin_menu())
     await c.answer()
 
 
@@ -193,7 +194,7 @@ async def cb_stats(c: CallbackQuery):
         f"  {'🟢' if ch['active'] else '⚪️'} {ch['title']}: "
         f"{fmt(ch['budget_spent_mush'])} / {fmt(ch['daily_budget_mush'])}"
         for ch in chats) or "  нет чатов"
-    await c.message.edit_text(
+    await ui.edit(c.message, 
         f"📊 <b>Сводка</b>\n\n"
         f"👥 Юзеров: {s['users']} (забанено {s['banned']})\n"
         f"✅ Рефералов зачислено: {s['paid']}\n"
@@ -204,7 +205,7 @@ async def cb_stats(c: CallbackQuery):
         f"💸 <b>Выведено всего</b>\n"
         f"🍄 {fmt(s['wm'])} | 🪙 {fmt(s['wc'])}\n\n"
         f"🧯 <b>Суточный бюджет по чатам</b> 🍄\n{budget}",
-        reply_markup=kb.admin_menu())
+        reply_markup=await kb.admin_menu())
     await c.answer()
 
 
@@ -216,15 +217,16 @@ async def cb_flagged(c: CallbackQuery):
         "SELECT r.*, u.username FROM rb_referrals r LEFT JOIN rb_users u ON u.tg_id=r.inviter_id "
         "WHERE r.flagged AND r.status='hold' ORDER BY r.joined_at DESC LIMIT 20")
     if not rows:
-        await c.message.edit_text("🚩 Подозрительных начислений нет.", reply_markup=kb.admin_menu())
+        await ui.edit(c.message, "🚩 Подозрительных начислений нет.", reply_markup=await kb.admin_menu())
         return await c.answer()
+    sx = await settings.ctx()
     lines = [f"• inviter <code>{r['inviter_id']}</code> (@{r['username']}) ← "
              f"<code>{r['invitee_id']}</code>, {fmt(r['amount'])} "
-             f"{CURRENCY_EMOJI[r['currency']]} — {r['flag_reason']}\n"
+             f"{sx['e_' + r['currency']]} — {r['flag_reason']}\n"
              f"  /approve_{r['id']}  /deny_{r['id']}" for r in rows]
-    await c.message.edit_text(
+    await ui.edit(c.message, 
         "🚩 <b>Ручная проверка</b>\nЭти начисления автоматом НЕ пройдут.\n\n" + "\n".join(lines),
-        reply_markup=kb.admin_menu())
+        reply_markup=await kb.admin_menu())
     await c.answer()
 
 
@@ -235,7 +237,7 @@ async def approve_ref(msg: Message, m):
     rid = int(m.group(1))
     await db.pool().execute("UPDATE rb_referrals SET flagged=FALSE WHERE id=$1", rid)
     await db.audit(msg.from_user.id, "ref_approve", {"id": rid})
-    await msg.reply(f"✅ Реферал #{rid} разморожен, выплата пройдёт по окончании холда.")
+    await ui.reply(msg, f"✅ Реферал #{rid} разморожен, выплата пройдёт по окончании холда.")
 
 
 @router.message(F.text.regexp(r"^/deny_(\d+)$").as_("m"))
@@ -246,7 +248,7 @@ async def deny_ref(msg: Message, m):
     await db.pool().execute(
         "UPDATE rb_referrals SET status='void', voided_at=now() WHERE id=$1 AND status='hold'", rid)
     await db.audit(msg.from_user.id, "ref_deny", {"id": rid})
-    await msg.reply(f"❌ Реферал #{rid} отклонён.")
+    await ui.reply(msg, f"❌ Реферал #{rid} отклонён.")
 
 
 # ---------------- поиск юзера ----------------
@@ -255,7 +257,7 @@ async def cb_find(c: CallbackQuery, state: FSMContext):
     if not await db.admin_chats(c.from_user.id) and c.from_user.id not in SUPER_ADMINS:
         return await c.answer("Нет доступа.", show_alert=True)
     await state.set_state(Find.query)
-    await c.message.edit_text("🔍 Отправь @username или user_id", reply_markup=kb.back_menu())
+    await ui.edit(c.message, "🔍 Отправь @username или user_id", reply_markup=await kb.back_menu())
     await c.answer()
 
 
@@ -266,7 +268,7 @@ async def find_input(msg: Message, state: FSMContext):
     row = await db.pool().fetchrow(
         "SELECT * FROM rb_users WHERE (username ILIKE $1) OR (tg_id::text = $1)", q)
     if not row:
-        return await msg.answer("Не найден.", reply_markup=kb.admin_menu())
+        return await ui.answer(msg, "Не найден.", reply_markup=await kb.admin_menu())
     b = await db.balances(row["tg_id"])
     st = await db.pool().fetchrow(
         "SELECT count(*) FILTER (WHERE status='paid') paid, "
@@ -276,16 +278,17 @@ async def find_input(msg: Message, state: FSMContext):
     led = await db.pool().fetch(
         "SELECT reason, delta, currency, created_at FROM rb_ledger WHERE tg_id=$1 "
         "ORDER BY id DESC LIMIT 10", row["tg_id"])
+    sx = await settings.ctx()
     hist = "\n".join(f"  {r['created_at']:%d.%m %H:%M} {r['reason']} "
-                     f"{r['delta']:+} {CURRENCY_EMOJI[r['currency']]}" for r in led) or "  пусто"
-    await msg.answer(
+                     f"{r['delta']:+} {sx['e_' + r['currency']]}" for r in led) or "  пусто"
+    await ui.answer(msg, 
         f"👤 <b>{row['first_name']}</b> @{row['username'] or '—'}\n"
         f"<code>{row['tg_id']}</code>{' 🚫 БАН' if row['banned'] else ''}\n\n"
         f"💰 🍄 {fmt(b['mushrooms'])} | 🪙 {fmt(b['coins'])}\n"
         f"👥 ✅ {st['paid']} | ⏳ {st['hold']} | ❌ {st['lost']}\n"
         f"📅 В боте с {row['created_at']:%d.%m.%Y}\n\n"
         f"📜 <b>Последние операции</b>\n{hist}",
-        reply_markup=kb.admin_menu())
+        reply_markup=await kb.admin_menu())
 
 
 # ---------------- подтверждение вывода ----------------
@@ -296,13 +299,14 @@ async def cb_wd_ok(c: CallbackQuery):
     if err:
         return await c.answer(f"⚠️ {err}", show_alert=True)
     with contextlib.suppress(Exception):
-        await c.message.edit_text(
+        await ui.edit(c.message, 
             c.message.html_text.split("\n\n⚠️")[0] +
             f"\n\n✅ <b>ВЫПЛАЧЕНО</b> — подтвердил {c.from_user.first_name}", reply_markup=None)
     with contextlib.suppress(Exception):
-        await c.bot.send_message(
-            row["tg_id"],
-            f"✅ Вывод <b>{fmt(row['amount'])}</b> {CURRENCY_EMOJI[row['currency']]} подтверждён.\n"
+        await ui.send(
+            c.bot, row["tg_id"],
+            f"✅ Вывод <b>{fmt(row['amount'])}</b> "
+            f"{(await settings.ctx())['e_' + row['currency']]} подтверждён.\n"
             f"Сумма списана с баланса. Если валюту не получил — сразу пиши админу.")
     await c.answer("Проведено.")
 
@@ -314,8 +318,8 @@ async def cb_wd_no(c: CallbackQuery):
     if err:
         return await c.answer(f"⚠️ {err}", show_alert=True)
     with contextlib.suppress(Exception):
-        await c.message.edit_text(f"🚫 Заявка #{wid} отклонена.", reply_markup=None)
+        await ui.edit(c.message, f"🚫 Заявка #{wid} отклонена.", reply_markup=None)
     with contextlib.suppress(Exception):
-        await c.bot.send_message(row["tg_id"], "🚫 Твоя заявка на вывод отклонена админом. "
-                                               "Баланс не тронут.")
+        await ui.send(c.bot, row["tg_id"], "🚫 Твоя заявка на вывод отклонена админом. "
+                                           "Баланс не тронут.")
     await c.answer("Отклонено.")

@@ -5,6 +5,7 @@
 привязки и burn остаются на месте. Включил обратно — всё продолжается с того же места.
 """
 import contextlib
+from html import escape
 
 from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
@@ -13,8 +14,8 @@ from aiogram.types import CallbackQuery, Message
 
 import db
 import keyboards as kb
-from services import settings
-from services.render import edit as r_edit, reply as r_reply
+from services import settings, ui
+from services.render import edit as r_edit, render
 
 router = Router()
 
@@ -50,12 +51,12 @@ async def cb_chats(c: CallbackQuery):
     chats = await db.pool().fetch("SELECT * FROM rb_chats ORDER BY active DESC, created_at")
     if not chats:
         return await c.answer("Нет привязанных чатов. Напиши /bind в чате.", show_alert=True)
-    await c.message.edit_text(
+    await ui.edit(c.message, 
         "📢 <b>Чаты</b>\n\n"
         "🟢 активен — выдаёт ссылки, копит рефералов, крутит рулетку\n"
         "⚪️ отключён — новых начислений нет, <b>но весь прогресс сохранён</b>\n\n"
         "Отключение обратимо и ничего не стирает.",
-        reply_markup=kb.chat_admin_list(chats))
+        reply_markup=await kb.chat_admin_list(chats))
     await c.answer()
 
 
@@ -84,7 +85,7 @@ async def _render_chat(c: CallbackQuery, cid: int):
     off = ""
     if not ch["active"] and ch["deactivated_at"]:
         off = f"\n⚪️ Отключён {ch['deactivated_at']:%d.%m.%Y %H:%M}"
-    await c.message.edit_text(
+    await ui.edit(c.message, 
         f"{'🟢' if ch['active'] else '⚪️'} <b>{ch['title']}</b>\n"
         f"<code>{cid}</code>{off}\n\n"
         f"👥 Рефералов: ✅ {st['paid']} | ⏳ {st['hold']} | ❌ {st['lost']}\n"
@@ -93,7 +94,7 @@ async def _render_chat(c: CallbackQuery, cid: int):
         f"🔗 Реф-ссылок выдано: {links}\n"
         f"🧯 Бюджет сегодня: {ch['budget_spent_mush']:,} / {ch['daily_budget_mush']:,} 🍄"
         .replace(",", " "),
-        reply_markup=kb.chat_card(cid, ch["active"]))
+        reply_markup=await kb.chat_card(cid, ch["active"]))
     await c.answer()
 
 
@@ -141,13 +142,13 @@ async def _render_skin(c: CallbackQuery):
     prem = sum(1 for k in s if k.startswith("premium."))
     custom = sum(1 for k in s if k.startswith(("emoji.", "label.")))
     tpl = "свой" if s.get("profile.template") else "стандартный"
-    await c.message.edit_text(
+    await ui.edit(c.message, 
         f"🎨 <b>Кастомизация</b>\n\n"
         f"Изменённых эмодзи/названий: <b>{custom}</b>\n"
         f"Премиум-эмодзи: <b>{prem}</b>\n"
         f"Шаблон профиля: <b>{tpl}</b>\n\n"
         f"<i>Всё применяется сразу, без передеплоя.</i>",
-        reply_markup=kb.skin_menu())
+        reply_markup=await kb.skin_menu())
     await c.answer()
 
 
@@ -163,9 +164,9 @@ async def cb_sk_emoji(c: CallbackQuery, state: FSMContext):
 async def _render_emoji(c: CallbackQuery):
     s = await settings.load()
     cur = {slot: s.get(f"emoji.{slot}", d) for slot, (_, d) in settings.EMOJI_SLOTS.items()}
-    await c.message.edit_text(
+    await ui.edit(c.message, 
         "😀 <b>Эмодзи</b>\n\nВыбери слот. ⭐️ = стоит премиум-эмодзи.",
-        reply_markup=kb.slot_list(settings.EMOJI_SLOTS, {**cur, **s}, "sk_e"))
+        reply_markup=await kb.slot_list(settings.EMOJI_SLOTS, {**cur, **s}, "sk_e"))
     await c.answer()
 
 
@@ -179,13 +180,13 @@ async def cb_sk_slot(c: CallbackQuery, state: FSMContext):
     s = await settings.load()
     now = s.get(f"emoji.{slot}", settings.EMOJI_SLOTS[slot][1])
     cid = s.get(f"premium.{slot}")
-    await c.message.edit_text(
+    await ui.edit(c.message, 
         f"😀 <b>{settings.EMOJI_SLOTS[slot][0]}</b>\n\n"
         f"Сейчас: {now}" + (f" ⭐️ <code>{cid}</code>" if cid else "") + "\n\n"
         f"<b>Отправь эмодзи одним сообщением.</b>\n"
         f"Обычное — просто эмодзи.\n"
         f"Премиум — отправь премиум-эмодзи, бот сам вытащит его ID.",
-        reply_markup=kb.slot_card(slot, "sk_e", bool(cid)))
+        reply_markup=await kb.slot_card(slot, "sk_e", bool(cid)))
     await c.answer()
 
 
@@ -196,7 +197,7 @@ async def sk_emoji_input(msg: Message, state: FSMContext):
     slot = (await state.get_data())["slot"]
     text = (msg.text or "").strip()
     if not text or len(text) > 16:
-        return await msg.answer("Нужно одно эмодзи. Попробуй ещё раз.")
+        return await ui.answer(msg, "Нужно одно эмодзи. Попробуй ещё раз.")
 
     # премиум прилетает как custom_emoji entity — вытаскиваем id и символ-фолбэк
     ce = next((e for e in (msg.entities or []) if e.type == "custom_emoji"), None)
@@ -204,22 +205,23 @@ async def sk_emoji_input(msg: Message, state: FSMContext):
         b = text.encode("utf-16-le")
         ch = b[ce.offset * 2:(ce.offset + ce.length) * 2].decode("utf-16-le")
         if not await settings.set(f"emoji.{slot}", ch, msg.from_user.id):
-            return await msg.answer(NO_TABLE)
+            return await ui.answer(msg, NO_TABLE)
         await settings.set(f"premium.{slot}", ce.custom_emoji_id, msg.from_user.id)
         note = (f"⭐️ Премиум сохранён\nID: <code>{ce.custom_emoji_id}</code>\n"
                 f"Фолбэк: {ch}\n\n"
-                f"<i>Если у бота нет юзернейма с Fragment — Telegram отклонит премиум "
-                f"и покажет фолбэк. Проверь кнопкой «🧪 Тест».</i>")
+                f"<i>Работает, если у владельца бота есть Telegram Premium "
+                f"(либо боту куплен юзернейм на Fragment). Проверь кнопкой «🧪 Тест» — "
+                f"он покажет реальный ответ Telegram.</i>")
     else:
         if not await settings.set(f"emoji.{slot}", text, msg.from_user.id):
-            return await msg.answer(NO_TABLE)
+            return await ui.answer(msg, NO_TABLE)
         await settings.unset(f"premium.{slot}")
         note = f"Сохранено: {text}"
 
     await state.clear()
     await db.audit(msg.from_user.id, "skin_emoji", {"slot": slot})
-    await msg.answer(f"✅ <b>{settings.EMOJI_SLOTS[slot][0]}</b>\n\n{note}",
-                     reply_markup=kb.skin_menu())
+    await ui.answer(msg, f"✅ <b>{settings.EMOJI_SLOTS[slot][0]}</b>\n\n{note}",
+                     reply_markup=await kb.skin_menu())
 
 
 @router.callback_query(F.data.startswith("sk_prem_off:"))
@@ -240,11 +242,11 @@ async def cb_sk_label(c: CallbackQuery, state: FSMContext):
     await state.clear()
     s = await settings.load()
     cur = {slot: "" for slot in settings.LABEL_SLOTS}
-    await c.message.edit_text(
+    await ui.edit(c.message, 
         "🏷 <b>Названия валют</b>\n\n"
         f"Сейчас: <b>{await settings.label('mushrooms')}</b> / "
         f"<b>{await settings.label('coins')}</b>",
-        reply_markup=kb.slot_list(settings.LABEL_SLOTS, {**cur, **s}, "sk_l"))
+        reply_markup=await kb.slot_list(settings.LABEL_SLOTS, {**cur, **s}, "sk_l"))
     await c.answer()
 
 
@@ -255,11 +257,11 @@ async def cb_sk_label_slot(c: CallbackQuery, state: FSMContext):
     slot = c.data.split(":")[1]
     await state.set_state(Skin.label)
     await state.update_data(slot=slot)
-    await c.message.edit_text(
+    await ui.edit(c.message, 
         f"🏷 <b>{settings.LABEL_SLOTS[slot][0]}</b>\n\n"
         f"Сейчас: <b>{await settings.label(slot)}</b>\n\n"
         f"Отправь новое название текстом.",
-        reply_markup=kb.slot_card(slot, "sk_l", False))
+        reply_markup=await kb.slot_card(slot, "sk_l", False))
     await c.answer()
 
 
@@ -270,12 +272,12 @@ async def sk_label_input(msg: Message, state: FSMContext):
     slot = (await state.get_data())["slot"]
     text = (msg.text or "").strip()
     if not text or len(text) > 32:
-        return await msg.answer("От 1 до 32 символов.")
+        return await ui.answer(msg, "От 1 до 32 символов.")
     if not await settings.set(f"label.{slot}", text, msg.from_user.id):
-        return await msg.answer(NO_TABLE)
+        return await ui.answer(msg, NO_TABLE)
     await state.clear()
     await db.audit(msg.from_user.id, "skin_label", {"slot": slot, "value": text})
-    await msg.answer(f"✅ Название: <b>{text}</b>", reply_markup=kb.skin_menu())
+    await ui.answer(msg, f"✅ Название: <b>{text}</b>", reply_markup=await kb.skin_menu())
 
 
 # ---------- сброс слота ----------
@@ -301,7 +303,7 @@ async def cb_sk_tpl(c: CallbackQuery, state: FSMContext):
     await state.set_state(Skin.tpl)
     keys = "  ".join("{" + k + "}" for k in settings.PROFILE_KEYS)
     cur = await settings.profile_template()
-    await c.message.edit_text(
+    await ui.edit(c.message, 
         f"📝 <b>Шаблон профиля</b>\n\n"
         f"Отправь новый текст. Поддерживается HTML: <code>&lt;b&gt;</code>, "
         f"<code>&lt;i&gt;</code>, <code>&lt;code&gt;</code>.\n\n"
@@ -309,7 +311,7 @@ async def cb_sk_tpl(c: CallbackQuery, state: FSMContext):
         f"<code>e_*</code> — эмодзи слота, <code>l_*</code> — название валюты.\n"
         f"Перед сохранением проверю, что шаблон не падает.\n\n"
         f"<b>Текущий:</b>\n<pre>{cur.replace('<', '&lt;')}</pre>",
-        reply_markup=kb.slot_card("tpl", "sk_l", False))
+        reply_markup=await kb.slot_card("tpl", "sk_l", False))
     await c.answer()
 
 
@@ -320,32 +322,78 @@ async def sk_tpl_input(msg: Message, state: FSMContext):
     tpl = msg.html_text or ""
     err = settings.validate_template(tpl)
     if err:
-        return await msg.answer(f"⚠️ {err}\n\nИсправь и пришли снова.")
+        return await ui.answer(msg, f"⚠️ {err}\n\nИсправь и пришли снова.")
     if not await settings.set("profile.template", tpl, msg.from_user.id):
-        return await msg.answer(NO_TABLE)
+        return await ui.answer(msg, NO_TABLE)
     await state.clear()
     await db.audit(msg.from_user.id, "skin_tpl", {"len": len(tpl)})
-    await msg.answer("✅ Шаблон сохранён. Открой «👤 Профиль» и глянь.",
-                     reply_markup=kb.skin_menu())
+    await ui.answer(msg, "✅ Шаблон сохранён. Открой «👤 Профиль» и глянь.",
+                     reply_markup=await kb.skin_menu())
 
 
 # ---------- тест премиума ----------
 @router.callback_query(F.data == "sk_test")
 async def cb_sk_test(c: CallbackQuery):
+    """
+    Эмпирическая проверка. Bot API 9.4 (09.02.2026) разрешил боту custom_emoji,
+    если у ВЛАДЕЛЬЦА бота есть Telegram Premium — Fragment больше не обязателен.
+    Но в доке сказано "messages directly sent", про editMessageText молчок.
+    Анимация рулетки построена на редактировании, поэтому проверяем ОБА пути
+    отдельно и показываем настоящую ошибку от Telegram, а не догадки.
+    """
     if await deny(c):
         return
     em = await settings.emoji_map()
     if not em:
-        return await c.answer("Премиум-эмодзи не настроены ни в одном слоте.",
-                              show_alert=True)
-    line = " ".join(em.keys())
-    txt = (f"🧪 <b>Тест премиум-эмодзи</b>\n\n{line}\n\n"
-           f"Настроено слотов: <b>{len(em)}</b>\n\n"
-           f"<i>Видишь анимированные — Fragment-юзернейм есть, всё работает.\n"
-           f"Видишь обычные — Telegram отклонил премиум, бот молча откатился "
-           f"на фолбэк. Ничего не сломано, просто не красиво.</i>")
-    await r_edit(c.message, txt, em, reply_markup=kb.skin_menu())
-    await c.answer()
+        return await c.answer("Премиум-эмодзи не настроены ни в одном слоте. "
+                              "Сначала задай их в «😀 Эмодзи».", show_alert=True)
+    await c.answer("Проверяю оба пути…")
+    line = "  ".join(em.keys())
+    res = []
+
+    # 1) sendMessage — путь, который дока разрешает явно
+    text, ents = render(f"1️⃣ <b>Отправка</b> (sendMessage)\n{line}", em)
+    try:
+        await c.bot.send_message(c.from_user.id, text, entities=ents, parse_mode=None)
+        send_ok = True
+        res.append("✅ <b>Отправка</b> — премиум принят")
+    except Exception as e:
+        send_ok = False
+        res.append(f"❌ <b>Отправка</b> — отклонено\n<code>{escape(str(e))[:180]}</code>")
+
+    # 2) editMessageText — на нём держится анимация рулетки
+    try:
+        m = await c.bot.send_message(c.from_user.id, "2️⃣ Редактирование…")
+        text2, ents2 = render(f"2️⃣ <b>Редактирование</b> (editMessageText)\n{line}", em)
+        await ui.edit(m, text2, entities=ents2, parse_mode=None)
+        edit_ok = True
+        res.append("✅ <b>Редактирование</b> — премиум принят")
+    except Exception as e:
+        edit_ok = False
+        res.append(f"❌ <b>Редактирование</b> — отклонено\n<code>{escape(str(e))[:180]}</code>")
+
+    if send_ok and edit_ok:
+        verdict = ("🎉 Работает везде. Рулетка, профиль, баланс — всё с премиумом.")
+    elif send_ok and not edit_ok:
+        verdict = ("⚠️ Отправка — да, редактирование — нет.\n"
+                   "Значит анимация рулетки премиум не потянет: она построена на "
+                   "editMessageText. Скажи — переделаю финальную карточку на "
+                   "отдельную отправку, тогда премиум будет и там.")
+    elif not send_ok:
+        verdict = ("❌ Премиум не проходит вообще.\n\n"
+                   "Проверь: 1) Telegram Premium активен у аккаунта, которым ты "
+                   "создавал бота в BotFather (важен именно ВЛАДЕЛЕЦ, не ты как "
+                   "участник чата); 2) эмодзи взят из доступного тебе набора.\n"
+                   "Альтернатива — доп. юзернейм боту на Fragment.")
+
+    await c.bot.send_message(
+        c.from_user.id,
+        "🧪 <b>Тест премиум-эмодзи</b>\n\n" + "\n\n".join(res) +
+        f"\n\n{verdict}\n\n"
+        f"<i>Видишь анимированные эмодзи в пунктах выше — путь работает. "
+        f"Видишь обычные, но галочка ✅ — Telegram принял, просто у тебя "
+        f"не отрисовалось.</i>",
+        reply_markup=await kb.skin_menu())
 
 
 # ---------- полный сброс ----------
@@ -353,7 +401,7 @@ async def cb_sk_test(c: CallbackQuery):
 async def cb_sk_reset(c: CallbackQuery):
     if await deny(c):
         return
-    await c.message.edit_text(
+    await ui.edit(c.message, 
         "♻️ Сбросить <b>всю</b> кастомизацию — эмодзи, названия, шаблон?\n\n"
         "<i>Балансы и рефералы не тронутся, только внешний вид.</i>",
         reply_markup=kb.confirm("sk_reset_yes"))

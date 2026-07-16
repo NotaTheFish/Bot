@@ -1,2 +1,2 @@
-aiogram==3.15.0
+aiogram==3.29.1
 asyncpg==0.30.0

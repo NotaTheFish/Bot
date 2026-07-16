@@ -92,7 +92,12 @@ def render(html_text: str, emoji_map: dict[str, str] | None = None):
 
 
 async def send(bot, chat_id: int, html_text: str, emoji_map=None, **kw):
-    """Шлём с премиум-эмодзи; если Telegram их не принял — падаем на обычный HTML."""
+    """Шлём с премиум-эмодзи; если Telegram их не принял — падаем на обычный HTML.
+
+    Премиум доступен, если у владельца бота есть Telegram Premium (Bot API 9.4,
+    09.02.2026) либо боту куплен юзернейм на Fragment. Фолбэк — на случай, если
+    ни то ни другое, или эмодзи из недоступного набора.
+    """
     text, ents = render(html_text, emoji_map)
     if ents is None:
         return await bot.send_message(chat_id, html_text, **kw)

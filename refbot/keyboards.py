@@ -1,24 +1,24 @@
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
-from config import CURRENCY_EMOJI, CURRENCY_NAME
+from services import settings
+from services.ui import btn
 
 
-def main_menu(currency: str, is_admin: bool) -> InlineKeyboardMarkup:
+async def main_menu(currency: str, is_admin: bool) -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
-    kb.button(text="👤 Профиль", callback_data="profile")
-    kb.button(text="🔗 Моя ссылка", callback_data="mylink")
-    kb.button(text=f"{CURRENCY_EMOJI[currency]} Валюта: {CURRENCY_NAME[currency]}",
-              callback_data="toggle_cur")
-    kb.button(text="👥 Мои рефералы", callback_data="myrefs")
-    kb.button(text="💸 Вывод", callback_data="wd_menu")
+    await btn(kb, "Профиль", "profile", "profile")
+    await btn(kb, "Моя ссылка", "mylink", "link")
+    await btn(kb, f"Валюта: {await settings.label(currency)}", "toggle_cur", currency)
+    await btn(kb, "Мои рефералы", "myrefs", "refs")
+    await btn(kb, "Вывод", "wd_menu", "withdraw")
     if is_admin:
-        kb.button(text="🛠 Админка", callback_data="admin")
+        await btn(kb, "Админка", "admin", "admin")
     kb.adjust(2, 1, 2, 1)
     return kb.as_markup()
 
 
-def wd_menu(has_active: bool) -> InlineKeyboardMarkup:
+async def wd_menu(has_active: bool) -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
     if has_active:
         kb.button(text="✏️ Изменить сумму", callback_data="wd_amount")
@@ -38,20 +38,20 @@ def admin_wd_card(wid: int, version: int) -> InlineKeyboardMarkup:
     ]])
 
 
-def admin_menu() -> InlineKeyboardMarkup:
+async def admin_menu() -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
-    kb.button(text="🏆 Топ-25", callback_data="a_top")
+    await btn(kb, "Топ-25", "a_top", "top")
     kb.button(text="🔍 Найти юзера", callback_data="a_find")
     kb.button(text="🚩 На проверке", callback_data="a_flagged")
     kb.button(text="📊 Сводка", callback_data="a_stats")
-    kb.button(text="📢 Чаты", callback_data="a_chats")
+    await btn(kb, "Чаты", "a_chats", "chat")
     kb.button(text="🎨 Кастомизация", callback_data="a_skin")
-    kb.button(text="⬅️ Назад", callback_data="menu")
+    await btn(kb, "Назад", "menu", "back")
     kb.adjust(2, 2, 2, 1)
     return kb.as_markup()
 
 
-def chat_admin_list(chats) -> InlineKeyboardMarkup:
+async def chat_admin_list(chats) -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
     for ch in chats:
         mark = "🟢" if ch["active"] else "⚪️"
@@ -61,7 +61,7 @@ def chat_admin_list(chats) -> InlineKeyboardMarkup:
     return kb.as_markup()
 
 
-def chat_card(chat_id: int, active: bool) -> InlineKeyboardMarkup:
+async def chat_card(chat_id: int, active: bool) -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
     if active:
         kb.button(text="⚪️ Отключить чат", callback_data=f"a_choff:{chat_id}")
@@ -72,7 +72,7 @@ def chat_card(chat_id: int, active: bool) -> InlineKeyboardMarkup:
     return kb.as_markup()
 
 
-def skin_menu() -> InlineKeyboardMarkup:
+async def skin_menu() -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
     kb.button(text="😀 Эмодзи", callback_data="sk_emoji")
     kb.button(text="🏷 Названия валют", callback_data="sk_label")
@@ -84,7 +84,7 @@ def skin_menu() -> InlineKeyboardMarkup:
     return kb.as_markup()
 
 
-def slot_list(slots: dict, current: dict, prefix: str) -> InlineKeyboardMarkup:
+async def slot_list(slots: dict, current: dict, prefix: str) -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
     for slot, (desc, _) in slots.items():
         star = "⭐️" if current.get(f"premium.{slot}") else ""
@@ -95,7 +95,7 @@ def slot_list(slots: dict, current: dict, prefix: str) -> InlineKeyboardMarkup:
     return kb.as_markup()
 
 
-def slot_card(slot: str, prefix: str, has_premium: bool) -> InlineKeyboardMarkup:
+async def slot_card(slot: str, prefix: str, has_premium: bool) -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
     if has_premium:
         kb.button(text="🗑 Убрать премиум", callback_data=f"sk_prem_off:{slot}")
@@ -112,22 +112,23 @@ def confirm(action: str) -> InlineKeyboardMarkup:
     ]])
 
 
-def back_menu() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(inline_keyboard=[[
-        InlineKeyboardButton(text="⬅️ Меню", callback_data="menu")]])
+async def back_menu() -> InlineKeyboardMarkup:
+    kb = InlineKeyboardBuilder()
+    await btn(kb, "Меню", "menu", "back")
+    return kb.as_markup()
 
 
-def chat_picker(chats, prefix: str) -> InlineKeyboardMarkup:
+async def chat_picker(chats, prefix: str) -> InlineKeyboardMarkup:
     """prefix: 'lnk' — выбор чата для реф-ссылки."""
     kb = InlineKeyboardBuilder()
     for ch in chats:
-        kb.button(text=f"📢 {ch['title']}", callback_data=f"{prefix}:{ch['chat_id']}")
-    kb.button(text="⬅️ Меню", callback_data="menu")
+        await btn(kb, ch["title"], f"{prefix}:{ch['chat_id']}", "chat")
+    await btn(kb, "Меню", "menu", "back")
     kb.adjust(1)
     return kb.as_markup()
 
 
-def link_card(multi: bool) -> InlineKeyboardMarkup:
+async def link_card(multi: bool) -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
     if multi:
         kb.button(text="🔄 Другой чат", callback_data="mylink")

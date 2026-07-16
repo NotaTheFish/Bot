@@ -8,8 +8,9 @@ from aiogram.types import Message
 
 import db
 import roulette
-from config import ANIM_DELAY, ANIM_FRAMES, COIN_RATE, SPIN_COMMANDS
-from services import settings
+from config import (ANIM_DELAY, ANIM_FRAMES, COIN_RATE, SPIN_COMMANDS,
+                    UNLIMITED_SPIN_IDS)
+from services import settings, ui
 from services.render import edit as r_edit, reply as r_reply
 
 router = Router()
@@ -30,7 +31,7 @@ async def spin(msg: Message, bot: Bot):
     await db.upsert_user(uid, msg.from_user.username, msg.from_user.first_name)
 
     if await db.is_banned(uid):
-        return await msg.reply("🚫 Ты заблокирован в системе.")
+        return await ui.reply(msg, "🚫 Ты заблокирован в системе.")
 
     chat = await db.pool().fetchrow(
         "SELECT * FROM rb_chats WHERE chat_id=$1 AND active", msg.chat.id)
@@ -68,6 +69,13 @@ async def spin(msg: Message, bot: Bot):
                 if spent + cost > ch["daily_budget_mush"]:
                     raise BudgetExhausted
 
+                if uid in UNLIMITED_SPIN_IDS:
+                    # UNIQUE(tg_id, spin_day) не обходим — сносим сегодняшнюю строку
+                    # и пишем заново. Индекс остаётся боевым для всех остальных.
+                    # Леджер при этом полный: у каждой прокрутки свой spin:<id>.
+                    await conn.execute(
+                        "DELETE FROM rb_spins WHERE tg_id=$1 AND spin_day=$2", uid, today)
+
                 spin_id = await conn.fetchval(
                     "INSERT INTO rb_spins (tg_id, chat_id, currency, amount, spin_day) "
                     "VALUES ($1,$2,$3,$4,$5) RETURNING id",
@@ -85,7 +93,7 @@ async def spin(msg: Message, bot: Bot):
                  f"Возвращайся завтра.".replace(",", " "), em)
     except BudgetExhausted:
         # прокрутка НЕ засчитана — транзакция откатилась, завтра крутанёт
-        return await msg.reply("🧯 Суточный лимит выплат в этом чате исчерпан.\n"
+        return await ui.reply(msg, "🧯 Суточный лимит выплат в этом чате исчерпан.\n"
                                "Прокрутка не потрачена — заходи завтра.")
 
     # анимация
