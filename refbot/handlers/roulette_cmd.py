@@ -8,8 +8,8 @@ from aiogram.types import Message
 
 import db
 import roulette
-from config import (ANIM_DELAY, ANIM_FRAMES, COIN_RATE, SPIN_COMMANDS,
-                    UNLIMITED_SPIN_IDS)
+from config import (ANIM_DELAY, ANIM_FRAMES, COIN_RATE, FREE_ROULETTE,
+                    FREE_ROULETTE_BUDGET, SPIN_COMMANDS, UNLIMITED_SPIN_IDS)
 from services import settings, ui
 from services.render import edit as r_edit, reply as r_reply
 
@@ -18,6 +18,60 @@ router = Router()
 
 class BudgetExhausted(Exception):
     pass
+
+
+class ChatBlocked(Exception):
+    pass
+
+
+async def _charge_budget(conn, chat_id: int, title: str, cost: int) -> None:
+    """
+    Списать cost (в грибах) с суточного бюджета. Бросает BudgetExhausted / ChatBlocked.
+
+    Привязанный чат -> его собственный бюджет из rb_chats.
+    Непривязанный  -> общий потолок FREE_ROULETTE_BUDGET на ВСЕ такие чаты сразу.
+    Отдельный счётчик, потому что у случайного чата нет и не должно быть строки
+    в rb_chats: иначе он вылезет в «Мою ссылку» и в маршрутизацию выводов.
+    """
+    bound = await conn.fetchrow(
+        "SELECT * FROM rb_chats WHERE chat_id=$1 AND active FOR UPDATE", chat_id)
+
+    if bound:
+        if bound["budget_date"] != date.today():
+            await conn.execute(
+                "UPDATE rb_chats SET budget_date=CURRENT_DATE, budget_spent_mush=0 "
+                "WHERE chat_id=$1", chat_id)
+            spent = 0
+        else:
+            spent = bound["budget_spent_mush"]
+        if spent + cost > bound["daily_budget_mush"]:
+            raise BudgetExhausted
+        await conn.execute(
+            "UPDATE rb_chats SET budget_spent_mush = budget_spent_mush + $1 WHERE chat_id=$2",
+            cost, chat_id)
+        return
+
+    # --- свободный чат ---
+    if not FREE_ROULETTE:
+        raise ChatBlocked
+    fc = await conn.fetchrow("SELECT blocked FROM rb_free_chats WHERE chat_id=$1", chat_id)
+    if fc and fc["blocked"]:
+        raise ChatBlocked
+
+    await conn.execute(
+        "INSERT INTO rb_free_budget (day) VALUES (CURRENT_DATE) ON CONFLICT DO NOTHING")
+    spent = await conn.fetchval(
+        "SELECT spent_mush FROM rb_free_budget WHERE day=CURRENT_DATE FOR UPDATE")
+    if spent + cost > FREE_ROULETTE_BUDGET:
+        raise BudgetExhausted
+    await conn.execute(
+        "UPDATE rb_free_budget SET spent_mush = spent_mush + $1 WHERE day=CURRENT_DATE", cost)
+    await conn.execute(
+        """
+        INSERT INTO rb_free_chats (chat_id, title, spins) VALUES ($1,$2,1)
+        ON CONFLICT (chat_id) DO UPDATE
+        SET title=EXCLUDED.title, spins=rb_free_chats.spins+1, last_seen=now()
+        """, chat_id, title)
 
 
 def _match(text: str) -> bool:
@@ -32,11 +86,6 @@ async def spin(msg: Message, bot: Bot):
 
     if await db.is_banned(uid):
         return await ui.reply(msg, "🚫 Ты заблокирован в системе.")
-
-    chat = await db.pool().fetchrow(
-        "SELECT * FROM rb_chats WHERE chat_id=$1 AND active", msg.chat.id)
-    if not chat:
-        return
 
     user = await db.get_user(uid)
     cur = user["currency"]
@@ -55,19 +104,8 @@ async def spin(msg: Message, bot: Bot):
     try:
         async with db.pool().acquire() as conn:
             async with conn.transaction():
-                # суточный бюджет чата. FOR UPDATE сериализует прокрутки в этом чате.
-                ch = await conn.fetchrow(
-                    "SELECT * FROM rb_chats WHERE chat_id=$1 FOR UPDATE", msg.chat.id)
-                if ch["budget_date"] != today:
-                    await conn.execute(
-                        "UPDATE rb_chats SET budget_date=CURRENT_DATE, budget_spent_mush=0 "
-                        "WHERE chat_id=$1", msg.chat.id)
-                    spent = 0
-                else:
-                    spent = ch["budget_spent_mush"]
                 cost = amount // COIN_RATE if cur == "coins" else amount
-                if spent + cost > ch["daily_budget_mush"]:
-                    raise BudgetExhausted
+                await _charge_budget(conn, msg.chat.id, msg.chat.title or "", cost)
 
                 if uid in UNLIMITED_SPIN_IDS:
                     # UNIQUE(tg_id, spin_day) не обходим — сносим сегодняшнюю строку
@@ -80,9 +118,6 @@ async def spin(msg: Message, bot: Bot):
                     "INSERT INTO rb_spins (tg_id, chat_id, currency, amount, spin_day) "
                     "VALUES ($1,$2,$3,$4,$5) RETURNING id",
                     uid, msg.chat.id, cur, amount, today)
-                await conn.execute(
-                    "UPDATE rb_chats SET budget_spent_mush = budget_spent_mush + $1 "
-                    "WHERE chat_id=$2", cost, msg.chat.id)
                 total = await db.apply(conn, uid, cur, amount, "roulette",
                                        f"spin:{spin_id}", spin_id)
     except asyncpg.UniqueViolationError:

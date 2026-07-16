@@ -8,7 +8,7 @@ from aiogram.types import CallbackQuery, Message
 
 import db
 import keyboards as kb
-from config import SUPER_ADMINS
+from config import FREE_ROULETTE, FREE_ROULETTE_BUDGET, SUPER_ADMINS
 from services import settings, withdrawals, ui
 from services.notify import drop_admin_card
 
@@ -39,7 +39,9 @@ async def bind(msg: Message):
     await db.pool().execute(
         """
         INSERT INTO rb_chats (chat_id, title, owner_id) VALUES ($1,$2,$3)
-        ON CONFLICT (chat_id) DO UPDATE SET title=EXCLUDED.title, active=TRUE
+        ON CONFLICT (chat_id) DO UPDATE
+        SET title=EXCLUDED.title, active=TRUE, owner_id=EXCLUDED.owner_id,
+            deactivated_at=NULL, deactivated_by=NULL
         """, msg.chat.id, msg.chat.title, msg.from_user.id)
     await db.pool().execute(
         "INSERT INTO rb_admins (chat_id, tg_id, role) VALUES ($1,$2,'owner') "
@@ -194,7 +196,17 @@ async def cb_stats(c: CallbackQuery):
     budget = "\n".join(
         f"  {'🟢' if ch['active'] else '⚪️'} {ch['title']}: "
         f"{fmt(ch['budget_spent_mush'])} / {fmt(ch['daily_budget_mush'])}"
-        for ch in chats) or "  нет чатов"
+        for ch in chats) or "  нет привязанных чатов"
+
+    # свободная рулетка: чаты без /bind
+    fb = await db.pool().fetchval(
+        "SELECT spent_mush FROM rb_free_budget WHERE day=CURRENT_DATE") or 0
+    fc = await db.pool().fetchrow(
+        "SELECT count(*) n, count(*) FILTER (WHERE blocked) b FROM rb_free_chats")
+    free = (f"\n  {sx['e_roulette']} <b>Свободная рулетка</b> (чаты без /bind)\n"
+            f"  {fmt(fb)} / {fmt(FREE_ROULETTE_BUDGET)}"
+            f"{' — ВЫКЛЮЧЕНА' if not FREE_ROULETTE else ''}\n"
+            f"  Чатов: {fc['n']} (заблокировано {fc['b']})")
     await ui.edit(c.message, 
         f"📊 <b>Сводка</b>\n\n"
         f"{sx['e_refs']} Юзеров: {s['users']} (забанено {s['banned']})\n"
@@ -205,7 +217,7 @@ async def cb_stats(c: CallbackQuery):
         f"{sx['e_mushrooms']} {fmt(s['m'])} | {sx['e_coins']} {fmt(s['co'])}\n\n"
         f"{sx['e_withdraw']} <b>Выведено всего</b>\n"
         f"{sx['e_mushrooms']} {fmt(s['wm'])} | {sx['e_coins']} {fmt(s['wc'])}\n\n"
-        f"🧯 <b>Суточный бюджет по чатам</b> {sx['e_mushrooms']}\n{budget}",
+        f"🧯 <b>Суточный бюджет по чатам</b> {sx['e_mushrooms']}\n{budget}\n{free}",
         reply_markup=await kb.admin_menu())
     await c.answer()
 

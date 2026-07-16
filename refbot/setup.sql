@@ -191,9 +191,29 @@ ALTER TABLE rb_chats ADD COLUMN IF NOT EXISTS deactivated_at TIMESTAMPTZ;
 ALTER TABLE rb_chats ADD COLUMN IF NOT EXISTS deactivated_by BIGINT;
 
 
+-- ---------- 4b. Свободная рулетка (чаты без /bind) ----------
+-- Отдельно от rb_chats СПЕЦИАЛЬНО: иначе случайные чаты полезут в «Мою ссылку»,
+-- в маршрутизацию выводов и в список чатов админки.
+
+-- глобальный суточный потолок выплат по всем непривязанным чатам
+CREATE TABLE IF NOT EXISTS rb_free_budget (
+    day        DATE PRIMARY KEY,
+    spent_mush BIGINT NOT NULL DEFAULT 0
+);
+
+-- реестр чатов, где крутили без привязки: для видимости и блокировки
+CREATE TABLE IF NOT EXISTS rb_free_chats (
+    chat_id    BIGINT PRIMARY KEY,
+    title      TEXT,
+    blocked    BOOLEAN NOT NULL DEFAULT FALSE,
+    spins      INT NOT NULL DEFAULT 0,
+    first_seen TIMESTAMPTZ NOT NULL DEFAULT now(),
+    last_seen  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
 -- ---------- 5. Проверка ----------
 SELECT
-  (SELECT count(*) FROM pg_tables WHERE tablename ~ '^rb_')                   AS tables_expect_13,
+  (SELECT count(*) FROM pg_tables WHERE tablename ~ '^rb_')                   AS tables_expect_15,
   (SELECT count(*) FROM pg_type   WHERE typname ~ '^rb_' AND typtype = 'e')   AS enums_expect_3,
   (SELECT count(*) FROM pg_indexes WHERE indexname IN
      ('rb_referrals_alive_idx','rb_withdrawals_one_pending','rb_spins_daily')) AS guards_expect_3,
