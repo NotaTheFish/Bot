@@ -228,8 +228,10 @@ async def inline_review(query: InlineQuery, db: Database, bot, config):
 
             if file_id:
                 btn_text = seller.get("invite_button") or "✍️ Написать отзыв в боте"
+                btn_icon = seller.get("invite_button_icon")
+                from handlers.invite import _invite_btn
                 kb = InlineKeyboardMarkup(inline_keyboard=[[
-                    InlineKeyboardButton(text=btn_text[:64], url=ref_link)
+                    _invite_btn(btn_text, ref_link, btn_icon)
                 ]])
                 custom_text = seller.get("invite_text")
                 if custom_text:
@@ -254,6 +256,7 @@ async def inline_review(query: InlineQuery, db: Database, bot, config):
                         "caption": caption,
                         "btn_text": btn_text[:64],
                         "btn_url": ref_link,
+                        "btn_icon": btn_icon,
                         "ts": _time.time(),
                     }
                     if len(_PENDING_INLINE) > _PENDING_MAX:
@@ -278,8 +281,9 @@ async def inline_review(query: InlineQuery, db: Database, bot, config):
 
         # Фолбэк без CACHE_CHAT_ID — просто текст с кнопкой
         fb_btn = seller.get("invite_button") or "✍️ Написать отзыв в боте"
+        from handlers.invite import _invite_btn
         kb = InlineKeyboardMarkup(inline_keyboard=[[
-            InlineKeyboardButton(text=fb_btn[:64], url=ref_link)
+            _invite_btn(fb_btn, ref_link, seller.get("invite_button_icon"))
         ]])
         fb_custom = seller.get("invite_text")
         if fb_custom:
@@ -442,8 +446,9 @@ async def on_chosen_inline_result(chosen, bot, db: Database, config):
         if pend and chosen.inline_message_id:
             try:
                 # Кнопку пересоздаём — иначе правка снесёт её
+                from handlers.invite import _invite_btn
                 kb = InlineKeyboardMarkup(inline_keyboard=[[
-                    InlineKeyboardButton(text=pend["btn_text"], url=pend["btn_url"])
+                    _invite_btn(pend["btn_text"], pend["btn_url"], pend.get("btn_icon"))
                 ]])
                 await bot.edit_message_caption(
                     inline_message_id=chosen.inline_message_id,

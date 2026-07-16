@@ -34,6 +34,14 @@ def is_admin(user_id: int) -> bool:
     return user_id == ADMIN_ID
 
 
+def rich_text(message: Message) -> str:
+    """
+    Convert an incoming message to HTML, preserving formatting AND premium
+    (custom) emoji as <tg-emoji> tags. Plain .text would drop all of it.
+    """
+    return (message.html_text or "").strip()
+
+
 # ── FSM States ────────────────────────────────────────────────────────────────
 
 class CreateGiveaway(StatesGroup):
@@ -188,7 +196,7 @@ async def start_create(message: Message, state: FSMContext):
 
 @router.message(CreateGiveaway.title)
 async def process_title(message: Message, state: FSMContext):
-    await state.update_data(title=message.text.strip())
+    await state.update_data(title=rich_text(message))
     await state.set_state(CreateGiveaway.key)
     await message.answer(
         "Шаг 2/5 — Введи уникальный <b>ключ</b> конкурса (латиница или кириллица, без пробелов).\n"
@@ -216,7 +224,7 @@ async def process_key(message: Message, state: FSMContext):
 
 @router.message(CreateGiveaway.announcement)
 async def process_announcement(message: Message, state: FSMContext):
-    await state.update_data(announcement=message.text.strip())
+    await state.update_data(announcement=rich_text(message))
     await state.set_state(CreateGiveaway.prize_places)
     await message.answer(
         "Шаг 4/5 — Сколько <b>призовых мест</b>? Введи число (например: <code>3</code>):"
@@ -248,7 +256,7 @@ async def process_prizes(message: Message, state: FSMContext):
     current_place: int = data.get("current_place", 1)
     total_places: int = data.get("prize_places", 1)
 
-    prizes_collected.append({"place": current_place, "description": message.text.strip()})
+    prizes_collected.append({"place": current_place, "description": rich_text(message)})
     current_place += 1
     await state.update_data(prizes_collected=prizes_collected, current_place=current_place)
 
@@ -471,7 +479,7 @@ async def edit_text_process(message: Message, state: FSMContext, bot: Bot):
     data = await state.get_data()
     giveaway_id = data.get("current_giveaway_id")
 
-    await db.update_giveaway_text(giveaway_id, message.text.strip())
+    await db.update_giveaway_text(giveaway_id, rich_text(message))
     await state.set_state(None)
 
     await message.answer("✅ Текст обновлён. Обновляю опубликованные сообщения...")
@@ -522,7 +530,7 @@ async def edit_prizes_collect(message: Message, state: FSMContext, bot: Bot):
     total_places: int = data.get("new_prize_places", 1)
     giveaway_id = data.get("current_giveaway_id")
 
-    prizes_collected.append({"place": current_place, "description": message.text.strip()})
+    prizes_collected.append({"place": current_place, "description": rich_text(message)})
     current_place += 1
     await state.update_data(new_prizes_collected=prizes_collected, new_current_place=current_place)
 

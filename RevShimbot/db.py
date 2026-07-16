@@ -32,6 +32,7 @@ CREATE TABLE IF NOT EXISTS rvb_sellers (
     invite_button TEXT,
     invite_photo TEXT,
     invite_template_id TEXT,
+    invite_button_icon TEXT,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
@@ -274,7 +275,8 @@ class Database:
                 ADD COLUMN IF NOT EXISTS inline_anon BOOLEAN NOT NULL DEFAULT FALSE
             """)
             # Авто-миграция: настраиваемое приглашение (паста) для инлайна
-            for _col in ("invite_text", "invite_button", "invite_photo", "invite_template_id"):
+            for _col in ("invite_text", "invite_button", "invite_photo",
+                         "invite_template_id", "invite_button_icon"):
                 await conn.execute(
                     f"ALTER TABLE rvb_sellers ADD COLUMN IF NOT EXISTS {_col} TEXT")
             # Авто-миграция: verified_at для каналов
@@ -826,6 +828,7 @@ class Database:
         "inline_notify_seller", "show_buyer_button", "allow_template_choice",
         "anon_mode", "anon_nickname", "anon_avatar", "inline_anon",
         "invite_text", "invite_button", "invite_photo", "invite_template_id",
+        "invite_button_icon",
     }
 
     async def update_seller(self, user_id: int, **fields) -> Optional[dict]:

@@ -1,4 +1,5 @@
 import logging
+import re
 from aiogram import Bot
 from aiogram.exceptions import TelegramBadRequest
 
@@ -6,6 +7,47 @@ from database import db
 from keyboards.kb import channels_kb
 
 logger = logging.getLogger(__name__)
+
+# Premium (custom) emoji are allowed for bots in private/group/supergroup chats
+# when the bot OWNER has Telegram Premium (Bot API 9.4, Feb 2026).
+# Channels are NOT covered — there we transparently fall back to plain emoji.
+TG_EMOJI_RE = re.compile(r'<tg-emoji[^>]*>(.*?)</tg-emoji>', re.DOTALL | re.IGNORECASE)
+
+
+def strip_custom_emoji(html_text: str) -> str:
+    """Replace <tg-emoji ...>X</tg-emoji> with the fallback emoji X inside it."""
+    return TG_EMOJI_RE.sub(r'\1', html_text)
+
+
+def _is_emoji_error(err: Exception) -> bool:
+    msg = str(err).lower()
+    return "emoji" in msg or "premium" in msg
+
+
+async def send_html_smart(bot: Bot, chat_id: int, html_text: str, reply_markup=None):
+    """Send HTML; if the chat rejects custom emoji (e.g. channels), retry without them."""
+    try:
+        return await bot.send_message(chat_id, html_text, reply_markup=reply_markup)
+    except TelegramBadRequest as e:
+        if not _is_emoji_error(e):
+            raise
+        logger.info(f"Custom emoji rejected in {chat_id}, retrying with plain emoji: {e}")
+        return await bot.send_message(chat_id, strip_custom_emoji(html_text), reply_markup=reply_markup)
+
+
+async def edit_html_smart(bot: Bot, chat_id: int, message_id: int, html_text: str, reply_markup=None):
+    """Edit with HTML; retry without custom emoji if the chat rejects them."""
+    try:
+        return await bot.edit_message_text(
+            text=html_text, chat_id=chat_id, message_id=message_id, reply_markup=reply_markup
+        )
+    except TelegramBadRequest as e:
+        if not _is_emoji_error(e):
+            raise
+        return await bot.edit_message_text(
+            text=strip_custom_emoji(html_text), chat_id=chat_id,
+            message_id=message_id, reply_markup=reply_markup
+        )
 
 
 # ── Channel title / invite link maintenance ────────────────────────────────────
@@ -63,7 +105,7 @@ async def publish_announcement(bot: Bot, giveaway_id: int, target_chat_id: int) 
     channels = await prepare_channels(bot, giveaway_id)
     kb = channels_kb(channels, giveaway_id)
 
-    msg = await bot.send_message(target_chat_id, g['announcement'], reply_markup=kb)
+    msg = await send_html_smart(bot, target_chat_id, g['announcement'], reply_markup=kb)
     await db.add_published_message(giveaway_id, target_chat_id, msg.message_id)
     return msg.message_id
 
@@ -79,11 +121,8 @@ async def sync_published_messages(bot: Bot, giveaway_id: int):
     published = await db.get_published_messages(giveaway_id)
     for pm in published:
         try:
-            await bot.edit_message_text(
-                text=g['announcement'],
-                chat_id=pm['chat_id'],
-                message_id=pm['message_id'],
-                reply_markup=kb
+            await edit_html_smart(
+                bot, pm['chat_id'], pm['message_id'], g['announcement'], reply_markup=kb
             )
         except TelegramBadRequest as e:
             # Message not modified, deleted, or too old to edit — ignore quietly

@@ -5,7 +5,7 @@ from aiogram.types import Message
 
 from database import db
 from keyboards.kb import channels_kb
-from services.giveaway_service import prepare_channels
+from services.giveaway_service import prepare_channels, send_html_smart
 
 logger = logging.getLogger(__name__)
 router = Router()
@@ -33,7 +33,7 @@ async def chat_key_trigger(message: Message, bot: Bot):
     kb = channels_kb(channels, g['id'])
 
     try:
-        sent = await message.answer(g['announcement'], reply_markup=kb)
+        sent = await send_html_smart(bot, message.chat.id, g['announcement'], reply_markup=kb)
         await db.add_published_message(g['id'], sent.chat.id, sent.message_id)
     except Exception as e:
         logger.error(f"Failed to send giveaway announcement: {e}")

@@ -15,10 +15,23 @@ logger = logging.getLogger(__name__)
 DEFAULT_BUTTON = "✍️ Написать отзыв в боте"
 
 
+def _invite_btn(text: str, url: str, icon_id=None) -> InlineKeyboardButton:
+    """Кнопка приглашения. icon_custom_emoji_id — премиум-иконка перед текстом
+    (Bot API 9.4+; работает, если у владельца бота есть Telegram Premium)."""
+    if icon_id:
+        try:
+            return InlineKeyboardButton(text=text[:64], url=url,
+                                        icon_custom_emoji_id=icon_id)
+        except Exception:
+            pass
+    return InlineKeyboardButton(text=text[:64], url=url)
+
+
 class InviteSG(StatesGroup):
     enter_text = State()
     enter_button = State()
     enter_photo = State()
+    enter_icon = State()
 
 
 def _default_text(shop: str, pub_id: str, bot_username: str) -> str:
@@ -39,6 +52,9 @@ def _kb_invite(seller: dict) -> InlineKeyboardMarkup:
                               callback_data="invite:text")],
         [InlineKeyboardButton(text="🔘 Название кнопки" + (" ✅" if has_btn else ""),
                               callback_data="invite:button")],
+        [InlineKeyboardButton(text="✨ Иконка кнопки (премиум-эмодзи)"
+                                   + (" ✅" if seller.get("invite_button_icon") else ""),
+                              callback_data="invite:icon")],
         [InlineKeyboardButton(text="🎨 Превью: карточка" + (" ✅" if has_tpl and not has_photo else ""),
                               callback_data="invite:tplpick")],
         [InlineKeyboardButton(text="📷 Превью: своё фото" + (" ✅" if has_photo else ""),
@@ -72,6 +88,7 @@ def _invite_text(seller: dict, bot_username: str) -> str:
         "Здесь можно настроить его вид.\n\n"
         f"• <b>Текст:</b> {'свой ✅' if txt else 'стандартный'}\n"
         f"• <b>Кнопка:</b> {_h.escape(btn)}\n"
+        f"• <b>Иконка кнопки:</b> {'премиум-эмодзи ✅' if seller.get('invite_button_icon') else 'нет'}\n"
         f"• <b>Превью:</b> {preview_src}\n\n"
         "<i>В тексте можно использовать премиум-эмодзи и плейсхолдеры "
         "<code>{shop}</code> (название магазина) и <code>{id}</code> (твой ID).</i>"
@@ -157,6 +174,59 @@ async def invite_button_input(message: Message, state: FSMContext, db: Database,
     await db.update_seller(message.from_user.id, invite_button=btn)
     await message.answer(f"✅ Кнопка: <b>{_h.escape(btn)}</b>")
     await _show_menu(message, db, message.from_user.id, config.BOT_USERNAME)
+
+
+@router.callback_query(F.data == "invite:icon")
+async def cb_invite_icon(call: CallbackQuery, state: FSMContext):
+    await call.answer()
+    await state.set_state(InviteSG.enter_icon)
+    await call.message.answer(
+        "✨ Пришли <b>премиум-эмодзи</b> — оно станет иконкой на кнопке приглашения.\n\n"
+        "Просто отправь одно премиум-эмодзи сообщением. Бот возьмёт его ID.\n\n"
+        "<i>Иконка показывается перед текстом кнопки. Работает благодаря Telegram "
+        "Premium у владельца бота.</i>\n\n"
+        "Отправь /off чтобы убрать иконку, /cancel — отменить."
+    )
+
+
+@router.message(InviteSG.enter_icon, F.text == "/cancel")
+async def invite_icon_cancel(message: Message, state: FSMContext):
+    await state.clear()
+    await message.answer("Отменено.")
+
+
+@router.message(InviteSG.enter_icon, F.text == "/off")
+async def invite_icon_off(message: Message, state: FSMContext, db: Database, config):
+    await state.clear()
+    await db.update_seller(message.from_user.id, invite_button_icon=None)
+    await message.answer("✅ Иконка убрана.")
+    await _show_menu(message, db, message.from_user.id, config.BOT_USERNAME)
+
+
+@router.message(InviteSG.enter_icon, F.text)
+async def invite_icon_input(message: Message, state: FSMContext, db: Database, config):
+    # Достаём custom_emoji_id из премиум-эмодзи, которое прислал пользователь
+    emoji_id = None
+    for e in (message.entities or []):
+        if e.type == "custom_emoji" and e.custom_emoji_id:
+            emoji_id = e.custom_emoji_id
+            break
+    if not emoji_id:
+        await message.answer(
+            "⚠️ Это не премиум-эмодзи. Нужно именно <b>премиум</b> (анимированное) "
+            "эмодзи — обычные не подойдут.\n\n"
+            "Пришли ещё раз или /cancel."
+        )
+        return
+    await state.clear()
+    await db.update_seller(message.from_user.id, invite_button_icon=emoji_id)
+    await message.answer("✅ Иконка кнопки сохранена! Глянь «👁 Предпросмотр».")
+    await _show_menu(message, db, message.from_user.id, config.BOT_USERNAME)
+
+
+@router.message(InviteSG.enter_icon)
+async def invite_icon_wrong(message: Message):
+    await message.answer("Пришли премиум-эмодзи сообщением, /off — убрать, /cancel — отмена.")
 
 
 @router.callback_query(F.data == "invite:photo")
@@ -251,7 +321,8 @@ async def cb_invite_reset(call: CallbackQuery, db: Database, config):
         await call.answer("Сначала настрой шаблон", show_alert=True)
         return
     await db.update_seller(call.from_user.id, invite_text=None, invite_button=None,
-                           invite_photo=None, invite_template_id=None)
+                           invite_photo=None, invite_template_id=None,
+                           invite_button_icon=None)
     await call.answer("🗑 Сброшено к стандартному")
     seller = await db.get_seller(call.from_user.id)
     try:
@@ -271,7 +342,7 @@ async def cb_invite_preview(call: CallbackQuery, db: Database, bot, config):
     ref_link = f"https://t.me/{config.BOT_USERNAME}?start=seller_{seller['pub_id']}"
     btn = seller.get("invite_button") or DEFAULT_BUTTON
     kb = InlineKeyboardMarkup(inline_keyboard=[[
-        InlineKeyboardButton(text=btn[:64], url=ref_link)
+        _invite_btn(btn, ref_link, seller.get("invite_button_icon"))
     ]])
     custom = seller.get("invite_text")
     if custom:
