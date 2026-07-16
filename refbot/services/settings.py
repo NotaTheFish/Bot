@@ -6,7 +6,13 @@
 Если Fragment-юзернейма у бота нет — Telegram отклонит entity, render.py молча
 откатится на символ-фолбэк. Ничего не сломается, просто будет обычное эмодзи.
 """
+import logging
+
+import asyncpg
+
 import db
+
+log = logging.getLogger(__name__)
 
 # slot -> (описание для админки, дефолтный символ)
 EMOJI_SLOTS = {
@@ -52,13 +58,29 @@ PROFILE_KEYS = ["id", "bal_m", "bal_c", "hold_m", "hold_c", "paid", "hold", "los
                [f"e_{s}" for s in EMOJI_SLOTS] + [f"l_{s}" for s in LABEL_SLOTS]
 
 _cache: dict[str, str] | None = None
+_warned = False
 
 
 async def load(force: bool = False) -> dict[str, str]:
-    global _cache
+    """
+    Настройки — это косметика. Если таблицы ещё нет (setup.sql не накатан) или БД
+    икнула — отдаём пустой кэш и работаем на дефолтах. Ронять бота из-за эмодзи нельзя.
+    """
+    global _cache, _warned
     if _cache is None or force:
-        rows = await db.pool().fetch("SELECT key, value FROM rb_settings")
-        _cache = {r["key"]: r["value"] for r in rows}
+        try:
+            rows = await db.pool().fetch("SELECT key, value FROM rb_settings")
+            _cache = {r["key"]: r["value"] for r in rows}
+            _warned = False
+        except asyncpg.UndefinedTableError:
+            if not _warned:
+                log.warning("rb_settings нет — работаю на стандартном оформлении. "
+                            "Накати setup.sql, чтобы включить кастомизацию.")
+                _warned = True
+            _cache = {}
+        except Exception as e:
+            log.warning("не смог прочитать rb_settings (%s), беру дефолты", e)
+            _cache = {}
     return _cache
 
 
@@ -66,20 +88,30 @@ async def get(key: str, default: str = "") -> str:
     return (await load()).get(key, default)
 
 
-async def set(key: str, value: str, actor: int | None = None):
-    await db.pool().execute(
-        """
-        INSERT INTO rb_settings (key, value, updated_by, updated_at)
-        VALUES ($1,$2,$3, now())
-        ON CONFLICT (key) DO UPDATE
-        SET value=EXCLUDED.value, updated_by=EXCLUDED.updated_by, updated_at=now()
-        """, key, value, actor)
+async def set(key: str, value: str, actor: int | None = None) -> bool:
+    """False = таблицы нет, настройка не сохранена (нужен setup.sql)."""
+    try:
+        await db.pool().execute(
+            """
+            INSERT INTO rb_settings (key, value, updated_by, updated_at)
+            VALUES ($1,$2,$3, now())
+            ON CONFLICT (key) DO UPDATE
+            SET value=EXCLUDED.value, updated_by=EXCLUDED.updated_by, updated_at=now()
+            """, key, value, actor)
+    except asyncpg.UndefinedTableError:
+        log.warning("rb_settings нет — настройка %s не сохранена", key)
+        return False
     await load(force=True)
+    return True
 
 
-async def unset(key: str):
-    await db.pool().execute("DELETE FROM rb_settings WHERE key=$1", key)
+async def unset(key: str) -> bool:
+    try:
+        await db.pool().execute("DELETE FROM rb_settings WHERE key=$1", key)
+    except asyncpg.UndefinedTableError:
+        return False
     await load(force=True)
+    return True
 
 
 async def emoji(slot: str) -> str:

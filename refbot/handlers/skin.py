@@ -18,6 +18,11 @@ from services.render import edit as r_edit, reply as r_reply
 
 router = Router()
 
+NO_TABLE = ("⚠️ Таблица <code>rb_settings</code> ещё не создана — настройка не сохранена.\n\n"
+            "Накати <code>setup.sql</code> в Railway → Postgres → Console:\n"
+            "<code>psql -U postgres -d railway -f /setup.sql</code>\n\n"
+            "Бот при этом работает — просто на стандартном оформлении.")
+
 
 class Skin(StatesGroup):
     emoji = State()
@@ -198,14 +203,16 @@ async def sk_emoji_input(msg: Message, state: FSMContext):
     if ce:
         b = text.encode("utf-16-le")
         ch = b[ce.offset * 2:(ce.offset + ce.length) * 2].decode("utf-16-le")
-        await settings.set(f"emoji.{slot}", ch, msg.from_user.id)
+        if not await settings.set(f"emoji.{slot}", ch, msg.from_user.id):
+            return await msg.answer(NO_TABLE)
         await settings.set(f"premium.{slot}", ce.custom_emoji_id, msg.from_user.id)
         note = (f"⭐️ Премиум сохранён\nID: <code>{ce.custom_emoji_id}</code>\n"
                 f"Фолбэк: {ch}\n\n"
                 f"<i>Если у бота нет юзернейма с Fragment — Telegram отклонит премиум "
                 f"и покажет фолбэк. Проверь кнопкой «🧪 Тест».</i>")
     else:
-        await settings.set(f"emoji.{slot}", text, msg.from_user.id)
+        if not await settings.set(f"emoji.{slot}", text, msg.from_user.id):
+            return await msg.answer(NO_TABLE)
         await settings.unset(f"premium.{slot}")
         note = f"Сохранено: {text}"
 
@@ -264,7 +271,8 @@ async def sk_label_input(msg: Message, state: FSMContext):
     text = (msg.text or "").strip()
     if not text or len(text) > 32:
         return await msg.answer("От 1 до 32 символов.")
-    await settings.set(f"label.{slot}", text, msg.from_user.id)
+    if not await settings.set(f"label.{slot}", text, msg.from_user.id):
+        return await msg.answer(NO_TABLE)
     await state.clear()
     await db.audit(msg.from_user.id, "skin_label", {"slot": slot, "value": text})
     await msg.answer(f"✅ Название: <b>{text}</b>", reply_markup=kb.skin_menu())
@@ -313,7 +321,8 @@ async def sk_tpl_input(msg: Message, state: FSMContext):
     err = settings.validate_template(tpl)
     if err:
         return await msg.answer(f"⚠️ {err}\n\nИсправь и пришли снова.")
-    await settings.set("profile.template", tpl, msg.from_user.id)
+    if not await settings.set("profile.template", tpl, msg.from_user.id):
+        return await msg.answer(NO_TABLE)
     await state.clear()
     await db.audit(msg.from_user.id, "skin_tpl", {"len": len(tpl)})
     await msg.answer("✅ Шаблон сохранён. Открой «👤 Профиль» и глянь.",
@@ -355,7 +364,10 @@ async def cb_sk_reset(c: CallbackQuery):
 async def cb_sk_reset_yes(c: CallbackQuery, state: FSMContext):
     if await deny(c):
         return
-    await db.pool().execute("DELETE FROM rb_settings")
+    try:
+        await db.pool().execute("DELETE FROM rb_settings")
+    except Exception:
+        return await c.answer("Таблица rb_settings ещё не создана.", show_alert=True)
     await settings.load(force=True)
     await db.audit(c.from_user.id, "skin_reset", {})
     await c.answer("Всё сброшено к стандартному.", show_alert=True)
