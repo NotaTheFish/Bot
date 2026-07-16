@@ -60,36 +60,37 @@ def band_stats() -> list[tuple[int, int, float, float]]:
 
 
 # ---------- анимация ----------
+# Никаких ASCII-рамок. Telegram рендерит текст пропорциональным шрифтом:
+# ╔═══╗ — узкие символы, 🍄 — широкий и разной ширины на разных ОС.
+# Рамку из ═ и ║ выровнять невозможно в принципе, она всегда будет ползти.
+# Поэтому рамку рисует сам Telegram через <blockquote> — она выровнена всегда.
 WHEEL = ["🍄", "🪙", "🎲", "💎", "🌿", "🔥", "⭐️", "🧿"]
+BAR_LEN = 5
 
 
-def frame(i: int, currency_emoji: str) -> str:
-    """Кадр прокрутки. Окно из 3 символов, скользит по колесу."""
+def frame(i: int, e_roulette: str = "🎰") -> str:
+    """Кадр прокрутки. Окно из 3 символов скользит по колесу."""
     a = WHEEL[i % len(WHEEL)]
     b = WHEEL[(i + 3) % len(WHEEL)]
     c = WHEEL[(i + 6) % len(WHEEL)]
-    bar = "▰" * (i % 6) + "▱" * (5 - i % 6)
-    return (
-        f"🎰 <b>РУЛЕТКА</b> 🎰\n"
-        f"╔═══════════╗\n"
-        f"║  {a}  ⟪ {b} ⟫  {c}  ║\n"
-        f"╚═══════════╝\n"
-        f"<i>{bar}</i>"
-    )
+    filled = i % (BAR_LEN + 1)
+    bar = "▰" * filled + "▱" * (BAR_LEN - filled)
+    return (f"{e_roulette} <b>РУЛЕТКА</b>\n"
+            f"<blockquote>{a}   ⟪ {b} ⟫   {c}\n"
+            f"{bar}</blockquote>")
 
 
-def result_card(name: str, amount: int, currency: str, emoji: str, total: int) -> str:
-    cur = "грибов" if currency == "mushrooms" else "коинов"
-    return (
-        f"🎰 <b>РУЛЕТКА</b> 🎰\n"
-        f"╔═══════════╗\n"
-        f"║  {emoji}  ⟪ {emoji} ⟫  {emoji}  ║\n"
-        f"╚═══════════╝\n\n"
-        f"👤 {name}\n"
-        f"🎁 Выигрыш: <b>{amount:,}</b> {cur} {emoji}\n"
-        f"💰 Баланс: <b>{total:,}</b>\n\n"
-        f"<i>Следующая прокрутка — завтра</i>"
-    ).replace(",", " ")
+def result_card(name: str, amount: int, emoji: str, label: str,
+                total: int, e_roulette: str = "🎰") -> str:
+    n = f"{amount:,}".replace(",", " ")
+    t = f"{total:,}".replace(",", " ")
+    return (f"{e_roulette} <b>РУЛЕТКА</b>\n"
+            f"<blockquote>{emoji}   ⟪ {emoji} ⟫   {emoji}\n"
+            f"{'▰' * BAR_LEN}</blockquote>\n"
+            f"👤 {name}\n"
+            f"🎁 Выигрыш: <b>{n}</b> {emoji} {label}\n"
+            f"💰 Баланс: <b>{t}</b>\n\n"
+            f"<i>Следующая прокрутка — завтра</i>")
 
 
 if __name__ == "__main__":

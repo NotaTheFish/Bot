@@ -4,45 +4,24 @@ from datetime import date
 
 import asyncpg
 from aiogram import Bot, F, Router
-from aiogram.types import Message, MessageEntity
+from aiogram.types import Message
 
 import db
 import roulette
-from config import (ANIM_DELAY, ANIM_FRAMES, CURRENCY_EMOJI, PREMIUM_EMOJI,
-                    SPIN_COMMANDS, COIN_RATE)
+from config import ANIM_DELAY, ANIM_FRAMES, COIN_RATE, SPIN_COMMANDS
+from services import settings
+from services.render import edit as r_edit, reply as r_reply
 
 router = Router()
 
 
-def _premium_entities(text: str) -> list[MessageEntity] | None:
-    """
-    Премиум-эмодзи. Работают ТОЛЬКО если у бота куплен доп. юзернейм на Fragment.
-    Если PREMIUM_EMOJI пуст — возвращаем None и всё летит обычными эмодзи.
-    """
-    if not PREMIUM_EMOJI:
-        return None
-    ents = []
-    for emoji, cid in PREMIUM_EMOJI.items():
-        start = 0
-        while True:
-            i = text.find(emoji, start)
-            if i == -1:
-                break
-            offset = len(text[:i].encode("utf-16-le")) // 2
-            length = len(emoji.encode("utf-16-le")) // 2
-            ents.append(MessageEntity(type="custom_emoji", offset=offset,
-                                      length=length, custom_emoji_id=cid))
-            start = i + len(emoji)
-    return ents or None
+class BudgetExhausted(Exception):
+    pass
 
 
 def _match(text: str) -> bool:
     t = (text or "").strip().lower()
     return any(t == c or t.startswith(c + " ") for c in SPIN_COMMANDS)
-
-
-class BudgetExhausted(Exception):
-    pass
 
 
 @router.message(F.chat.type.in_({"group", "supergroup"}), F.text.func(_match))
@@ -62,6 +41,12 @@ async def spin(msg: Message, bot: Bot):
     cur = user["currency"]
     amount = roulette.roll(cur)
     today = date.today()
+
+    # оформление берём из админки (эмодзи + премиум), а не из config
+    e_cur = await settings.emoji(cur)
+    e_rou = await settings.emoji("roulette")
+    label = await settings.label(cur)
+    em = await settings.emoji_map()
 
     # Кто первый вставил строку в rb_spins за сегодня — тот и крутит.
     # UNIQUE(tg_id, spin_day) => гонка из десяти сообщений подряд не пройдёт.
@@ -95,29 +80,25 @@ async def spin(msg: Message, bot: Bot):
     except asyncpg.UniqueViolationError:
         last = await db.pool().fetchval(
             "SELECT amount FROM rb_spins WHERE tg_id=$1 AND spin_day=$2", uid, today)
-        return await msg.reply(
-            f"⏳ Ты уже крутил сегодня (выпало {last:,} {CURRENCY_EMOJI[cur]}).\n"
-            f"Возвращайся завтра.".replace(",", " "))
+        return await r_reply(
+            msg, f"⏳ Ты уже крутил сегодня (выпало {last:,} {e_cur}).\n"
+                 f"Возвращайся завтра.".replace(",", " "), em)
     except BudgetExhausted:
         # прокрутка НЕ засчитана — транзакция откатилась, завтра крутанёт
         return await msg.reply("🧯 Суточный лимит выплат в этом чате исчерпан.\n"
                                "Прокрутка не потрачена — заходи завтра.")
 
     # анимация
-    m = await msg.reply(roulette.frame(0, CURRENCY_EMOJI[cur]))
+    m = await r_reply(msg, roulette.frame(0, e_rou), em)
     for i in range(1, ANIM_FRAMES):
         await asyncio.sleep(ANIM_DELAY)
         with contextlib.suppress(Exception):
-            await m.edit_text(roulette.frame(i, CURRENCY_EMOJI[cur]))
+            await r_edit(m, roulette.frame(i, e_rou), em)
 
     await asyncio.sleep(ANIM_DELAY)
-    name = msg.from_user.first_name
-    card = roulette.result_card(name, amount, cur, CURRENCY_EMOJI[cur], total)
-    try:
-        await m.edit_text(card, entities=_premium_entities(card), parse_mode="HTML")
-    except Exception:
-        with contextlib.suppress(Exception):
-            await m.edit_text(card)
+    card = roulette.result_card(msg.from_user.first_name, amount, e_cur, label, total, e_rou)
+    with contextlib.suppress(Exception):
+        await r_edit(m, card, em)
 
 
 @router.message(F.chat.type.in_({"group", "supergroup"}),
@@ -126,7 +107,11 @@ async def bal(msg: Message):
     await db.upsert_user(msg.from_user.id, msg.from_user.username, msg.from_user.first_name)
     b = await db.balances(msg.from_user.id)
     me = await msg.bot.get_me()
-    await msg.reply(
-        f"💰 <b>{msg.from_user.first_name}</b>\n"
-        f"🍄 {b['mushrooms']:,}\n🪙 {b['coins']:,}\n\n"
-        f"Подробнее и вывод — в боте: @{me.username}".replace(",", " "))
+    s = await settings.ctx()
+    await r_reply(
+        msg,
+        f"{s['e_balance']} <b>{msg.from_user.first_name}</b>\n"
+        f"<blockquote>{s['e_mushrooms']} {s['l_mushrooms']}: <b>{b['mushrooms']:,}</b>\n"
+        f"{s['e_coins']} {s['l_coins']}: <b>{b['coins']:,}</b></blockquote>\n"
+        f"Подробнее и вывод — в боте: @{me.username}".replace(",", " "),
+        await settings.emoji_map())
