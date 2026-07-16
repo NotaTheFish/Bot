@@ -1,10 +1,13 @@
 -- ============================================================
--- refbot — схема для вставки в Railway → Postgres → Data → Query
--- Идемпотентна: можно вставлять повторно, ничего не сломается и не сотрётся.
--- Если панель ругается на длину — вставляй по блокам (они помечены).
+-- refbot — ЕДИНЫЙ файл установки. Больше ничего накатывать не надо.
+--
+-- Railway → Postgres → Console → Upload этого файла → затем:
+--     psql -U postgres -d railway -f /setup.sql
+--
+-- Идемпотентен: гоняй сколько угодно раз. Ничего не удаляет, данные не трогает.
+-- Подходит и для чистой базы, и поверх уже накатанной схемы.
 -- ============================================================
-
--- ---------- БЛОК 1: типы ----------
+-- ---------- 1. Типы ----------
 DO $$ BEGIN
     CREATE TYPE rb_currency AS ENUM ('mushrooms', 'coins');
 EXCEPTION WHEN duplicate_object THEN NULL; END $$;
@@ -18,7 +21,7 @@ DO $$ BEGIN
 EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 
 
--- ---------- БЛОК 2: таблицы ----------
+-- ---------- 2. Таблицы ----------
 CREATE TABLE IF NOT EXISTS rb_users (
     tg_id      BIGINT PRIMARY KEY,
     username   TEXT,
@@ -161,7 +164,7 @@ CREATE TABLE IF NOT EXISTS rb_audit (
 );
 
 
--- ---------- БЛОК 3: индексы (без них защита от накрутки не работает) ----------
+-- ---------- 3. Индексы (без них защита от накрутки не работает) ----------
 CREATE INDEX        IF NOT EXISTS rb_ledger_user_idx      ON rb_ledger (tg_id, created_at DESC);
 CREATE UNIQUE INDEX IF NOT EXISTS rb_referrals_alive_idx  ON rb_referrals (chat_id, invitee_id) WHERE status IN ('hold','paid');
 CREATE INDEX        IF NOT EXISTS rb_referrals_due_idx    ON rb_referrals (hold_until) WHERE status = 'hold';
@@ -172,10 +175,29 @@ CREATE UNIQUE INDEX IF NOT EXISTS rb_spins_daily          ON rb_spins (tg_id, sp
 CREATE INDEX        IF NOT EXISTS rb_audit_idx            ON rb_audit (action, created_at DESC);
 
 
--- ---------- БЛОК 4: проверка ----------
+
+-- ---------- 4. Кастомизация и отключение чатов ----------
+-- настройки: эмодзи, названия, шаблон профиля
+CREATE TABLE IF NOT EXISTS rb_settings (
+    key        TEXT PRIMARY KEY,
+    value      TEXT NOT NULL,
+    updated_by BIGINT,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- отключение чата: прогресс сохраняется целиком
+-- active уже был. Добавляем, кто и когда отключил — чтобы потом не гадать.
+ALTER TABLE rb_chats ADD COLUMN IF NOT EXISTS deactivated_at TIMESTAMPTZ;
+ALTER TABLE rb_chats ADD COLUMN IF NOT EXISTS deactivated_by BIGINT;
+
+
+-- ---------- 5. Проверка ----------
 SELECT
-  (SELECT count(*) FROM pg_tables WHERE tablename ~ '^rb_')                  AS tables_expect_12,
-  (SELECT count(*) FROM pg_type   WHERE typname ~ '^rb_' AND typtype = 'e')  AS enums_expect_3,
+  (SELECT count(*) FROM pg_tables WHERE tablename ~ '^rb_')                   AS tables_expect_13,
+  (SELECT count(*) FROM pg_type   WHERE typname ~ '^rb_' AND typtype = 'e')   AS enums_expect_3,
   (SELECT count(*) FROM pg_indexes WHERE indexname IN
      ('rb_referrals_alive_idx','rb_withdrawals_one_pending','rb_spins_daily')) AS guards_expect_3,
+  (SELECT count(*) FROM information_schema.columns
+     WHERE table_name='rb_chats' AND column_name IN
+       ('deactivated_at','deactivated_by'))                                    AS newcols_expect_2,
   current_database() AS db;

@@ -30,6 +30,23 @@ async def push_admin_card(bot, wd: dict):
     spins = await db.pool().fetchval("SELECT count(*) FROM rb_spins WHERE tg_id=$1", wd["tg_id"])
     uname = f"@{u['username']}" if u["username"] else (u["first_name"] or "—")
 
+    # откуда деньги: касса общая на все чаты, поэтому владельцу важно видеть источник
+    origin = await db.pool().fetch(
+        """
+        SELECT ch.title, sum(l.delta) s
+        FROM rb_ledger l
+        JOIN rb_referrals r ON r.id = l.ref_id
+        JOIN rb_chats ch    ON ch.chat_id = r.chat_id
+        WHERE l.tg_id = $1 AND l.reason = 'referral' AND l.currency = $2
+        GROUP BY ch.title ORDER BY s DESC
+        """, wd["tg_id"], wd["currency"])
+    spin_sum = await db.pool().fetchval(
+        "SELECT COALESCE(sum(delta),0) FROM rb_ledger "
+        "WHERE tg_id=$1 AND reason='roulette' AND currency=$2", wd["tg_id"], wd["currency"]) or 0
+    src = "\n".join(f"  📢 {r['title']}: {_fmt(r['s'])}" for r in origin)
+    if spin_sum:
+        src += f"\n  🎰 Рулетка: {_fmt(spin_sum)}"
+
     text = (
         f"💸 <b>ЗАЯВКА НА ВЫВОД #{wd['id']}</b>\n\n"
         f"👤 {uname} | <code>{wd['tg_id']}</code>\n"
@@ -39,6 +56,7 @@ async def push_admin_card(bot, wd: dict):
         f"👥 Рефералов: ✅ {stat['paid']} | ⏳ {stat['hold']}\n"
         f"🎰 Прокруток всего: {spins}\n"
         f"🕐 Регистрация в боте: {u['created_at']:%d.%m.%Y}\n\n"
+        f"📥 <b>Откуда заработано</b>\n{src or '  —'}\n\n"
         f"⚠️ Сначала <b>отдай валюту в игре</b>, потом жми «Подтвердить».\n"
         f"Подтверждение = списание с баланса. Отката нет."
     )

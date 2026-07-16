@@ -8,7 +8,10 @@ from aiogram.types import CallbackQuery, Message
 
 import db
 import keyboards as kb
-from config import CURRENCY_EMOJI, CURRENCY_NAME, MIN_WITHDRAW, HOLD_HOURS
+from config import (CURRENCY_EMOJI, CURRENCY_NAME, MIN_WITHDRAW, HOLD_HOURS,
+                    PAYOUT_CHAT_ID, SUPER_ADMINS)
+from services import settings
+from services.render import edit as r_edit
 from services import referrals, withdrawals
 from services.notify import push_admin_card, drop_admin_card
 
@@ -21,6 +24,30 @@ class WD(StatesGroup):
 
 def fmt(n: int) -> str:
     return f"{n:,}".replace(",", " ")
+
+
+async def _is_admin(uid: int) -> bool:
+    """SUPER_ADMINS видят админку всегда, даже до первого /bind.
+    Раньше проверялся только rb_admins — владелец кнопки не видел вообще."""
+    return uid in SUPER_ADMINS or bool(await db.admin_chats(uid))
+
+
+async def _payout_chat() -> int | None:
+    """
+    Касса общая на все чаты, поэтому заявка на вывод — не про конкретный чат,
+    а про то, КТО её обрабатывает. Берём PAYOUT_CHAT_ID, иначе самый ранний
+    активный (детерминированно, а не как повезёт).
+    Если появятся чаты с РАЗНЫМИ владельцами — общая касса станет проблемой:
+    владелец одного чата начнёт платить за рефералов другого. Тогда сюда надо
+    возвращаться и делить балансы по чатам.
+    """
+    if PAYOUT_CHAT_ID:
+        ok = await db.pool().fetchval(
+            "SELECT 1 FROM rb_chats WHERE chat_id=$1 AND active", PAYOUT_CHAT_ID)
+        if ok:
+            return PAYOUT_CHAT_ID
+    return await db.pool().fetchval(
+        "SELECT chat_id FROM rb_chats WHERE active ORDER BY created_at, chat_id LIMIT 1")
 
 
 async def guard(event) -> bool:
@@ -71,7 +98,7 @@ async def start_plain(msg: Message, state: FSMContext):
     if not await guard(msg):
         return
     u = await db.get_user(msg.from_user.id)
-    is_adm = bool(await db.admin_chats(msg.from_user.id))
+    is_adm = await _is_admin(msg.from_user.id)
     await msg.answer(
         f"👋 Привет, {msg.from_user.first_name}!\n\n"
         f"Приглашай людей в чат по своей ссылке и получай валюту.\n"
@@ -88,7 +115,7 @@ async def cb_menu(c: CallbackQuery, state: FSMContext):
     if not await guard(c):
         return
     u = await db.get_user(c.from_user.id)
-    is_adm = bool(await db.admin_chats(c.from_user.id))
+    is_adm = await _is_admin(c.from_user.id)
     await c.message.edit_text("🏠 <b>Главное меню</b>",
                               reply_markup=kb.main_menu(u["currency"], is_adm))
     await c.answer()
@@ -114,20 +141,40 @@ async def cb_profile(c: CallbackQuery):
         "WHERE inviter_id=$1 AND status='hold' GROUP BY currency", c.from_user.id)
     holds = {r["currency"]: r["s"] for r in hold_sum}
 
-    await c.message.edit_text(
-        f"👤 <b>Профиль</b>\n"
-        f"ID: <code>{c.from_user.id}</code>\n\n"
-        f"💰 <b>Баланс</b>\n"
-        f"🍄 Грибы: <b>{fmt(b['mushrooms'])}</b>\n"
-        f"🪙 Коины: <b>{fmt(b['coins'])}</b>\n\n"
-        f"⏳ <b>На удержании</b>\n"
-        f"🍄 {fmt(holds.get('mushrooms', 0))}   🪙 {fmt(holds.get('coins', 0))}\n\n"
-        f"👥 <b>Рефералы</b>\n"
-        f"✅ Зачислено: {row['paid']}\n"
-        f"⏳ Ждут: {row['hold']}\n"
-        f"❌ Потеряно: {row['lost']}\n\n"
-        f"⚙️ Валюта: {CURRENCY_EMOJI[u['currency']]} {CURRENCY_NAME[u['currency']]}",
-        reply_markup=kb.back_menu())
+    per_chat = await db.pool().fetch(
+        """
+        SELECT ch.title,
+               count(*) FILTER (WHERE r.status='paid') paid,
+               count(*) FILTER (WHERE r.status='hold') hold
+        FROM rb_referrals r JOIN rb_chats ch ON ch.chat_id = r.chat_id
+        WHERE r.inviter_id = $1 AND r.status IN ('paid','hold')
+        GROUP BY ch.title ORDER BY paid DESC
+        """, c.from_user.id)
+
+    sctx = await settings.ctx()
+    chats_block = ""
+    if len(per_chat) > 1:
+        chats_block = f"\n{sctx['e_chat']} <b>По чатам</b>\n" + "\n".join(
+            f"  {r['title']}: {sctx['e_paid']} {r['paid']} | {sctx['e_hold']} {r['hold']}"
+            for r in per_chat) + "\n"
+
+    tpl = await settings.profile_template()
+    data = {
+        **sctx,
+        "id": c.from_user.id,
+        "bal_m": fmt(b["mushrooms"]), "bal_c": fmt(b["coins"]),
+        "hold_m": fmt(holds.get("mushrooms", 0)), "hold_c": fmt(holds.get("coins", 0)),
+        "paid": row["paid"], "hold": row["hold"], "lost": row["lost"],
+        "chats": chats_block,
+        "e_cur": sctx[f"e_{u['currency']}"], "l_cur": sctx[f"l_{u['currency']}"],
+    }
+    try:
+        text = tpl.format(**data)
+    except Exception:
+        # админ сломал шаблон -> не роняем профиль юзеру, откатываемся на дефолт
+        text = settings.DEFAULT_PROFILE.format(**data)
+
+    await r_edit(c.message, text, await settings.emoji_map(), reply_markup=kb.back_menu())
     await c.answer()
 
 
@@ -139,7 +186,7 @@ async def cb_toggle(c: CallbackQuery):
     u = await db.get_user(c.from_user.id)
     new = "coins" if u["currency"] == "mushrooms" else "mushrooms"
     await db.pool().execute("UPDATE rb_users SET currency=$1 WHERE tg_id=$2", new, c.from_user.id)
-    is_adm = bool(await db.admin_chats(c.from_user.id))
+    is_adm = await _is_admin(c.from_user.id)
     await c.message.edit_reply_markup(reply_markup=kb.main_menu(new, is_adm))
     await c.answer(
         f"Теперь получаешь: {CURRENCY_NAME[new]}\n"
@@ -154,21 +201,47 @@ async def cb_link(c: CallbackQuery):
         return
     chats = await db.pool().fetch("SELECT * FROM rb_chats WHERE active ORDER BY chat_id")
     if not chats:
-        await c.answer("Пока нет подключённых чатов.", show_alert=True)
-        return
-    me = await c.bot.get_me()
-    parts = []
-    for ch in chats:
-        code = await referrals.get_or_create_ref_code(ch["chat_id"], c.from_user.id)
-        clicks = await db.pool().fetchval("SELECT clicks FROM rb_ref_links WHERE code=$1", code)
-        parts.append(f"📢 <b>{ch['title']}</b>\n"
-                     f"<code>https://t.me/{me.username}?start={code}</code>\n"
-                     f"👁 переходов: {clicks}")
+        return await c.answer("Пока нет подключённых чатов.", show_alert=True)
+    if len(chats) == 1:
+        return await _show_link(c, chats[0]["chat_id"])
     await c.message.edit_text(
-        "🔗 <b>Твои реферальные ссылки</b>\n\n" + "\n\n".join(parts) +
-        "\n\n<i>Кидай ссылку друзьям. Бот выдаст каждому персональный одноразовый "
-        "инвайт. Награда упадёт на удержание сразу, а на баланс — через 3 дня.</i>",
-        reply_markup=kb.back_menu(), disable_web_page_preview=True)
+        "🔗 <b>Выбери чат</b>\n\n"
+        "У каждого чата своя ссылка и свой зачёт. Один и тот же друг приносит "
+        "награду в <b>каждом</b> чате отдельно — пригласил в первый, потом во второй, "
+        "получил дважды.",
+        reply_markup=kb.chat_picker(chats, "lnk"))
+    await c.answer()
+
+
+@router.callback_query(F.data.startswith("lnk:"))
+async def cb_link_pick(c: CallbackQuery):
+    if not await guard(c):
+        return
+    await _show_link(c, int(c.data.split(":")[1]))
+
+
+async def _show_link(c: CallbackQuery, chat_id: int):
+    ch = await db.pool().fetchrow("SELECT * FROM rb_chats WHERE chat_id=$1 AND active", chat_id)
+    if not ch:
+        return await c.answer("Чат недоступен.", show_alert=True)
+    me = await c.bot.get_me()
+    code = await referrals.get_or_create_ref_code(chat_id, c.from_user.id)
+    st = await db.pool().fetchrow(
+        """
+        SELECT (SELECT clicks FROM rb_ref_links WHERE code=$1) clicks,
+               count(*) FILTER (WHERE status='paid') paid,
+               count(*) FILTER (WHERE status='hold') hold
+        FROM rb_referrals WHERE inviter_id=$2 AND chat_id=$3
+        """, code, c.from_user.id, chat_id)
+    multi = await db.pool().fetchval("SELECT count(*) FROM rb_chats WHERE active") > 1
+    await c.message.edit_text(
+        f"🔗 <b>{ch['title']}</b>\n\n"
+        f"<code>https://t.me/{me.username}?start={code}</code>\n\n"
+        f"👁 Переходов: {st['clicks']}\n"
+        f"✅ Зачислено: {st['paid']}   ⏳ Ждут: {st['hold']}\n\n"
+        f"<i>Кидай друзьям. Бот выдаст каждому персональный одноразовый инвайт. "
+        f"Награда упадёт на удержание сразу, на баланс — через 3 дня.</i>",
+        reply_markup=kb.link_card(multi), disable_web_page_preview=True)
     await c.answer()
 
 
@@ -249,10 +322,10 @@ async def wd_amount_input(msg: Message, state: FSMContext):
                                 f"{CURRENCY_EMOJI[row['currency']]}. Админу ушло новое уведомление.",
                                 reply_markup=kb.back_menu())
 
-    chat = await db.pool().fetchrow("SELECT chat_id FROM rb_chats WHERE active LIMIT 1")
-    if not chat:
+    chat_id = await _payout_chat()
+    if not chat_id:
         return await msg.answer("Нет активного чата для вывода.")
-    wid, err = await withdrawals.create(msg.from_user.id, chat["chat_id"], u["currency"], amount)
+    wid, err = await withdrawals.create(msg.from_user.id, chat_id, u["currency"], amount)
     if err:
         return await msg.answer(f"⚠️ {err}")
     row = await db.pool().fetchrow("SELECT * FROM rb_withdrawals WHERE id=$1", wid)

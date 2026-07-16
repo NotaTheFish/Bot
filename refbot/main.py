@@ -10,8 +10,8 @@ from aiogram.fsm.storage.memory import MemoryStorage
 import db
 import roulette
 from config import BOT_TOKEN, CURRENCY_EMOJI
-from handlers import admin, chat_events, roulette_cmd, user
-from services import referrals
+from handlers import admin, chat_events, roulette_cmd, skin, user
+from services import referrals, settings
 
 logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -39,11 +39,13 @@ async def hold_worker(bot: Bot):
 
 async def main():
     await db.init()
+    await settings.load()
     bot = Bot(BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
     dp = Dispatcher(storage=MemoryStorage())
     dp.include_router(chat_events.router)
     dp.include_router(roulette_cmd.router)
     dp.include_router(admin.router)
+    dp.include_router(skin.router)
     dp.include_router(user.router)
 
     log.info("EV рулетки: %.1f 🍄 / %.0f 🪙 за прокрутку",

@@ -30,6 +30,8 @@ ROULETTE_BANDS = [
     (3000, 10000,   0.5),
 ]
 ROULETTE_ROUND_TO = 10          # округление выигрыша в грибах
+PAYOUT_CHAT_ID = int(os.getenv("PAYOUT_CHAT_ID", "0")) or None
+
 SPIN_COMMANDS = ("!шимм рулетка", "!шим рулетка", "!рулетка")
 
 # ---------- анимация ----------

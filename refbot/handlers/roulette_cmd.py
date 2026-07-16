@@ -41,6 +41,10 @@ def _match(text: str) -> bool:
     return any(t == c or t.startswith(c + " ") for c in SPIN_COMMANDS)
 
 
+class BudgetExhausted(Exception):
+    pass
+
+
 @router.message(F.chat.type.in_({"group", "supergroup"}), F.text.func(_match))
 async def spin(msg: Message, bot: Bot):
     uid = msg.from_user.id
@@ -61,13 +65,31 @@ async def spin(msg: Message, bot: Bot):
 
     # Кто первый вставил строку в rb_spins за сегодня — тот и крутит.
     # UNIQUE(tg_id, spin_day) => гонка из десяти сообщений подряд не пройдёт.
+    # Прокрутка одна в сутки НА ЮЗЕРА, а не на чат: два чата ≠ две прокрутки.
     try:
         async with db.pool().acquire() as conn:
             async with conn.transaction():
+                # суточный бюджет чата. FOR UPDATE сериализует прокрутки в этом чате.
+                ch = await conn.fetchrow(
+                    "SELECT * FROM rb_chats WHERE chat_id=$1 FOR UPDATE", msg.chat.id)
+                if ch["budget_date"] != today:
+                    await conn.execute(
+                        "UPDATE rb_chats SET budget_date=CURRENT_DATE, budget_spent_mush=0 "
+                        "WHERE chat_id=$1", msg.chat.id)
+                    spent = 0
+                else:
+                    spent = ch["budget_spent_mush"]
+                cost = amount // COIN_RATE if cur == "coins" else amount
+                if spent + cost > ch["daily_budget_mush"]:
+                    raise BudgetExhausted
+
                 spin_id = await conn.fetchval(
                     "INSERT INTO rb_spins (tg_id, chat_id, currency, amount, spin_day) "
                     "VALUES ($1,$2,$3,$4,$5) RETURNING id",
                     uid, msg.chat.id, cur, amount, today)
+                await conn.execute(
+                    "UPDATE rb_chats SET budget_spent_mush = budget_spent_mush + $1 "
+                    "WHERE chat_id=$2", cost, msg.chat.id)
                 total = await db.apply(conn, uid, cur, amount, "roulette",
                                        f"spin:{spin_id}", spin_id)
     except asyncpg.UniqueViolationError:
@@ -76,6 +98,10 @@ async def spin(msg: Message, bot: Bot):
         return await msg.reply(
             f"⏳ Ты уже крутил сегодня (выпало {last:,} {CURRENCY_EMOJI[cur]}).\n"
             f"Возвращайся завтра.".replace(",", " "))
+    except BudgetExhausted:
+        # прокрутка НЕ засчитана — транзакция откатилась, завтра крутанёт
+        return await msg.reply("🧯 Суточный лимит выплат в этом чате исчерпан.\n"
+                               "Прокрутка не потрачена — заходи завтра.")
 
     # анимация
     m = await msg.reply(roulette.frame(0, CURRENCY_EMOJI[cur]))

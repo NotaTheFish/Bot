@@ -44,11 +44,93 @@ def admin_menu() -> InlineKeyboardMarkup:
     kb.button(text="🔍 Найти юзера", callback_data="a_find")
     kb.button(text="🚩 На проверке", callback_data="a_flagged")
     kb.button(text="📊 Сводка", callback_data="a_stats")
+    kb.button(text="📢 Чаты", callback_data="a_chats")
+    kb.button(text="🎨 Кастомизация", callback_data="a_skin")
     kb.button(text="⬅️ Назад", callback_data="menu")
-    kb.adjust(2, 2, 1)
+    kb.adjust(2, 2, 2, 1)
     return kb.as_markup()
+
+
+def chat_admin_list(chats) -> InlineKeyboardMarkup:
+    kb = InlineKeyboardBuilder()
+    for ch in chats:
+        mark = "🟢" if ch["active"] else "⚪️"
+        kb.button(text=f"{mark} {ch['title']}", callback_data=f"a_chat:{ch['chat_id']}")
+    kb.button(text="⬅️ Админка", callback_data="admin")
+    kb.adjust(1)
+    return kb.as_markup()
+
+
+def chat_card(chat_id: int, active: bool) -> InlineKeyboardMarkup:
+    kb = InlineKeyboardBuilder()
+    if active:
+        kb.button(text="⚪️ Отключить чат", callback_data=f"a_choff:{chat_id}")
+    else:
+        kb.button(text="🟢 Включить обратно", callback_data=f"a_chon:{chat_id}")
+    kb.button(text="⬅️ К списку", callback_data="a_chats")
+    kb.adjust(1)
+    return kb.as_markup()
+
+
+def skin_menu() -> InlineKeyboardMarkup:
+    kb = InlineKeyboardBuilder()
+    kb.button(text="😀 Эмодзи", callback_data="sk_emoji")
+    kb.button(text="🏷 Названия валют", callback_data="sk_label")
+    kb.button(text="📝 Шаблон профиля", callback_data="sk_tpl")
+    kb.button(text="🧪 Тест премиум-эмодзи", callback_data="sk_test")
+    kb.button(text="♻️ Сбросить всё", callback_data="sk_reset")
+    kb.button(text="⬅️ Админка", callback_data="admin")
+    kb.adjust(2, 1, 1, 1, 1)
+    return kb.as_markup()
+
+
+def slot_list(slots: dict, current: dict, prefix: str) -> InlineKeyboardMarkup:
+    kb = InlineKeyboardBuilder()
+    for slot, (desc, _) in slots.items():
+        star = "⭐️" if current.get(f"premium.{slot}") else ""
+        kb.button(text=f"{current.get(slot, '')}{star} {desc}",
+                  callback_data=f"{prefix}:{slot}")
+    kb.button(text="⬅️ Кастомизация", callback_data="a_skin")
+    kb.adjust(2)
+    return kb.as_markup()
+
+
+def slot_card(slot: str, prefix: str, has_premium: bool) -> InlineKeyboardMarkup:
+    kb = InlineKeyboardBuilder()
+    if has_premium:
+        kb.button(text="🗑 Убрать премиум", callback_data=f"sk_prem_off:{slot}")
+    kb.button(text="♻️ Сброс к дефолту", callback_data=f"sk_def:{prefix}:{slot}")
+    kb.button(text="⬅️ Назад", callback_data="sk_emoji" if prefix == "sk_e" else "sk_label")
+    kb.adjust(1)
+    return kb.as_markup()
+
+
+def confirm(action: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="✅ Да", callback_data=action),
+        InlineKeyboardButton(text="❌ Нет", callback_data="a_skin"),
+    ]])
 
 
 def back_menu() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[[
         InlineKeyboardButton(text="⬅️ Меню", callback_data="menu")]])
+
+
+def chat_picker(chats, prefix: str) -> InlineKeyboardMarkup:
+    """prefix: 'lnk' — выбор чата для реф-ссылки."""
+    kb = InlineKeyboardBuilder()
+    for ch in chats:
+        kb.button(text=f"📢 {ch['title']}", callback_data=f"{prefix}:{ch['chat_id']}")
+    kb.button(text="⬅️ Меню", callback_data="menu")
+    kb.adjust(1)
+    return kb.as_markup()
+
+
+def link_card(multi: bool) -> InlineKeyboardMarkup:
+    kb = InlineKeyboardBuilder()
+    if multi:
+        kb.button(text="🔄 Другой чат", callback_data="mylink")
+    kb.button(text="⬅️ Меню", callback_data="menu")
+    kb.adjust(1)
+    return kb.as_markup()

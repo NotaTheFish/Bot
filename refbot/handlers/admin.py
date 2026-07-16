@@ -49,6 +49,33 @@ async def bind(msg: Message):
                     "Добавь других админов: /addadmin @username")
 
 
+@router.message(Command("unbind"), F.chat.type.in_({"group", "supergroup"}))
+async def unbind(msg: Message):
+    """Отключить чат прямо из чата. Прогресс сохраняется целиком."""
+    row = await db.pool().fetchrow("SELECT * FROM rb_chats WHERE chat_id=$1", msg.chat.id)
+    if not row:
+        return await msg.reply("Этот чат и не был привязан.")
+    if msg.from_user.id != row["owner_id"] and msg.from_user.id not in SUPER_ADMINS:
+        return await msg.reply("🚫 Только владелец чата.")
+    if not row["active"]:
+        return await msg.reply("Чат уже отключён. Включить: «🛠 Админка → 📢 Чаты».")
+    await db.pool().execute(
+        "UPDATE rb_chats SET active=FALSE, deactivated_at=now(), deactivated_by=$1 "
+        "WHERE chat_id=$2", msg.from_user.id, msg.chat.id)
+    await db.audit(msg.from_user.id, "chat_off", {"chat_id": msg.chat.id, "via": "unbind"})
+    st = await db.pool().fetchrow(
+        "SELECT count(*) FILTER (WHERE status='hold') hold, "
+        "count(*) FILTER (WHERE status='paid') paid FROM rb_referrals WHERE chat_id=$1",
+        msg.chat.id)
+    await msg.reply(
+        f"⚪️ Чат отключён. Новых начислений и ссылок не будет.\n\n"
+        f"<b>Прогресс сохранён полностью:</b>\n"
+        f"✅ {st['paid']} выплаченных рефералов\n"
+        f"⏳ {st['hold']} холдов заморожены\n"
+        f"💰 Балансы юзеров не тронуты\n\n"
+        f"Включить обратно: «🛠 Админка → 📢 Чаты» или снова /bind.")
+
+
 @router.message(Command("addadmin"), F.chat.type.in_({"group", "supergroup"}))
 async def addadmin(msg: Message):
     row = await db.pool().fetchrow("SELECT owner_id FROM rb_chats WHERE chat_id=$1", msg.chat.id)
@@ -159,8 +186,13 @@ async def cb_stats(c: CallbackQuery):
           (SELECT COALESCE(sum(amount),0) FROM rb_withdrawals WHERE status='confirmed'
              AND currency='coins') wc
         """)
-    ch = await db.pool().fetchrow(
-        "SELECT budget_spent_mush, daily_budget_mush FROM rb_chats WHERE active LIMIT 1")
+    chats = await db.pool().fetch(
+        "SELECT title, active, budget_spent_mush, daily_budget_mush FROM rb_chats "
+        "ORDER BY active DESC, created_at")
+    budget = "\n".join(
+        f"  {'🟢' if ch['active'] else '⚪️'} {ch['title']}: "
+        f"{fmt(ch['budget_spent_mush'])} / {fmt(ch['daily_budget_mush'])}"
+        for ch in chats) or "  нет чатов"
     await c.message.edit_text(
         f"📊 <b>Сводка</b>\n\n"
         f"👥 Юзеров: {s['users']} (забанено {s['banned']})\n"
@@ -171,8 +203,7 @@ async def cb_stats(c: CallbackQuery):
         f"🍄 {fmt(s['m'])} | 🪙 {fmt(s['co'])}\n\n"
         f"💸 <b>Выведено всего</b>\n"
         f"🍄 {fmt(s['wm'])} | 🪙 {fmt(s['wc'])}\n\n"
-        f"🧯 Суточный бюджет: {fmt(ch['budget_spent_mush'] if ch else 0)} / "
-        f"{fmt(ch['daily_budget_mush'] if ch else 0)} 🍄",
+        f"🧯 <b>Суточный бюджет по чатам</b> 🍄\n{budget}",
         reply_markup=kb.admin_menu())
     await c.answer()
 
