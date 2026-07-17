@@ -103,6 +103,26 @@ async def admin_chats(tg_id: int) -> list[int]:
     return [r["chat_id"] for r in rows]
 
 
+EXPECTED_TABLES = [
+    "rb_users", "rb_chats", "rb_admins", "rb_balances", "rb_ledger", "rb_ref_links",
+    "rb_invites", "rb_targets", "rb_referrals", "rb_withdrawals", "rb_spins", "rb_audit",
+    "rb_settings", "rb_free_budget", "rb_free_chats",
+    "rb_contest_chats", "rb_week_msgs", "rb_week_draws",
+]
+
+
+async def check_schema() -> list[str]:
+    """
+    Какие таблицы отсутствуют. Зовётся на старте и ОРЁТ в лог.
+    Иначе недостающая таблица проявляется как молча не работающая команда —
+    ровно так и потерялся /шимшайнуть.
+    """
+    rows = await pool().fetch(
+        "SELECT tablename FROM pg_tables WHERE tablename = ANY($1::text[])", EXPECTED_TABLES)
+    have = {r["tablename"] for r in rows}
+    return [t for t in EXPECTED_TABLES if t not in have]
+
+
 async def audit(actor_id: int | None, action: str, payload: dict):
     import json
     await pool().execute(

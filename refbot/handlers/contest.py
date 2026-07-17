@@ -27,6 +27,12 @@ from services.ui import btn
 router = Router()
 log = logging.getLogger(__name__)
 
+NO_TABLES = ("⚠️ Таблицы конкурса ещё не созданы — подключить не могу.\n\n"
+             "Накати <code>setup.sql</code>: Railway → Postgres → Console → Upload файла, "
+             "затем\n<code>psql -U postgres -d railway -f /setup.sql</code>\n\n"
+             "Проверка вернёт <code>18 | 3 | 4 | 2 | railway</code>. "
+             "После этого команда заработает сама, передеплой не нужен.")
+
 
 def fmt(n: int) -> str:
     return f"{n:,}".replace(",", " ")
@@ -54,6 +60,8 @@ class CounterMiddleware(BaseMiddleware):
                        event: Message, data: dict) -> Any:
         try:
             u = event.from_user
+            # is_contest_chat сам вернёт False, если таблиц нет: тогда ни запросов,
+            # ни трейсбека в лог на каждое сообщение
             if (u and not u.is_bot
                     and event.chat.type in ("group", "supergroup")
                     and await contest.is_contest_chat(event.chat.id)):
@@ -70,7 +78,8 @@ async def cbind(msg: Message):
     if not await _chat_admin(msg.bot, msg.chat.id, msg.from_user.id):
         return await msg.reply("🚫 Только админ чата.")
     await db.upsert_user(msg.from_user.id, msg.from_user.username, msg.from_user.first_name)
-    await contest.bind(msg.chat.id, msg.chat.title or "", msg.from_user.id)
+    if not await contest.bind(msg.chat.id, msg.chat.title or "", msg.from_user.id):
+        return await ui.reply(msg, NO_TABLES)
     await db.audit(msg.from_user.id, "contest_bind", {"chat_id": msg.chat.id})
     s, e = contest.period_bounds()
     per = (f"{CONTEST_TEST_MINUTES} мин (ТЕСТ)" if CONTEST_TEST_MINUTES
@@ -89,6 +98,8 @@ async def cbind(msg: Message):
 async def cunbind(msg: Message):
     if not await _chat_admin(msg.bot, msg.chat.id, msg.from_user.id):
         return await msg.reply("🚫 Только админ чата.")
+    if not await contest.tables_ready():
+        return await ui.reply(msg, NO_TABLES)
     row = await db.pool().fetchrow(
         "SELECT * FROM rb_contest_chats WHERE chat_id=$1", msg.chat.id)
     if not row or not row["active"]:
@@ -102,6 +113,8 @@ async def cunbind(msg: Message):
 # ==================== /неделя ====================
 @router.message(Command("неделя", "week"), F.chat.type.in_({"group", "supergroup"}))
 async def week(msg: Message):
+    if not await contest.tables_ready():
+        return await ui.reply(msg, NO_TABLES)
     if not await contest.is_contest_chat(msg.chat.id):
         return
     s, e = contest.period_bounds()

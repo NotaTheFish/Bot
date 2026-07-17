@@ -10,15 +10,52 @@
 Для тестов CONTEST_TEST_MINUTES>0 делает «неделю» длиной в N минут — вся остальная
 логика при этом не меняется, поэтому тест проверяет боевой код, а не свою копию.
 """
+import logging
 import secrets
+import time as _time
 from datetime import datetime, time, timedelta, timezone
 from zoneinfo import ZoneInfo
 
+import asyncpg
+
 import db
+
+log = logging.getLogger(__name__)
 from config import (CONTEST_MIN_MSGS, CONTEST_MSGS_PER_TICKET, CONTEST_PRIZE,
                     CONTEST_TEST_MINUTES, CONTEST_TZ)
 
 TZ = ZoneInfo(CONTEST_TZ)
+
+# --- готовность схемы ---
+# Тот же урок, что с rb_settings: отсутствие таблицы не должно убивать хендлер
+# молча. Проверяем один раз, при отсутствии перепроверяем раз в минуту — накатил
+# setup.sql, и конкурс заработал без перезапуска бота.
+_ready: bool | None = None
+_last_check = 0.0
+
+
+async def tables_ready() -> bool:
+    global _ready, _last_check
+    if _ready:
+        return True
+    now_m = _time.monotonic()
+    if _ready is False and now_m - _last_check < 60:
+        return False
+    _last_check = now_m
+    try:
+        await db.pool().fetchval("SELECT 1 FROM rb_contest_chats LIMIT 1")
+        if _ready is False:
+            log.warning("Таблицы конкурса появились — конкурс включён.")
+        _ready = True
+    except asyncpg.UndefinedTableError:
+        if _ready is None:
+            log.warning("Таблиц конкурса нет (rb_contest_chats) — конкурс выключен. "
+                        "Накати setup.sql.")
+        _ready = False
+    except Exception as e:
+        log.warning("не смог проверить таблицы конкурса: %s", e)
+        _ready = False
+    return _ready
 
 
 def now() -> datetime:
@@ -77,7 +114,10 @@ def prize(currency: str) -> int:
 
 
 # ---------- чаты ----------
-async def bind(chat_id: int, title: str, owner_id: int):
+async def bind(chat_id: int, title: str, owner_id: int) -> bool:
+    """False — таблиц нет, нужен setup.sql."""
+    if not await tables_ready():
+        return False
     await db.pool().execute(
         """
         INSERT INTO rb_contest_chats (chat_id, title, owner_id) VALUES ($1,$2,$3)
@@ -85,6 +125,7 @@ async def bind(chat_id: int, title: str, owner_id: int):
         SET title=EXCLUDED.title, owner_id=EXCLUDED.owner_id, active=TRUE,
             deactivated_at=NULL, deactivated_by=NULL
         """, chat_id, title, owner_id)
+    return True
 
 
 async def unbind(chat_id: int, by: int):
@@ -94,11 +135,15 @@ async def unbind(chat_id: int, by: int):
 
 
 async def is_contest_chat(chat_id: int) -> bool:
+    if not await tables_ready():
+        return False
     return bool(await db.pool().fetchval(
         "SELECT 1 FROM rb_contest_chats WHERE chat_id=$1 AND active", chat_id))
 
 
 async def active_chats():
+    if not await tables_ready():
+        return []
     return await db.pool().fetch("SELECT * FROM rb_contest_chats WHERE active")
 
 

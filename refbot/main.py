@@ -40,6 +40,18 @@ async def hold_worker(bot: Bot):
 
 async def main():
     await db.init()
+
+    missing = await db.check_schema()
+    if missing:
+        log.error("=" * 62)
+        log.error("В БАЗЕ НЕТ ТАБЛИЦ: %s", ", ".join(missing))
+        log.error("Накати setup.sql, иначе связанные команды будут молча не работать:")
+        log.error("  psql -U postgres -d railway -f /setup.sql")
+        log.error("Бот запустится и продолжит работать тем, что есть.")
+        log.error("=" * 62)
+    else:
+        log.info("схема БД в порядке: все %d таблиц на месте", len(db.EXPECTED_TABLES))
+
     await settings.load()
     bot = Bot(BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
     dp = Dispatcher(storage=MemoryStorage())
