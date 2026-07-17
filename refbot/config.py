@@ -58,6 +58,15 @@ ANIM_DELAY = 0.45          # сек между кадрами (не опуска
 # Бот при старте орёт в лог, если она заполнена, чтобы ты не забыл.
 UNLIMITED_SPIN_IDS = {int(x) for x in os.getenv("UNLIMITED_SPIN_IDS", "").split(",") if x.strip()}
 
+# ---------- еженедельный конкурс по активности ----------
+CONTEST_TZ = os.getenv("CONTEST_TZ", "Europe/Berlin")   # в какой зоне считать понедельник
+CONTEST_MIN_MSGS = int(os.getenv("CONTEST_MIN_MSGS", "500"))    # порог участия
+CONTEST_MSGS_PER_TICKET = int(os.getenv("CONTEST_MSGS_PER_TICKET", "50"))
+CONTEST_PRIZE = {"mushrooms": 100_000, "coins": 2_000_000}   # курс 20×, как везде в боте
+# Антиспама тут нет намеренно: за флудом следит отдельный бот в чате.
+# ТЕСТ: >0 — «неделя» длится столько минут. 0 — настоящая неделя (пн 00:00 .. вс 23:59).
+CONTEST_TEST_MINUTES = int(os.getenv("CONTEST_TEST_MINUTES", "0"))
+
 # ---------- антифрод ----------
 INVITE_TTL_MIN = 30            # одноразовая ссылка живёт 30 минут
 MAX_REFS_PER_DAY = 15          # дефолт, переопределяется в rb_chats

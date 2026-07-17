@@ -9,8 +9,8 @@ from aiogram.fsm.storage.memory import MemoryStorage
 
 import db
 import roulette
-from config import BOT_TOKEN, UNLIMITED_SPIN_IDS
-from handlers import admin, chat_events, roulette_cmd, skin, user
+from config import BOT_TOKEN, CONTEST_TEST_MINUTES, UNLIMITED_SPIN_IDS
+from handlers import admin, chat_events, contest, roulette_cmd, skin, user
 from services import referrals, settings, ui
 
 logging.basicConfig(level=logging.INFO,
@@ -43,6 +43,8 @@ async def main():
     await settings.load()
     bot = Bot(BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
     dp = Dispatcher(storage=MemoryStorage())
+    dp.message.outer_middleware(contest.CounterMiddleware())
+    dp.include_router(contest.router)
     dp.include_router(chat_events.router)
     dp.include_router(roulette_cmd.router)
     dp.include_router(admin.router)
@@ -51,6 +53,11 @@ async def main():
 
     log.info("EV рулетки: %.1f 🍄 / %.0f 🪙 за прокрутку",
              roulette.expected_value("mushrooms"), roulette.expected_value("coins"))
+    if CONTEST_TEST_MINUTES:
+        log.warning("=" * 60)
+        log.warning("ТЕСТОВЫЙ РЕЖИМ КОНКУРСА: «неделя» = %d мин", CONTEST_TEST_MINUTES)
+        log.warning("Очисти CONTEST_TEST_MINUTES перед боевым запуском.")
+        log.warning("=" * 60)
     if UNLIMITED_SPIN_IDS:
         log.warning("=" * 60)
         log.warning("ТЕСТОВЫЙ РЕЖИМ: безлимитная рулетка у %s", UNLIMITED_SPIN_IDS)
@@ -58,6 +65,7 @@ async def main():
         log.warning("=" * 60)
 
     asyncio.create_task(hold_worker(bot))
+    asyncio.create_task(contest.worker(bot))
     await bot.delete_webhook(drop_pending_updates=True)
     try:
         await dp.start_polling(bot, allowed_updates=ALLOWED)

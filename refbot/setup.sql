@@ -211,12 +211,60 @@ CREATE TABLE IF NOT EXISTS rb_free_chats (
     last_seen  TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+-- ---------- 4c. Еженедельный конкурс по активности ----------
+-- Отдельно от rb_chats: /шимшайнуть не должен привязывать чат к рефералке.
+
+CREATE TABLE IF NOT EXISTS rb_contest_chats (
+    chat_id        BIGINT PRIMARY KEY,
+    title          TEXT,
+    owner_id       BIGINT NOT NULL,
+    active         BOOLEAN NOT NULL DEFAULT TRUE,
+    pinned_msg_id  BIGINT,          -- СВОЙ последний закреп, чужие не трогаем
+    created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+    deactivated_at TIMESTAMPTZ,
+    deactivated_by BIGINT
+);
+
+-- Счётчики сообщений. Ключ — начало периода, поэтому НИЧЕГО не обнуляется:
+-- новая неделя = новая строка. Старый период лежит нетронутым, пока админ
+-- не проведёт розыгрыш (хоть через месяц).
+CREATE TABLE IF NOT EXISTS rb_week_msgs (
+    chat_id      BIGINT      NOT NULL,
+    period_start TIMESTAMPTZ NOT NULL,
+    user_id      BIGINT      NOT NULL,
+    msgs         INT         NOT NULL DEFAULT 0,
+    last_msg_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (chat_id, period_start, user_id)
+);
+CREATE INDEX IF NOT EXISTS rb_week_msgs_period_idx ON rb_week_msgs (chat_id, period_start);
+
+CREATE TABLE IF NOT EXISTS rb_week_draws (
+    id            BIGSERIAL PRIMARY KEY,
+    chat_id       BIGINT      NOT NULL,
+    period_start  TIMESTAMPTZ NOT NULL,
+    period_end    TIMESTAMPTZ NOT NULL,
+    status        TEXT        NOT NULL DEFAULT 'pending',  -- pending | drawn | empty
+    announce_msg_id BIGINT,
+    winner_id     BIGINT,
+    winner_tickets INT,
+    tickets_total INT NOT NULL DEFAULT 0,
+    players       INT NOT NULL DEFAULT 0,
+    currency      rb_currency,
+    amount        BIGINT,
+    created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+    drawn_at      TIMESTAMPTZ,
+    drawn_by      BIGINT
+);
+-- один розыгрыш на (чат, период) — гарантия от двойной выплаты на уровне БД
+CREATE UNIQUE INDEX IF NOT EXISTS rb_week_draws_uniq ON rb_week_draws (chat_id, period_start);
+
 -- ---------- 5. Проверка ----------
 SELECT
-  (SELECT count(*) FROM pg_tables WHERE tablename ~ '^rb_')                   AS tables_expect_15,
+  (SELECT count(*) FROM pg_tables WHERE tablename ~ '^rb_')                   AS tables_expect_18,
   (SELECT count(*) FROM pg_type   WHERE typname ~ '^rb_' AND typtype = 'e')   AS enums_expect_3,
   (SELECT count(*) FROM pg_indexes WHERE indexname IN
-     ('rb_referrals_alive_idx','rb_withdrawals_one_pending','rb_spins_daily')) AS guards_expect_3,
+     ('rb_referrals_alive_idx','rb_withdrawals_one_pending','rb_spins_daily',
+      'rb_week_draws_uniq')) AS guards_expect_4,
   (SELECT count(*) FROM information_schema.columns
      WHERE table_name='rb_chats' AND column_name IN
        ('deactivated_at','deactivated_by'))                                    AS newcols_expect_2,
