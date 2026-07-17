@@ -129,7 +129,8 @@ async def week(msg: Message):
 
     lines = []
     for i, r in enumerate(rows[:25], 1):
-        mark = f"🎫 {r['tickets']}" if r["tickets"] else f"{CONTEST_MIN_MSGS - r['msgs']} до участия"
+        mark = (f"🎫 {r['tickets']}" if r["tickets"]
+                else f"ещё {max(0, CONTEST_MIN_MSGS - r['msgs'])} до участия")
         lines.append(f"{i}. {_name(r)} — <b>{r['msgs']}</b> ({mark})")
 
     me = next((r for r in rows if r["user_id"] == msg.from_user.id), None)
@@ -139,7 +140,8 @@ async def week(msg: Message):
         mine = (f"\n\n{sx['e_profile']} Ты: <b>{me['msgs']}</b> сообщений, место {pos}, "
                 f"билетов: <b>{me['tickets']}</b>")
         if not me["tickets"]:
-            mine += f"\n<i>Ещё {CONTEST_MIN_MSGS - me['msgs']} — и ты в конкурсе</i>"
+            mine += (f"\n<i>Ещё {max(0, CONTEST_MIN_MSGS - me['msgs'])} сообщений — "
+                     f"и ты в конкурсе</i>")
 
     players = [r for r in rows if r["tickets"]]
     total = sum(r["tickets"] for r in players)
@@ -276,17 +278,28 @@ async def do_draw(c: CallbackQuery):
 
 # ==================== ПЛАНИРОВЩИК ====================
 async def worker(bot: Bot):
-    """Раз в минуту проверяет, не закрылся ли период. Идемпотентно."""
+    """
+    Раз в минуту закрывает предыдущий период. Цикл вечный, пока чат активен.
+
+    Ведём отсчёт ОТ ВРЕМЕНИ, а не от наличия сообщений. Раньше период искался
+    через rb_week_msgs («есть строки, розыгрыша нет») — и в тихую неделю цикл
+    просто останавливался, потому что периода как бы не существовало.
+    Неделя заканчивается независимо от того, писал кто-нибудь или нет.
+
+    Идемпотентность держится на UNIQUE (chat_id, period_start): сколько бы раз
+    воркер ни проснулся за период, анонс будет ровно один.
+    """
     while True:
         try:
             cur_start, _ = contest.period_bounds()
+            prev_start, prev_end = contest.prev_period(cur_start)
             for chat in await contest.active_chats():
-                start = await contest.due_draw(chat["chat_id"], cur_start)
-                if not start:
+                # период, закончившийся ДО привязки чата, не наш
+                if prev_end <= chat["created_at"]:
                     continue
-                draw = await contest.create_draw(chat["chat_id"], start)
+                draw = await contest.create_draw(chat["chat_id"], prev_start)
                 if not draw:
-                    continue  # кто-то успел раньше
+                    continue  # уже анонсирован
                 await announce(bot, chat, draw)
         except Exception:
             log.exception("contest_worker упал, продолжаю")

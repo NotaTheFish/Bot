@@ -9,7 +9,8 @@ from aiogram.fsm.storage.memory import MemoryStorage
 
 import db
 import roulette
-from config import BOT_TOKEN, CONTEST_TEST_MINUTES, UNLIMITED_SPIN_IDS
+from config import (BOT_TOKEN, CONTEST_MIN_MSGS, CONTEST_MSGS_PER_TICKET,
+                    CONTEST_TEST_MINUTES, UNLIMITED_SPIN_IDS)
 from handlers import admin, chat_events, contest, roulette_cmd, skin, user
 from services import referrals, settings, ui
 
@@ -65,6 +66,10 @@ async def main():
 
     log.info("EV рулетки: %.1f 🍄 / %.0f 🪙 за прокрутку",
              roulette.expected_value("mushrooms"), roulette.expected_value("coins"))
+    if CONTEST_MIN_MSGS < CONTEST_MSGS_PER_TICKET:
+        log.warning("CONTEST_MIN_MSGS=%d ниже CONTEST_MSGS_PER_TICKET=%d — "
+                    "на пороге будет ровно 1 билет. Для дробного теста поставь "
+                    "CONTEST_MSGS_PER_TICKET=1", CONTEST_MIN_MSGS, CONTEST_MSGS_PER_TICKET)
     if CONTEST_TEST_MINUTES:
         log.warning("=" * 60)
         log.warning("ТЕСТОВЫЙ РЕЖИМ КОНКУРСА: «неделя» = %d мин", CONTEST_TEST_MINUTES)

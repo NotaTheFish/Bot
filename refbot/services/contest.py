@@ -85,10 +85,18 @@ def prev_period(start: datetime) -> tuple[datetime, datetime]:
 
 
 def tickets(msgs: int) -> int:
-    """До порога билетов нет. На пороге — сразу msgs//50."""
+    """
+    До порога билетов нет. Прошёл порог — участник, и билетов ВСЕГДА минимум 1.
+
+    max(1, ...) не косметика: при боевых 500/50 он ничего не меняет (500//50=10),
+    но если порог опустить ниже цены билета (например для теста: 5 сообщений при
+    50 за билет), то msgs//50 даст 0 — человек «участник» с нулём билетов,
+    и конкурс не состоится вообще. Состояния «прошёл порог, но билетов нет»
+    быть не должно ни при каких настройках.
+    """
     if msgs < CONTEST_MIN_MSGS:
         return 0
-    return msgs // CONTEST_MSGS_PER_TICKET
+    return max(1, msgs // CONTEST_MSGS_PER_TICKET)
 
 
 def pick_winner(rows) -> tuple[int | None, int]:
@@ -165,22 +173,13 @@ async def count_message(chat_id: int, user_id: int) -> None:
         """, chat_id, start, user_id)
 
 
-async def due_draw(chat_id: int, cur_start: datetime):
-    """Самый свежий закрытый период без розыгрыша. None — всё разыграно."""
-    return await db.pool().fetchval(
-        """
-        SELECT DISTINCT w.period_start FROM rb_week_msgs w
-        WHERE w.chat_id = $1 AND w.period_start < $2
-          AND NOT EXISTS (SELECT 1 FROM rb_week_draws d
-                          WHERE d.chat_id = w.chat_id AND d.period_start = w.period_start)
-        ORDER BY w.period_start DESC LIMIT 1
-        """, chat_id, cur_start)
-
-
 async def create_draw(chat_id: int, start: datetime):
     """
-    Создаёт запись розыгрыша. UNIQUE (chat_id, period_start) — вторая попытка
-    (два инстанса, ретрай планировщика) молча ничего не сделает.
+    Создаёт запись розыгрыша за период. None — уже создан.
+
+    UNIQUE (chat_id, period_start) — вторая попытка (ретрай планировщика, два
+    инстанса) молча ничего не сделает. Именно этот индекс, а не проверка в коде,
+    гарантирует ровно один анонс на период.
     """
     _, end = period_bounds(start)
     rows = await standings(chat_id, start)
