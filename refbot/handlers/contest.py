@@ -19,7 +19,7 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 import db
 import roulette
 from config import (ANIM_DELAY, ANIM_FRAMES, CONTEST_MIN_MSGS, CONTEST_MSGS_PER_TICKET,
-                    CONTEST_TEST_MINUTES, SUPER_ADMINS)
+                    CONTEST_PRIZE, CONTEST_TEST_MINUTES, SUPER_ADMINS)
 from services import contest, settings, ui
 from services.render import edit as r_edit
 from services.ui import btn
@@ -76,19 +76,23 @@ class CounterMiddleware(BaseMiddleware):
 @router.message(Command("шимшайнуть", "cbind"), F.chat.type.in_({"group", "supergroup"}))
 async def cbind(msg: Message):
     if not await _chat_admin(msg.bot, msg.chat.id, msg.from_user.id):
-        return await msg.reply("🚫 Только админ чата.")
+        return await ui.reply(msg, "🚫 Только админ чата.")
     await db.upsert_user(msg.from_user.id, msg.from_user.username, msg.from_user.first_name)
     if not await contest.bind(msg.chat.id, msg.chat.title or "", msg.from_user.id):
         return await ui.reply(msg, NO_TABLES)
     await db.audit(msg.from_user.id, "contest_bind", {"chat_id": msg.chat.id})
     s, e = contest.period_bounds()
+    sx = await settings.ctx()
     per = (f"{CONTEST_TEST_MINUTES} мин (ТЕСТ)" if CONTEST_TEST_MINUTES
            else "неделя, пн 00:00 → вс 23:59")
-    await msg.reply(
-        f"✅ Конкурс активности подключён.\n\n"
+    await ui.reply(
+        msg,
+        f"{sx['e_paid']} <b>Конкурс активности подключён</b>\n\n"
         f"📊 Период: {per}\n"
         f"🎫 От <b>{CONTEST_MIN_MSGS}</b> сообщений — участие, "
         f"1 билет за каждые <b>{CONTEST_MSGS_PER_TICKET}</b>\n"
+        f"{sx['e_roulette']} Приз: <b>{fmt(CONTEST_PRIZE['mushrooms'])}</b> "
+        f"{sx['e_mushrooms']} или <b>{fmt(CONTEST_PRIZE['coins'])}</b> {sx['e_coins']}\n"
         f"🏁 Текущий период до {e.astimezone(contest.TZ):%d.%m %H:%M}\n\n"
         f"Статистика: /неделя\nОтключить: /отшимшайнуть\n\n"
         f"<i>На рефералку это не влияет — она отдельно, через /шайнуть.</i>")
@@ -97,17 +101,17 @@ async def cbind(msg: Message):
 @router.message(Command("отшимшайнуть", "cunbind"), F.chat.type.in_({"group", "supergroup"}))
 async def cunbind(msg: Message):
     if not await _chat_admin(msg.bot, msg.chat.id, msg.from_user.id):
-        return await msg.reply("🚫 Только админ чата.")
+        return await ui.reply(msg, "🚫 Только админ чата.")
     if not await contest.tables_ready():
         return await ui.reply(msg, NO_TABLES)
     row = await db.pool().fetchrow(
         "SELECT * FROM rb_contest_chats WHERE chat_id=$1", msg.chat.id)
     if not row or not row["active"]:
-        return await msg.reply("Конкурс тут и не был подключён.")
+        return await ui.reply(msg, "Конкурс тут и не был подключён.")
     await contest.unbind(msg.chat.id, msg.from_user.id)
     await db.audit(msg.from_user.id, "contest_unbind", {"chat_id": msg.chat.id})
-    await msg.reply("⚪️ Конкурс отключён. Счётчики сохранены — "
-                    "неразыгранные периоды можно добить после /шимшайнуть.")
+    await ui.reply(msg, "⚪️ Конкурс отключён. Счётчики сохранены — "
+                        "неразыгранные периоды можно добить после /шимшайнуть.")
 
 
 # ==================== /неделя ====================
@@ -132,7 +136,7 @@ async def week(msg: Message):
     mine = ""
     if me:
         pos = rows.index(me) + 1
-        mine = (f"\n\n👤 Ты: <b>{me['msgs']}</b> сообщений, место {pos}, "
+        mine = (f"\n\n{sx['e_profile']} Ты: <b>{me['msgs']}</b> сообщений, место {pos}, "
                 f"билетов: <b>{me['tickets']}</b>")
         if not me["tickets"]:
             mine += f"\n<i>Ещё {CONTEST_MIN_MSGS - me['msgs']} — и ты в конкурсе</i>"
@@ -169,7 +173,7 @@ async def announce(bot: Bot, chat, draw):
     await btn(kb, "Запустить рулетку", f"draw:{draw['id']}", "roulette")
     m = await ui.send(
         bot, chat["chat_id"],
-        f"🏁 <b>НЕДЕЛЯ ЗАВЕРШЕНА</b>\n"
+        f"{sx['e_roulette']} <b>НЕДЕЛЯ ЗАВЕРШЕНА</b>\n"
         f"<i>{s:%d.%m %H:%M} — {e:%d.%m %H:%M}</i>\n\n"
         f"🎫 Участников: <b>{draw['players']}</b>\n"
         f"🎟 Билетов разыграно: <b>{draw['tickets_total']}</b>\n\n"
