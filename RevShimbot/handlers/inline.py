@@ -227,42 +227,14 @@ async def inline_review(query: InlineQuery, db: Database, bot, config):
                     file_id = None
 
             if file_id:
-                btn_text = seller.get("invite_button") or "✍️ Написать отзыв в боте"
-                btn_icon = seller.get("invite_button_icon")
-                from handlers.invite import _invite_btn
-                kb = InlineKeyboardMarkup(inline_keyboard=[[
-                    _invite_btn(btn_text, ref_link, btn_icon)
-                ]])
-                custom_text = seller.get("invite_text")
-                if custom_text:
-                    # Свой текст: подставляем плейсхолдеры. Текст уже HTML (с <tg-emoji>)
-                    caption = (custom_text
-                               .replace("{shop}", _esc(seller["shop_name"]))
-                               .replace("{id}", _esc(str(seller["pub_id"]))))
-                else:
-                    caption = (
-                        f"⭐️ <b>{_esc(seller['shop_name'])}</b> просит оставить отзыв!\n\n"
-                        f"Нажми кнопку ниже, чтобы написать красивый отзыв.\n\n"
-                        f"💡 <i>Быстрее: напиши прямо в чате "
-                        f"<code>@{config.BOT_USERNAME} {seller['pub_id']} твой отзыв</code> "
-                        f"и нажми на всплывающую картинку.</i>"
-                    )
-                # Премиум-эмодзи в инлайн-результате Telegram срезает, но повторная
-                # правка сообщения ботом их сохраняет — помечаем результат для
-                # авто-редактирования в on_chosen_inline_result.
-                inv_id = f"invite:{result_id[:24]}"
-                if "<tg-emoji" in caption:
-                    _PENDING_INLINE[inv_id] = {
-                        "caption": caption,
-                        "btn_text": btn_text[:64],
-                        "btn_url": ref_link,
-                        "btn_icon": btn_icon,
-                        "ts": _time.time(),
-                    }
-                    if len(_PENDING_INLINE) > _PENDING_MAX:
-                        for _k in sorted(_PENDING_INLINE,
-                                         key=lambda k: _PENDING_INLINE[k]["ts"])[:100]:
-                            _PENDING_INLINE.pop(_k, None)
+                from handlers.invite import build_invite_caption, build_invite_kb
+                kb = build_invite_kb(seller, config.BOT_USERNAME)
+                caption = build_invite_caption(seller, config.BOT_USERNAME)
+                # Премиум-эмодзи Telegram срезает в инлайн-результате, но повторная
+                # правка ботом их возвращает. ID продавца кладём прямо в result_id —
+                # тогда восстановление работает даже если Telegram отдал результат
+                # из своего кеша (бот при этом не вызывается) или бот перезапустился.
+                inv_id = f"invite:{seller['id']}"
                 await _safe_answer(query,
                     results=[
                         InlineQueryResultCachedPhoto(
@@ -442,22 +414,29 @@ async def on_chosen_inline_result(chosen, bot, db: Database, config):
     # Приглашение с премиум-эмодзи: Telegram срезает custom_emoji в инлайн-результате,
     # но правка сообщения самим ботом их сохраняет. Переписываем caption поверх.
     if result_id.startswith("invite:"):
-        pend = _PENDING_INLINE.pop(result_id, None)
-        if pend and chosen.inline_message_id:
-            try:
-                # Кнопку пересоздаём — иначе правка снесёт её
-                from handlers.invite import _invite_btn
-                kb = InlineKeyboardMarkup(inline_keyboard=[[
-                    _invite_btn(pend["btn_text"], pend["btn_url"], pend.get("btn_icon"))
-                ]])
-                await bot.edit_message_caption(
-                    inline_message_id=chosen.inline_message_id,
-                    caption=pend["caption"],
-                    parse_mode="HTML",
-                    reply_markup=kb,
-                )
-            except Exception as e:
-                logger.info(f"Не удалось обновить приглашение премиум-эмодзи: {e}")
+        # Восстанавливаем пасту из БД (не из памяти) — надёжно при кеше Telegram
+        if not chosen.inline_message_id:
+            return
+        try:
+            seller_id = int(result_id.split(":")[1])
+        except (IndexError, ValueError):
+            return
+        seller = await db.get_seller(seller_id)
+        if not seller:
+            return
+        from handlers.invite import build_invite_caption, build_invite_kb
+        caption = build_invite_caption(seller, config.BOT_USERNAME)
+        if "<tg-emoji" not in caption:
+            return  # премиума нет — править нечего
+        try:
+            await bot.edit_message_caption(
+                inline_message_id=chosen.inline_message_id,
+                caption=caption,
+                parse_mode="HTML",
+                reply_markup=build_invite_kb(seller, config.BOT_USERNAME),
+            )
+        except Exception as e:
+            logger.info(f"Не удалось вернуть премиум-эмодзи в приглашение: {e}")
         return
 
     if not result_id.startswith("notify:"):

@@ -24,9 +24,15 @@ def fmt(n: int) -> str:
 
 
 # ---------------- привязка чата ----------------
-@router.message(Command("bind"), F.chat.type.in_({"group", "supergroup"}))
+@router.message(Command("шайнуть", "bind"), F.chat.type.in_({"group", "supergroup"}))
 async def bind(msg: Message):
-    """Владелец чата пишет /bind в самом чате. Права проверяем у Telegram, не на слово."""
+    """
+    Владелец чата пишет /шайнуть в самом чате. Права проверяем у Telegram, не на слово.
+
+    Кириллица в командах работает только потому, что Group Privacy выключен —
+    бот получает все сообщения, а не только распознанные Telegram команды.
+    В меню BotFather такую команду не добавить. /bind оставлен алиасом.
+    """
     m = await msg.bot.get_chat_member(msg.chat.id, msg.from_user.id)
     if m.status != "creator" and msg.from_user.id not in SUPER_ADMINS:
         return await ui.reply(msg, "🚫 Привязать чат может только его создатель.")
@@ -51,7 +57,7 @@ async def bind(msg: Message):
                     "Добавь других админов: /addadmin @username")
 
 
-@router.message(Command("unbind"), F.chat.type.in_({"group", "supergroup"}))
+@router.message(Command("отшайнуть", "unbind"), F.chat.type.in_({"group", "supergroup"}))
 async def unbind(msg: Message):
     """Отключить чат прямо из чата. Прогресс сохраняется целиком."""
     row = await db.pool().fetchrow("SELECT * FROM rb_chats WHERE chat_id=$1", msg.chat.id)
@@ -75,7 +81,7 @@ async def unbind(msg: Message):
         f"✅ {st['paid']} выплаченных рефералов\n"
         f"⏳ {st['hold']} холдов заморожены\n"
         f"💰 Балансы юзеров не тронуты\n\n"
-        f"Включить обратно: «🛠 Админка → 📢 Чаты» или снова /bind.")
+        f"Включить обратно: «🛠 Админка → 📢 Чаты» или снова /шайнуть.")
 
 
 @router.message(Command("addadmin"), F.chat.type.in_({"group", "supergroup"}))
@@ -198,12 +204,12 @@ async def cb_stats(c: CallbackQuery):
         f"{fmt(ch['budget_spent_mush'])} / {fmt(ch['daily_budget_mush'])}"
         for ch in chats) or "  нет привязанных чатов"
 
-    # свободная рулетка: чаты без /bind
+    # свободная рулетка: чаты без /шайнуть
     fb = await db.pool().fetchval(
         "SELECT spent_mush FROM rb_free_budget WHERE day=CURRENT_DATE") or 0
     fc = await db.pool().fetchrow(
         "SELECT count(*) n, count(*) FILTER (WHERE blocked) b FROM rb_free_chats")
-    free = (f"\n  {sx['e_roulette']} <b>Свободная рулетка</b> (чаты без /bind)\n"
+    free = (f"\n  {sx['e_roulette']} <b>Свободная рулетка</b> (чаты без привязки)\n"
             f"  {fmt(fb)} / {fmt(FREE_ROULETTE_BUDGET)}"
             f"{' — ВЫКЛЮЧЕНА' if not FREE_ROULETTE else ''}\n"
             f"  Чатов: {fc['n']} (заблокировано {fc['b']})")

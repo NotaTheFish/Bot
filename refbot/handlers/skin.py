@@ -51,7 +51,7 @@ async def cb_chats(c: CallbackQuery):
         return
     chats = await db.pool().fetch("SELECT * FROM rb_chats ORDER BY active DESC, created_at")
     if not chats:
-        return await c.answer("Нет привязанных чатов. Напиши /bind в чате.", show_alert=True)
+        return await c.answer("Нет привязанных чатов. Напиши /шайнуть в чате.", show_alert=True)
     await ui.edit(c.message, 
         "📢 <b>Чаты</b>\n\n"
         "🟢 активен — выдаёт ссылки, копит рефералов, крутит рулетку\n"

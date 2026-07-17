@@ -26,7 +26,7 @@ def fmt(n: int) -> str:
 
 
 async def _is_admin(uid: int) -> bool:
-    """SUPER_ADMINS видят админку всегда, даже до первого /bind.
+    """SUPER_ADMINS видят админку всегда, даже до первого /шайнуть.
     Раньше проверялся только rb_admins — владелец кнопки не видел вообще."""
     return uid in SUPER_ADMINS or bool(await db.admin_chats(uid))
 
@@ -199,17 +199,17 @@ async def cb_toggle(c: CallbackQuery):
 async def cb_link(c: CallbackQuery):
     if not await guard(c):
         return
-    chats = await db.pool().fetch("SELECT * FROM rb_chats WHERE active ORDER BY chat_id")
+    chats = await db.pool().fetch("SELECT * FROM rb_chats WHERE active ORDER BY created_at")
     if not chats:
         return await c.answer("Пока нет подключённых чатов.", show_alert=True)
-    if len(chats) == 1:
-        return await _show_link(c, chats[0]["chat_id"])
     sx = await settings.ctx()
-    await ui.edit(c.message,
+    await ui.edit(
+        c.message,
         f"{sx['e_link']} <b>Выбери чат</b>\n\n"
-        "У каждого чата своя ссылка и свой зачёт. Один и тот же друг приносит "
-        "награду в <b>каждом</b> чате отдельно — пригласил в первый, потом во второй, "
-        "получил дважды.",
+        f"У каждого чата <b>своя</b> ссылка и свой зачёт. Один и тот же друг приносит "
+        f"награду в каждом чате отдельно — пригласил в первый, потом во второй, "
+        f"получил дважды.\n\n"
+        f"<i>Ссылку можно получить только на чат, в котором ты сам состоишь.</i>",
         reply_markup=await kb.chat_picker(chats, "lnk"))
     await c.answer()
 
@@ -221,10 +221,53 @@ async def cb_link_pick(c: CallbackQuery):
     await _show_link(c, int(c.data.split(":")[1]))
 
 
+IN_CHAT = frozenset({"creator", "administrator", "member", "restricted"})
+
+
+async def _join_url(bot, chat_id: int) -> str | None:
+    """Ссылка на вступление для того, кто ещё не в чате.
+
+    НЕ реферальная и НЕ пишется в rb_invites: человек пришёл сам, награду за него
+    никто не получит. on_join не найдёт такую ссылку по имени и просто пройдёт мимо.
+    """
+    try:
+        ch = await bot.get_chat(chat_id)
+        if ch.username:
+            return f"https://t.me/{ch.username}"
+        if ch.invite_link:
+            return ch.invite_link
+        link = await bot.create_chat_invite_link(chat_id=chat_id, name="self-join")
+        return link.invite_link
+    except Exception:
+        return None
+
+
 async def _show_link(c: CallbackQuery, chat_id: int):
     ch = await db.pool().fetchrow("SELECT * FROM rb_chats WHERE chat_id=$1 AND active", chat_id)
     if not ch:
         return await c.answer("Чат недоступен.", show_alert=True)
+    sx = await settings.ctx()
+    multi = await db.pool().fetchval("SELECT count(*) FROM rb_chats WHERE active") > 1
+
+    # --- состоит ли человек в этом чате ---
+    try:
+        m = await c.bot.get_chat_member(chat_id, c.from_user.id)
+        inside = m.status in IN_CHAT
+    except Exception:
+        inside = False
+
+    if not inside:
+        url = await _join_url(c.bot, chat_id)
+        tail = (f"\n\n{url}" if url else
+                "\n\n<i>Ссылку на вход попроси у админов чата.</i>")
+        await ui.edit(
+            c.message,
+            f"{sx['e_chat']} <b>{ch['title']}</b>\n\n"
+            f"⚠️ Ты пока не состоишь в этом чате, поэтому реферальной ссылки нет.\n"
+            f"Сначала вступи — потом возвращайся и забирай ссылку.{tail}",
+            reply_markup=await kb.link_card(multi), disable_web_page_preview=True)
+        return await c.answer("Сначала вступи в чат", show_alert=True)
+
     me = await c.bot.get_me()
     code = await referrals.get_or_create_ref_code(chat_id, c.from_user.id)
     st = await db.pool().fetchrow(
@@ -234,9 +277,8 @@ async def _show_link(c: CallbackQuery, chat_id: int):
                count(*) FILTER (WHERE status='hold') hold
         FROM rb_referrals WHERE inviter_id=$2 AND chat_id=$3
         """, code, c.from_user.id, chat_id)
-    multi = await db.pool().fetchval("SELECT count(*) FROM rb_chats WHERE active") > 1
-    sx = await settings.ctx()
-    await ui.edit(c.message,
+    await ui.edit(
+        c.message,
         f"{sx['e_link']} <b>{ch['title']}</b>\n\n"
         f"<code>https://t.me/{me.username}?start={code}</code>\n\n"
         f"👁 Переходов: {st['clicks']}\n"

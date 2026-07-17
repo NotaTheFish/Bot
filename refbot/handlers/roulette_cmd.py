@@ -8,12 +8,33 @@ from aiogram.types import Message
 
 import db
 import roulette
+import time
+
 from config import (ANIM_DELAY, ANIM_FRAMES, COIN_RATE, FREE_ROULETTE,
-                    FREE_ROULETTE_BUDGET, SPIN_COMMANDS, UNLIMITED_SPIN_IDS)
+                    FREE_ROULETTE_BUDGET, SPIN_COMMANDS, SPIN_NAG_COOLDOWN,
+                    UNLIMITED_SPIN_IDS)
 from services import settings, ui
 from services.render import edit as r_edit, reply as r_reply
 
 router = Router()
+
+
+# {tg_id: когда последний раз сказали «уже крутил»}. Инстанс один, так что памяти хватит.
+_nagged: dict[int, float] = {}
+
+
+def _should_nag(uid: int) -> bool:
+    """True — можно ответить. False — молчим, человек спамит."""
+    now = time.monotonic()
+    last = _nagged.get(uid, 0)
+    if now - last < SPIN_NAG_COOLDOWN:
+        return False
+    _nagged[uid] = now
+    if len(_nagged) > 5000:  # не даём словарю расти бесконечно
+        cutoff = now - SPIN_NAG_COOLDOWN
+        for k in [k for k, v in _nagged.items() if v < cutoff]:
+            _nagged.pop(k, None)
+    return True
 
 
 class BudgetExhausted(Exception):
@@ -121,11 +142,14 @@ async def spin(msg: Message, bot: Bot):
                 total = await db.apply(conn, uid, cur, amount, "roulette",
                                        f"spin:{spin_id}", spin_id)
     except asyncpg.UniqueViolationError:
+        # уже крутил сегодня. Отвечаем ОДИН раз, дальше молчим SPIN_NAG_COOLDOWN секунд.
+        if not _should_nag(uid):
+            return
         last = await db.pool().fetchval(
             "SELECT amount FROM rb_spins WHERE tg_id=$1 AND spin_day=$2", uid, today)
-        return await r_reply(
-            msg, f"⏳ Ты уже крутил сегодня (выпало {last:,} {e_cur}).\n"
-                 f"Возвращайся завтра.".replace(",", " "), em)
+        return await ui.reply(
+            msg, f"{e_rou} Ты уже крутил сегодня — выпало <b>{last:,}</b> {e_cur}.\n"
+                 f"Прокрутка одна в сутки. Возвращайся завтра.".replace(",", " "))
     except BudgetExhausted:
         # прокрутка НЕ засчитана — транзакция откатилась, завтра крутанёт
         return await ui.reply(msg, "🧯 Суточный лимит выплат в этом чате исчерпан.\n"
