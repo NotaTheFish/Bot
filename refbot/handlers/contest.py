@@ -7,6 +7,7 @@
 """
 import asyncio
 import contextlib
+from datetime import timedelta
 import logging
 from html import escape
 from typing import Any, Awaitable, Callable
@@ -18,8 +19,9 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 import db
 import roulette
-from config import (ANIM_DELAY, ANIM_FRAMES, CONTEST_MIN_MSGS, CONTEST_MSGS_PER_TICKET,
-                    CONTEST_PRIZE, CONTEST_TEST_MINUTES, SUPER_ADMINS)
+from config import (ANIM_DELAY, ANIM_FRAMES, CONTEST_COUNT_PARTIAL_FIRST, CONTEST_MIN_MSGS,
+                    CONTEST_MSGS_PER_TICKET, CONTEST_PRIZE, CONTEST_TEST_MINUTES, SUPER_ADMINS)
+from config import CONTEST_TZ
 from services import contest, settings, ui
 from services.render import edit as r_edit
 from services.ui import btn
@@ -84,7 +86,17 @@ async def cbind(msg: Message):
     s, e = contest.period_bounds()
     sx = await settings.ctx()
     per = (f"{CONTEST_TEST_MINUTES} мин (ТЕСТ)" if CONTEST_TEST_MINUTES
-           else "неделя, пн 00:00 → вс 23:59")
+           else f"неделя, пн 00:00 → вс 23:59 ({CONTEST_TZ})")
+    # когда пройдёт первый розыгрыш
+    if CONTEST_TEST_MINUTES or CONTEST_COUNT_PARTIAL_FIRST:
+        first = e
+        note = ""
+    else:
+        # текущий период неполный -> первый розыгрыш по итогам СЛЕДУЮЩего
+        _, first = contest.period_bounds(e + timedelta(seconds=1))
+        note = ("\n\n⚠️ Чат привязан в середине периода. Первый конкурс — по итогам "
+                "<b>следующей полной недели</b>, чтобы счёт был честным.\n"
+                "Считать и текущую неполную — переменная CONTEST_COUNT_PARTIAL_FIRST=1.")
     await ui.reply(
         msg,
         f"{sx['e_paid']} <b>Конкурс активности подключён</b>\n\n"
@@ -93,8 +105,8 @@ async def cbind(msg: Message):
         f"1 билет за каждые <b>{CONTEST_MSGS_PER_TICKET}</b>\n"
         f"{sx['e_roulette']} Приз: <b>{fmt(CONTEST_PRIZE['mushrooms'])}</b> "
         f"{sx['e_mushrooms']} или <b>{fmt(CONTEST_PRIZE['coins'])}</b> {sx['e_coins']}\n"
-        f"🏁 Текущий период до {e.astimezone(contest.TZ):%d.%m %H:%M}\n\n"
-        f"Статистика: /неделя\nОтключить: /отшимшайнуть\n\n"
+        f"🏁 Первый розыгрыш: {first.astimezone(contest.TZ):%d.%m %H:%M}\n\n"
+        f"Статистика: /неделя\nОтключить: /отшимшайнуть{note}\n\n"
         f"<i>На рефералку это не влияет — она отдельно, через /шайнуть.</i>")
 
 
@@ -296,6 +308,10 @@ async def worker(bot: Bot):
             for chat in await contest.active_chats():
                 # период, закончившийся ДО привязки чата, не наш
                 if prev_end <= chat["created_at"]:
+                    continue
+                # период НАЧАЛСЯ до привязки => он неполный. По умолчанию пропускаем
+                # (розыгрыш вышел бы по обрезанной неделе), если явно не разрешён.
+                if prev_start < chat["created_at"] and not CONTEST_COUNT_PARTIAL_FIRST:
                     continue
                 draw = await contest.create_draw(chat["chat_id"], prev_start)
                 if not draw:
