@@ -3,6 +3,9 @@ import os
 BOT_TOKEN = os.environ["BOT_TOKEN"]
 DATABASE_URL = os.environ["DATABASE_URL"]
 SUPER_ADMINS = {int(x) for x in os.getenv("SUPER_ADMINS", "").split(",") if x.strip()}
+# Админы, которым можно ТОЛЬКО принимать заявки на вывод. Больше ничего:
+# ни банов, ни статистики, ни настроек. Узкий доступ через переменную на Railway.
+PAYOUT_ADMINS = {int(x) for x in os.getenv("PAYOUT_ADMINS", "").split(",") if x.strip()}
 
 # ---------- экономика ----------
 # Коины = грибы × 20 везде. Один множитель на всю систему — меньше шансов ошибиться.

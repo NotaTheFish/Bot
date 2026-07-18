@@ -78,9 +78,11 @@ async def confirm(admin_id: int, wid: int, version: int) -> tuple[dict | None, s
                 return None, f"Заявка уже обработана ({wd['status']})."
             if wd["version"] != version:
                 return None, "Сумма изменилась. Обнови сообщение — придёт новое."
-            if not await conn.fetchval(
-                    "SELECT 1 FROM rb_admins WHERE chat_id=$1 AND tg_id=$2", wd["chat_id"], admin_id):
-                return None, "Ты не админ этого чата."
+            from config import PAYOUT_ADMINS, SUPER_ADMINS
+            is_chat_admin = await conn.fetchval(
+                "SELECT 1 FROM rb_admins WHERE chat_id=$1 AND tg_id=$2", wd["chat_id"], admin_id)
+            if not (is_chat_admin or admin_id in PAYOUT_ADMINS or admin_id in SUPER_ADMINS):
+                return None, "Нет прав на подтверждение вывода."
             try:
                 bal = await db.apply(conn, wd["tg_id"], wd["currency"], -wd["amount"],
                                      "withdraw", f"wd:{wid}", wid)
@@ -101,9 +103,11 @@ async def reject(admin_id: int, wid: int, reason: str = "") -> tuple[dict | None
             wd = await conn.fetchrow("SELECT * FROM rb_withdrawals WHERE id=$1 FOR UPDATE", wid)
             if not wd or wd["status"] != "pending":
                 return None, "Заявка недоступна."
-            if not await conn.fetchval(
-                    "SELECT 1 FROM rb_admins WHERE chat_id=$1 AND tg_id=$2", wd["chat_id"], admin_id):
-                return None, "Ты не админ этого чата."
+            from config import PAYOUT_ADMINS, SUPER_ADMINS
+            is_chat_admin = await conn.fetchval(
+                "SELECT 1 FROM rb_admins WHERE chat_id=$1 AND tg_id=$2", wd["chat_id"], admin_id)
+            if not (is_chat_admin or admin_id in PAYOUT_ADMINS or admin_id in SUPER_ADMINS):
+                return None, "Нет прав."
             row = await conn.fetchrow(
                 "UPDATE rb_withdrawals SET status='rejected', decided_at=now(), decided_by=$1, "
                 "comment=$2 WHERE id=$3 RETURNING *", admin_id, reason, wid)

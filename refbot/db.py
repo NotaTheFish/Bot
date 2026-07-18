@@ -89,6 +89,27 @@ async def get_user(tg_id: int):
     return await pool().fetchrow("SELECT * FROM rb_users WHERE tg_id = $1", tg_id)
 
 
+async def banned_users(limit: int = 100):
+    return await pool().fetch(
+        "SELECT tg_id, username, first_name, ban_reason, banned_at FROM rb_users "
+        "WHERE banned ORDER BY banned_at DESC NULLS LAST LIMIT $1", limit)
+
+
+async def set_ban(tg_id: int, reason: str, by: int):
+    await pool().execute(
+        "UPDATE rb_users SET banned=TRUE, ban_reason=$1, banned_by=$2, banned_at=now() "
+        "WHERE tg_id=$3", reason or "не указана", by, tg_id)
+    # гасим холды и активную заявку забаненного
+    await pool().execute(
+        "UPDATE rb_referrals SET status='void', voided_at=now() "
+        "WHERE inviter_id=$1 AND status='hold'", tg_id)
+
+
+async def clear_ban(tg_id: int):
+    await pool().execute(
+        "UPDATE rb_users SET banned=FALSE, ban_reason=NULL WHERE tg_id=$1", tg_id)
+
+
 async def is_banned(tg_id: int) -> bool:
     return bool(await pool().fetchval("SELECT banned FROM rb_users WHERE tg_id = $1", tg_id))
 

@@ -309,7 +309,107 @@ async def find_input(msg: Message, state: FSMContext):
         f"{sx['e_lost']} {st['lost']}\n"
         f"📅 В боте с {row['created_at']:%d.%m.%Y}\n\n"
         f"📜 <b>Последние операции</b>\n{hist}",
-        reply_markup=await kb.admin_menu())
+        reply_markup=await kb.find_card(row["tg_id"], row["banned"]))
+
+
+# ---------------- баны ----------------
+class Unban(StatesGroup):
+    query = State()
+
+
+def _admin_only(uid: int):
+    """None если можно, иначе текст отказа. Payout-админам сюда нельзя."""
+    return None
+
+
+async def _render_bans(c, links_mode: bool):
+    rows = await db.banned_users(100)
+    sx = await settings.ctx()
+    if not rows:
+        body = "Забаненных нет."
+    else:
+        lines = []
+        for r in rows:
+            name = f"@{r['username']}" if r["username"] else (r["first_name"] or "—")
+            reason = f" — {r['ban_reason']}" if r["ban_reason"] else ""
+            lines.append(f"🚫 {name}  <code>{r['tg_id']}</code>{reason}")
+        body = "\n".join(lines)
+    hint = ("\n\n<i>Кнопки ниже — ссылки на профили.</i>" if links_mode and rows
+            else "\n\n<i>ID указаны рядом с именами — для разбана.</i>" if rows else "")
+    await ui.edit(c.message, f"🚫 <b>Баны</b> ({len(rows)})\n\n{body}{hint}",
+                  reply_markup=await kb.bans_panel(rows, links_mode))
+
+
+@router.callback_query(F.data == "a_bans")
+async def cb_bans(c: CallbackQuery, state: FSMContext):
+    if not await db.admin_chats(c.from_user.id) and c.from_user.id not in SUPER_ADMINS:
+        return await c.answer("Нет доступа.", show_alert=True)
+    await state.clear()
+    await _render_bans(c, links_mode=False)
+    await c.answer()
+
+
+@router.callback_query(F.data == "a_bans_links")
+async def cb_bans_links(c: CallbackQuery):
+    if not await db.admin_chats(c.from_user.id) and c.from_user.id not in SUPER_ADMINS:
+        return await c.answer("Нет доступа.", show_alert=True)
+    await _render_bans(c, links_mode=True)
+    await c.answer()
+
+
+@router.callback_query(F.data == "a_unban")
+async def cb_unban(c: CallbackQuery, state: FSMContext):
+    if not await db.admin_chats(c.from_user.id) and c.from_user.id not in SUPER_ADMINS:
+        return await c.answer("Нет доступа.", show_alert=True)
+    await state.set_state(Unban.query)
+    await ui.edit(c.message, "♻️ Пришли ID человека, которого разбанить.",
+                  reply_markup=await kb.back_menu())
+    await c.answer()
+
+
+@router.message(Unban.query)
+async def unban_input(msg: Message, state: FSMContext):
+    await state.clear()
+    q = (msg.text or "").strip()
+    if not q.isdigit():
+        return await ui.answer(msg, "ID — это число. Попробуй ещё раз через «🚫 Баны».",
+                               reply_markup=await kb.admin_menu())
+    tg_id = int(q)
+    u = await db.get_user(tg_id)
+    if not u or not u["banned"]:
+        return await ui.answer(msg, "Этот ID не в бане.", reply_markup=await kb.admin_menu())
+    await db.clear_ban(tg_id)
+    await db.audit(msg.from_user.id, "unban", {"tg_id": tg_id})
+    with contextlib.suppress(Exception):
+        await ui.send(msg.bot, tg_id, "✅ С тебя сняли блокировку в системе.")
+    await ui.answer(msg, f"✅ <code>{tg_id}</code> разблокирован.",
+                    reply_markup=await kb.admin_menu())
+
+
+@router.callback_query(F.data.startswith("a_toggleban:"))
+async def cb_toggle_ban(c: CallbackQuery):
+    if not await db.admin_chats(c.from_user.id) and c.from_user.id not in SUPER_ADMINS:
+        return await c.answer("Нет доступа.", show_alert=True)
+    tg_id = int(c.data.split(":")[1])
+    u = await db.get_user(tg_id)
+    if not u:
+        return await c.answer("Юзер не найден.", show_alert=True)
+    now_banned = not u["banned"]
+    if now_banned:
+        await db.set_ban(tg_id, "бан из поиска", c.from_user.id)
+        await db.audit(c.from_user.id, "ban", {"tg_id": tg_id})
+        with contextlib.suppress(Exception):
+            await ui.send(c.bot, tg_id, "🚫 Тебя заблокировали в системе. "
+                                        "Начисления и выводы недоступны.")
+        await c.answer("Забанен.")
+    else:
+        await db.clear_ban(tg_id)
+        await db.audit(c.from_user.id, "unban", {"tg_id": tg_id})
+        with contextlib.suppress(Exception):
+            await ui.send(c.bot, tg_id, "✅ С тебя сняли блокировку в системе.")
+        await c.answer("Разбанен.")
+    with contextlib.suppress(Exception):
+        await c.message.edit_reply_markup(reply_markup=await kb.find_card(tg_id, now_banned))
 
 
 # ---------------- подтверждение вывода ----------------

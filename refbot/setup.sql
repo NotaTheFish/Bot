@@ -187,6 +187,7 @@ CREATE TABLE IF NOT EXISTS rb_settings (
 
 -- отключение чата: прогресс сохраняется целиком
 -- active уже был. Добавляем, кто и когда отключил — чтобы потом не гадать.
+ALTER TABLE rb_withdrawals ADD COLUMN IF NOT EXISTS admin_cards JSONB;
 ALTER TABLE rb_chats ADD COLUMN IF NOT EXISTS deactivated_at TIMESTAMPTZ;
 ALTER TABLE rb_chats ADD COLUMN IF NOT EXISTS deactivated_by BIGINT;
 

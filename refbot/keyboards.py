@@ -30,6 +30,19 @@ async def wd_menu(has_active: bool) -> InlineKeyboardMarkup:
     return kb.as_markup()
 
 
+async def find_card(tg_id: int, banned: bool) -> InlineKeyboardMarkup:
+    """Тумблер под найденным юзером: не забанен -> «🥳 бан» (забанит),
+    забанен -> «😡 бан» (разбанит)."""
+    kb = InlineKeyboardBuilder()
+    if banned:
+        await btn(kb, "😡 бан", f"a_toggleban:{tg_id}")
+    else:
+        await btn(kb, "🥳 бан", f"a_toggleban:{tg_id}")
+    await btn(kb, "Админка", "admin", "back")
+    kb.adjust(1)
+    return kb.as_markup()
+
+
 async def admin_wd_card(wid: int, version: int) -> InlineKeyboardMarkup:
     # version зашит в кнопку. Юзер поменял сумму -> version вырос -> старая кнопка мертва.
     kb = InlineKeyboardBuilder()
@@ -46,6 +59,7 @@ async def admin_menu() -> InlineKeyboardMarkup:
     await btn(kb, "🚩 На проверке", "a_flagged")
     await btn(kb, "📊 Сводка", "a_stats")
     await btn(kb, "Чаты", "a_chats", "chat")
+    await btn(kb, "🚫 Баны", "a_bans")
     await btn(kb, "🎨 Кастомизация", "a_skin")
     await btn(kb, "Назад", "menu", "back")
     kb.adjust(2, 2, 2, 1)
@@ -102,6 +116,28 @@ async def slot_card(slot: str, prefix: str, has_premium: bool) -> InlineKeyboard
         await btn(kb, "🗑 Убрать премиум", f"sk_prem_off:{slot}")
     await btn(kb, "♻️ Сброс к дефолту", f"sk_def:{prefix}:{slot}")
     await btn(kb, "Назад", "sk_emoji" if prefix == "sk_e" else "sk_label", "back")
+    kb.adjust(1)
+    return kb.as_markup()
+
+
+async def bans_panel(rows, links_mode: bool) -> InlineKeyboardMarkup:
+    """
+    links_mode=False — обычный вид: заголовок-строки (текст в сообщении), тут только действия.
+    links_mode=True  — на месте действий появляются кнопки-ссылки tg://user на каждого.
+    """
+    kb = InlineKeyboardBuilder()
+    if links_mode:
+        for r in rows:
+            name = f"@{r['username']}" if r["username"] else (r["first_name"] or str(r["tg_id"]))
+            kb.button(text=f"👤 {name}", url=f"tg://user?id={r['tg_id']}")
+        await btn(kb, "⬅️ Назад к списку", "a_bans")
+        kb.adjust(1)
+        return kb.as_markup()
+
+    if rows:
+        await btn(kb, "🔗 Ссылки на профили", "a_bans_links")
+        await btn(kb, "♻️ Разбанить по ID", "a_unban")
+    await btn(kb, "Админка", "admin", "back")
     kb.adjust(1)
     return kb.as_markup()
 
