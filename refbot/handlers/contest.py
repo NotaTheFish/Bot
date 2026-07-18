@@ -29,11 +29,8 @@ from services.ui import btn
 router = Router()
 log = logging.getLogger(__name__)
 
-NO_TABLES = ("⚠️ Таблицы конкурса ещё не созданы — подключить не могу.\n\n"
-             "Накати <code>setup.sql</code>: Railway → Postgres → Console → Upload файла, "
-             "затем\n<code>psql -U postgres -d railway -f /setup.sql</code>\n\n"
-             "Проверка вернёт <code>18 | 3 | 4 | 2 | railway</code>. "
-             "После этого команда заработает сама, передеплой не нужен.")
+# Короткий ответ в чат — без инструкций по БД (их видит весь чат). Подробности в лог.
+NO_TABLES = "⚙️ Конкурс ещё настраивается. Загляни попозже."
 
 
 def fmt(n: int) -> str:
@@ -81,12 +78,13 @@ async def cbind(msg: Message):
         return await ui.reply(msg, "🚫 Только админ чата.")
     await db.upsert_user(msg.from_user.id, msg.from_user.username, msg.from_user.first_name)
     if not await contest.bind(msg.chat.id, msg.chat.title or "", msg.from_user.id):
+        log.error("НЕТ ТАБЛИЦ КОНКУРСА — накати setup.sql. /шимшайнуть не сработал в %s",
+                  msg.chat.id)
         return await ui.reply(msg, NO_TABLES)
     await db.audit(msg.from_user.id, "contest_bind", {"chat_id": msg.chat.id})
     s, e = contest.period_bounds()
     sx = await settings.ctx()
-    per = (f"{CONTEST_TEST_MINUTES} мин (ТЕСТ)" if CONTEST_TEST_MINUTES
-           else f"неделя, пн 00:00 → вс 23:59 ({CONTEST_TZ})")
+    per = "неделя, пн 00:00 → вс 23:59"
     # когда пройдёт первый розыгрыш
     if CONTEST_TEST_MINUTES or CONTEST_COUNT_PARTIAL_FIRST:
         first = e
@@ -94,9 +92,8 @@ async def cbind(msg: Message):
     else:
         # текущий период неполный -> первый розыгрыш по итогам СЛЕДУЮЩего
         _, first = contest.period_bounds(e + timedelta(seconds=1))
-        note = ("\n\n⚠️ Чат привязан в середине периода. Первый конкурс — по итогам "
-                "<b>следующей полной недели</b>, чтобы счёт был честным.\n"
-                "Считать и текущую неполную — переменная CONTEST_COUNT_PARTIAL_FIRST=1.")
+        note = ("\n\n⚠️ Чат привязан в середине недели — первый конкурс пройдёт "
+                "по итогам <b>следующей полной недели</b>, чтобы счёт был честным.")
     await ui.reply(
         msg,
         f"{sx['e_paid']} <b>Конкурс активности подключён</b>\n\n"
@@ -193,7 +190,7 @@ async def announce(bot: Bot, chat, draw):
         f"🎟 Билетов разыграно: <b>{draw['tickets_total']}</b>\n\n"
         f"Победителя определит рулетка. Больше билетов — выше шанс, "
         f"но решает случай.\n\n"
-        f"<i>Кнопку жмёт админ.</i>",
+        f"<i>Розыгрыш запускает администратор.</i>",
         reply_markup=kb.as_markup())
 
     await db.pool().execute(

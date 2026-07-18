@@ -19,10 +19,8 @@ from services.render import edit as r_edit, parse_free_pair, render
 
 router = Router()
 
-NO_TABLE = ("⚠️ Таблица <code>rb_settings</code> ещё не создана — настройка не сохранена.\n\n"
-            "Накати <code>setup.sql</code> в Railway → Postgres → Console:\n"
-            "<code>psql -U postgres -d railway -f /setup.sql</code>\n\n"
-            "Бот при этом работает — просто на стандартном оформлении.")
+NO_TABLE = ("⚠️ Настройки пока недоступны — оформление стандартное.\n"
+            "Загляни попозже, когда бот будет полностью настроен.")
 
 
 class Skin(StatesGroup):
