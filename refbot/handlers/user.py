@@ -113,8 +113,9 @@ async def start_plain(msg: Message, state: FSMContext):
 async def cmd_promo(msg: Message, command: CommandObject):
     """
     /promo <код> — активирует промокод из переменной PROMO_CODE.
-    Даёт 100k грибов или 2M коинов (по валюте юзера). Один раз на человека.
-    Нет переменной / неверный код — молча как «неверный», чтобы код не подбирали.
+    Даёт 100k грибов или 2M коинов (по валюте юзера). БЕЗЛИМИТНЫЙ: тестовый
+    инструмент, активировать можно сколько угодно раз. Нет переменной / неверный
+    код — отвечаем «неверный», чтобы код не подбирали.
     """
     from config import PROMO_CODE, PROMO_REWARD
     if not await guard(msg):
@@ -130,17 +131,14 @@ async def cmd_promo(msg: Message, command: CommandObject):
     amount = PROMO_REWARD[cur]
     sx = await settings.ctx()
 
-    # один раз на человека: PRIMARY KEY (code, tg_id) отсекает повтор на уровне БД
+    # Безлимит => каждое начисление уникально. db.apply идемпотентен по ключу,
+    # поэтому ключ должен быть РАЗНЫМ каждый раз, иначе второй /promo вернёт None
+    # и ничего не зачислит. Берём id из последовательности — гарантированно уникален.
     async with db.pool().acquire() as conn:
         async with conn.transaction():
-            try:
-                await conn.execute(
-                    "INSERT INTO rb_promo_used (code, tg_id) VALUES ($1,$2)",
-                    PROMO_CODE, msg.from_user.id)
-            except Exception:
-                return await ui.answer(msg, "Ты уже активировал этот промокод.")
+            uniq = await conn.fetchval("SELECT nextval('rb_promo_seq')")
             bal = await db.apply(conn, msg.from_user.id, cur, amount,
-                                 "promo", f"promo:{PROMO_CODE}:{msg.from_user.id}")
+                                 "promo", f"promo:{uniq}")
     await db.audit(msg.from_user.id, "promo", {"code": PROMO_CODE, "amount": amount})
     await ui.answer(
         msg,

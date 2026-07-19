@@ -260,18 +260,14 @@ CREATE TABLE IF NOT EXISTS rb_week_draws (
 CREATE UNIQUE INDEX IF NOT EXISTS rb_week_draws_uniq ON rb_week_draws (chat_id, period_start);
 
 -- ---------- 4d. Промокод (тест системы вывода) ----------
--- Промокод задаётся переменной PROMO_CODE. Безлимитный по числу людей,
--- но один человек активирует один раз — иначе это дыра в балансе.
-CREATE TABLE IF NOT EXISTS rb_promo_used (
-    code    TEXT   NOT NULL,
-    tg_id   BIGINT NOT NULL,
-    used_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    PRIMARY KEY (code, tg_id)
-);
+-- Промокод задаётся переменной PROMO_CODE. БЕЗЛИМИТНЫЙ — тестовый инструмент,
+-- активировать можно сколько угодно раз. Sequence даёт уникальный ключ каждому
+-- начислению, чтобы идемпотентность db.apply не блокировала повторы.
+CREATE SEQUENCE IF NOT EXISTS rb_promo_seq;
 
 -- ---------- 5. Проверка ----------
 SELECT
-  (SELECT count(*) FROM pg_tables WHERE tablename ~ '^rb_')                   AS tables_expect_19,
+  (SELECT count(*) FROM pg_tables WHERE tablename ~ '^rb_')                   AS tables_expect_18,
   (SELECT count(*) FROM pg_type   WHERE typname ~ '^rb_' AND typtype = 'e')   AS enums_expect_3,
   (SELECT count(*) FROM pg_indexes WHERE indexname IN
      ('rb_referrals_alive_idx','rb_withdrawals_one_pending','rb_spins_daily',
