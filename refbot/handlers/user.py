@@ -1,7 +1,7 @@
 import re
 
 from aiogram import F, Router
-from aiogram.filters import CommandStart, CommandObject
+from aiogram.filters import Command, CommandObject, CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, Message
@@ -107,6 +107,46 @@ async def start_plain(msg: Message, state: FSMContext):
         f"если реферал остался в чате.\n\n"
         f"Текущая валюта: {sx['e_' + u['currency']]} <b>{sx['l_' + u['currency']]}</b>",
         reply_markup=await kb.main_menu(u["currency"], is_adm))
+
+
+@router.message(Command("promo"))
+async def cmd_promo(msg: Message, command: CommandObject):
+    """
+    /promo <код> — активирует промокод из переменной PROMO_CODE.
+    Даёт 100k грибов или 2M коинов (по валюте юзера). Один раз на человека.
+    Нет переменной / неверный код — молча как «неверный», чтобы код не подбирали.
+    """
+    from config import PROMO_CODE, PROMO_REWARD
+    if not await guard(msg):
+        return
+    code = (command.args or "").strip()
+    if not code:
+        return await ui.answer(msg, "Использование: <code>/promo КОД</code>")
+    if not PROMO_CODE or code != PROMO_CODE:
+        return await ui.answer(msg, "❌ Неверный промокод.")
+
+    u = await db.get_user(msg.from_user.id)
+    cur = u["currency"]
+    amount = PROMO_REWARD[cur]
+    sx = await settings.ctx()
+
+    # один раз на человека: PRIMARY KEY (code, tg_id) отсекает повтор на уровне БД
+    async with db.pool().acquire() as conn:
+        async with conn.transaction():
+            try:
+                await conn.execute(
+                    "INSERT INTO rb_promo_used (code, tg_id) VALUES ($1,$2)",
+                    PROMO_CODE, msg.from_user.id)
+            except Exception:
+                return await ui.answer(msg, "Ты уже активировал этот промокод.")
+            bal = await db.apply(conn, msg.from_user.id, cur, amount,
+                                 "promo", f"promo:{PROMO_CODE}:{msg.from_user.id}")
+    await db.audit(msg.from_user.id, "promo", {"code": PROMO_CODE, "amount": amount})
+    await ui.answer(
+        msg,
+        f"✅ Промокод активирован!\n"
+        f"Начислено: <b>{amount:,}</b> {sx['e_' + cur]} {sx['l_' + cur]}\n"
+        f"Баланс: <b>{bal:,}</b>".replace(",", " "))
 
 
 @router.callback_query(F.data == "menu")

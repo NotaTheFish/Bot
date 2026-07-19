@@ -155,17 +155,25 @@ async def spin(msg: Message, bot: Bot):
         return await ui.reply(msg, "🧯 Суточный лимит выплат в этом чате исчерпан.\n"
                                "Прокрутка не потрачена — заходи завтра.")
 
-    # анимация
-    m = await r_reply(msg, roulette.frame(0, e_rou), em)
-    for i in range(1, ANIM_FRAMES):
+    # анимация. Баланс уже начислен в транзакции выше — что бы ни случилось с
+    # сообщениями (флуд-контроль), выигрыш не потеряется. Кадры необязательны,
+    # важна финальная карточка.
+    card = roulette.result_card(msg.from_user.first_name, amount, e_cur, label, total, e_rou)
+    m = None
+    with contextlib.suppress(Exception):
+        m = await r_reply(msg, roulette.frame(0, e_rou), em)
+    if m is not None:
+        for i in range(1, ANIM_FRAMES):
+            await asyncio.sleep(ANIM_DELAY)
+            with contextlib.suppress(Exception):
+                await r_edit(m, roulette.frame(i, e_rou), em)
         await asyncio.sleep(ANIM_DELAY)
         with contextlib.suppress(Exception):
-            await r_edit(m, roulette.frame(i, e_rou), em)
-
-    await asyncio.sleep(ANIM_DELAY)
-    card = roulette.result_card(msg.from_user.first_name, amount, e_cur, label, total, e_rou)
-    with contextlib.suppress(Exception):
-        await r_edit(m, card, em)
+            await r_edit(m, card, em)
+    else:
+        # стартовый кадр не ушёл (флуд) — отдадим хотя бы результат, тоже без падения
+        with contextlib.suppress(Exception):
+            await r_reply(msg, card, em)
 
 
 @router.message(F.chat.type.in_({"group", "supergroup"}),

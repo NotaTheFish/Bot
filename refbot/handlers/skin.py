@@ -306,15 +306,20 @@ async def cb_free(c: CallbackQuery, state: FSMContext):
 
 async def _render_free(c: CallbackQuery):
     pairs = await settings.free_map()
-    body = "\n".join(f"  {ch} → <code>{cid}</code>" for ch, cid in pairs.items()) or "  пусто"
+    covered = set(pairs) | {await settings.emoji(s) for s in settings.EMOJI_SLOTS
+                            if (await settings.load()).get(f"premium.{s}")}
+    # какие из реально используемых символов ещё БЕЗ премиума
+    missing = [e for e in settings.USED_EMOJI if e not in covered]
+    body = "\n".join(f"  {ch} → есть" for ch in pairs) or "  пусто"
+    miss = " ".join(missing) if missing else "— всё покрыто ✅"
     await ui.edit(
         c.message,
         f"♻️ <b>Свободные замены</b>\n\n"
-        f"Мапят <b>любой символ</b> на премиум-эмодзи. Работает везде, где этот символ "
-        f"встретится: в тексте, на кнопках, в рулетке, в админке.\n\n"
-        f"Слоты — только для смысловых вещей (какое эмодзи значит «грибы»). "
-        f"А тут можно заменить хоть 📊, хоть 🔍, хоть 👁 — всё, что попадётся на глаза.\n\n"
-        f"<b>Сейчас ({len(pairs)}):</b>\n{body}",
+        f"Мапят <b>любой символ</b> на премиум. Работает везде, где символ встретится: "
+        f"текст, кнопки, рулетка, админка.\n\n"
+        f"<b>Задано ({len(pairs)}):</b>\n{body}\n\n"
+        f"<b>Ещё без премиума</b> (из тех, что бот реально шлёт):\n{miss}\n\n"
+        f"<i>Скинь пару «обычное + премиум», чтобы добавить.</i>",
         reply_markup=await kb.free_list(pairs))
     await c.answer()
 

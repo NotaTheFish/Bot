@@ -14,13 +14,19 @@ def _fmt(n: int) -> str:
     return f"{n:,}".replace(",", " ")
 
 
-async def _responsible(chat_id: int) -> int | None:
-    return await db.pool().fetchval("SELECT owner_id FROM rb_chats WHERE chat_id=$1", chat_id)
+async def _recipients(chat_id: int) -> list[int]:
+    """Кому слать карточку вывода: владелец чата + все payout-админы из переменной."""
+    from config import PAYOUT_ADMINS
+    owner = await db.pool().fetchval("SELECT owner_id FROM rb_chats WHERE chat_id=$1", chat_id)
+    ids = set(PAYOUT_ADMINS)
+    if owner:
+        ids.add(owner)
+    return list(ids)
 
 
 async def push_admin_card(bot, wd: dict):
-    admin_id = await _responsible(wd["chat_id"])
-    if not admin_id:
+    recipients = await _recipients(wd["chat_id"])
+    if not recipients:
         return
     u = await db.get_user(wd["tg_id"])
     b = await db.balances(wd["tg_id"])
@@ -64,20 +70,34 @@ async def push_admin_card(bot, wd: dict):
         f"⚠️ Сначала <b>отдай валюту в игре</b>, потом жми «Подтвердить».\n"
         f"Подтверждение = списание с баланса. Отката нет."
     )
-    try:
-        m = await ui.send(bot, admin_id, text,
-                          reply_markup=await kb.admin_wd_card(wd["id"], wd["version"]))
-        await db.pool().execute(
-            "UPDATE rb_withdrawals SET admin_chat_id=$1, admin_msg_id=$2 WHERE id=$3",
-            m.chat.id, m.message_id, wd["id"])
-    except Exception as e:
-        log.warning("не смог отправить карточку админу %s: %s", admin_id, e)
+    import json
+    markup = await kb.admin_wd_card(wd["id"], wd["version"], wd["tg_id"], u)
+    sent = []
+    for admin_id in recipients:
+        try:
+            m = await ui.send(bot, admin_id, text, reply_markup=markup)
+            sent.append([m.chat.id, m.message_id])
+        except Exception as e:
+            log.warning("не смог отправить карточку админу %s: %s", admin_id, e)
+    # все копии в admin_cards — чтобы удалить у ВСЕХ при отмене/смене суммы
+    await db.pool().execute(
+        "UPDATE rb_withdrawals SET admin_cards=$1::jsonb, admin_chat_id=$2, admin_msg_id=$3 "
+        "WHERE id=$4",
+        json.dumps(sent), sent[0][0] if sent else None,
+        sent[0][1] if sent else None, wd["id"])
 
 
 async def drop_admin_card(bot, wd: dict):
-    if not wd.get("admin_chat_id") or not wd.get("admin_msg_id"):
-        return
-    with contextlib.suppress(Exception):
-        await bot.delete_message(wd["admin_chat_id"], wd["admin_msg_id"])
+    """Удаляет карточку у ВСЕХ, кому слали (владелец + payout-админы)."""
+    import json
+    cards = wd.get("admin_cards")
+    if isinstance(cards, str):
+        cards = json.loads(cards)
+    if not cards and wd.get("admin_chat_id") and wd.get("admin_msg_id"):
+        cards = [[wd["admin_chat_id"], wd["admin_msg_id"]]]
+    for chat_id, msg_id in (cards or []):
+        with contextlib.suppress(Exception):
+            await bot.delete_message(chat_id, msg_id)
     await db.pool().execute(
-        "UPDATE rb_withdrawals SET admin_chat_id=NULL, admin_msg_id=NULL WHERE id=$1", wd["id"])
+        "UPDATE rb_withdrawals SET admin_cards=NULL, admin_chat_id=NULL, admin_msg_id=NULL "
+        "WHERE id=$1", wd["id"])

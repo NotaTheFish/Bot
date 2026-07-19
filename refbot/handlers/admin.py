@@ -312,6 +312,54 @@ async def find_input(msg: Message, state: FSMContext):
         reply_markup=await kb.find_card(row["tg_id"], row["banned"]))
 
 
+@router.callback_query(F.data == "a_pending")
+async def cb_pending(c: CallbackQuery):
+    from config import PAYOUT_ADMINS
+    if (not await db.admin_chats(c.from_user.id) and c.from_user.id not in SUPER_ADMINS
+            and c.from_user.id not in PAYOUT_ADMINS):
+        return await c.answer("Нет доступа.", show_alert=True)
+    rows = await db.pool().fetch(
+        """
+        SELECT w.*, u.username, u.first_name
+        FROM rb_withdrawals w LEFT JOIN rb_users u ON u.tg_id = w.tg_id
+        WHERE w.status='pending' ORDER BY w.created_at
+        """)
+    sx = await settings.ctx()
+    if not rows:
+        return await c.answer("Открытых заявок нет 🎉", show_alert=True)
+    lines = []
+    for w in rows:
+        name = f"@{w['username']}" if w["username"] else (w["first_name"] or str(w["tg_id"]))
+        ago = (datetime.now(timezone.utc) - w["created_at"]).total_seconds() / 3600
+        wait = f"{int(ago)}ч" if ago >= 1 else f"{int(ago * 60)}м"
+        lines.append(f"#{w['id']} — {name} <code>{w['tg_id']}</code>\n"
+                     f"   {fmt(w['amount'])} {sx['e_' + w['currency']]} · ждёт {wait}")
+    await ui.edit(
+        c.message,
+        f"💸 <b>Открытые заявки на вывод</b> ({len(rows)})\n\n"
+        + "\n".join(lines)
+        + "\n\n<i>Карточки с кнопками уже пришли в ЛС. "
+          "Тут — просто чтобы ничего не потерять.</i>",
+        reply_markup=await kb.pending_list(rows))
+    await c.answer()
+
+
+@router.callback_query(F.data.startswith("a_wdcard:"))
+async def cb_resend_card(c: CallbackQuery):
+    from config import PAYOUT_ADMINS
+    from services import notify
+    if (not await db.admin_chats(c.from_user.id) and c.from_user.id not in SUPER_ADMINS
+            and c.from_user.id not in PAYOUT_ADMINS):
+        return await c.answer("Нет доступа.", show_alert=True)
+    wid = int(c.data.split(":")[1])
+    wd = await db.pool().fetchrow(
+        "SELECT * FROM rb_withdrawals WHERE id=$1 AND status='pending'", wid)
+    if not wd:
+        return await c.answer("Заявка уже обработана.", show_alert=True)
+    await notify.push_admin_card(c.bot, dict(wd))
+    await c.answer("Карточка прислана в ЛС.")
+
+
 # ---------------- баны ----------------
 class Unban(StatesGroup):
     query = State()

@@ -43,9 +43,16 @@ async def find_card(tg_id: int, banned: bool) -> InlineKeyboardMarkup:
     return kb.as_markup()
 
 
-async def admin_wd_card(wid: int, version: int) -> InlineKeyboardMarkup:
+async def admin_wd_card(wid: int, version: int, tg_id: int | None = None,
+                        user=None) -> InlineKeyboardMarkup:
     # version зашит в кнопку. Юзер поменял сумму -> version вырос -> старая кнопка мертва.
     kb = InlineKeyboardBuilder()
+    if tg_id:
+        name = (f"@{user['username']}" if user and user.get("username")
+                else ((user["first_name"] if user else None) or str(tg_id)))
+        url = (f"https://t.me/{user['username']}" if user and user.get("username")
+               else f"tg://user?id={tg_id}")
+        kb.button(text=f"👤 {name}", url=url)
     await btn(kb, "✅ Подтвердить вывод", f"wdok:{wid}:{version}")
     await btn(kb, "🚫 Отклонить", f"wdno:{wid}:{version}")
     kb.adjust(1)
@@ -56,13 +63,14 @@ async def admin_menu() -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
     await btn(kb, "Топ-25", "a_top", "top")
     await btn(kb, "🔍 Найти юзера", "a_find")
+    await btn(kb, "💸 Заявки на вывод", "a_pending")
     await btn(kb, "🚩 На проверке", "a_flagged")
     await btn(kb, "📊 Сводка", "a_stats")
     await btn(kb, "Чаты", "a_chats", "chat")
     await btn(kb, "🚫 Баны", "a_bans")
     await btn(kb, "🎨 Кастомизация", "a_skin")
     await btn(kb, "Назад", "menu", "back")
-    kb.adjust(2, 2, 2, 1)
+    kb.adjust(2, 2, 2, 2, 1)
     return kb.as_markup()
 
 
@@ -116,6 +124,16 @@ async def slot_card(slot: str, prefix: str, has_premium: bool) -> InlineKeyboard
         await btn(kb, "🗑 Убрать премиум", f"sk_prem_off:{slot}")
     await btn(kb, "♻️ Сброс к дефолту", f"sk_def:{prefix}:{slot}")
     await btn(kb, "Назад", "sk_emoji" if prefix == "sk_e" else "sk_label", "back")
+    kb.adjust(1)
+    return kb.as_markup()
+
+
+async def pending_list(rows) -> InlineKeyboardMarkup:
+    """Кнопка на каждую заявку — прислать карточку с кнопками заново."""
+    kb = InlineKeyboardBuilder()
+    for w in rows[:20]:
+        await btn(kb, f"#{w['id']} — прислать карточку", f"a_wdcard:{w['id']}")
+    await btn(kb, "Админка", "admin", "back")
     kb.adjust(1)
     return kb.as_markup()
 

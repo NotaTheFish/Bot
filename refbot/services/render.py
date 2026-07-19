@@ -9,9 +9,11 @@
 Все offset считаются в UTF-16 code units, как требует Bot API. Эмодзи вне BMP
 занимают 2 единицы, а не 1 — на этом обычно всё и ломается.
 """
+import asyncio
 import logging
 from html.parser import HTMLParser
 
+from aiogram.exceptions import TelegramBadRequest, TelegramRetryAfter
 from aiogram.types import MessageEntity
 
 log = logging.getLogger(__name__)
@@ -114,40 +116,67 @@ def render(html_text: str, emoji_map: dict[str, str] | None = None):
     return p.text, ents
 
 
+async def _safe(primary, fallback, retries: int = 2):
+    """
+    Один вызов Telegram, переживающий флуд-контроль и умеющий откатиться на HTML.
+
+    primary   — корутина-фабрика с премиум-entities (её можно вызвать несколько раз);
+    fallback  — корутина-фабрика с обычным HTML.
+
+    TelegramRetryAfter — это НЕ «бот сломался», это Telegram просит подождать N секунд.
+    Раньше это исключение ловил общий except и пытался переслать заново -> падало
+    наружу и роняло обработчик (та самая «зависшая» рулетка). Теперь ждём и повторяем,
+    а на HTML откатываемся только если Telegram реально не принял entities.
+    """
+    for attempt in range(retries + 1):
+        try:
+            return await primary()
+        except TelegramRetryAfter as e:
+            if attempt < retries:
+                await asyncio.sleep(e.retry_after + 1)
+                continue
+            # исчерпали попытки — пусть флуд всплывёт, его словит глобальный обработчик
+            raise
+        except TelegramBadRequest as e:
+            # entities не приняты (нет премиума / чужой набор) — честный фолбэк
+            log.warning("премиум-эмодзи отклонены (%s), шлю обычным HTML", e)
+            try:
+                return await fallback()
+            except TelegramRetryAfter as e2:
+                await asyncio.sleep(e2.retry_after + 1)
+                return await fallback()
+
+
 async def send(bot, chat_id: int, html_text: str, emoji_map=None, **kw):
-    """Шлём с премиум-эмодзи; если Telegram их не принял — падаем на обычный HTML.
+    """Шлём с премиум-эмодзи; Telegram их не принял — падаем на обычный HTML.
 
     Премиум доступен, если у владельца бота есть Telegram Premium (Bot API 9.4,
-    09.02.2026) либо боту куплен юзернейм на Fragment. Фолбэк — на случай, если
-    ни то ни другое, или эмодзи из недоступного набора.
+    09.02.2026) либо боту куплен юзернейм на Fragment.
     """
     text, ents = render(html_text, emoji_map)
     if ents is None:
-        return await bot.send_message(chat_id, html_text, **kw)
-    try:
-        return await bot.send_message(chat_id, text, entities=ents, parse_mode=None, **kw)
-    except Exception as e:
-        log.warning("премиум-эмодзи отклонены (%s), шлю обычным HTML", e)
-        return await bot.send_message(chat_id, html_text, **kw)
+        return await _safe(lambda: bot.send_message(chat_id, html_text, **kw),
+                           lambda: bot.send_message(chat_id, html_text, **kw))
+    return await _safe(
+        lambda: bot.send_message(chat_id, text, entities=ents, parse_mode=None, **kw),
+        lambda: bot.send_message(chat_id, html_text, **kw))
 
 
 async def edit(message, html_text: str, emoji_map=None, **kw):
     text, ents = render(html_text, emoji_map)
     if ents is None:
-        return await message.edit_text(html_text, **kw)
-    try:
-        return await message.edit_text(text, entities=ents, parse_mode=None, **kw)
-    except Exception as e:
-        log.warning("премиум-эмодзи отклонены (%s), редактирую обычным HTML", e)
-        return await message.edit_text(html_text, **kw)
+        return await _safe(lambda: message.edit_text(html_text, **kw),
+                           lambda: message.edit_text(html_text, **kw))
+    return await _safe(
+        lambda: message.edit_text(text, entities=ents, parse_mode=None, **kw),
+        lambda: message.edit_text(html_text, **kw))
 
 
 async def reply(message, html_text: str, emoji_map=None, **kw):
     text, ents = render(html_text, emoji_map)
     if ents is None:
-        return await message.reply(html_text, **kw)
-    try:
-        return await message.reply(text, entities=ents, parse_mode=None, **kw)
-    except Exception as e:
-        log.warning("премиум-эмодзи отклонены (%s), отвечаю обычным HTML", e)
-        return await message.reply(html_text, **kw)
+        return await _safe(lambda: message.reply(html_text, **kw),
+                           lambda: message.reply(html_text, **kw))
+    return await _safe(
+        lambda: message.reply(text, entities=ents, parse_mode=None, **kw),
+        lambda: message.reply(html_text, **kw))

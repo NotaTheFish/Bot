@@ -3,6 +3,7 @@ import contextlib
 import logging
 
 from aiogram import Bot, Dispatcher
+from aiogram.exceptions import TelegramBadRequest, TelegramRetryAfter
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 from aiogram.fsm.storage.memory import MemoryStorage
@@ -56,6 +57,23 @@ async def main():
     await settings.load()
     bot = Bot(BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
     dp = Dispatcher(storage=MemoryStorage())
+
+    @dp.errors()
+    async def on_error(event):
+        """
+        Ловит ВСЁ, что вылетело из обработчиков, чтобы бот не «зависал».
+        TelegramRetryAfter (флуд-контроль) — не ошибка логики, а просьба подождать:
+        логируем тихо. Остальное — с трейсбеком, но бот продолжает жить.
+        """
+        exc = event.exception
+        if isinstance(exc, TelegramRetryAfter):
+            log.warning("флуд-контроль: Telegram просит подождать %s c", exc.retry_after)
+        elif isinstance(exc, TelegramBadRequest):
+            log.warning("Telegram отклонил запрос: %s", exc)
+        else:
+            log.exception("необработанная ошибка в апдейте", exc_info=exc)
+        return True  # апдейт «обработан» — бот не падает
+
     dp.message.outer_middleware(contest.CounterMiddleware())
     dp.include_router(contest.router)
     dp.include_router(chat_events.router)
