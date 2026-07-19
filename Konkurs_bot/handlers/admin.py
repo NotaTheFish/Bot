@@ -15,7 +15,7 @@ from keyboards.kb import (
 from services.giveaway_service import (
     publish_announcement, sync_published_messages, refresh_all_invite_links,
     check_user_subscriptions, revalidate_participants, prepare_channels,
-    finalize_subscription_check, pick_weighted_winners,
+    finalize_subscription_check, pick_weighted_winners, make_invite_link,
 )
 
 logger = logging.getLogger(__name__)
@@ -296,8 +296,8 @@ async def resolve_chat_from_message(message: Message, bot: Bot) -> tuple[int | N
 
 
 async def verify_bot_in_chat(bot: Bot, chat_id: int) -> tuple[bool, str | None]:
-    """Returns (ok, invite_link_or_error). Checks bot is admin and gets an invite link
-    WITHOUT rotating an existing primary link (only generates if needed)."""
+    """Returns (ok, invite_link_or_error). Checks bot is admin and creates a proper
+    unlimited join-request-free invite link (https://t.me/+...)."""
     try:
         bot_info = await bot.get_me()
         member = await bot.get_chat_member(chat_id, bot_info.id)
@@ -307,14 +307,13 @@ async def verify_bot_in_chat(bot: Bot, chat_id: int) -> tuple[bool, str | None]:
         logger.error(f"get_chat_member({chat_id}) failed: {e}")
         return False, f"Бот не найден в чате. Ошибка: {e}"
 
-    # Try to create an invite link only now (this is a NEW giveaway channel, so safe to create once)
-    try:
-        invite_link = await bot.export_chat_invite_link(chat_id)
-        return True, invite_link
-    except Exception as e:
-        logger.warning(f"export_chat_invite_link({chat_id}) failed: {e}")
-        numeric = str(chat_id).replace("-100", "").lstrip("-")
-        return True, f"https://t.me/c/{numeric}"
+    link = await make_invite_link(bot, chat_id)
+    if link is None:
+        return False, (
+            "Не удалось создать пригласительную ссылку. "
+            "Убедись, что у бота есть право «Пригласительные ссылки» (Invite Users via Link)."
+        )
+    return True, link
 
 
 @router.message(CreateGiveaway.channels)

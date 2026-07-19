@@ -66,20 +66,56 @@ async def ensure_channel_info(bot: Bot, channel: dict) -> dict:
     return {**channel, 'chat_title': title}
 
 
-async def refresh_invite_link(bot: Bot, channel: dict) -> dict:
-    """Force-generate a new invite link and persist it. Use sparingly — invalidates the old one."""
+async def make_invite_link(bot: Bot, chat_id: int) -> str | None:
+    """
+    Create a proper public join link (https://t.me/+...) that works for users who
+    are NOT yet members. Uses createChatInviteLink (a NEW named link that does not
+    disturb the chat's primary link). Falls back to the public @username link if the
+    chat has one. Returns None if nothing works.
+    """
+    # 1. Preferred: a fresh unlimited invite link (no join request, no expiry)
     try:
-        new_link = await bot.export_chat_invite_link(channel['chat_id'])
+        result = await bot.create_chat_invite_link(chat_id, creates_join_request=False)
+        return result.invite_link
+    except Exception as e:
+        logger.warning(f"create_chat_invite_link({chat_id}) failed: {e}")
+
+    # 2. If the chat is public, use its @username link — always joinable
+    try:
+        chat = await bot.get_chat(chat_id)
+        if getattr(chat, 'username', None):
+            return f"https://t.me/{chat.username}"
+    except Exception as e:
+        logger.warning(f"get_chat({chat_id}) for username fallback failed: {e}")
+
+    # 3. Last resort: the primary link via export (may rotate it, but better than nothing)
+    try:
+        return await bot.export_chat_invite_link(chat_id)
+    except Exception as e:
+        logger.error(f"All invite-link methods failed for {chat_id}: {e}")
+        return None
+
+
+async def refresh_invite_link(bot: Bot, channel: dict) -> dict:
+    """Create a fresh working invite link and persist it."""
+    new_link = await make_invite_link(bot, channel['chat_id'])
+    if new_link:
         await db.update_channel_invite_link(channel['id'], new_link)
         return {**channel, 'invite_link': new_link}
-    except Exception as e:
-        logger.error(f"Could not refresh invite link for {channel['chat_id']}: {e}")
-        return channel
+    logger.error(f"Could not refresh invite link for {channel['chat_id']}")
+    return channel
+
+
+def _is_bad_invite_link(link: str | None) -> bool:
+    """Detect the old broken internal-style link that non-members can't open."""
+    if not link:
+        return True
+    return "t.me/c/" in link
 
 
 async def get_or_create_invite_link(bot: Bot, channel: dict) -> dict:
-    """Use the stored invite link if present; only generate one if missing."""
-    if channel.get('invite_link'):
+    """Use the stored invite link if it's a valid public one; otherwise create a new one."""
+    if not _is_bad_invite_link(channel.get('invite_link')):
         return channel
     return await refresh_invite_link(bot, channel)
 
