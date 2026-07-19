@@ -8,11 +8,35 @@ from aiogram.types import CallbackQuery, Message
 
 import db
 import keyboards as kb
-from config import FREE_ROULETTE, FREE_ROULETTE_BUDGET, SUPER_ADMINS
+from config import FREE_ROULETTE, FREE_ROULETTE_BUDGET, PAYOUT_ADMINS, SUPER_ADMINS
 from services import settings, withdrawals, ui
 from services.notify import drop_admin_card
 
 router = Router()
+
+
+@router.callback_query(F.data == "a_noop")
+async def cb_noop(c: CallbackQuery):
+    await c.answer("Только просмотр — изменять может главный админ.", show_alert=True)
+
+
+# ---------------- РОЛИ ----------------
+# Главный (SUPER_ADMINS + владелец чата в rb_admins) — может ВСЁ.
+# Второстепенный (PAYOUT_ADMINS) — заходит в админку, ВИДИТ всё, но из действий
+#   умеет только принимать/отклонять выводы. Ни банов, ни настроек, ни чатов.
+async def can_manage(uid: int) -> bool:
+    """Право на любые изменяющие действия: баны, кастомизация, чаты, разбан."""
+    return uid in SUPER_ADMINS or bool(await db.admin_chats(uid))
+
+
+async def can_view(uid: int) -> bool:
+    """Право войти в админку и смотреть. Второстепенный сюда тоже попадает."""
+    return await can_manage(uid) or uid in PAYOUT_ADMINS
+
+
+async def can_payout(uid: int) -> bool:
+    """Право подтверждать/отклонять выводы."""
+    return await can_manage(uid) or uid in PAYOUT_ADMINS
 
 
 class Find(StatesGroup):
@@ -102,7 +126,7 @@ async def addadmin(msg: Message):
 # ---------------- баны ----------------
 @router.message(Command("rban"))
 async def rban(msg: Message, command: CommandObject):
-    if not await db.admin_chats(msg.from_user.id) and msg.from_user.id not in SUPER_ADMINS:
+    if not await can_manage(msg.from_user.id):
         return
     target = None
     if msg.reply_to_message:
@@ -131,7 +155,7 @@ async def rban(msg: Message, command: CommandObject):
 
 @router.message(Command("runban"))
 async def runban(msg: Message, command: CommandObject):
-    if not await db.admin_chats(msg.from_user.id) and msg.from_user.id not in SUPER_ADMINS:
+    if not await can_manage(msg.from_user.id):
         return
     target = msg.reply_to_message.from_user.id if msg.reply_to_message else \
         (int(command.args) if command.args and command.args.lstrip("-").isdigit() else None)
@@ -146,15 +170,15 @@ async def runban(msg: Message, command: CommandObject):
 # ---------------- админ-меню ----------------
 @router.callback_query(F.data == "admin")
 async def cb_admin(c: CallbackQuery):
-    if not await db.admin_chats(c.from_user.id) and c.from_user.id not in SUPER_ADMINS:
+    if not await can_view(c.from_user.id):
         return await c.answer("Нет доступа.", show_alert=True)
-    await ui.edit(c.message, "🛠 <b>Админка</b>", reply_markup=await kb.admin_menu())
+    await ui.edit(c.message, "🛠 <b>Админка</b>", reply_markup=await kb.admin_menu(await can_manage(c.from_user.id)))
     await c.answer()
 
 
 @router.callback_query(F.data == "a_top")
 async def cb_top(c: CallbackQuery):
-    if not await db.admin_chats(c.from_user.id) and c.from_user.id not in SUPER_ADMINS:
+    if not await can_view(c.from_user.id):
         return await c.answer("Нет доступа.", show_alert=True)
     rows = await db.pool().fetch(
         """
@@ -172,13 +196,13 @@ async def cb_top(c: CallbackQuery):
         lines.append(f"{i}. {mark}{name} — {fmt(r['amount'])} {sx['e_' + r['currency']]} "
                      f"<code>{r['tg_id']}</code>")
     await ui.edit(c.message, f"{sx['e_top']} <b>Топ-25 по балансу</b>\n\n" + ("\n".join(lines) or "пусто"),
-                              reply_markup=await kb.admin_menu())
+                              reply_markup=await kb.admin_menu(await can_manage(c.from_user.id)))
     await c.answer()
 
 
 @router.callback_query(F.data == "a_stats")
 async def cb_stats(c: CallbackQuery):
-    if not await db.admin_chats(c.from_user.id) and c.from_user.id not in SUPER_ADMINS:
+    if not await can_view(c.from_user.id):
         return await c.answer("Нет доступа.", show_alert=True)
     sx = await settings.ctx()
     s = await db.pool().fetchrow(
@@ -224,19 +248,19 @@ async def cb_stats(c: CallbackQuery):
         f"{sx['e_withdraw']} <b>Выведено всего</b>\n"
         f"{sx['e_mushrooms']} {fmt(s['wm'])} | {sx['e_coins']} {fmt(s['wc'])}\n\n"
         f"🧯 <b>Суточный бюджет по чатам</b> {sx['e_mushrooms']}\n{budget}\n{free}",
-        reply_markup=await kb.admin_menu())
+        reply_markup=await kb.admin_menu(await can_manage(c.from_user.id)))
     await c.answer()
 
 
 @router.callback_query(F.data == "a_flagged")
 async def cb_flagged(c: CallbackQuery):
-    if not await db.admin_chats(c.from_user.id) and c.from_user.id not in SUPER_ADMINS:
+    if not await can_view(c.from_user.id):
         return await c.answer("Нет доступа.", show_alert=True)
     rows = await db.pool().fetch(
         "SELECT r.*, u.username FROM rb_referrals r LEFT JOIN rb_users u ON u.tg_id=r.inviter_id "
         "WHERE r.flagged AND r.status='hold' ORDER BY r.joined_at DESC LIMIT 20")
     if not rows:
-        await ui.edit(c.message, "🚩 Подозрительных начислений нет.", reply_markup=await kb.admin_menu())
+        await ui.edit(c.message, "🚩 Подозрительных начислений нет.", reply_markup=await kb.admin_menu(await can_manage(c.from_user.id)))
         return await c.answer()
     sx = await settings.ctx()
     lines = [f"• inviter <code>{r['inviter_id']}</code> (@{r['username']}) ← "
@@ -245,13 +269,13 @@ async def cb_flagged(c: CallbackQuery):
              f"  /approve_{r['id']}  /deny_{r['id']}" for r in rows]
     await ui.edit(c.message, 
         "🚩 <b>Ручная проверка</b>\nЭти начисления автоматом НЕ пройдут.\n\n" + "\n".join(lines),
-        reply_markup=await kb.admin_menu())
+        reply_markup=await kb.admin_menu(await can_manage(c.from_user.id)))
     await c.answer()
 
 
 @router.message(F.text.regexp(r"^/approve_(\d+)$").as_("m"))
 async def approve_ref(msg: Message, m):
-    if not await db.admin_chats(msg.from_user.id) and msg.from_user.id not in SUPER_ADMINS:
+    if not await can_manage(msg.from_user.id):
         return
     rid = int(m.group(1))
     await db.pool().execute("UPDATE rb_referrals SET flagged=FALSE WHERE id=$1", rid)
@@ -261,7 +285,7 @@ async def approve_ref(msg: Message, m):
 
 @router.message(F.text.regexp(r"^/deny_(\d+)$").as_("m"))
 async def deny_ref(msg: Message, m):
-    if not await db.admin_chats(msg.from_user.id) and msg.from_user.id not in SUPER_ADMINS:
+    if not await can_manage(msg.from_user.id):
         return
     rid = int(m.group(1))
     await db.pool().execute(
@@ -273,7 +297,7 @@ async def deny_ref(msg: Message, m):
 # ---------------- поиск юзера ----------------
 @router.callback_query(F.data == "a_find")
 async def cb_find(c: CallbackQuery, state: FSMContext):
-    if not await db.admin_chats(c.from_user.id) and c.from_user.id not in SUPER_ADMINS:
+    if not await can_view(c.from_user.id):
         return await c.answer("Нет доступа.", show_alert=True)
     await state.set_state(Find.query)
     await ui.edit(c.message, "🔍 Отправь @username или user_id", reply_markup=await kb.back_menu())
@@ -287,7 +311,7 @@ async def find_input(msg: Message, state: FSMContext):
     row = await db.pool().fetchrow(
         "SELECT * FROM rb_users WHERE (username ILIKE $1) OR (tg_id::text = $1)", q)
     if not row:
-        return await ui.answer(msg, "Не найден.", reply_markup=await kb.admin_menu())
+        return await ui.answer(msg, "Не найден.", reply_markup=await kb.admin_menu(await can_manage(msg.from_user.id)))
     b = await db.balances(row["tg_id"])
     st = await db.pool().fetchrow(
         "SELECT count(*) FILTER (WHERE status='paid') paid, "
@@ -309,7 +333,7 @@ async def find_input(msg: Message, state: FSMContext):
         f"{sx['e_lost']} {st['lost']}\n"
         f"📅 В боте с {row['created_at']:%d.%m.%Y}\n\n"
         f"📜 <b>Последние операции</b>\n{hist}",
-        reply_markup=await kb.find_card(row["tg_id"], row["banned"]))
+        reply_markup=await kb.find_card(row["tg_id"], row["banned"], await can_manage(msg.from_user.id)))
 
 
 @router.callback_query(F.data == "a_pending")
@@ -385,12 +409,12 @@ async def _render_bans(c, links_mode: bool):
     hint = ("\n\n<i>Кнопки ниже — ссылки на профили.</i>" if links_mode and rows
             else "\n\n<i>ID указаны рядом с именами — для разбана.</i>" if rows else "")
     await ui.edit(c.message, f"🚫 <b>Баны</b> ({len(rows)})\n\n{body}{hint}",
-                  reply_markup=await kb.bans_panel(rows, links_mode))
+                  reply_markup=await kb.bans_panel(rows, links_mode, await can_manage(c.from_user.id)))
 
 
 @router.callback_query(F.data == "a_bans")
 async def cb_bans(c: CallbackQuery, state: FSMContext):
-    if not await db.admin_chats(c.from_user.id) and c.from_user.id not in SUPER_ADMINS:
+    if not await can_view(c.from_user.id):
         return await c.answer("Нет доступа.", show_alert=True)
     await state.clear()
     await _render_bans(c, links_mode=False)
@@ -399,7 +423,7 @@ async def cb_bans(c: CallbackQuery, state: FSMContext):
 
 @router.callback_query(F.data == "a_bans_links")
 async def cb_bans_links(c: CallbackQuery):
-    if not await db.admin_chats(c.from_user.id) and c.from_user.id not in SUPER_ADMINS:
+    if not await can_view(c.from_user.id):
         return await c.answer("Нет доступа.", show_alert=True)
     await _render_bans(c, links_mode=True)
     await c.answer()
@@ -407,8 +431,8 @@ async def cb_bans_links(c: CallbackQuery):
 
 @router.callback_query(F.data == "a_unban")
 async def cb_unban(c: CallbackQuery, state: FSMContext):
-    if not await db.admin_chats(c.from_user.id) and c.from_user.id not in SUPER_ADMINS:
-        return await c.answer("Нет доступа.", show_alert=True)
+    if not await can_manage(c.from_user.id):
+        return await c.answer("Только главный админ может разбанивать.", show_alert=True)
     await state.set_state(Unban.query)
     await ui.edit(c.message, "♻️ Пришли ID человека, которого разбанить.",
                   reply_markup=await kb.back_menu())
@@ -421,23 +445,23 @@ async def unban_input(msg: Message, state: FSMContext):
     q = (msg.text or "").strip()
     if not q.isdigit():
         return await ui.answer(msg, "ID — это число. Попробуй ещё раз через «🚫 Баны».",
-                               reply_markup=await kb.admin_menu())
+                               reply_markup=await kb.admin_menu(await can_manage(msg.from_user.id)))
     tg_id = int(q)
     u = await db.get_user(tg_id)
     if not u or not u["banned"]:
-        return await ui.answer(msg, "Этот ID не в бане.", reply_markup=await kb.admin_menu())
+        return await ui.answer(msg, "Этот ID не в бане.", reply_markup=await kb.admin_menu(await can_manage(msg.from_user.id)))
     await db.clear_ban(tg_id)
     await db.audit(msg.from_user.id, "unban", {"tg_id": tg_id})
     with contextlib.suppress(Exception):
         await ui.send(msg.bot, tg_id, "✅ С тебя сняли блокировку в системе.")
     await ui.answer(msg, f"✅ <code>{tg_id}</code> разблокирован.",
-                    reply_markup=await kb.admin_menu())
+                    reply_markup=await kb.admin_menu(await can_manage(msg.from_user.id)))
 
 
 @router.callback_query(F.data.startswith("a_toggleban:"))
 async def cb_toggle_ban(c: CallbackQuery):
-    if not await db.admin_chats(c.from_user.id) and c.from_user.id not in SUPER_ADMINS:
-        return await c.answer("Нет доступа.", show_alert=True)
+    if not await can_manage(c.from_user.id):
+        return await c.answer("Только главный админ может банить.", show_alert=True)
     tg_id = int(c.data.split(":")[1])
     u = await db.get_user(tg_id)
     if not u:
@@ -457,7 +481,7 @@ async def cb_toggle_ban(c: CallbackQuery):
             await ui.send(c.bot, tg_id, "✅ С тебя сняли блокировку в системе.")
         await c.answer("Разбанен.")
     with contextlib.suppress(Exception):
-        await c.message.edit_reply_markup(reply_markup=await kb.find_card(tg_id, now_banned))
+        await c.message.edit_reply_markup(reply_markup=await kb.find_card(tg_id, now_banned, await can_manage(c.from_user.id)))
 
 
 # ---------------- подтверждение вывода ----------------

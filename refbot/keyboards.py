@@ -30,14 +30,15 @@ async def wd_menu(has_active: bool) -> InlineKeyboardMarkup:
     return kb.as_markup()
 
 
-async def find_card(tg_id: int, banned: bool) -> InlineKeyboardMarkup:
+async def find_card(tg_id: int, banned: bool, manage: bool = True) -> InlineKeyboardMarkup:
     """Тумблер под найденным юзером: не забанен -> «🥳 бан» (забанит),
-    забанен -> «😡 бан» (разбанит)."""
+    забанен -> «😡 бан» (разбанит). У второстепенного тумблера нет — он не банит."""
     kb = InlineKeyboardBuilder()
-    if banned:
-        await btn(kb, "😡 бан", f"a_toggleban:{tg_id}")
-    else:
-        await btn(kb, "🥳 бан", f"a_toggleban:{tg_id}")
+    if manage:
+        if banned:
+            await btn(kb, "😡 бан", f"a_toggleban:{tg_id}")
+        else:
+            await btn(kb, "🥳 бан", f"a_toggleban:{tg_id}")
     await btn(kb, "Админка", "admin", "back")
     kb.adjust(1)
     return kb.as_markup()
@@ -59,7 +60,13 @@ async def admin_wd_card(wid: int, version: int, tg_id: int | None = None,
     return kb.as_markup()
 
 
-async def admin_menu() -> InlineKeyboardMarkup:
+async def admin_menu(manage: bool = True) -> InlineKeyboardMarkup:
+    """
+    manage=True  — главный админ: все кнопки, включая действия.
+    manage=False — второстепенный (PAYOUT_ADMINS): видит всё, но «Кастомизация»
+                   скрыта (это чистое действие). Баны/Чаты/Найти он видит, но
+                   внутри кнопки-действия ему не дадут — там свой гейт.
+    """
     kb = InlineKeyboardBuilder()
     await btn(kb, "Топ-25", "a_top", "top")
     await btn(kb, "🔍 Найти юзера", "a_find")
@@ -68,17 +75,21 @@ async def admin_menu() -> InlineKeyboardMarkup:
     await btn(kb, "📊 Сводка", "a_stats")
     await btn(kb, "Чаты", "a_chats", "chat")
     await btn(kb, "🚫 Баны", "a_bans")
-    await btn(kb, "🎨 Кастомизация", "a_skin")
+    if manage:
+        await btn(kb, "🎨 Кастомизация", "a_skin")
     await btn(kb, "Назад", "menu", "back")
     kb.adjust(2, 2, 2, 2, 1)
     return kb.as_markup()
 
 
-async def chat_admin_list(chats) -> InlineKeyboardMarkup:
+async def chat_admin_list(chats, manage: bool = True) -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
     for ch in chats:
         mark = "🟢" if ch["active"] else "⚪️"
-        await btn(kb, f"{mark} {ch['title']}", f"a_chat:{ch['chat_id']}")
+        # второстепенному чаты некликабельны: просмотр без действий.
+        # noop-кнопка показывает статус, но карточку вкл/выкл не открывает.
+        cb = f"a_chat:{ch['chat_id']}" if manage else "a_noop"
+        await btn(kb, f"{mark} {ch['title']}", cb)
     await btn(kb, "Админка", "admin", "back")
     kb.adjust(1)
     return kb.as_markup()
@@ -138,7 +149,7 @@ async def pending_list(rows) -> InlineKeyboardMarkup:
     return kb.as_markup()
 
 
-async def bans_panel(rows, links_mode: bool) -> InlineKeyboardMarkup:
+async def bans_panel(rows, links_mode: bool, manage: bool = True) -> InlineKeyboardMarkup:
     """
     links_mode=False — обычный вид: заголовок-строки (текст в сообщении), тут только действия.
     links_mode=True  — на месте действий появляются кнопки-ссылки tg://user на каждого.
@@ -154,7 +165,8 @@ async def bans_panel(rows, links_mode: bool) -> InlineKeyboardMarkup:
 
     if rows:
         await btn(kb, "🔗 Ссылки на профили", "a_bans_links")
-        await btn(kb, "♻️ Разбанить по ID", "a_unban")
+        if manage:
+            await btn(kb, "♻️ Разбанить по ID", "a_unban")
     await btn(kb, "Админка", "admin", "back")
     kb.adjust(1)
     return kb.as_markup()

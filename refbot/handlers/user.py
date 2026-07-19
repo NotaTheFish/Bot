@@ -26,9 +26,14 @@ def fmt(n: int) -> str:
 
 
 async def _is_admin(uid: int) -> bool:
-    """SUPER_ADMINS видят админку всегда, даже до первого /шайнуть.
-    Раньше проверялся только rb_admins — владелец кнопки не видел вообще."""
-    return uid in SUPER_ADMINS or bool(await db.admin_chats(uid))
+    """
+    Кто видит кнопку «Админка»: главный (SUPER_ADMINS / rb_admins) И второстепенный
+    (PAYOUT_ADMINS) — последний заходит смотреть и принимать выводы.
+    Что именно внутри доступно, решают гейты в admin.py (can_view / can_manage).
+    """
+    from config import PAYOUT_ADMINS
+    return (uid in SUPER_ADMINS or uid in PAYOUT_ADMINS
+            or bool(await db.admin_chats(uid)))
 
 
 async def _payout_chat() -> int | None:
