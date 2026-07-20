@@ -192,25 +192,54 @@ ALTER TABLE rb_chats ADD COLUMN IF NOT EXISTS deactivated_at TIMESTAMPTZ;
 ALTER TABLE rb_chats ADD COLUMN IF NOT EXISTS deactivated_by BIGINT;
 
 
--- ---------- 4b. Свободная рулетка (чаты без /bind) ----------
--- Отдельно от rb_chats СПЕЦИАЛЬНО: иначе случайные чаты полезут в «Мою ссылку»,
--- в маршрутизацию выводов и в список чатов админки.
+-- ---------- 4b. Рулетка (одобренные чаты) ----------
+-- Рулетка !шайн работает ТОЛЬКО в чатах, где главный админ включил её через /шимм.
+-- Отдельно от rb_chats СПЕЦИАЛЬНО: иначе чат с одной лишь рулеткой полез бы
+-- в «Мою ссылку», в маршрутизацию выводов и т.д.
 
--- глобальный суточный потолок выплат по всем непривязанным чатам
-CREATE TABLE IF NOT EXISTS rb_free_budget (
+CREATE TABLE IF NOT EXISTS rb_roulette_chats (
+    chat_id        BIGINT PRIMARY KEY,
+    title          TEXT,
+    active         BOOLEAN NOT NULL DEFAULT TRUE,
+    spins          INT NOT NULL DEFAULT 0,
+    enabled_by     BIGINT,
+    enabled_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+    deactivated_at TIMESTAMPTZ,
+    deactivated_by BIGINT,
+    last_spin_at   TIMESTAMPTZ
+);
+
+-- Перенос уже включённых чатов из прежней «свободной» таблицы (если она была).
+-- Незаблокированные становятся активными одобренными чатами.
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name='rb_free_chats') THEN
+        INSERT INTO rb_roulette_chats (chat_id, title, active, spins, enabled_at)
+        SELECT chat_id, title, NOT blocked, spins, first_seen
+        FROM rb_free_chats
+        ON CONFLICT (chat_id) DO NOTHING;
+    END IF;
+END $$;
+
+-- Суточный бюджет рулетки по одобренным чатам (общий потолок-предохранитель).
+CREATE TABLE IF NOT EXISTS rb_roulette_budget (
     day        DATE PRIMARY KEY,
     spent_mush BIGINT NOT NULL DEFAULT 0
 );
 
--- реестр чатов, где крутили без привязки: для видимости и блокировки
-CREATE TABLE IF NOT EXISTS rb_free_chats (
-    chat_id    BIGINT PRIMARY KEY,
-    title      TEXT,
-    blocked    BOOLEAN NOT NULL DEFAULT FALSE,
-    spins      INT NOT NULL DEFAULT 0,
-    first_seen TIMESTAMPTZ NOT NULL DEFAULT now(),
-    last_seen  TIMESTAMPTZ NOT NULL DEFAULT now()
-);
+-- Перенос израсходованного бюджета за сегодня из старой таблицы.
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name='rb_free_budget') THEN
+        INSERT INTO rb_roulette_budget (day, spent_mush)
+        SELECT day, spent_mush FROM rb_free_budget
+        ON CONFLICT (day) DO NOTHING;
+    END IF;
+END $$;
+
+-- Старые таблицы больше не нужны — «свободного» режима нет.
+DROP TABLE IF EXISTS rb_free_chats;
+DROP TABLE IF EXISTS rb_free_budget;
 
 -- ---------- 4c. Еженедельный конкурс по активности ----------
 -- Отдельно от rb_chats: /шимшайнуть не должен привязывать чат к рефералке.

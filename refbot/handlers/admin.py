@@ -8,7 +8,7 @@ from aiogram.types import CallbackQuery, Message
 
 import db
 import keyboards as kb
-from config import FREE_ROULETTE, FREE_ROULETTE_BUDGET, PAYOUT_ADMINS, SUPER_ADMINS
+from config import PAYOUT_ADMINS, ROULETTE_DAILY_BUDGET, SUPER_ADMINS
 from services import settings, withdrawals, ui
 from services.notify import drop_admin_card
 
@@ -228,15 +228,15 @@ async def cb_stats(c: CallbackQuery):
         f"{fmt(ch['budget_spent_mush'])} / {fmt(ch['daily_budget_mush'])}"
         for ch in chats) or "  нет привязанных чатов"
 
-    # свободная рулетка: чаты без /шайнуть
-    fb = await db.pool().fetchval(
-        "SELECT spent_mush FROM rb_free_budget WHERE day=CURRENT_DATE") or 0
-    fc = await db.pool().fetchrow(
-        "SELECT count(*) n, count(*) FILTER (WHERE blocked) b FROM rb_free_chats")
-    free = (f"\n  {sx['e_roulette']} <b>Свободная рулетка</b> (чаты без привязки)\n"
-            f"  {fmt(fb)} / {fmt(FREE_ROULETTE_BUDGET)}"
-            f"{' — ВЫКЛЮЧЕНА' if not FREE_ROULETTE else ''}\n"
-            f"  Чатов: {fc['n']} (заблокировано {fc['b']})")
+    # рулетка: одобренные через /шимм чаты
+    rb = await db.pool().fetchval(
+        "SELECT spent_mush FROM rb_roulette_budget WHERE day=CURRENT_DATE") or 0
+    rc = await db.pool().fetchrow(
+        "SELECT count(*) FILTER (WHERE active) n, count(*) FILTER (WHERE NOT active) off "
+        "FROM rb_roulette_chats")
+    free = (f"\n  {sx['e_roulette']} <b>Рулетка</b> (одобренные чаты)\n"
+            f"  {fmt(rb)} / {fmt(ROULETTE_DAILY_BUDGET)} за сегодня\n"
+            f"  Активных чатов: {rc['n']} (выключено {rc['off']})")
     await ui.edit(c.message, 
         f"📊 <b>Сводка</b>\n\n"
         f"{sx['e_refs']} Юзеров: {s['users']} (забанено {s['banned']})\n"

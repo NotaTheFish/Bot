@@ -4,19 +4,58 @@ from datetime import date
 
 import asyncpg
 from aiogram import Bot, F, Router
+from aiogram.filters import Command
 from aiogram.types import Message
 
 import db
 import roulette
 import time
 
-from config import (ANIM_DELAY, ANIM_FRAMES, COIN_RATE, FREE_ROULETTE,
-                    FREE_ROULETTE_BUDGET, SPIN_COMMANDS, SPIN_NAG_COOLDOWN,
+from config import (ANIM_DELAY, ANIM_FRAMES, COIN_RATE, ROULETTE_DAILY_BUDGET,
+                    SPIN_COMMANDS, SPIN_NAG_COOLDOWN, SUPER_ADMINS,
                     UNLIMITED_SPIN_IDS)
 from services import settings, ui
 from services.render import edit as r_edit, reply as r_reply
 
 router = Router()
+
+
+# ==================== ВКЛ/ВЫКЛ РУЛЕТКИ (/шимм, /отшимм) ====================
+@router.message(Command("шимм", "shimm"), F.chat.type.in_({"group", "supergroup"}))
+async def shimm_on(msg: Message):
+    """
+    Включить рулетку в этом чате. ТОЛЬКО главный админ бота (SUPER_ADMINS):
+    рулетка тратит грибы из его кармана, ему и решать, где она крутит.
+    """
+    if msg.from_user.id not in SUPER_ADMINS:
+        return  # молчим для всех, кроме владельца бота — команда не «светится»
+    await db.pool().execute(
+        """
+        INSERT INTO rb_roulette_chats (chat_id, title, active, enabled_by, enabled_at)
+        VALUES ($1, $2, TRUE, $3, now())
+        ON CONFLICT (chat_id) DO UPDATE
+        SET active = TRUE, title = EXCLUDED.title, enabled_by = EXCLUDED.enabled_by,
+            deactivated_at = NULL, deactivated_by = NULL
+        """, msg.chat.id, msg.chat.title or "", msg.from_user.id)
+    await db.audit(msg.from_user.id, "roulette_on", {"chat_id": msg.chat.id})
+    await ui.reply(msg, "🎰 Рулетка включена в этом чате. Игроки могут крутить !шайн.\n"
+                        "Выключить: /отшимм")
+
+
+@router.message(Command("отшимм", "otshimm"), F.chat.type.in_({"group", "supergroup"}))
+async def shimm_off(msg: Message):
+    """Выключить рулетку в этом чате. Только главный админ бота."""
+    if msg.from_user.id not in SUPER_ADMINS:
+        return
+    row = await db.pool().fetchrow(
+        "SELECT active FROM rb_roulette_chats WHERE chat_id=$1", msg.chat.id)
+    if not row or not row["active"]:
+        return await ui.reply(msg, "Рулетка тут и так не включена.")
+    await db.pool().execute(
+        "UPDATE rb_roulette_chats SET active=FALSE, deactivated_at=now(), deactivated_by=$1 "
+        "WHERE chat_id=$2", msg.from_user.id, msg.chat.id)
+    await db.audit(msg.from_user.id, "roulette_off", {"chat_id": msg.chat.id})
+    await ui.reply(msg, "🎰 Рулетка выключена. Включить обратно: /шимм")
 
 
 # {tg_id: когда последний раз сказали «уже крутил»}. Инстанс один, так что памяти хватит.
@@ -47,52 +86,30 @@ class ChatBlocked(Exception):
 
 async def _charge_budget(conn, chat_id: int, title: str, cost: int) -> None:
     """
-    Списать cost (в грибах) с суточного бюджета. Бросает BudgetExhausted / ChatBlocked.
+    Списать cost (в грибах) с суточного бюджета рулетки.
+    Бросает ChatBlocked, если чат НЕ одобрен через /шимм, или BudgetExhausted.
 
-    Привязанный чат -> его собственный бюджет из rb_chats.
-    Непривязанный  -> общий потолок FREE_ROULETTE_BUDGET на ВСЕ такие чаты сразу.
-    Отдельный счётчик, потому что у случайного чата нет и не должно быть строки
-    в rb_chats: иначе он вылезет в «Мою ссылку» и в маршрутизацию выводов.
+    Рулетка теперь полностью отвязана от рефералки: работает ТОЛЬКО в чатах из
+    rb_roulette_chats (одобренных главным админом). Нет чата в списке — не крутим,
+    чтобы не платить за грибы в чужих чатах, о которых владелец бота не знает.
     """
-    bound = await conn.fetchrow(
-        "SELECT * FROM rb_chats WHERE chat_id=$1 AND active FOR UPDATE", chat_id)
-
-    if bound:
-        if bound["budget_date"] != date.today():
-            await conn.execute(
-                "UPDATE rb_chats SET budget_date=CURRENT_DATE, budget_spent_mush=0 "
-                "WHERE chat_id=$1", chat_id)
-            spent = 0
-        else:
-            spent = bound["budget_spent_mush"]
-        if spent + cost > bound["daily_budget_mush"]:
-            raise BudgetExhausted
-        await conn.execute(
-            "UPDATE rb_chats SET budget_spent_mush = budget_spent_mush + $1 WHERE chat_id=$2",
-            cost, chat_id)
-        return
-
-    # --- свободный чат ---
-    if not FREE_ROULETTE:
-        raise ChatBlocked
-    fc = await conn.fetchrow("SELECT blocked FROM rb_free_chats WHERE chat_id=$1", chat_id)
-    if fc and fc["blocked"]:
+    approved = await conn.fetchrow(
+        "SELECT active FROM rb_roulette_chats WHERE chat_id=$1", chat_id)
+    if not approved or not approved["active"]:
         raise ChatBlocked
 
+    # общий суточный потолок-предохранитель на все одобренные чаты вместе
     await conn.execute(
-        "INSERT INTO rb_free_budget (day) VALUES (CURRENT_DATE) ON CONFLICT DO NOTHING")
+        "INSERT INTO rb_roulette_budget (day) VALUES (CURRENT_DATE) ON CONFLICT DO NOTHING")
     spent = await conn.fetchval(
-        "SELECT spent_mush FROM rb_free_budget WHERE day=CURRENT_DATE FOR UPDATE")
-    if spent + cost > FREE_ROULETTE_BUDGET:
+        "SELECT spent_mush FROM rb_roulette_budget WHERE day=CURRENT_DATE FOR UPDATE")
+    if spent + cost > ROULETTE_DAILY_BUDGET:
         raise BudgetExhausted
     await conn.execute(
-        "UPDATE rb_free_budget SET spent_mush = spent_mush + $1 WHERE day=CURRENT_DATE", cost)
+        "UPDATE rb_roulette_budget SET spent_mush = spent_mush + $1 WHERE day=CURRENT_DATE", cost)
     await conn.execute(
-        """
-        INSERT INTO rb_free_chats (chat_id, title, spins) VALUES ($1,$2,1)
-        ON CONFLICT (chat_id) DO UPDATE
-        SET title=EXCLUDED.title, spins=rb_free_chats.spins+1, last_seen=now()
-        """, chat_id, title)
+        "UPDATE rb_roulette_chats SET spins = spins + 1, last_spin_at = now(), "
+        "title = COALESCE($2, title) WHERE chat_id = $1", chat_id, title or None)
 
 
 def _match(text: str) -> bool:

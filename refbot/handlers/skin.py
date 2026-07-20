@@ -63,16 +63,33 @@ async def deny_view(c: CallbackQuery) -> bool:
 async def cb_chats(c: CallbackQuery):
     if await deny_view(c):
         return
-    chats = await db.pool().fetch("SELECT * FROM rb_chats ORDER BY active DESC, created_at")
+    chats = await db.chats_overview()
     if not chats:
-        return await c.answer("Нет привязанных чатов. Напиши /шайнуть в чате.", show_alert=True)
+        return await c.answer("Нет чатов. /шайнуть — рефералка, /шимм — рулетка, "
+                              "/шимшайнуть — конкурс.", show_alert=True)
     manage = await is_admin(c.from_user.id)
-    await ui.edit(c.message, 
+
+    lines = []
+    for ch in chats:
+        svc = []
+        if ch["referral"]:
+            svc.append("Рефералка")
+        if ch["roulette"]:
+            svc.append("Рулетка")
+        if ch["contest"]:
+            svc.append("Конкурс")
+        active = bool(svc)
+        mark = "🟢" if active else "⚪️"
+        title = ch["title"] or str(ch["chat_id"])
+        svc_line = " · ".join(svc) if svc else "ничего не активно"
+        lines.append(f"{mark} <b>{title}</b>\n   {svc_line}")
+
+    await ui.edit(c.message,
         "📢 <b>Чаты</b>\n\n"
-        "🟢 активен — выдаёт ссылки, копит рефералов, крутит рулетку\n"
-        "⚪️ отключён — новых начислений нет, <b>но весь прогресс сохранён</b>\n\n"
-        + ("Отключение обратимо и ничего не стирает." if manage
-           else "<i>Только просмотр.</i>"),
+        + "\n\n".join(lines) +
+        "\n\n<i>Рефералка — /шайнуть · Рулетка — /шимм · Конкурс — /шимшайнуть</i>"
+        + ("\n\nНажми на чат, чтобы управлять рефералкой." if manage
+           else "\n\n<i>Только просмотр.</i>"),
         reply_markup=await kb.chat_admin_list(chats, manage))
     await c.answer()
 

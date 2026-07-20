@@ -124,10 +124,52 @@ async def admin_chats(tg_id: int) -> list[int]:
     return [r["chat_id"] for r in rows]
 
 
+async def chats_overview():
+    """
+    Объединённый список всех чатов из трёх независимых систем с флагами услуг:
+      referral — рефералка (/шайнуть, rb_chats)
+      roulette — рулетка   (/шимм,     rb_roulette_chats)
+      contest  — конкурс   (/шимшайнуть, rb_contest_chats)
+
+    Один чат может использовать любую комбинацию. Собираем из всех источников,
+    чтобы чат с одной лишь рулеткой тоже попал в список (раньше брали только
+    rb_chats и такие чаты не показывались).
+
+    Возвращает список dict: chat_id, title, referral, roulette, contest (bool),
+    отсортирован: сначала где хоть что-то активно, потом по названию.
+    """
+    rows = await pool().fetch(
+        """
+        WITH ids AS (
+            SELECT chat_id, title, active FROM rb_chats
+            UNION ALL
+            SELECT chat_id, title, active FROM rb_roulette_chats
+            UNION ALL
+            SELECT chat_id, title, active FROM rb_contest_chats
+        ),
+        titles AS (
+            SELECT chat_id,
+                   COALESCE(MAX(title) FILTER (WHERE title <> ''), MAX(title)) AS title
+            FROM ids GROUP BY chat_id
+        )
+        SELECT t.chat_id, t.title,
+               COALESCE(rc.active, FALSE) AS referral,
+               COALESCE(ro.active, FALSE) AS roulette,
+               COALESCE(cc.active, FALSE) AS contest
+        FROM titles t
+        LEFT JOIN rb_chats          rc ON rc.chat_id = t.chat_id
+        LEFT JOIN rb_roulette_chats ro ON ro.chat_id = t.chat_id
+        LEFT JOIN rb_contest_chats  cc ON cc.chat_id = t.chat_id
+        ORDER BY (COALESCE(rc.active,FALSE) OR COALESCE(ro.active,FALSE)
+                  OR COALESCE(cc.active,FALSE)) DESC, t.title
+        """)
+    return [dict(r) for r in rows]
+
+
 EXPECTED_TABLES = [
     "rb_users", "rb_chats", "rb_admins", "rb_balances", "rb_ledger", "rb_ref_links",
     "rb_invites", "rb_targets", "rb_referrals", "rb_withdrawals", "rb_spins", "rb_audit",
-    "rb_settings", "rb_free_budget", "rb_free_chats",
+    "rb_settings", "rb_roulette_budget", "rb_roulette_chats",
     "rb_contest_chats", "rb_week_msgs", "rb_week_draws",
 ]
 

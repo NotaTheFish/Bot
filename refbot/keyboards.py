@@ -85,11 +85,17 @@ async def admin_menu(manage: bool = True) -> InlineKeyboardMarkup:
 async def chat_admin_list(chats, manage: bool = True) -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
     for ch in chats:
-        mark = "🟢" if ch["active"] else "⚪️"
-        # второстепенному чаты некликабельны: просмотр без действий.
-        # noop-кнопка показывает статус, но карточку вкл/выкл не открывает.
-        cb = f"a_chat:{ch['chat_id']}" if manage else "a_noop"
-        await btn(kb, f"{mark} {ch['title']}", cb)
+        active = ch.get("referral") or ch.get("roulette") or ch.get("contest")
+        mark = "🟢" if active else "⚪️"
+        # Карточка (a_chat:) управляет рефералкой и существует только для чатов
+        # с рефералкой. Чат без неё (только рулетка/конкурс) карточки не имеет.
+        # Второстепенному все чаты некликабельны (просмотр без действий).
+        if manage and ch.get("referral"):
+            cb = f"a_chat:{ch['chat_id']}"
+        else:
+            cb = "a_noop"
+        title = ch.get("title") or str(ch["chat_id"])
+        await btn(kb, f"{mark} {title}", cb)
     await btn(kb, "Админка", "admin", "back")
     kb.adjust(1)
     return kb.as_markup()
