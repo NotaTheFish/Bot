@@ -85,6 +85,14 @@ async def giveaway_info_text(g: dict) -> str:
         f"  {place_emoji(p['place'])} {p['place']} место — {p['description']}"
         for p in prizes
     )
+    # Guard against Telegram's 4096-char limit when there are many prizes:
+    # if the block is huge, collapse it to a compact summary.
+    if len(prizes_text) > 2500:
+        prizes_text = (
+            f"  {place_emoji(1)} 1 место — {prizes[0]['description']}\n"
+            f"  … и ещё {len(prizes) - 1} мест "
+            f"(всего {len(prizes)} призов — полный список в объявлении)"
+        )
     channels_text = "\n".join(f"  • {ch['chat_title']}" for ch in channels) or "  (нет каналов)"
 
     unsub_note = ""
@@ -235,10 +243,10 @@ async def process_announcement(message: Message, state: FSMContext):
 async def process_prize_places(message: Message, state: FSMContext):
     try:
         places = int(message.text.strip())
-        if places < 1 or places > 20:
+        if places < 1 or places > 100:
             raise ValueError
     except ValueError:
-        await message.answer("❌ Введи корректное число от 1 до 20:")
+        await message.answer("❌ Введи корректное число от 1 до 100:")
         return
 
     await state.update_data(prize_places=places, prizes_collected=[], current_place=1)
@@ -508,10 +516,10 @@ async def edit_prizes_start(message: Message, state: FSMContext):
 async def edit_prizes_places(message: Message, state: FSMContext):
     try:
         places = int(message.text.strip())
-        if places < 1 or places > 20:
+        if places < 1 or places > 100:
             raise ValueError
     except ValueError:
-        await message.answer("❌ Введи корректное число от 1 до 20:")
+        await message.answer("❌ Введи корректное число от 1 до 100:")
         return
 
     await state.update_data(new_prize_places=places, new_prizes_collected=[], new_current_place=1)
