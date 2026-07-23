@@ -117,11 +117,12 @@ async def skin_menu() -> InlineKeyboardMarkup:
     await btn(kb, "😀 Эмодзи", "sk_emoji")
     await btn(kb, "🏷 Названия валют", "sk_label")
     await btn(kb, "♻️ Свободные замены", "sk_free")
+    await btn(kb, "⏳ Реакция ожидания", "sk_wait")
     await btn(kb, "📝 Шаблон профиля", "sk_tpl")
     await btn(kb, "🧪 Тест премиум-эмодзи", "sk_test")
     await btn(kb, "🗑 Сбросить всё", "sk_reset")
     await btn(kb, "Админка", "admin", "back")
-    kb.adjust(2, 1, 1, 1, 1, 1)
+    kb.adjust(2, 1, 1, 1, 1, 1, 1)
     return kb.as_markup()
 
 

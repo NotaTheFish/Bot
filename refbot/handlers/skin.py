@@ -28,6 +28,7 @@ class Skin(StatesGroup):
     label = State()
     tpl = State()
     free = State()
+    wait = State()
 
 
 async def is_admin(uid: int) -> bool:
@@ -267,6 +268,85 @@ async def cb_prem_off(c: CallbackQuery):
     await settings.unset(f"premium.{slot}")
     await c.answer("Премиум убран, символ остался.", show_alert=True)
     await _render_emoji(c)
+
+
+# ---------- реакция ожидания ----------
+@router.callback_query(F.data == "sk_wait")
+async def cb_sk_wait(c: CallbackQuery, state: FSMContext):
+    if await deny(c):
+        return
+    await state.set_state(Skin.wait)
+    s = await settings.load()
+    from services.reactions import WAIT_SLOT, DEFAULT_WAIT_EMOJI
+    cid = s.get(f"premium.{WAIT_SLOT}")
+    plain = s.get(f"emoji.{WAIT_SLOT}") or DEFAULT_WAIT_EMOJI
+    cur = (f"{plain} ⭐️ <code>{cid}</code>" if cid else plain)
+    await ui.edit(c.message,
+        f"⏳ <b>Реакция ожидания</b>\n\n"
+        f"Её бот ставит на сообщение !шайн, пока игрок ждёт очереди в живом чате.\n\n"
+        f"Сейчас: {cur}\n\n"
+        f"<b>Отправь эмодзи одним сообщением.</b>\n"
+        f"Обычное — просто эмодзи.\n"
+        f"Премиум — отправь премиум-эмодзи, бот вытащит ID.\n\n"
+        f"<i>⚠️ Премиум-реакцию Telegram примет, только если в НАСТРОЙКАХ ЧАТА "
+        f"разрешены кастомные реакции (Управление чатом → Реакции). Если нет — "
+        f"бот автоматически поставит обычные часы. Это ограничение Telegram, "
+        f"не бота.</i>",
+        reply_markup=await kb.slot_card(WAIT_SLOT, "sk_waitoff", bool(cid)))
+    await c.answer()
+
+
+@router.message(Skin.wait)
+async def sk_wait_input(msg: Message, state: FSMContext):
+    if not await is_admin(msg.from_user.id):
+        return await state.clear()
+    from services.reactions import WAIT_SLOT
+    text = (msg.text or "").strip()
+    if not text or len(text) > 16:
+        return await ui.answer(msg, "Нужно одно эмодзи. Попробуй ещё раз.")
+
+    ce = next((e for e in (msg.entities or []) if e.type == "custom_emoji"), None)
+    if ce:
+        b = text.encode("utf-16-le")
+        ch = b[ce.offset * 2:(ce.offset + ce.length) * 2].decode("utf-16-le")
+        if not await settings.set(f"emoji.{WAIT_SLOT}", ch, msg.from_user.id):
+            return await ui.answer(msg, NO_TABLE)
+        await settings.set(f"premium.{WAIT_SLOT}", ce.custom_emoji_id, msg.from_user.id)
+        note = (f"⭐️ Премиум-реакция сохранена\nID: <code>{ce.custom_emoji_id}</code>\n"
+                f"Запасная (обычная): {ch}\n\n"
+                f"<i>Сработает, если чат разрешил кастомные реакции. Иначе — запасная.</i>")
+    else:
+        if not await settings.set(f"emoji.{WAIT_SLOT}", text, msg.from_user.id):
+            return await ui.answer(msg, NO_TABLE)
+        await settings.unset(f"premium.{WAIT_SLOT}")
+        note = f"Сохранено (обычная реакция): {text}"
+
+    await state.clear()
+    await db.audit(msg.from_user.id, "skin_wait_reaction", {})
+    await ui.answer(msg, f"✅ <b>Реакция ожидания</b>\n\n{note}",
+                     reply_markup=await kb.skin_menu())
+
+
+@router.callback_query(F.data.startswith("sk_waitoff:"))
+async def cb_wait_off(c: CallbackQuery):
+    if await deny(c):
+        return
+    from services.reactions import WAIT_SLOT
+    await settings.unset(f"premium.{WAIT_SLOT}")
+    await c.answer("Премиум-реакция убрана, осталась обычная.", show_alert=True)
+    await _rerender_wait(c)
+
+
+async def _rerender_wait(c: CallbackQuery):
+    s = await settings.load()
+    from services.reactions import WAIT_SLOT, DEFAULT_WAIT_EMOJI
+    cid = s.get(f"premium.{WAIT_SLOT}")
+    plain = s.get(f"emoji.{WAIT_SLOT}") or DEFAULT_WAIT_EMOJI
+    cur = (f"{plain} ⭐️ <code>{cid}</code>" if cid else plain)
+    await ui.edit(c.message,
+        f"⏳ <b>Реакция ожидания</b>\n\nСейчас: {cur}\n\n"
+        f"<i>Отправь эмодзи, чтобы сменить.</i>",
+        reply_markup=await kb.slot_card(WAIT_SLOT, "sk_waitoff", bool(cid)))
 
 
 # ---------- названия валют ----------

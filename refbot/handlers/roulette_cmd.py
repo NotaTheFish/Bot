@@ -14,8 +14,9 @@ import time
 from config import (ANIM_DELAY, ANIM_FRAMES, COIN_RATE, ROULETTE_DAILY_BUDGET,
                     SPIN_COMMANDS, SPIN_NAG_COOLDOWN, SUPER_ADMINS,
                     UNLIMITED_SPIN_IDS)
-from services import settings, ui
+from services import settings, spin_queue, ui
 from services.render import edit as r_edit, reply as r_reply
+from services import reactions
 
 router = Router()
 
@@ -127,7 +128,6 @@ async def spin(msg: Message, bot: Bot):
 
     user = await db.get_user(uid)
     cur = user["currency"]
-    amount = roulette.roll(cur)
     today = date.today()
 
     # оформление берём из админки (эмодзи + премиум), а не из config
@@ -136,45 +136,87 @@ async def spin(msg: Message, bot: Bot):
     label = await settings.label(cur)
     em = await settings.emoji_map()
 
-    # Кто первый вставил строку в rb_spins за сегодня — тот и крутит.
-    # UNIQUE(tg_id, spin_day) => гонка из десяти сообщений подряд не пройдёт.
-    # Прокрутка одна в сутки НА ЮЗЕРА, а не на чат: два чата ≠ две прокрутки.
-    try:
-        async with db.pool().acquire() as conn:
-            async with conn.transaction():
-                cost = amount // COIN_RATE if cur == "coins" else amount
-                await _charge_budget(conn, msg.chat.id, msg.chat.title or "", cost)
+    # ---------- ДЕШЁВЫЕ ПРОВЕРКИ ДО ОЧЕРЕДИ ----------
+    # В очередь попадает ТОЛЬКО прокрутка, которая реально состоится. Кто уже
+    # крутил / чат не одобрен — отвечаем сразу, место в очереди не занимаем,
+    # иначе такой игрок тормозит тех, кто крутит впервые, и ждёт ради отказа.
 
-                if uid in UNLIMITED_SPIN_IDS:
-                    # UNIQUE(tg_id, spin_day) не обходим — сносим сегодняшнюю строку
-                    # и пишем заново. Индекс остаётся боевым для всех остальных.
-                    # Леджер при этом полный: у каждой прокрутки свой spin:<id>.
-                    await conn.execute(
-                        "DELETE FROM rb_spins WHERE tg_id=$1 AND spin_day=$2", uid, today)
+    # чат одобрен для рулетки?
+    approved = await db.pool().fetchval(
+        "SELECT active FROM rb_roulette_chats WHERE chat_id=$1", msg.chat.id)
+    if not approved:
+        return  # рулетка тут не включена (/шимм) — молчим
 
-                spin_id = await conn.fetchval(
-                    "INSERT INTO rb_spins (tg_id, chat_id, currency, amount, spin_day) "
-                    "VALUES ($1,$2,$3,$4,$5) RETURNING id",
-                    uid, msg.chat.id, cur, amount, today)
-                total = await db.apply(conn, uid, cur, amount, "roulette",
-                                       f"spin:{spin_id}", spin_id)
-    except asyncpg.UniqueViolationError:
-        # уже крутил сегодня. Отвечаем ОДИН раз, дальше молчим SPIN_NAG_COOLDOWN секунд.
-        if not _should_nag(uid):
-            return
-        last = await db.pool().fetchval(
+    # уже крутил сегодня? (быстрый предварительный отсев; финальная гарантия —
+    # UNIQUE(tg_id, spin_day) внутри транзакции, от гонки)
+    if uid not in UNLIMITED_SPIN_IDS:
+        prev = await db.pool().fetchval(
             "SELECT amount FROM rb_spins WHERE tg_id=$1 AND spin_day=$2", uid, today)
-        return await ui.reply(
-            msg, f"{e_rou} Ты уже крутил сегодня — выпало <b>{last:,}</b> {e_cur}.\n"
-                 f"Прокрутка одна в сутки. Возвращайся завтра.".replace(",", " "))
-    except BudgetExhausted:
-        # прокрутка НЕ засчитана — транзакция откатилась, завтра крутанёт
-        return await ui.reply(msg, "🧯 Суточный лимит выплат в этом чате исчерпан.\n"
-                               "Прокрутка не потрачена — заходи завтра.")
+        if prev is not None:
+            if not _should_nag(uid):
+                return
+            return await ui.reply(
+                msg, f"{e_rou} Ты уже крутил сегодня — выпало <b>{prev:,}</b> {e_cur}.\n"
+                     f"Прокрутка одна в сутки. Возвращайся завтра.".replace(",", " "))
 
+    amount = roulette.roll(cur)
+
+    # ---------- ОЧЕРЕДЬ НА ЧАТ ----------
+    # Пока в чате крутится чья-то анимация, ставим ждущему реакцию ожидания.
+    # Реакцию снимаем, как только очередь дошла (зашли в слот). Проверки уже
+    # пройдены выше, так что сюда встаёт только реальная прокрутка.
+    wait_set = False
+    if spin_queue.position(msg.chat.id) > 1:
+        wait_set = await reactions.set_wait(msg.chat.id, msg.message_id, bot)
+
+    async with spin_queue.QueueSlot(msg.chat.id):
+        if wait_set:
+            await reactions.clear(msg.chat.id, msg.message_id, bot)
+
+        try:
+            async with db.pool().acquire() as conn:
+                async with conn.transaction():
+                    cost = amount // COIN_RATE if cur == "coins" else amount
+                    await _charge_budget(conn, msg.chat.id, msg.chat.title or "", cost)
+
+                    if uid in UNLIMITED_SPIN_IDS:
+                        # UNIQUE(tg_id, spin_day) не обходим — сносим сегодняшнюю строку
+                        # и пишем заново. Индекс остаётся боевым для всех остальных.
+                        await conn.execute(
+                            "DELETE FROM rb_spins WHERE tg_id=$1 AND spin_day=$2", uid, today)
+
+                    spin_id = await conn.fetchval(
+                        "INSERT INTO rb_spins (tg_id, chat_id, currency, amount, spin_day) "
+                        "VALUES ($1,$2,$3,$4,$5) RETURNING id",
+                        uid, msg.chat.id, cur, amount, today)
+                    total = await db.apply(conn, uid, cur, amount, "roulette",
+                                           f"spin:{spin_id}", spin_id)
+        except asyncpg.UniqueViolationError:
+            # проскочил предварительную проверку (гонка) — крутил всё же сегодня
+            if not _should_nag(uid):
+                return
+            last = await db.pool().fetchval(
+                "SELECT amount FROM rb_spins WHERE tg_id=$1 AND spin_day=$2", uid, today)
+            return await ui.reply(
+                msg, f"{e_rou} Ты уже крутил сегодня — выпало <b>{last:,}</b> {e_cur}.\n"
+                     f"Прокрутка одна в сутки. Возвращайся завтра.".replace(",", " "))
+        except BudgetExhausted:
+            # прокрутка НЕ засчитана — транзакция откатилась, завтра крутанёт
+            return await ui.reply(msg, "🧯 Суточный лимит выплат в этом чате исчерпан.\n"
+                                   "Прокрутка не потрачена — заходи завтра.")
+        except ChatBlocked:
+            return  # чат выключили между проверкой и слотом — молчим
+
+        await _animate(msg, e_rou, e_cur, label, amount, total, em)
+
+async def _animate(msg, e_rou, e_cur, label, amount, total, em):
     # анимация. Баланс уже начислен в транзакции выше — что бы ни случилось с
     # сообщениями (флуд-контроль), выигрыш не потеряется. Кадры необязательны,
     # важна финальная карточка.
+    #
+    # Шкала заполняется за один проход (кадры 0..BAR_LEN), затем сразу карточка —
+    # без второго круга и без лишней паузы после заполнения. Карточка приходит
+    # на том же интервале, что и кадры.
     card = roulette.result_card(msg.from_user.first_name, amount, e_cur, label, total, e_rou)
     m = None
     with contextlib.suppress(Exception):
@@ -184,6 +226,7 @@ async def spin(msg: Message, bot: Bot):
             await asyncio.sleep(ANIM_DELAY)
             with contextlib.suppress(Exception):
                 await r_edit(m, roulette.frame(i, e_rou), em)
+        # шкала полна — результат на том же интервале, без отдельной задержки
         await asyncio.sleep(ANIM_DELAY)
         with contextlib.suppress(Exception):
             await r_edit(m, card, em)
