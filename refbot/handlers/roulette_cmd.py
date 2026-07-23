@@ -1,5 +1,6 @@
 import asyncio
 import contextlib
+import logging
 from datetime import date
 
 import asyncpg
@@ -19,6 +20,7 @@ from services.render import edit as r_edit, reply as r_reply
 from services import reactions
 
 router = Router()
+log = logging.getLogger("roulette")
 
 
 # ==================== ВКЛ/ВЫКЛ РУЛЕТКИ (/шимм, /отшимм) ====================
@@ -121,9 +123,12 @@ def _match(text: str) -> bool:
 @router.message(F.chat.type.in_({"group", "supergroup"}), F.text.func(_match))
 async def spin(msg: Message, bot: Bot):
     uid = msg.from_user.id
+    log.info("СТАРТ spin: chat=%s user=%s msg=%s text=%r",
+             msg.chat.id, uid, msg.message_id, msg.text)
     await db.upsert_user(uid, msg.from_user.username, msg.from_user.first_name)
 
     if await db.is_banned(uid):
+        log.info("  -> забанен, выход")
         return await ui.reply(msg, "🚫 Ты заблокирован в системе.")
 
     user = await db.get_user(uid)
@@ -145,6 +150,7 @@ async def spin(msg: Message, bot: Bot):
     approved = await db.pool().fetchval(
         "SELECT active FROM rb_roulette_chats WHERE chat_id=$1", msg.chat.id)
     if not approved:
+        log.info("  -> чат %s НЕ одобрен (/шимм), выход", msg.chat.id)
         return  # рулетка тут не включена (/шимм) — молчим
 
     # уже крутил сегодня? (быстрый предварительный отсев; финальная гарантия —
@@ -153,6 +159,7 @@ async def spin(msg: Message, bot: Bot):
         prev = await db.pool().fetchval(
             "SELECT amount FROM rb_spins WHERE tg_id=$1 AND spin_day=$2", uid, today)
         if prev is not None:
+            log.info("  -> уже крутил сегодня (%s), выход", prev)
             if not _should_nag(uid):
                 return
             return await ui.reply(
@@ -165,13 +172,20 @@ async def spin(msg: Message, bot: Bot):
     # Пока в чате крутится чья-то анимация, ставим ждущему реакцию ожидания.
     # Реакцию снимаем, как только очередь дошла (зашли в слот). Проверки уже
     # пройдены выше, так что сюда встаёт только реальная прокрутка.
+    pos = spin_queue.position(msg.chat.id)
+    log.info("  позиция в очереди чата %s = %s (>1 значит кто-то уже крутится)",
+             msg.chat.id, pos)
     wait_set = False
-    if spin_queue.position(msg.chat.id) > 1:
+    if pos > 1:
         wait_set = await reactions.set_wait(msg.chat.id, msg.message_id, bot)
+        log.info("  реакция ожидания поставлена=%s на msg=%s", wait_set, msg.message_id)
 
+    log.info("  жду слот очереди chat=%s user=%s", msg.chat.id, uid)
     async with spin_queue.QueueSlot(msg.chat.id):
+        log.info("  ВОШЁЛ в слот chat=%s user=%s — кручу", msg.chat.id, uid)
         if wait_set:
             await reactions.clear(msg.chat.id, msg.message_id, bot)
+            log.info("  реакция снята с msg=%s", msg.message_id)
 
         try:
             async with db.pool().acquire() as conn:

@@ -39,17 +39,22 @@ async def set_wait(chat_id: int, message_id: int, bot) -> bool:
             await bot.set_message_reaction(
                 chat_id, message_id,
                 reaction=[ReactionTypeCustomEmoji(custom_emoji_id=premium_id)])
+            log.info("реакция: премиум ПОСТАВЛЕНА chat=%s msg=%s id=%s",
+                     chat_id, message_id, premium_id)
             return True
         except Exception as e:
             # чат не разрешил кастомную реакцию — падаем на обычную
-            log.debug("премиум-реакция не принята (%s), ставлю обычную", e)
+            log.info("реакция: премиум ОТКЛОНЁН (%s), ставлю обычную %r", e, plain)
 
     try:
         await bot.set_message_reaction(
             chat_id, message_id, reaction=[ReactionTypeEmoji(emoji=plain)])
+        log.info("реакция: обычная ПОСТАВЛЕНА chat=%s msg=%s emoji=%r",
+                 chat_id, message_id, plain)
         return True
     except Exception as e:
-        log.debug("не смог поставить обычную реакцию: %s", e)
+        log.warning("реакция: НЕ смог поставить даже обычную chat=%s msg=%s: %s",
+                    chat_id, message_id, e)
         return False
 
 
