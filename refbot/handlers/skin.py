@@ -286,12 +286,12 @@ async def cb_sk_wait(c: CallbackQuery, state: FSMContext):
         f"Её бот ставит на сообщение !шайн, пока игрок ждёт очереди в живом чате.\n\n"
         f"Сейчас: {cur}\n\n"
         f"<b>Отправь эмодзи одним сообщением.</b>\n"
-        f"Обычное — просто эмодзи.\n"
+        f"Обычное — только из набора реакций Telegram: 👀 🤔 👍 🔥 🎉 🙏 👌 ❤ и т.п.\n"
         f"Премиум — отправь премиум-эмодзи, бот вытащит ID.\n\n"
         f"<i>⚠️ Премиум-реакцию Telegram примет, только если в НАСТРОЙКАХ ЧАТА "
         f"разрешены кастомные реакции (Управление чатом → Реакции). Если нет — "
-        f"бот автоматически поставит обычные часы. Это ограничение Telegram, "
-        f"не бота.</i>",
+        f"бот поставит запасную 👀. Обычные «часы» ⌛ Telegram как реакцию НЕ "
+        f"принимает — только эмодзи из своего набора. Это ограничение Telegram.</i>",
         reply_markup=await kb.slot_card(WAIT_SLOT, "sk_waitoff", bool(cid)))
     await c.answer()
 
@@ -316,6 +316,15 @@ async def sk_wait_input(msg: Message, state: FSMContext):
                 f"Запасная (обычная): {ch}\n\n"
                 f"<i>Сработает, если чат разрешил кастомные реакции. Иначе — запасная.</i>")
     else:
+        from services.reactions import VALID_REACTIONS, DEFAULT_WAIT_EMOJI
+        if text not in VALID_REACTIONS:
+            return await ui.answer(
+                msg,
+                f"⚠️ Telegram принимает как реакцию только эмодзи из своего набора, "
+                f"а {text} в него не входит — будет отказ.\n\n"
+                f"Подойдут, например: 👀 🤔 👍 🔥 🎉 🙏 👌\n"
+                f"Пришли одну из них, или задай премиум-эмодзи "
+                f"(для него нужно разрешить кастомные реакции в настройках чата).")
         if not await settings.set(f"emoji.{WAIT_SLOT}", text, msg.from_user.id):
             return await ui.answer(msg, NO_TABLE)
         await settings.unset(f"premium.{WAIT_SLOT}")

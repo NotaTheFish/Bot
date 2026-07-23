@@ -22,7 +22,19 @@ from services import settings
 log = logging.getLogger(__name__)
 
 WAIT_SLOT = "wait_reaction"          # ключ настройки
-DEFAULT_WAIT_EMOJI = "⌛"            # запасная обычная реакция (Telegram-разрешённая)
+DEFAULT_WAIT_EMOJI = "👀"            # запасная реакция (входит в разрешённый Telegram набор)
+
+# Telegram принимает как обычные реакции ТОЛЬКО фиксированный набор эмодзи.
+# ⌛/⏳ в него НЕ входят — отдают REACTION_INVALID. Это проверенный список
+# разрешённых (Bot API). Если запасной символ не отсюда — берём 👀, иначе отказ.
+VALID_REACTIONS = {
+    "👍", "👎", "❤", "🔥", "🥰", "👏", "😁", "🤔", "🤯", "😱", "🤬", "😢", "🎉",
+    "🤩", "🤮", "💩", "🙏", "👌", "🕊", "🤡", "🥱", "🥴", "😍", "🐳", "❤‍🔥",
+    "🌚", "🌭", "💯", "🤣", "⚡", "🍌", "🏆", "💔", "🤨", "😐", "🍓", "🍾", "💋",
+    "🖕", "😈", "😴", "😭", "🤓", "👻", "👨‍💻", "👀", "🎃", "🙈", "😇", "😨",
+    "🤝", "✍", "🤗", "🫡", "🎅", "🎄", "☃", "💅", "🤪", "🗿", "🆒", "💘", "🙉",
+    "🦄", "😘", "💊", "🙊", "😎", "👾", "🤷", "😡",
+}
 
 
 async def set_wait(chat_id: int, message_id: int, bot) -> bool:
@@ -31,8 +43,11 @@ async def set_wait(chat_id: int, message_id: int, bot) -> bool:
     Не бросает: реакция необязательна, её отсутствие не должно ломать прокрутку.
     """
     premium_id = await settings.get(f"premium.{WAIT_SLOT}")
-    # запасной обычный эмодзи — из настроек или дефолт
-    plain = await settings.get(f"emoji.{WAIT_SLOT}") or DEFAULT_WAIT_EMOJI
+    # запасной обычный эмодзи — из настроек, но ТОЛЬКО если он в разрешённом наборе,
+    # иначе Telegram вернёт REACTION_INVALID. Не из набора -> дефолтный 👀.
+    plain = await settings.get(f"emoji.{WAIT_SLOT}")
+    if plain not in VALID_REACTIONS:
+        plain = DEFAULT_WAIT_EMOJI
 
     if premium_id:
         try:
