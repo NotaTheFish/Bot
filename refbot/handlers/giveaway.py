@@ -7,6 +7,7 @@
 
 Только главный админ (can_manage). Второстепенному кнопка «Розыгрыши» не видна.
 """
+import contextlib
 import logging
 
 from aiogram import F, Router
