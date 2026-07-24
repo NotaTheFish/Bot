@@ -352,6 +352,10 @@ CREATE TABLE IF NOT EXISTS rb_giveaway_members (
 -- Страйки глобальные — храним счётчик прямо в rb_users. 3 страйка -> бан бота.
 ALTER TABLE rb_users ADD COLUMN IF NOT EXISTS strikes INT NOT NULL DEFAULT 0;
 
+-- title_html: название розыгрыша с премиум-эмодзи (для сообщений). Обычный title
+-- остаётся plain — он идёт на кнопки, где HTML/премиум не рендерится.
+ALTER TABLE rb_giveaways ADD COLUMN IF NOT EXISTS title_html TEXT;
+
 -- ---------- 5. Проверка ----------
 SELECT
   (SELECT count(*) FROM pg_tables WHERE tablename ~ '^rb_')                   AS tables_expect_21,

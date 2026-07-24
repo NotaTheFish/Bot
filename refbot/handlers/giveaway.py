@@ -30,6 +30,12 @@ async def _can(uid: int) -> bool:
     return uid in SUPER_ADMINS or bool(await db.admin_chats(uid))
 
 
+def _title(g: dict) -> str:
+    """Название с премиум-эмодзи для СООБЩЕНИЙ (html). Fallback на plain title.
+    Для КНОПОК используй g['title'] — там HTML не рендерится."""
+    return g.get("title_html") or g["title"]
+
+
 class GwNew(StatesGroup):
     title = State()
     key_on = State()
@@ -79,7 +85,9 @@ async def gw_title(msg: Message, state: FSMContext):
     title = (msg.text or "").strip()
     if not title or len(title) > 100:
         return await ui.answer(msg, "Название до 100 символов. Ещё раз.")
-    await state.update_data(title=title)
+    # plain — для кнопок/списков (HTML там не рендерится), html — для сообщений (с премиумом)
+    title_html = msg.html_text if msg.text else title
+    await state.update_data(title=title, title_html=title_html)
     await state.set_state(GwNew.key_on)
     await ui.answer(msg,
         "Шаг 2/8 — <b>ключ привязки</b>.\n\n"
@@ -389,7 +397,7 @@ def _summary(data: dict) -> str:
     ends = data.get("ends_at")
     ends_h = ends.strftime("%d.%m.%Y %H:%M МСК") if ends else "вручную"
     return (f"🎁 <b>Проверь розыгрыш</b>\n\n"
-            f"Название: <b>{data['title']}</b>\n"
+            f"Название: <b>{data.get('title_html') or data['title']}</b>\n"
             f"Ключ привязки: <code>{data['key_on']}</code>\n"
             f"Ключ отвязки: <code>{data['key_off']}</code>\n"
             f"Валюта: {mode_h}\n"
@@ -411,7 +419,7 @@ async def cb_gw_save(c: CallbackQuery, state: FSMContext):
     await db.audit(c.from_user.id, "gw_create", {"id": gid, "title": data["title"]})
     await state.clear()
     await ui.edit(c.message,
-        f"✅ Розыгрыш «{data['title']}» создан (черновик).\n\n"
+        f"✅ Розыгрыш «{data.get('title_html') or data['title']}» создан (черновик).\n\n"
         f"Теперь привяжи чаты/каналы: напиши <code>{data['key_on']}</code> в каждом. "
         f"Потом запусти его в «Мои розыгрыши».",
         reply_markup=await kb.gw_menu())
@@ -455,7 +463,7 @@ async def cb_gw_open(c: CallbackQuery):
     status_h = {"draft": "черновик", "running": "идёт", "finished": "завершён"}
     chat_lines = "\n".join(f"  • {ch['title']} ({ch['kind']})" for ch in chats) or "  — пока не привязаны"
     await ui.edit(c.message,
-        f"🎁 <b>{g['title']}</b>\n"
+        f"🎁 <b>{_title(g)}</b>\n"
         f"Статус: {status_h.get(g['status'])}\n"
         f"Ключ: <code>{g['key_on']}</code>\n"
         f"Мест: {g['places']}\n"
@@ -594,7 +602,7 @@ async def cb_gw_run(c: CallbackQuery):
     ok, total, errors = await gw_publish.publish(c.bot, gid)
     await db.audit(c.from_user.id, "gw_run", {"id": gid, "ok": ok, "total": total})
 
-    txt = f"🚀 Розыгрыш «{g['title']}» запущен.\n\nОпубликовано: {ok}/{total}"
+    txt = f"🚀 Розыгрыш «{_title(g)}» запущен.\n\nОпубликовано: {ok}/{total}"
     if errors:
         txt += "\n\n⚠️ Ошибки:\n" + "\n".join(f"• {e}" for e in errors[:5])
     await ui.edit(c.message, txt, reply_markup=await kb.gw_card(gid, "running"))
@@ -633,7 +641,7 @@ async def _show_join_screen(msg, gid, g):
     already = await db.gw_is_member(gid, msg.from_user.id)
     status = "✅ Ты уже участвуешь!" if already else "Подпишись на всё ниже и жми «Проверить»."
     await ui.answer(msg,
-        f"🎁 <b>{g['title']}</b>\n\n"
+        f"🎁 <b>{_title(g)}</b>\n\n"
         f"Чтобы участвовать, подпишись на все чаты и каналы:\n\n"
         f"{status}\n\n"
         f"<i>Если выйдешь из них до конца розыгрыша — не получишь приз и заработаешь "
@@ -660,7 +668,7 @@ async def cb_gw_check(c: CallbackQuery):
     # подписан везде. Если валюта на выбор — спросить, иначе сразу записать
     if g["reward_mode"] == "choice":
         await ui.edit(c.message,
-            f"🎁 <b>{g['title']}</b>\n\nВыбери валюту приза — в ней получишь награду, "
+            f"🎁 <b>{_title(g)}</b>\n\nВыбери валюту приза — в ней получишь награду, "
             f"если выиграешь:",
             reply_markup=await kb.gw_currency_choice(gid))
         return await c.answer()
@@ -668,7 +676,7 @@ async def cb_gw_check(c: CallbackQuery):
     await db.gw_join(gid, c.from_user.id)
     await db.audit(c.from_user.id, "gw_join", {"id": gid})
     await ui.edit(c.message,
-        f"🎉 Ты участвуешь в «{g['title']}»!\n\n"
+        f"🎉 Ты участвуешь в «{_title(g)}»!\n\n"
         f"Не выходи из чатов/каналов до конца — иначе приз сгорит и получишь страйк. "
         f"О результатах бот сообщит лично.")
     await c.answer("Записал!")
@@ -693,7 +701,7 @@ async def cb_gw_currency(c: CallbackQuery):
     await db.audit(c.from_user.id, "gw_join", {"id": gid, "currency": cur})
     cur_h = "🍄 грибах" if cur == "mushrooms" else "🪙 коинах"
     await ui.edit(c.message,
-        f"🎉 Ты участвуешь в «{g['title']}»!\n\n"
+        f"🎉 Ты участвуешь в «{_title(g)}»!\n\n"
         f"Приз получишь в {cur_h}, если выиграешь.\n"
         f"Не выходи из чатов до конца — иначе приз сгорит и получишь страйк.")
     await c.answer("Записал!")
@@ -730,7 +738,7 @@ async def cb_gw_members(c: CallbackQuery):
             lines.append(f"✅ {name}")
             subbed += 1
 
-    text = (f"👥 <b>Участники «{g['title']}»</b>\n\n"
+    text = (f"👥 <b>Участники «{_title(g)}»</b>\n\n"
             f"Всего: {len(members)} · подписаны: {subbed} · отписались: {gone}\n\n"
             + "\n".join(lines[:50]) +
             "\n\n<i>Это просмотр. Страйки начислятся только при завершении.</i>")
@@ -748,7 +756,7 @@ async def cb_gw_finish(c: CallbackQuery):
 
     await c.answer("Провожу розыгрыш…")
     await run_finish(c.bot, gid, by=c.from_user.id)
-    await ui.edit(c.message, f"🏁 Розыгрыш «{g['title']}» завершён. Результаты опубликованы.",
+    await ui.edit(c.message, f"🏁 Розыгрыш «{_title(g)}» завершён. Результаты опубликованы.",
                   reply_markup=await kb.gw_menu())
 
 
@@ -785,22 +793,22 @@ async def run_finish(bot, gid: int, by: int = None):
                 w = next(x for x in result["winners"] if x[0] == tg)
                 prize_s = _prize_str(g["reward_mode"], w[2], w[3])
                 if g["reward_mode"] == "other":
-                    await ui.send(bot, tg, f"🎉 Ты выиграл в «{g['title']}»!\n\n"
+                    await ui.send(bot, tg, f"🎉 Ты выиграл в «{_title(g)}»!\n\n"
                                            f"Приз: {g.get('other_desc') or 'уточнит админ'}. "
                                            f"С тобой свяжутся лично.")
                 else:
-                    await ui.send(bot, tg, f"🎉 Ты выиграл в «{g['title']}»!\n\n"
+                    await ui.send(bot, tg, f"🎉 Ты выиграл в «{_title(g)}»!\n\n"
                                            f"Приз: {prize_s} — уже на твоём балансе в боте.")
             elif tg in result["struck"]:
                 n = await db.gw_get_strikes(tg)
                 if tg in result["banned"]:
-                    await ui.send(bot, tg, f"🚫 Ты отписался от чатов розыгрыша «{g['title']}» "
+                    await ui.send(bot, tg, f"🚫 Ты отписался от чатов розыгрыша «{_title(g)}» "
                                            f"и получил 3-й страйк — теперь заблокирован в боте.")
                 else:
-                    await ui.send(bot, tg, f"⚠️ Ты отписался от чатов розыгрыша «{g['title']}». "
+                    await ui.send(bot, tg, f"⚠️ Ты отписался от чатов розыгрыша «{_title(g)}». "
                                            f"Приз сгорел, страйк {n}/3.")
             else:
-                await ui.send(bot, tg, f"😔 Розыгрыш «{g['title']}» завершён. В этот раз не "
+                await ui.send(bot, tg, f"😔 Розыгрыш «{_title(g)}» завершён. В этот раз не "
                                        f"повезло — не отчаивайся, будут ещё!")
 
 

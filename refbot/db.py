@@ -175,12 +175,13 @@ async def gw_create(data: dict) -> int:
     return await pool().fetchval(
         """
         INSERT INTO rb_giveaways
-          (title, key_on, key_off, announce_text, finish_text, reward_mode,
+          (title, title_html, key_on, key_off, announce_text, finish_text, reward_mode,
            other_desc, places, prizes, ends_at, created_by, status)
-        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb,$10,$11,'draft')
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb,$11,$12,'draft')
         RETURNING id
         """,
-        data["title"], data["key_on"], data["key_off"], data["announce_text"],
+        data["title"], data.get("title_html") or data["title"],
+        data["key_on"], data["key_off"], data["announce_text"],
         data["finish_text"], data["reward_mode"], data.get("other_desc"),
         data["places"], _json.dumps(data["prizes"]), data.get("ends_at"),
         data["created_by"])
