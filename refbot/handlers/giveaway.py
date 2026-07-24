@@ -835,7 +835,7 @@ async def cb_gw_strikes(c: CallbackQuery):
         flag = "🚫 бан" if r["banned"] else f"{r['strikes']}/3"
         lines.append(f"{name} — {flag}")
         await btn(kbd, f"♻️ Сбросить {name}", f"gwstr_clear:{r['tg_id']}")
-    await btn(kbd, "◀️ Назад", "gw_menu", "back")
+    await btn(kbd, "Назад", "gw_menu", "back")
     kbd.adjust(1)
     await ui.edit(c.message, "⚖️ <b>Страйки и баны</b>\n\n" + "\n".join(lines),
                   reply_markup=kbd.as_markup())

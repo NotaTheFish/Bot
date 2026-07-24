@@ -42,6 +42,11 @@ class _Parser(HTMLParser):
     def handle_starttag(self, tag, attrs):
         if tag == "a":
             self._stack.append((tag, u16(self.text), {"url": dict(attrs).get("href")}))
+        elif tag == "tg-emoji":
+            # премиум-эмодзи, вставленный самим пользователем в текст.
+            # <tg-emoji emoji-id="123">🎁</tg-emoji> -> custom_emoji entity.
+            eid = dict(attrs).get("emoji-id")
+            self._stack.append((tag, u16(self.text), {"custom_emoji_id": eid}))
         elif tag in TAGS:
             self._stack.append((tag, u16(self.text), {}))
 
@@ -51,7 +56,12 @@ class _Parser(HTMLParser):
                 t, start, extra = self._stack.pop(i)
                 length = u16(self.text) - start
                 if length > 0:
-                    typ = "text_link" if t == "a" else TAGS[t]
+                    if t == "a":
+                        typ = "text_link"
+                    elif t == "tg-emoji":
+                        typ = "custom_emoji"
+                    else:
+                        typ = TAGS[t]
                     self.entities.append(
                         MessageEntity(type=typ, offset=start, length=length, **extra))
                 break
@@ -106,7 +116,9 @@ def render(html_text: str, emoji_map: dict[str, str] | None = None):
     entities=None означает «премиум не нужен» — вызывающий код просто шлёт с parse_mode=HTML.
     """
     emoji_map = {k: v for k, v in (emoji_map or {}).items() if k and v}
-    if not emoji_map or not any(ch in html_text for ch in emoji_map):
+    # парсим, если есть свободные замены ИЛИ пользователь вставил премиум сам (<tg-emoji>)
+    has_user_premium = "<tg-emoji" in html_text
+    if not has_user_premium and (not emoji_map or not any(ch in html_text for ch in emoji_map)):
         return html_text, None
     p = _Parser()
     p.feed(html_text)

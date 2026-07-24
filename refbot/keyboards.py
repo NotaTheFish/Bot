@@ -240,7 +240,7 @@ async def gw_reward_mode() -> InlineKeyboardMarkup:
     await btn(kb, "🍄 Только грибы", "gwr:mushrooms")
     await btn(kb, "🪙 Только коины", "gwr:coins")
     await btn(kb, "🔄 На выбор (грибы/коины)", "gwr:choice")
-    await btn(kb, "🍄🪙 Обе сразу", "gwr:both")
+    await btn(kb, "🎁 Обе сразу (грибы + коины)", "gwr:both")
     await btn(kb, "🎀 Другое (выдам лично)", "gwr:other")
     kb.adjust(2, 1, 1, 1)
     return kb.as_markup()
@@ -280,7 +280,7 @@ async def gw_card(gid: int, status: str) -> InlineKeyboardMarkup:
         await btn(kb, "👥 Участники", f"gw_members:{gid}")
         await btn(kb, "🏁 Завершить", f"gw_finish:{gid}")
     await btn(kb, "🗑 Удалить", f"gw_del:{gid}")
-    await btn(kb, "◀️ К списку", "gw_list", "back")
+    await btn(kb, "К списку", "gw_list", "back")
     kb.adjust(1)
     return kb.as_markup()
 
@@ -288,7 +288,7 @@ async def gw_card(gid: int, status: str) -> InlineKeyboardMarkup:
 async def back_to(callback: str) -> InlineKeyboardMarkup:
     """Одна кнопка «Назад» на заданный callback."""
     kb = InlineKeyboardBuilder()
-    await btn(kb, "◀️ Назад", callback, "back")
+    await btn(kb, "Назад", callback, "back")
     return kb.as_markup()
 
 
