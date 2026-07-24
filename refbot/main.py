@@ -20,7 +20,7 @@ logging.basicConfig(level=logging.INFO,
 log = logging.getLogger("refbot")
 
 # chat_member ОБЯЗАТЕЛЕН — без него Telegram не пришлёт входы/выходы.
-ALLOWED = ["message", "callback_query", "chat_member", "my_chat_member"]
+ALLOWED = ["message", "callback_query", "chat_member", "my_chat_member", "channel_post"]
 
 
 async def hold_worker(bot: Bot):
