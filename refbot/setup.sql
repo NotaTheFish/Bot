@@ -294,13 +294,71 @@ CREATE UNIQUE INDEX IF NOT EXISTS rb_week_draws_uniq ON rb_week_draws (chat_id, 
 -- начислению, чтобы идемпотентность db.apply не блокировала повторы.
 CREATE SEQUENCE IF NOT EXISTS rb_promo_seq;
 
+-- ---------- 4e. Розыгрыши (giveaway) ----------
+-- Отдельная система от «конкурса активности» (/шимшайнуть). Тут: подписался ->
+-- участвуешь -> случайные победители -> приз на баланс в боте. Управляет главный
+-- админ из ЛС. Валюта режимами: mushrooms | coins | choice (игрок выбирает) |
+-- both (и грибы и коины) | other (админ выдаёт лично).
+
+CREATE TABLE IF NOT EXISTS rb_giveaways (
+    id            BIGSERIAL PRIMARY KEY,
+    title         TEXT NOT NULL,
+    key_on        TEXT NOT NULL,          -- ключ привязки, напр. !шимм!
+    key_off       TEXT NOT NULL,          -- ключ отвязки, напр. !отшимм!
+    announce_text TEXT NOT NULL,          -- паста объявления
+    finish_text   TEXT NOT NULL,          -- паста завершения
+    reward_mode   TEXT NOT NULL,          -- mushrooms|coins|choice|both|other
+    other_desc    TEXT,                   -- если mode=other: что за приз (для показа)
+    places        INT  NOT NULL,          -- число призовых мест (1..50)
+    prizes        JSONB NOT NULL,         -- [{place, mushrooms, coins}] на каждое место
+    status        TEXT NOT NULL DEFAULT 'draft',  -- draft|running|finished
+    announce_kb   TEXT,                   -- deep-link payload для кнопки «Участвовать»
+    ends_at       TIMESTAMPTZ,            -- таймер автозавершения (NULL = вручную)
+    created_by    BIGINT NOT NULL,
+    created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+    started_at    TIMESTAMPTZ,
+    finished_at   TIMESTAMPTZ
+);
+-- Ключ привязки уникален только среди АКТИВНЫХ (draft|running). Завершённый
+-- освобождает ключ. Частичный уникальный индекс это и обеспечивает.
+CREATE UNIQUE INDEX IF NOT EXISTS rb_giveaways_key_active
+    ON rb_giveaways (key_on) WHERE status IN ('draft', 'running');
+
+-- Куда привязан розыгрыш (по ключу). Чат или канал — не важно, храним тип для
+-- публикации (в канале постим от имени канала). invite — ссылка, созданная ботом.
+CREATE TABLE IF NOT EXISTS rb_giveaway_chats (
+    giveaway_id  BIGINT NOT NULL REFERENCES rb_giveaways(id) ON DELETE CASCADE,
+    chat_id      BIGINT NOT NULL,
+    title        TEXT,
+    kind         TEXT NOT NULL DEFAULT 'chat',   -- chat|channel
+    invite_link  TEXT,                            -- пригласительная, созданная ботом
+    announce_msg BIGINT,                          -- id опубликованного объявления (для откр/удаления)
+    result_msg   BIGINT,                          -- id поста с результатами
+    PRIMARY KEY (giveaway_id, chat_id)
+);
+
+-- Участники розыгрыша. currency — выбранная валюта (для mode=choice), иначе NULL.
+CREATE TABLE IF NOT EXISTS rb_giveaway_members (
+    giveaway_id  BIGINT NOT NULL REFERENCES rb_giveaways(id) ON DELETE CASCADE,
+    tg_id        BIGINT NOT NULL,
+    currency     TEXT,                    -- выбор игрока при mode=choice
+    joined_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+    is_winner    BOOLEAN NOT NULL DEFAULT FALSE,
+    place        INT,                     -- какое место занял (если победил)
+    struck       BOOLEAN NOT NULL DEFAULT FALSE,  -- получил ли страйк за отписку
+    PRIMARY KEY (giveaway_id, tg_id)
+);
+
+-- Страйки глобальные — храним счётчик прямо в rb_users. 3 страйка -> бан бота.
+ALTER TABLE rb_users ADD COLUMN IF NOT EXISTS strikes INT NOT NULL DEFAULT 0;
+
 -- ---------- 5. Проверка ----------
 SELECT
-  (SELECT count(*) FROM pg_tables WHERE tablename ~ '^rb_')                   AS tables_expect_18,
+  (SELECT count(*) FROM pg_tables WHERE tablename ~ '^rb_')                   AS tables_expect_21,
   (SELECT count(*) FROM pg_type   WHERE typname ~ '^rb_' AND typtype = 'e')   AS enums_expect_3,
   (SELECT count(*) FROM pg_indexes WHERE indexname IN
      ('rb_referrals_alive_idx','rb_withdrawals_one_pending','rb_spins_daily',
-      'rb_week_draws_uniq')) AS guards_expect_4,
+      'rb_week_draws_uniq','rb_giveaways_key_active')) AS guards_expect_5,
   (SELECT count(*) FROM information_schema.columns
      WHERE table_name='rb_chats' AND column_name IN
        ('deactivated_at','deactivated_by'))                                    AS newcols_expect_2,

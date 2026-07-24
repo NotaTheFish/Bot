@@ -76,9 +76,10 @@ async def admin_menu(manage: bool = True) -> InlineKeyboardMarkup:
     await btn(kb, "Чаты", "a_chats", "chat")
     await btn(kb, "🚫 Баны", "a_bans")
     if manage:
+        await btn(kb, "🎁 Розыгрыши", "gw_menu")
         await btn(kb, "🎨 Кастомизация", "a_skin")
     await btn(kb, "Назад", "menu", "back")
-    kb.adjust(2, 2, 2, 2, 1)
+    kb.adjust(2, 2, 2, 2, 1, 1)
     return kb.as_markup()
 
 
@@ -219,4 +220,98 @@ async def link_card(multi: bool) -> InlineKeyboardMarkup:
         await btn(kb, "🔄 Другой чат", "mylink", "chat")
     await btn(kb, "Меню", "menu", "back")
     kb.adjust(1)
+    return kb.as_markup()
+
+
+# ==================== РОЗЫГРЫШИ ====================
+async def gw_menu() -> InlineKeyboardMarkup:
+    kb = InlineKeyboardBuilder()
+    await btn(kb, "➕ Создать розыгрыш", "gw_new")
+    await btn(kb, "🎁 Мои розыгрыши", "gw_list")
+    await btn(kb, "⚖️ Страйки и баны", "gw_strikes")
+    await btn(kb, "Админка", "admin", "back")
+    kb.adjust(1)
+    return kb.as_markup()
+
+
+async def gw_reward_mode() -> InlineKeyboardMarkup:
+    """Выбор режима валюты при создании."""
+    kb = InlineKeyboardBuilder()
+    await btn(kb, "🍄 Только грибы", "gwr:mushrooms")
+    await btn(kb, "🪙 Только коины", "gwr:coins")
+    await btn(kb, "🔄 На выбор (грибы/коины)", "gwr:choice")
+    await btn(kb, "🍄🪙 Обе сразу", "gwr:both")
+    await btn(kb, "🎀 Другое (выдам лично)", "gwr:other")
+    kb.adjust(2, 1, 1, 1)
+    return kb.as_markup()
+
+
+async def gw_prize_method(both: bool = False) -> InlineKeyboardMarkup:
+    """Как задать призы: поровну или вручную по местам."""
+    kb = InlineKeyboardBuilder()
+    await btn(kb, "⚖️ Распределить поровну", "gwp:equal")
+    await btn(kb, "✏️ Задать по местам", "gwp:manual")
+    kb.adjust(1)
+    return kb.as_markup()
+
+
+async def gw_timer_choice() -> InlineKeyboardMarkup:
+    kb = InlineKeyboardBuilder()
+    await btn(kb, "⏰ Задать таймер", "gwt:set")
+    await btn(kb, "✋ Без таймера (вручную)", "gwt:none")
+    kb.adjust(1)
+    return kb.as_markup()
+
+
+async def gw_confirm() -> InlineKeyboardMarkup:
+    kb = InlineKeyboardBuilder()
+    await btn(kb, "✅ Создать", "gw_save")
+    await btn(kb, "❌ Отмена", "gw_menu")
+    kb.adjust(2)
+    return kb.as_markup()
+
+
+async def gw_card(gid: int, status: str) -> InlineKeyboardMarkup:
+    """Карточка розыгрыша в «Мои розыгрыши»."""
+    kb = InlineKeyboardBuilder()
+    if status == "draft":
+        await btn(kb, "🚀 Запустить", f"gw_run:{gid}")
+    if status == "running":
+        await btn(kb, "👥 Участники", f"gw_members:{gid}")
+        await btn(kb, "🏁 Завершить", f"gw_finish:{gid}")
+    await btn(kb, "🗑 Удалить", f"gw_del:{gid}")
+    await btn(kb, "◀️ К списку", "gw_list", "back")
+    kb.adjust(1)
+    return kb.as_markup()
+
+
+async def back_to(callback: str) -> InlineKeyboardMarkup:
+    """Одна кнопка «Назад» на заданный callback."""
+    kb = InlineKeyboardBuilder()
+    await btn(kb, "◀️ Назад", callback, "back")
+    return kb.as_markup()
+
+
+async def gw_subscribe(chats: list, gid: int, ready: bool) -> InlineKeyboardMarkup:
+    """
+    Экран участия в ЛС: кнопки-ссылки на подписку + «Проверить и участвовать».
+    ready — если True, показываем кнопку участия (после проверки).
+    """
+    kb = InlineKeyboardBuilder()
+    for ch in chats:
+        title = ch.get("title") or "чат"
+        link = ch.get("invite_link")
+        if link:
+            kb.button(text=f"➡️ {title}", url=link)
+    await btn(kb, "✅ Проверить подписку", f"gwjoin:{gid}")
+    kb.adjust(1)
+    return kb.as_markup()
+
+
+async def gw_currency_choice(gid: int) -> InlineKeyboardMarkup:
+    """Выбор валюты для режима choice."""
+    kb = InlineKeyboardBuilder()
+    await btn(kb, "🍄 Грибы", f"gwcur:{gid}:mushrooms")
+    await btn(kb, "🪙 Коины", f"gwcur:{gid}:coins")
+    kb.adjust(2)
     return kb.as_markup()

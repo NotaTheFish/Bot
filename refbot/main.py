@@ -12,7 +12,7 @@ import db
 import roulette
 from config import (BOT_TOKEN, CONTEST_MIN_MSGS, CONTEST_MSGS_PER_TICKET,
                     CONTEST_TEST_MINUTES, UNLIMITED_SPIN_IDS)
-from handlers import admin, chat_events, contest, roulette_cmd, skin, user
+from handlers import admin, chat_events, contest, giveaway, roulette_cmd, skin, user
 from services import referrals, settings, ui
 
 logging.basicConfig(level=logging.INFO,
@@ -79,6 +79,7 @@ async def main():
     dp.include_router(chat_events.router)
     dp.include_router(roulette_cmd.router)
     dp.include_router(admin.router)
+    dp.include_router(giveaway.router)
     dp.include_router(skin.router)
     dp.include_router(user.router)
 
@@ -101,6 +102,7 @@ async def main():
 
     asyncio.create_task(hold_worker(bot))
     asyncio.create_task(contest.worker(bot))
+    asyncio.create_task(giveaway.worker(bot))
     await bot.delete_webhook(drop_pending_updates=True)
     try:
         await dp.start_polling(bot, allowed_updates=ALLOWED)

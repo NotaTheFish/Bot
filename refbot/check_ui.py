@@ -39,6 +39,10 @@ def main() -> int:
         rel = f.relative_to(ROOT).as_posix()
         text = f.read_text()
         for i, line in enumerate(text.splitlines(), 1):
+            # строка с «# noqa: ui» — намеренная прямая отправка (напр. пост в
+            # КАНАЛ от имени канала, где премиум и не должен работать)
+            if "# noqa: ui" in line:
+                continue
             if rel not in ALLOWED and BAD_SEND.search(line):
                 problems.append(f"{rel}:{i} отправка в обход ui — премиум не сработает\n"
                                 f"    {line.strip()}")
