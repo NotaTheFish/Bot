@@ -44,6 +44,7 @@ class GwNew(StatesGroup):
     finish = State()
     # валюта выбирается кнопкой, не state
     places = State()
+    other_desc = State()      # описание приза для режима «другое»
     prize_total = State()     # для «поровну»
     prize_manual = State()    # для «по местам»
     timer = State()
@@ -171,7 +172,7 @@ async def cb_gw_reward(c: CallbackQuery, state: FSMContext):
     mode = c.data.split(":")[1]
     await state.update_data(reward_mode=mode)
     if mode == "other":
-        await state.update_data(prizes=[], places=1, other_desc=None)
+        await state.update_data(prizes=[], places=1)
         await state.set_state(GwNew.places)
         await ui.edit(c.message,
             "🎀 <b>Другое</b> — приз выдашь лично.\n\n"
@@ -199,15 +200,30 @@ async def gw_places(msg: Message, state: FSMContext):
     mode = data["reward_mode"]
 
     if mode == "other":
-        desc = data.get("_other_pending")
-        # для other приза в валюте нет — сразу к таймеру
+        # для other приза в валюте нет — но спросим ОПИСАНИЕ приза (ручной ввод, премиум ок)
         await state.update_data(prizes=[{"place": i + 1} for i in range(places)])
-        return await _ask_timer(msg, state)
+        await state.set_state(GwNew.other_desc)
+        return await ui.answer(msg,
+            "🎀 <b>Что за приз?</b>\n\n"
+            "Опиши приз, который выдашь победителям лично (можно с премиум-эмодзи). "
+            "Он покажется победителю в уведомлении.\n\n"
+            "Например: <i>Роблокс-питомец Shadow Dragon</i>")
 
     # грибы/коины/выбор/обе — спросим, как задать суммы
     await ui.answer(msg,
         f"Мест: <b>{places}</b>. Как задать призы?",
         reply_markup=await kb.gw_prize_method(both=(mode == "both")))
+
+
+@router.message(GwNew.other_desc)
+async def gw_other_desc(msg: Message, state: FSMContext):
+    if not await _can(msg.from_user.id):
+        return await state.clear()
+    desc = msg.html_text if msg.text else ""
+    if not desc:
+        return await ui.answer(msg, "Опиши приз текстом. Ещё раз.")
+    await state.update_data(other_desc=desc)
+    await _ask_timer(msg, state)
 
 
 # ---------------- призы ----------------
@@ -526,7 +542,7 @@ async def _handle_key(bot, chat, msg_id, text, from_user_id, is_channel):
         link = await gw_invites.ensure_invite(bot, chat.id)
         await db.gw_bind_chat(gw_on["id"], chat.id, title, kind, link)
         note = (f"✅ {'Канал' if is_channel else 'Чат'} <b>{title}</b> привязан к "
-                f"розыгрышу «{gw_on['title']}».")
+                f"розыгрышу «{_title(gw_on)}».")
         if not deleted:
             note += (f"\n\n⚠️ Не смог удалить твоё сообщение с ключом — удали сам "
                      f"(нет прав на удаление).")
@@ -538,7 +554,7 @@ async def _handle_key(bot, chat, msg_id, text, from_user_id, is_channel):
     elif gw_off:
         removed = await db.gw_unbind_chat(gw_off["id"], chat.id)
         note = (f"➖ {'Канал' if is_channel else 'Чат'} <b>{title}</b> отвязан от "
-                f"розыгрыша «{gw_off['title']}»." if removed
+                f"розыгрыша «{_title(gw_off)}»." if removed
                 else f"Этот {'канал' if is_channel else 'чат'} и так не был привязан.")
         if not deleted:
             note += "\n\n⚠️ Сообщение с ключом удали сам — не было прав."
