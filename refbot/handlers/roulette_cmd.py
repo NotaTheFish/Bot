@@ -1,7 +1,8 @@
 import asyncio
 import contextlib
 import logging
-from datetime import date
+from datetime import date, datetime
+from zoneinfo import ZoneInfo
 
 import asyncpg
 from aiogram import Bot, F, Router
@@ -12,7 +13,7 @@ import db
 import roulette
 import time
 
-from config import (ANIM_DELAY, ANIM_FRAMES, COIN_RATE, ROULETTE_DAILY_BUDGET,
+from config import (ANIM_DELAY, ANIM_FRAMES, COIN_RATE, ROULETTE_DAILY_BUDGET, ROULETTE_TZ,
                     SPIN_COMMANDS, SPIN_NAG_COOLDOWN, SUPER_ADMINS,
                     UNLIMITED_SPIN_IDS)
 from services import settings, spin_queue, ui
@@ -133,7 +134,7 @@ async def spin(msg: Message, bot: Bot):
 
     user = await db.get_user(uid)
     cur = user["currency"]
-    today = date.today()
+    today = datetime.now(ZoneInfo(ROULETTE_TZ)).date()  # сброс в 00:00 по МСК, не UTC
 
     # оформление берём из админки (эмодзи + премиум), а не из config
     e_cur = await settings.emoji(cur)

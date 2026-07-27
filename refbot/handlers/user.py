@@ -1,3 +1,4 @@
+import contextlib
 import re
 
 from aiogram import F, Router
@@ -104,6 +105,10 @@ async def start_plain(msg: Message, state: FSMContext):
     u = await db.get_user(msg.from_user.id)
     is_adm = await _is_admin(msg.from_user.id)
     sx = await settings.ctx()
+    # reply-клавиатура «☰ Меню» ставится отдельным тихим сообщением (reply и inline
+    # нельзя в одном). Ставим один раз при старте — дальше висит всегда.
+    with contextlib.suppress(Exception):
+        await msg.answer("Панель управления снизу 👇", reply_markup=kb.menu_reply())  # noqa: ui
     await ui.answer(msg, 
         f"👋 Привет, {msg.from_user.first_name}!\n\n"
         f"Приглашай людей в чат по своей ссылке и получай валюту.\n"
@@ -112,6 +117,38 @@ async def start_plain(msg: Message, state: FSMContext):
         f"если реферал остался в чате.\n\n"
         f"Текущая валюта: {sx['e_' + u['currency']]} <b>{sx['l_' + u['currency']]}</b>",
         reply_markup=await kb.main_menu(u["currency"], is_adm))
+
+
+@router.message(F.text == "☰ Меню")
+async def reply_menu_btn(msg: Message, state: FSMContext):
+    """Нажатие reply-кнопки «☰ Меню» — открыть инлайн главное меню."""
+    await state.clear()
+    if not await guard(msg):
+        return
+    u = await db.get_user(msg.from_user.id)
+    is_adm = await _is_admin(msg.from_user.id)
+    await ui.answer(msg, "🏠 <b>Главное меню</b>",
+                    reply_markup=await kb.main_menu(u["currency"], is_adm))
+
+
+@router.message(Command("свернуть", "hide"))
+async def hide_reply_kb(msg: Message):
+    """Свернуть reply-клавиатуру."""
+    await msg.answer("Панель свёрнута. Вернуть — /меню", reply_markup=kb.menu_reply_hide())  # noqa: ui
+
+
+@router.message(Command("меню", "menu"))
+async def show_reply_kb(msg: Message, state: FSMContext):
+    """Развернуть reply-клавиатуру и показать меню."""
+    await state.clear()
+    if not await guard(msg):
+        return
+    u = await db.get_user(msg.from_user.id)
+    is_adm = await _is_admin(msg.from_user.id)
+    with contextlib.suppress(Exception):
+        await msg.answer("Панель управления снизу 👇", reply_markup=kb.menu_reply())  # noqa: ui
+    await ui.answer(msg, "🏠 <b>Главное меню</b>",
+                    reply_markup=await kb.main_menu(u["currency"], is_adm))
 
 
 @router.message(Command("promo"))

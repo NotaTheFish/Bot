@@ -562,13 +562,23 @@ async def _handle_key(bot, chat, msg_id, text, from_user_id, is_channel):
 
 
 async def _notify_admin(bot, created_by, actor_id, text):
-    """Пишем в ЛС тому, кто создал розыгрыш (и актору, если это другой человек)."""
+    """
+    Пишем в ЛС тому, кто создал розыгрыш (и актору, если это другой человек).
+    После уведомления — ДОГОНЯЮЩАЯ панель розыгрышей вниз: уведомления о привязке
+    отталкивают панель «Розыгрыши» вверх, поэтому показываем её заново внизу.
+    Только осмысленный ответ (реальная привязка) — не на всякий чих.
+    """
     targets = {created_by}
     if actor_id:
         targets.add(actor_id)
     for t in targets:
         with contextlib.suppress(Exception):
             await ui.send(bot, t, text)
+        # догоняющая панель — только создателю (у него открыто меню розыгрышей)
+        if t == created_by:
+            with contextlib.suppress(Exception):
+                await ui.repanel(bot, t, "🎁 <b>Розыгрыши</b>",
+                                 reply_markup=await kb.gw_menu())
 
 
 async def _is_gw_key(msg: Message) -> bool:

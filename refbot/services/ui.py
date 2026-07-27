@@ -39,6 +39,38 @@ async def send(bot, chat_id: int, html_text: str, **kw):
     return await render.send(bot, chat_id, html_text, await _em(), **kw)
 
 
+async def panel(bot, chat_id: int, html_text: str, old_msg_id: int = None, **kw):
+    """
+    «Догоняющая» инлайн-панель: показать её свежим сообщением ВНИЗУ чата.
+
+    Порядок против мерцания: сначала ОТПРАВЛЯЕМ новое (появляется внизу), потом
+    удаляем старое (оно выше, исчезновение глазу незаметно). Никогда не наоборот —
+    иначе будет миг без панели.
+
+    old_msg_id — id прежней панели, которую надо убрать (или None, если первая).
+    Возвращает message_id новой панели — вызывающий сохраняет его для следующего раза.
+    """
+    import contextlib
+    m = await send(bot, chat_id, html_text, **kw)
+    if old_msg_id:
+        with contextlib.suppress(Exception):
+            await bot.delete_message(chat_id, old_msg_id)
+    return m.message_id
+
+
+async def repanel(bot, chat_id: int, html_text: str, **kw):
+    """
+    Догоняющая панель с автоведением id: берёт прежний id из panel_state, показывает
+    новую панель внизу, удаляет старую, сохраняет новый id. Это то, что зовут
+    «точечные» места (после осмысленного ответа бота), чтобы панель была внизу.
+    """
+    from services import panel_state
+    old = panel_state.get(chat_id)
+    new_id = await panel(bot, chat_id, html_text, old_msg_id=old, **kw)
+    panel_state.set(chat_id, new_id)
+    return new_id
+
+
 # ---------- кнопки ----------
 # Bot API 9.4 добавил icon_custom_emoji_id для InlineKeyboardButton.
 # Иконка рисуется ОТДЕЛЬНО от текста, поэтому если премиум есть — эмодзи из

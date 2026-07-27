@@ -68,6 +68,7 @@ UNLIMITED_SPIN_IDS = {int(x) for x in os.getenv("UNLIMITED_SPIN_IDS", "").split(
 
 # ---------- еженедельный конкурс по активности ----------
 CONTEST_TZ = os.getenv("CONTEST_TZ", "Europe/Moscow")   # в какой зоне считать понедельник
+ROULETTE_TZ = os.getenv("ROULETTE_TZ", "Europe/Moscow")  # в какой зоне рулетка считает «день» (сброс в 00:00)
 CONTEST_MIN_MSGS = int(os.getenv("CONTEST_MIN_MSGS", "500"))    # порог участия
 CONTEST_MSGS_PER_TICKET = int(os.getenv("CONTEST_MSGS_PER_TICKET", "50"))
 CONTEST_PRIZE = {"mushrooms": 100_000, "coins": 2_000_000}   # курс 20×, как везде в боте

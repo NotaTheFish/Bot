@@ -38,9 +38,14 @@ def fmt(n: int) -> str:
 
 
 def _name(r) -> str:
-    if r.get("username"):
-        return f"@{r['username']}"
-    return escape(r.get("first_name") or str(r["user_id"]))
+    """
+    Тихое упоминание: ссылка на профиль по ID (tg://user?id=), НЕ пингует.
+    @username слал бы уведомление — а так имя кликабельно, но человек не тревожится.
+    Имя берём из username/first_name, ссылку вешаем по user_id.
+    """
+    uid = r["user_id"]
+    label = r.get("username") or r.get("first_name") or str(uid)
+    return f'<a href="tg://user?id={uid}">{escape(str(label))}</a>'
 
 
 async def _chat_admin(bot, chat_id: int, uid: int) -> bool:

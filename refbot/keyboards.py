@@ -1,4 +1,5 @@
-from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+from aiogram.types import (InlineKeyboardButton, InlineKeyboardMarkup,
+                           KeyboardButton, ReplyKeyboardMarkup, ReplyKeyboardRemove)
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from services import settings
@@ -315,3 +316,22 @@ async def gw_currency_choice(gid: int) -> InlineKeyboardMarkup:
     await btn(kb, "🪙 Коины", f"gwcur:{gid}:coins")
     kb.adjust(2)
     return kb.as_markup()
+
+
+# ==================== REPLY-КЛАВИАТУРА ====================
+def menu_reply() -> ReplyKeyboardMarkup:
+    """
+    Постоянная reply-клавиатура: одна кнопка «☰ Меню» внизу экрана.
+    Нажатие шлёт текст «☰ Меню», бот ловит и открывает инлайн главное меню.
+    is_persistent — держится всегда, resize — компактная.
+    """
+    return ReplyKeyboardMarkup(
+        keyboard=[[KeyboardButton(text="☰ Меню")]],
+        resize_keyboard=True,
+        is_persistent=True,
+        input_field_placeholder="Напиши сообщение или жми ☰ Меню")
+
+
+def menu_reply_hide() -> ReplyKeyboardRemove:
+    """Свернуть reply-клавиатуру (убрать панель снизу)."""
+    return ReplyKeyboardRemove()
