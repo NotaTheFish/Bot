@@ -22,12 +22,22 @@ async def main_menu(currency: str, is_admin: bool) -> InlineKeyboardMarkup:
 async def wd_menu(has_active: bool) -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
     if has_active:
-        await btn(kb, "✏️ Изменить сумму", "wd_amount")
+        await btn(kb, "✏️ Изменить сумму", "wd_cur")
         await btn(kb, "❌ Отменить заявку", "wd_cancel")
     else:
-        await btn(kb, "Создать заявку", "wd_amount", "withdraw")
+        await btn(kb, "Создать заявку", "wd_cur", "withdraw")
     await btn(kb, "Назад", "menu", "back")
     kb.adjust(1)
+    return kb.as_markup()
+
+
+async def wd_currency() -> InlineKeyboardMarkup:
+    """Выбор валюты вывода."""
+    kb = InlineKeyboardBuilder()
+    await btn(kb, "🍄 Грибы", "wdcur:mushrooms")
+    await btn(kb, "🪙 Коины", "wdcur:coins")
+    await btn(kb, "Назад", "wd_menu", "back")
+    kb.adjust(2, 1)
     return kb.as_markup()
 
 

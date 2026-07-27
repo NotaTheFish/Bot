@@ -19,6 +19,7 @@ router = Router()
 
 
 class WD(StatesGroup):
+    currency = State()
     amount = State()
 
 
@@ -51,8 +52,15 @@ async def _payout_chat() -> int | None:
             "SELECT 1 FROM rb_chats WHERE chat_id=$1 AND active", PAYOUT_CHAT_ID)
         if ok:
             return PAYOUT_CHAT_ID
-    return await db.pool().fetchval(
+    # сначала активный чат
+    active = await db.pool().fetchval(
         "SELECT chat_id FROM rb_chats WHERE active ORDER BY created_at, chat_id LIMIT 1")
+    if active:
+        return active
+    # активных нет — касса общая, chat_id нужен лишь чтобы понять, кто обработает.
+    # Берём ЛЮБОЙ чат (даже неактивный), лишь бы заявку было к чему привязать.
+    return await db.pool().fetchval(
+        "SELECT chat_id FROM rb_chats ORDER BY created_at, chat_id LIMIT 1")
 
 
 async def guard(event) -> bool:
@@ -418,13 +426,38 @@ async def cb_wd_menu(c: CallbackQuery):
     await c.answer()
 
 
-@router.callback_query(F.data == "wd_amount")
-async def cb_wd_amount(c: CallbackQuery, state: FSMContext):
+@router.callback_query(F.data == "wd_cur")
+async def cb_wd_cur(c: CallbackQuery, state: FSMContext):
     if not await guard(c):
         return
+    await state.set_state(WD.currency)
+    sx = await settings.ctx()
+    b = await db.balances(c.from_user.id)
+    await ui.edit(c.message,
+        f"💸 <b>Вывод</b>\n\n"
+        f"Выбери валюту:\n"
+        f"{sx['e_mushrooms']} {fmt(b['mushrooms'])} · {sx['e_coins']} {fmt(b['coins'])}",
+        reply_markup=await kb.wd_currency())
+    await c.answer()
+
+
+@router.callback_query(F.data.startswith("wdcur:"))
+async def cb_wd_currency_pick(c: CallbackQuery, state: FSMContext):
+    if not await guard(c):
+        return
+    cur = c.data.split(":")[1]
+    await state.update_data(wd_currency=cur)
     await state.set_state(WD.amount)
-    await ui.edit(c.message, "✍️ Отправь сумму вывода числом.\nНапример: <code>150000</code>",
-                              reply_markup=await kb.back_menu())
+    sx = await settings.ctx()
+    b = await db.balances(c.from_user.id)
+    e = sx['e_' + cur]
+    await ui.edit(c.message,
+        f"✍️ <b>Сумма вывода</b> в {e}\n\n"
+        f"Твой баланс: <b>{fmt(b[cur])}</b> {e}\n"
+        f"Минимум: <b>{fmt(MIN_WITHDRAW[cur])}</b> {e}\n\n"
+        f"Пришли число. Понимаю: <code>100к</code>=100000, <code>1м</code>=1млн, "
+        f"<code>1.5м</code>, пробелы.",
+        reply_markup=await kb.back_menu())
     await c.answer()
 
 
@@ -432,38 +465,49 @@ async def cb_wd_amount(c: CallbackQuery, state: FSMContext):
 async def wd_amount_input(msg: Message, state: FSMContext):
     if not await guard(msg):
         return
-    raw = re.sub(r"[^\d]", "", msg.text or "")
-    if not raw:
-        return await ui.answer(msg, "Нужно число. Попробуй ещё раз.")
-    amount = int(raw)
-    u = await db.get_user(msg.from_user.id)
+    from services.amount_parse import parse_amount
+    amount = parse_amount(msg.text or "")
+    if amount is None:
+        return await ui.answer(msg, "Не понял сумму. Например: <code>100к</code>, "
+                               "<code>1.5м</code> или <code>100000</code>. Ещё раз.")
+    data = await state.get_data()
+    cur = data.get("wd_currency") or (await db.get_user(msg.from_user.id))["currency"]
+    sx = await settings.ctx()
+    e = sx['e_' + cur]
+
+    # проверки: минимум и баланс
+    if amount < MIN_WITHDRAW[cur]:
+        return await ui.answer(msg, f"Минимум для вывода — <b>{fmt(MIN_WITHDRAW[cur])}</b> {e}. "
+                               f"Ты ввёл меньше.")
+    b = await db.balances(msg.from_user.id)
+    if amount > b[cur]:
+        return await ui.answer(msg, f"На балансе только <b>{fmt(b[cur])}</b> {e}, "
+                               f"а ты хочешь вывести {fmt(amount)}. Введи сумму не больше баланса.")
 
     act = await withdrawals.active(msg.from_user.id)
     if act:
         row, err = await withdrawals.change_amount(msg.from_user.id, amount)
         if err:
             return await ui.answer(msg, f"⚠️ {err}")
-        # старое сообщение админу удаляем, шлём свежее
         await drop_admin_card(msg.bot, act)
         await push_admin_card(msg.bot, row)
         await state.clear()
-        sx = await settings.ctx()
-        return await ui.answer(msg, f"✏️ Сумма изменена на <b>{fmt(amount)}</b> "
-                               f"{sx['e_' + row['currency']]}. Админу ушло новое уведомление.",
+        return await ui.answer(msg, f"✏️ Сумма изменена на <b>{fmt(amount)}</b> {e}. "
+                               f"Админу ушло новое уведомление.",
                                reply_markup=await kb.back_menu())
 
     chat_id = await _payout_chat()
     if not chat_id:
-        return await ui.answer(msg, "Нет активного чата для вывода.")
-    wid, err = await withdrawals.create(msg.from_user.id, chat_id, u["currency"], amount)
+        return await ui.answer(msg, "⚠️ Пока некому обработать вывод — нет ни одного "
+                               "чата с ботом. Напиши админу напрямую.")
+    wid, err = await withdrawals.create(msg.from_user.id, chat_id, cur, amount)
     if err:
         return await ui.answer(msg, f"⚠️ {err}")
     row = await db.pool().fetchrow("SELECT * FROM rb_withdrawals WHERE id=$1", wid)
     await push_admin_card(msg.bot, dict(row))
     await state.clear()
-    sx = await settings.ctx()
     await ui.answer(msg,
-        f"{sx['e_paid']} Заявка создана: <b>{fmt(amount)}</b> {sx['e_' + u['currency']]}\n"
+        f"{sx['e_paid']} Заявка создана: <b>{fmt(amount)}</b> {e}\n"
         f"Админ получил уведомление. Пока он не подтвердил — сумму можно менять или отменить.\n"
         f"Списание произойдёт только в момент подтверждения.",
         reply_markup=await kb.back_menu())
