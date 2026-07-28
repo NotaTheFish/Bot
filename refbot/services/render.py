@@ -174,6 +174,22 @@ async def send(bot, chat_id: int, html_text: str, emoji_map=None, **kw):
         lambda: bot.send_message(chat_id, html_text, **kw))
 
 
+async def send_photo(bot, chat_id: int, photo: str, caption: str, emoji_map=None, **kw):
+    """
+    Фото с подписью. Подпись рендерится с премиум-эмодзи (caption_entities), при
+    отказе Telegram — обычный HTML-caption. photo — file_id.
+    """
+    text, ents = render(caption, emoji_map)
+    if ents is None:
+        return await _safe(
+            lambda: bot.send_photo(chat_id, photo, caption=caption, **kw),
+            lambda: bot.send_photo(chat_id, photo, caption=caption, **kw))
+    return await _safe(
+        lambda: bot.send_photo(chat_id, photo, caption=text,
+                               caption_entities=ents, parse_mode=None, **kw),
+        lambda: bot.send_photo(chat_id, photo, caption=caption, **kw))
+
+
 async def edit(message, html_text: str, emoji_map=None, **kw):
     text, ents = render(html_text, emoji_map)
     if ents is None:

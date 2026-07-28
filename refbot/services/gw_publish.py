@@ -26,6 +26,11 @@ async def _join_kb(bot, gid: int) -> InlineKeyboardMarkup:
         InlineKeyboardButton(text="🎉 Участвовать", url=url)]])
 
 
+# Лимит подписи к фото у Telegram — 1024 символа. Длиннее — шлём фото отдельно,
+# текст обычным сообщением (у него лимит 4096).
+CAPTION_LIMIT = 1000
+
+
 async def publish(bot, gid: int) -> tuple[int, int, list[str]]:
     """
     Опубликовать объявление во все привязанные чаты/каналы и закрепить.
@@ -37,16 +42,31 @@ async def publish(bot, gid: int) -> tuple[int, int, list[str]]:
 
     ok_count = 0
     errors = []
+    photo = gw.get("announce_photo")
     for ch in chats:
         try:
             if ch["kind"] == "channel":
                 # в канал — обычная отправка (от имени канала), premium вручную
-                m = await bot.send_message(ch["chat_id"], gw["announce_text"],  # noqa: ui
-                                           reply_markup=kbd)
+                if photo:
+                    m = await bot.send_photo(ch["chat_id"], photo,  # noqa: ui
+                                             caption=gw["announce_text"], reply_markup=kbd)
+                else:
+                    m = await bot.send_message(ch["chat_id"], gw["announce_text"],  # noqa: ui
+                                               reply_markup=kbd)
             else:
                 # в чат — через render, премиум-эмодзи работают
-                m = await ui.send(bot, ch["chat_id"], gw["announce_text"],
-                                  reply_markup=kbd)
+                if photo and len(gw["announce_text"]) <= CAPTION_LIMIT:
+                    m = await ui.send_photo(bot, ch["chat_id"], photo,
+                                            gw["announce_text"], reply_markup=kbd)
+                elif photo:
+                    # текст длиннее лимита подписи — фото отдельно, текст с кнопкой
+                    with contextlib.suppress(Exception):
+                        await bot.send_photo(ch["chat_id"], photo)  # noqa: ui
+                    m = await ui.send(bot, ch["chat_id"], gw["announce_text"],
+                                      reply_markup=kbd)
+                else:
+                    m = await ui.send(bot, ch["chat_id"], gw["announce_text"],
+                                      reply_markup=kbd)
             await db.gw_save_announce_msg(gid, ch["chat_id"], m.message_id)
             # закрепляем
             with contextlib.suppress(Exception):
@@ -70,6 +90,7 @@ async def publish_results(bot, gid: int, winners_text: str) -> None:
     gw = await db.gw_get(gid)
     chats = await db.gw_chats(gid)
     full = gw["finish_text"] + "\n\n" + winners_text
+    photo = gw.get("finish_photo")
 
     for ch in chats:
         # открепить + удалить объявление
@@ -81,9 +102,15 @@ async def publish_results(bot, gid: int, winners_text: str) -> None:
         # опубликовать результаты
         try:
             if ch["kind"] == "channel":
-                m = await bot.send_message(ch["chat_id"], full)  # noqa: ui
+                if photo:
+                    m = await bot.send_photo(ch["chat_id"], photo, caption=full)  # noqa: ui
+                else:
+                    m = await bot.send_message(ch["chat_id"], full)  # noqa: ui
             else:
-                m = await ui.send(bot, ch["chat_id"], full)
+                if photo:
+                    m = await ui.send_photo(bot, ch["chat_id"], photo, full)
+                else:
+                    m = await ui.send(bot, ch["chat_id"], full)
             await db.gw_save_result_msg(gid, ch["chat_id"], m.message_id)
             with contextlib.suppress(Exception):
                 await bot.pin_chat_message(ch["chat_id"], m.message_id,

@@ -39,6 +39,11 @@ async def send(bot, chat_id: int, html_text: str, **kw):
     return await render.send(bot, chat_id, html_text, await _em(), **kw)
 
 
+async def send_photo(bot, chat_id: int, photo: str, caption: str, **kw):
+    """Фото с премиум-подписью через render."""
+    return await render.send_photo(bot, chat_id, photo, caption, await _em(), **kw)
+
+
 async def panel(bot, chat_id: int, html_text: str, old_msg_id: int = None, **kw):
     """
     «Догоняющая» инлайн-панель: показать её свежим сообщением ВНИЗУ чата.

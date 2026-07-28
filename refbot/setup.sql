@@ -356,6 +356,10 @@ ALTER TABLE rb_users ADD COLUMN IF NOT EXISTS strikes INT NOT NULL DEFAULT 0;
 -- остаётся plain — он идёт на кнопки, где HTML/премиум не рендерится.
 ALTER TABLE rb_giveaways ADD COLUMN IF NOT EXISTS title_html TEXT;
 
+-- Фото для объявления начала и итогов (Telegram file_id). NULL = без фото.
+ALTER TABLE rb_giveaways ADD COLUMN IF NOT EXISTS announce_photo TEXT;
+ALTER TABLE rb_giveaways ADD COLUMN IF NOT EXISTS finish_photo TEXT;
+
 -- ---------- 5. Проверка ----------
 SELECT
   (SELECT count(*) FROM pg_tables WHERE tablename ~ '^rb_')                   AS tables_expect_21,

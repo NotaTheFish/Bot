@@ -331,17 +331,28 @@ async def gw_currency_choice(gid: int) -> InlineKeyboardMarkup:
 # ==================== REPLY-КЛАВИАТУРА ====================
 def menu_reply() -> ReplyKeyboardMarkup:
     """
-    Постоянная reply-клавиатура: одна кнопка «☰ Меню» внизу экрана.
-    Нажатие шлёт текст «☰ Меню», бот ловит и открывает инлайн главное меню.
-    is_persistent — держится всегда, resize — компактная.
+    Reply-клавиатура внизу: одна кнопка «☰ Меню».
+
+    is_persistent НЕ ставим (=False по умолчанию) — тогда Telegram показывает
+    НАТИВНУЮ кнопку сворачивания/разворачивания у поля ввода (стрелка возле
+    скрепки), как у других ботов. С is_persistent=True эта кнопка есть, но НЕ
+    работает (баг Telegram) — поэтому её не трогаем.
     """
     return ReplyKeyboardMarkup(
         keyboard=[[KeyboardButton(text="☰ Меню")]],
         resize_keyboard=True,
-        is_persistent=True,
-        input_field_placeholder="Напиши сообщение или жми ☰ Меню")
+        input_field_placeholder="Жми ☰ Меню или пиши сообщение")
 
 
 def menu_reply_hide() -> ReplyKeyboardRemove:
     """Свернуть reply-клавиатуру (убрать панель снизу)."""
     return ReplyKeyboardRemove()
+
+
+async def gw_skip_photo(step: str) -> InlineKeyboardMarkup:
+    """Кнопка «Без фото» на шаге фото розыгрыша. step: announce|finish."""
+    kb = InlineKeyboardBuilder()
+    await btn(kb, "⏭ Без фото", f"gwphoto_skip:{step}")
+    await btn(kb, "Отмена", "gw_menu", "back")
+    kb.adjust(1)
+    return kb.as_markup()

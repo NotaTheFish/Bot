@@ -41,7 +41,9 @@ class GwNew(StatesGroup):
     key_on = State()
     key_off = State()
     announce = State()
+    announce_photo = State()
     finish = State()
+    finish_photo = State()
     # валюта выбирается кнопкой, не state
     places = State()
     other_desc = State()      # описание приза для режима «другое»
@@ -144,11 +146,33 @@ async def gw_announce(msg: Message, state: FSMContext):
     if not html:
         return await ui.answer(msg, "Нужен текст. Ещё раз.")
     await state.update_data(announce_text=html)
+    await state.set_state(GwNew.announce_photo)
+    await ui.answer(msg,
+        "📷 <b>Фото для объявления</b>\n\n"
+        "Пришли картинку, которая пойдёт вместе с объявлением. Или жми «Без фото».",
+        reply_markup=await kb.gw_skip_photo("announce"))
+
+
+@router.message(GwNew.announce_photo, F.photo)
+async def gw_announce_photo(msg: Message, state: FSMContext):
+    if not await _can(msg.from_user.id):
+        return await state.clear()
+    file_id = msg.photo[-1].file_id
+    await state.update_data(announce_photo=file_id)
     await state.set_state(GwNew.finish)
     await ui.answer(msg,
+        "✅ Фото сохранено.\n\n"
         "Шаг 5/8 — <b>текст завершения</b>.\n\n"
         "Пасту, которую бот покажет при подведении итогов (список победителей "
         "добавится автоматически).")
+
+
+@router.message(GwNew.announce_photo)
+async def gw_announce_photo_wrong(msg: Message, state: FSMContext):
+    if not await _can(msg.from_user.id):
+        return await state.clear()
+    await ui.answer(msg, "Это не фото. Пришли картинку или жми «Без фото».",
+                    reply_markup=await kb.gw_skip_photo("announce"))
 
 
 @router.message(GwNew.finish)
@@ -159,9 +183,47 @@ async def gw_finish(msg: Message, state: FSMContext):
     if not html:
         return await ui.answer(msg, "Нужен текст. Ещё раз.")
     await state.update_data(finish_text=html)
+    await state.set_state(GwNew.finish_photo)
     await ui.answer(msg,
-        "Шаг 6/8 — <b>валюта приза</b>. Выбери режим:",
-        reply_markup=await kb.gw_reward_mode())
+        "📷 <b>Фото для итогов</b>\n\n"
+        "Картинка к посту с результатами. Или «Без фото».",
+        reply_markup=await kb.gw_skip_photo("finish"))
+
+
+@router.message(GwNew.finish_photo, F.photo)
+async def gw_finish_photo(msg: Message, state: FSMContext):
+    if not await _can(msg.from_user.id):
+        return await state.clear()
+    await state.update_data(finish_photo=msg.photo[-1].file_id)
+    await ui.answer(msg, "✅ Фото сохранено.\n\nШаг 6/8 — <b>валюта приза</b>. Выбери режим:",
+                    reply_markup=await kb.gw_reward_mode())
+
+
+@router.message(GwNew.finish_photo)
+async def gw_finish_photo_wrong(msg: Message, state: FSMContext):
+    if not await _can(msg.from_user.id):
+        return await state.clear()
+    await ui.answer(msg, "Это не фото. Пришли картинку или жми «Без фото».",
+                    reply_markup=await kb.gw_skip_photo("finish"))
+
+
+@router.callback_query(F.data.startswith("gwphoto_skip:"))
+async def cb_gw_photo_skip(c: CallbackQuery, state: FSMContext):
+    if not await _can(c.from_user.id):
+        return await c.answer("Нет доступа.", show_alert=True)
+    step = c.data.split(":")[1]
+    if step == "announce":
+        await state.update_data(announce_photo=None)
+        await state.set_state(GwNew.finish)
+        await ui.edit(c.message,
+            "Шаг 5/8 — <b>текст завершения</b>.\n\n"
+            "Пасту, которую бот покажет при подведении итогов (список победителей "
+            "добавится автоматически).")
+    else:
+        await state.update_data(finish_photo=None)
+        await ui.edit(c.message, "Шаг 6/8 — <b>валюта приза</b>. Выбери режим:",
+                      reply_markup=await kb.gw_reward_mode())
+    await c.answer()
 
 
 # ---------------- валюта ----------------

@@ -176,15 +176,16 @@ async def gw_create(data: dict) -> int:
         """
         INSERT INTO rb_giveaways
           (title, title_html, key_on, key_off, announce_text, finish_text, reward_mode,
-           other_desc, places, prizes, ends_at, created_by, status)
-        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb,$11,$12,'draft')
+           other_desc, places, prizes, ends_at, created_by, announce_photo, finish_photo,
+           status)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb,$11,$12,$13,$14,'draft')
         RETURNING id
         """,
         data["title"], data.get("title_html") or data["title"],
         data["key_on"], data["key_off"], data["announce_text"],
         data["finish_text"], data["reward_mode"], data.get("other_desc"),
         data["places"], _json.dumps(data["prizes"]), data.get("ends_at"),
-        data["created_by"])
+        data["created_by"], data.get("announce_photo"), data.get("finish_photo"))
 
 
 async def gw_key_taken(key_on: str) -> bool:
