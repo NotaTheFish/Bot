@@ -57,16 +57,16 @@ async def publish(bot, gid: int) -> tuple[int, int, list[str]]:
                 # в чат — через render, премиум-эмодзи работают
                 if photo and len(gw["announce_text"]) <= CAPTION_LIMIT:
                     m = await ui.send_photo(bot, ch["chat_id"], photo,
-                                            gw["announce_text"], reply_markup=kbd)
+                                            gw["announce_text"], apply_free=False, reply_markup=kbd)
                 elif photo:
                     # текст длиннее лимита подписи — фото отдельно, текст с кнопкой
                     with contextlib.suppress(Exception):
                         await bot.send_photo(ch["chat_id"], photo)  # noqa: ui
                     m = await ui.send(bot, ch["chat_id"], gw["announce_text"],
-                                      reply_markup=kbd)
+                                      apply_free=False, reply_markup=kbd)
                 else:
                     m = await ui.send(bot, ch["chat_id"], gw["announce_text"],
-                                      reply_markup=kbd)
+                                      apply_free=False, reply_markup=kbd)
             await db.gw_save_announce_msg(gid, ch["chat_id"], m.message_id)
             # закрепляем
             with contextlib.suppress(Exception):
@@ -108,9 +108,9 @@ async def publish_results(bot, gid: int, winners_text: str) -> None:
                     m = await bot.send_message(ch["chat_id"], full)  # noqa: ui
             else:
                 if photo:
-                    m = await ui.send_photo(bot, ch["chat_id"], photo, full)
+                    m = await ui.send_photo(bot, ch["chat_id"], photo, full, apply_free=False)
                 else:
-                    m = await ui.send(bot, ch["chat_id"], full)
+                    m = await ui.send(bot, ch["chat_id"], full, apply_free=False)
             await db.gw_save_result_msg(gid, ch["chat_id"], m.message_id)
             with contextlib.suppress(Exception):
                 await bot.pin_chat_message(ch["chat_id"], m.message_id,

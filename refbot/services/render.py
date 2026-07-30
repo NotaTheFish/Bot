@@ -70,8 +70,14 @@ class _Parser(HTMLParser):
         self.text += data
 
 
-def _emoji_entities(text: str, emoji_map: dict[str, str]) -> list[MessageEntity]:
-    """emoji_map: {символ: custom_emoji_id}. Ищем каждый символ во всех вхождениях."""
+def _emoji_entities(text: str, emoji_map: dict[str, str],
+                    protected: list = None) -> list[MessageEntity]:
+    """
+    emoji_map: {символ: custom_emoji_id}. Ищем каждый символ во всех вхождениях.
+    protected: список (start, end) в UTF-16 — диапазоны пользовательских премиум-эмодзи,
+    куда замену НЕ ставим (fallback-символ внутри чужого премиума не трогаем).
+    """
+    protected = protected or []
     out = []
     for ch, cid in emoji_map.items():
         if not ch or not cid:
@@ -81,8 +87,13 @@ def _emoji_entities(text: str, emoji_map: dict[str, str]) -> list[MessageEntity]
             i = text.find(ch, start)
             if i == -1:
                 break
-            out.append(MessageEntity(type="custom_emoji", offset=u16(text[:i]),
-                                     length=u16(ch), custom_emoji_id=str(cid)))
+            off = u16(text[:i])
+            end = off + u16(ch)
+            # пропускаем, если совпадение попадает в защищённый премиум-диапазон
+            inside = any(off < p_end and end > p_start for p_start, p_end in protected)
+            if not inside:
+                out.append(MessageEntity(type="custom_emoji", offset=off,
+                                         length=u16(ch), custom_emoji_id=str(cid)))
             start = i + len(ch)
     return out
 
@@ -110,12 +121,19 @@ def parse_free_pair(text: str, entities) -> tuple[str, str, str]:
     return plain, ce.custom_emoji_id, ""
 
 
-def render(html_text: str, emoji_map: dict[str, str] | None = None):
+def render(html_text: str, emoji_map: dict[str, str] | None = None,
+           apply_free: bool = True):
     """
     -> (text, entities | None)
     entities=None означает «премиум не нужен» — вызывающий код просто шлёт с parse_mode=HTML.
+
+    apply_free — применять ли свободные замены (emoji_map). Для текстов, куда
+    пользователь САМ вставил премиум (название/объявление/завершение розыгрыша),
+    можно явно False. Но и при True замены НЕ трогают символы внутри пользовательских
+    <tg-emoji> — их fallback-символы защищены (см. ниже), иначе чужой премиум подменял бы
+    твой. Пользовательский премиум всегда важнее свободных замен.
     """
-    emoji_map = {k: v for k, v in (emoji_map or {}).items() if k and v}
+    emoji_map = {k: v for k, v in (emoji_map or {}).items() if k and v} if apply_free else {}
     # парсим, если есть свободные замены ИЛИ пользователь вставил премиум сам (<tg-emoji>)
     has_user_premium = "<tg-emoji" in html_text
     if not has_user_premium and (not emoji_map or not any(ch in html_text for ch in emoji_map)):
@@ -123,7 +141,11 @@ def render(html_text: str, emoji_map: dict[str, str] | None = None):
     p = _Parser()
     p.feed(html_text)
     p.close()
-    ents = p.entities + _emoji_entities(p.text, emoji_map)
+    # диапазоны, занятые пользовательскими премиум-эмодзи — сюда свободные замены НЕ лезут,
+    # иначе fallback-символ внутри твоего премиума подменится чужим премиумом (баг).
+    protected = [(e.offset, e.offset + e.length) for e in p.entities
+                 if e.type == "custom_emoji"]
+    ents = p.entities + _emoji_entities(p.text, emoji_map, protected)
     ents.sort(key=lambda e: (e.offset, e.length))
     return p.text, ents
 
@@ -159,13 +181,13 @@ async def _safe(primary, fallback, retries: int = 2):
                 return await fallback()
 
 
-async def send(bot, chat_id: int, html_text: str, emoji_map=None, **kw):
+async def send(bot, chat_id: int, html_text: str, emoji_map=None, apply_free=True, **kw):
     """Шлём с премиум-эмодзи; Telegram их не принял — падаем на обычный HTML.
 
     Премиум доступен, если у владельца бота есть Telegram Premium (Bot API 9.4,
     09.02.2026) либо боту куплен юзернейм на Fragment.
     """
-    text, ents = render(html_text, emoji_map)
+    text, ents = render(html_text, emoji_map, apply_free)
     if ents is None:
         return await _safe(lambda: bot.send_message(chat_id, html_text, **kw),
                            lambda: bot.send_message(chat_id, html_text, **kw))
@@ -174,12 +196,12 @@ async def send(bot, chat_id: int, html_text: str, emoji_map=None, **kw):
         lambda: bot.send_message(chat_id, html_text, **kw))
 
 
-async def send_photo(bot, chat_id: int, photo: str, caption: str, emoji_map=None, **kw):
+async def send_photo(bot, chat_id: int, photo: str, caption: str, emoji_map=None, apply_free=True, **kw):
     """
     Фото с подписью. Подпись рендерится с премиум-эмодзи (caption_entities), при
     отказе Telegram — обычный HTML-caption. photo — file_id.
     """
-    text, ents = render(caption, emoji_map)
+    text, ents = render(caption, emoji_map, apply_free)
     if ents is None:
         return await _safe(
             lambda: bot.send_photo(chat_id, photo, caption=caption, **kw),

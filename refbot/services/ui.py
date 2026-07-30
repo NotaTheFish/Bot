@@ -35,13 +35,13 @@ async def answer(message, html_text: str, **kw):
         return await message.answer(html_text, **kw)
 
 
-async def send(bot, chat_id: int, html_text: str, **kw):
-    return await render.send(bot, chat_id, html_text, await _em(), **kw)
+async def send(bot, chat_id: int, html_text: str, apply_free=True, **kw):
+    return await render.send(bot, chat_id, html_text, await _em(), apply_free, **kw)
 
 
-async def send_photo(bot, chat_id: int, photo: str, caption: str, **kw):
+async def send_photo(bot, chat_id: int, photo: str, caption: str, apply_free=True, **kw):
     """Фото с премиум-подписью через render."""
-    return await render.send_photo(bot, chat_id, photo, caption, await _em(), **kw)
+    return await render.send_photo(bot, chat_id, photo, caption, await _em(), apply_free, **kw)
 
 
 async def panel(bot, chat_id: int, html_text: str, old_msg_id: int = None, **kw):
