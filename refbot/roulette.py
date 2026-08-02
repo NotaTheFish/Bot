@@ -44,6 +44,25 @@ def roll(currency: str) -> int:
     return m * COIN_RATE if currency == "coins" else m
 
 
+def roll_jackpot(currency: str) -> tuple[int, bool]:
+    """
+    Секретная джекпот-прокрутка (!шaйн). Возвращает (сумма, is_jackpot).
+    С шансом JACKPOT_CHANCE% выпадает РОВНО JACKPOT_MAX (джекпот), иначе равномерно
+    JACKPOT_MIN..JACKPOT_MAX-1 (выглядит как крупная обычная прокрутка).
+    Сумма в грибах; для коинов умножается на COIN_RATE.
+    """
+    from config import JACKPOT_MIN, JACKPOT_MAX, JACKPOT_CHANCE, ROULETTE_ROUND_TO
+    if _rand() * 100 < JACKPOT_CHANCE:
+        m = JACKPOT_MAX
+        is_jack = True
+    else:
+        val = JACKPOT_MIN + _rand() * (JACKPOT_MAX - 1 - JACKPOT_MIN)
+        m = int(round(val / ROULETTE_ROUND_TO) * ROULETTE_ROUND_TO)
+        m = max(JACKPOT_MIN, min(JACKPOT_MAX - 1, m))
+        is_jack = False
+    return (m * COIN_RATE if currency == "coins" else m), is_jack
+
+
 def expected_value(currency: str = "mushrooms") -> float:
     """Сколько ты платишь в среднем за одну прокрутку. Запусти перед запуском бота."""
     ev = sum(w / _TOTAL_W * (low + high) / 2 for low, high, w in ROULETTE_BANDS)

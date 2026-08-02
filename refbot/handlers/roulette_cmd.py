@@ -15,7 +15,8 @@ import time
 
 from config import (ANIM_DELAY, ANIM_FRAMES, COIN_RATE, ROULETTE_DAILY_BUDGET, ROULETTE_TZ,
                     SPIN_COMMANDS, SPIN_NAG_COOLDOWN, SUPER_ADMINS,
-                    UNLIMITED_SPIN_IDS)
+                    UNLIMITED_SPIN_IDS, JACKPOT_COMMAND, JACKPOT_IDS,
+                    JACKPOT_MAX, JACKPOT_SHOWN_CHANCE)
 from services import settings, spin_queue, ui
 from services.render import edit as r_edit, reply as r_reply
 from services import reactions
@@ -114,6 +115,91 @@ async def _charge_budget(conn, chat_id: int, title: str, cost: int) -> None:
     await conn.execute(
         "UPDATE rb_roulette_chats SET spins = spins + 1, last_spin_at = now(), "
         "title = COALESCE($2, title) WHERE chat_id = $1", chat_id, title or None)
+
+
+def _match_jackpot(text: str) -> bool:
+    """Секретная команда !шaйн (англ. 'a'). Точное совпадение."""
+    return (text or "").strip().lower() == JACKPOT_COMMAND
+
+
+@router.message(F.chat.type.in_({"group", "supergroup"}), F.text.func(_match_jackpot))
+async def spin_jackpot(msg: Message, bot: Bot):
+    uid = msg.from_user.id
+    # Не из списка избранных — делаем вид, что команда набрана неверно (секрет не палим).
+    if uid not in JACKPOT_IDS:
+        return await ui.reply(msg, "❓ Команда набрана неверно.")
+
+    log.info("СТАРТ jackpot: chat=%s user=%s", msg.chat.id, uid)
+    await db.upsert_user(uid, msg.from_user.username, msg.from_user.first_name)
+    if await db.is_banned(uid):
+        return await ui.reply(msg, "🚫 Ты заблокирован в системе.")
+
+    user = await db.get_user(uid)
+    cur = user["currency"]
+    today = datetime.now(ZoneInfo(ROULETTE_TZ)).date()
+    e_cur = await settings.emoji(cur)
+    e_rou = await settings.emoji("roulette")
+    label = await settings.label(cur)
+    em = await settings.emoji_map()
+
+    approved = await db.pool().fetchval(
+        "SELECT active FROM rb_roulette_chats WHERE chat_id=$1", msg.chat.id)
+    if not approved:
+        return
+
+    # общий дневной лимит с обычной !шайн (та же таблица rb_spins)
+    if uid not in UNLIMITED_SPIN_IDS:
+        prev = await db.pool().fetchval(
+            "SELECT amount FROM rb_spins WHERE tg_id=$1 AND spin_day=$2", uid, today)
+        if prev is not None:
+            if not _should_nag(uid):
+                return
+            return await ui.reply(
+                msg, f"{e_rou} Ты уже крутил сегодня — выпало <b>{prev:,}</b> {e_cur}.\n"
+                     f"Прокрутка одна в сутки.".replace(",", " "))
+
+    amount, is_jackpot = roulette.roll_jackpot(cur)
+
+    pos = spin_queue.position(msg.chat.id)
+    wait_set = False
+    if pos > 1:
+        wait_set = await reactions.set_wait(msg.chat.id, msg.message_id, bot)
+
+    async with spin_queue.QueueSlot(msg.chat.id):
+        if wait_set:
+            await reactions.clear(msg.chat.id, msg.message_id, bot)
+        try:
+            async with db.pool().acquire() as conn:
+                async with conn.transaction():
+                    cost = amount // COIN_RATE if cur == "coins" else amount
+                    await _charge_budget(conn, msg.chat.id, msg.chat.title or "", cost)
+                    if uid in UNLIMITED_SPIN_IDS:
+                        await conn.execute(
+                            "DELETE FROM rb_spins WHERE tg_id=$1 AND spin_day=$2", uid, today)
+                    spin_id = await conn.fetchval(
+                        "INSERT INTO rb_spins (tg_id, chat_id, currency, amount, spin_day) "
+                        "VALUES ($1,$2,$3,$4,$5) RETURNING id",
+                        uid, msg.chat.id, cur, amount, today)
+                    total = await db.apply(conn, uid, cur, amount, "roulette",
+                                           f"spin:{spin_id}", spin_id)
+        except asyncpg.UniqueViolationError:
+            if not _should_nag(uid):
+                return
+            return await ui.reply(msg, f"{e_rou} Ты уже крутил сегодня.")
+        except BudgetExhausted:
+            return await ui.reply(msg, "🧯 Суточный лимит выплат в этом чате исчерпан.")
+        except ChatBlocked:
+            return
+
+        await _animate(msg, e_rou, e_cur, label, amount, total, em)
+        # поздравление ТОЛЬКО при ровном джекпоте
+        if is_jackpot:
+            with contextlib.suppress(Exception):
+                await ui.reply(msg,
+                    f"🎰💥 ДЖЕКПОТ!!! 💥🎰\n"
+                    f"Ты выбил РОВНО <b>{amount:,}</b> {e_cur}\n".replace(",", " ") +
+                    f"Шанс этого — {JACKPOT_SHOWN_CHANCE}%.\n"
+                    f"Это один случай на миллион. Буквально.")
 
 
 def _match(text: str) -> bool:
