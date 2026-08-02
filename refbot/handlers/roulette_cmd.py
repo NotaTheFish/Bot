@@ -89,7 +89,8 @@ class ChatBlocked(Exception):
     pass
 
 
-async def _charge_budget(conn, chat_id: int, title: str, cost: int) -> None:
+async def _charge_budget(conn, chat_id: int, title: str, cost: int,
+                         skip_budget: bool = False) -> None:
     """
     Списать cost (в грибах) с суточного бюджета рулетки.
     Бросает ChatBlocked, если чат НЕ одобрен через /шимм, или BudgetExhausted.
@@ -97,21 +98,29 @@ async def _charge_budget(conn, chat_id: int, title: str, cost: int) -> None:
     Рулетка теперь полностью отвязана от рефералки: работает ТОЛЬКО в чатах из
     rb_roulette_chats (одобренных главным админом). Нет чата в списке — не крутим,
     чтобы не платить за грибы в чужих чатах, о которых владелец бота не знает.
+
+    skip_budget=True — прокрутка НЕ трогает суточный бюджет чата (безлимитные ID и
+    секретная джекпот-команда: это тест/витрина, а не реальная экономика). Счётчик
+    прокруток чата всё равно обновляем.
+
+    День бюджета считаем по МСК (ROULETTE_TZ), как и лимит прокруток — иначе бюджет
+    обнулялся бы в 03:00 МСК (полночь UTC), вразнобой с самой рулеткой.
     """
     approved = await conn.fetchrow(
         "SELECT active FROM rb_roulette_chats WHERE chat_id=$1", chat_id)
     if not approved or not approved["active"]:
         raise ChatBlocked
 
-    # общий суточный потолок-предохранитель на все одобренные чаты вместе
-    await conn.execute(
-        "INSERT INTO rb_roulette_budget (day) VALUES (CURRENT_DATE) ON CONFLICT DO NOTHING")
-    spent = await conn.fetchval(
-        "SELECT spent_mush FROM rb_roulette_budget WHERE day=CURRENT_DATE FOR UPDATE")
-    if spent + cost > ROULETTE_DAILY_BUDGET:
-        raise BudgetExhausted
-    await conn.execute(
-        "UPDATE rb_roulette_budget SET spent_mush = spent_mush + $1 WHERE day=CURRENT_DATE", cost)
+    if not skip_budget:
+        day = datetime.now(ZoneInfo(ROULETTE_TZ)).date()  # МСК-день, как у прокруток
+        await conn.execute(
+            "INSERT INTO rb_roulette_budget (day) VALUES ($1) ON CONFLICT DO NOTHING", day)
+        spent = await conn.fetchval(
+            "SELECT spent_mush FROM rb_roulette_budget WHERE day=$1 FOR UPDATE", day)
+        if spent + cost > ROULETTE_DAILY_BUDGET:
+            raise BudgetExhausted
+        await conn.execute(
+            "UPDATE rb_roulette_budget SET spent_mush = spent_mush + $1 WHERE day=$2", cost, day)
     await conn.execute(
         "UPDATE rb_roulette_chats SET spins = spins + 1, last_spin_at = now(), "
         "title = COALESCE($2, title) WHERE chat_id = $1", chat_id, title or None)
@@ -172,7 +181,9 @@ async def spin_jackpot(msg: Message, bot: Bot):
             async with db.pool().acquire() as conn:
                 async with conn.transaction():
                     cost = amount // COIN_RATE if cur == "coins" else amount
-                    await _charge_budget(conn, msg.chat.id, msg.chat.title or "", cost)
+                    # безлимитные ID не тратят бюджет чата (их крутки — тест/витрина)
+                    await _charge_budget(conn, msg.chat.id, msg.chat.title or "", cost,
+                                         skip_budget=(uid in UNLIMITED_SPIN_IDS))
                     if uid in UNLIMITED_SPIN_IDS:
                         await conn.execute(
                             "DELETE FROM rb_spins WHERE tg_id=$1 AND spin_day=$2", uid, today)
@@ -278,7 +289,9 @@ async def spin(msg: Message, bot: Bot):
             async with db.pool().acquire() as conn:
                 async with conn.transaction():
                     cost = amount // COIN_RATE if cur == "coins" else amount
-                    await _charge_budget(conn, msg.chat.id, msg.chat.title or "", cost)
+                    # джекпот-команда — бутафория для админа, бюджет чата НЕ трогает
+                    await _charge_budget(conn, msg.chat.id, msg.chat.title or "", cost,
+                                         skip_budget=True)
 
                     if uid in UNLIMITED_SPIN_IDS:
                         # UNIQUE(tg_id, spin_day) не обходим — сносим сегодняшнюю строку
