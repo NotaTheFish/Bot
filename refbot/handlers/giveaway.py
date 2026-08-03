@@ -712,14 +712,20 @@ async def gw_join_start(msg: Message, command: CommandObject, state: FSMContext)
     except ValueError:
         return
     await db.upsert_user(msg.from_user.id, msg.from_user.username, msg.from_user.first_name)
+    # ставим нижнюю reply-панель «☰ Меню» — чтобы из giveaway всегда был выход
+    with contextlib.suppress(Exception):
+        await msg.answer("Панель управления снизу 👇", reply_markup=kb.menu_reply())  # noqa: ui
 
     # забанен — вообще не пускаем
     if await db.is_banned(msg.from_user.id):
-        return await ui.answer(msg, "🚫 Ты заблокирован в системе и не можешь участвовать.")
+        return await ui.answer(msg, "🚫 Ты заблокирован в системе и не можешь участвовать.",
+                               reply_markup=await kb.to_menu())
 
     g = await db.gw_get(gid)
     if not g or g["status"] != "running":
-        return await ui.answer(msg, "Этот розыгрыш уже завершён или не найден.")
+        return await ui.answer(msg,
+            "Этот розыгрыш уже завершён или не найден.\n\nЖми кнопку ниже — вернёшься в меню.",
+            reply_markup=await kb.to_menu())
 
     await _show_join_screen(msg, gid, g)
 
@@ -766,7 +772,8 @@ async def cb_gw_check(c: CallbackQuery):
     await ui.edit(c.message,
         f"🎉 Ты участвуешь в «{_title(g)}»!\n\n"
         f"Не выходи из чатов/каналов до конца — иначе приз сгорит и получишь страйк. "
-        f"О результатах бот сообщит лично.")
+        f"О результатах бот сообщит лично.",
+        reply_markup=await kb.to_menu())
     await c.answer("Записал!")
 
 
@@ -791,7 +798,8 @@ async def cb_gw_currency(c: CallbackQuery):
     await ui.edit(c.message,
         f"🎉 Ты участвуешь в «{_title(g)}»!\n\n"
         f"Приз получишь в {cur_h}, если выиграешь.\n"
-        f"Не выходи из чатов до конца — иначе приз сгорит и получишь страйк.")
+        f"Не выходи из чатов до конца — иначе приз сгорит и получишь страйк.",
+        reply_markup=await kb.to_menu())
     await c.answer("Записал!")
 
 

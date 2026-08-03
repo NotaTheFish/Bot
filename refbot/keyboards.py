@@ -307,6 +307,8 @@ async def gw_subscribe(chats: list, gid: int, ready: bool) -> InlineKeyboardMark
     """
     Экран участия в ЛС: кнопки-ссылки на подписку + «Проверить и участвовать».
     ready — если True, показываем кнопку участия (после проверки).
+    Всегда есть выход «☰ Меню» — чтобы не застрять на этом экране (deep-link /start
+    может возвращать сюда повторно).
     """
     kb = InlineKeyboardBuilder()
     for ch in chats:
@@ -315,6 +317,7 @@ async def gw_subscribe(chats: list, gid: int, ready: bool) -> InlineKeyboardMark
         if link:
             kb.button(text=f"➡️ {title}", url=link)
     await btn(kb, "✅ Проверить подписку", f"gwjoin:{gid}")
+    await btn(kb, "☰ Главное меню", "menu", "back")
     kb.adjust(1)
     return kb.as_markup()
 
@@ -324,7 +327,8 @@ async def gw_currency_choice(gid: int) -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
     await btn(kb, "🍄 Грибы", f"gwcur:{gid}:mushrooms")
     await btn(kb, "🪙 Коины", f"gwcur:{gid}:coins")
-    kb.adjust(2)
+    await btn(kb, "☰ Главное меню", "menu", "back")
+    kb.adjust(2, 1)
     return kb.as_markup()
 
 
@@ -355,4 +359,11 @@ async def gw_skip_photo(step: str) -> InlineKeyboardMarkup:
     await btn(kb, "⏭ Без фото", f"gwphoto_skip:{step}")
     await btn(kb, "Отмена", "gw_menu", "back")
     kb.adjust(1)
+    return kb.as_markup()
+
+
+async def to_menu() -> InlineKeyboardMarkup:
+    """Одна кнопка «☰ Главное меню» — выход в главное меню из любого тупика."""
+    kb = InlineKeyboardBuilder()
+    await btn(kb, "☰ Главное меню", "menu", "back")
     return kb.as_markup()
