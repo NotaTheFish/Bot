@@ -868,11 +868,16 @@ async def run_finish(bot, gid: int, by: int = None):
 
     # текст победителей для поста
     if result["winners"]:
+        e_m = await settings.emoji_html("mushrooms")
+        e_c = await settings.emoji_html("coins")
         wlines = []
         for tg, place, prize, cur in result["winners"]:
             u = await db.get_user(tg)
-            name = f"@{u['username']}" if u and u["username"] else (u["first_name"] if u else tg)
-            wlines.append(f"{place}. {name} — {_prize_str(g['reward_mode'], prize, cur)}")
+            # кликабельное имя со ссылкой на профиль по ID (актуально + не зависит от @username)
+            label = (u["username"] if u and u["username"]
+                     else (u["first_name"] if u and u["first_name"] else str(tg)))
+            name = f'<a href="tg://user?id={tg}">{_esc(label)}</a>'
+            wlines.append(f"{place}. {name} — {_prize_str(g['reward_mode'], prize, cur, e_m, e_c)}")
         winners_text = "🏆 <b>Победители:</b>\n" + "\n".join(wlines)
     else:
         winners_text = "😔 Победителей нет — недостаточно участников с подпиской."
@@ -887,7 +892,9 @@ async def run_finish(bot, gid: int, by: int = None):
         with contextlib.suppress(Exception):
             if tg in winner_ids:
                 w = next(x for x in result["winners"] if x[0] == tg)
-                prize_s = _prize_str(g["reward_mode"], w[2], w[3])
+                e_m = await settings.emoji_html("mushrooms")
+                e_c = await settings.emoji_html("coins")
+                prize_s = _prize_str(g["reward_mode"], w[2], w[3], e_m, e_c)
                 if g["reward_mode"] == "other":
                     await ui.send(bot, tg, f"🎉 Ты выиграл в «{_title(g)}»!\n\n"
                                            f"Приз: {g.get('other_desc') or 'уточнит админ'}. "
@@ -908,18 +915,24 @@ async def run_finish(bot, gid: int, by: int = None):
                                        f"повезло — не отчаивайся, будут ещё!")
 
 
-def _prize_str(mode, prize, cur) -> str:
+def _prize_str(mode, prize, cur, e_m="🍄", e_c="🪙") -> str:
     if mode == "mushrooms":
-        return f"{fmt_amount(prize['mushrooms'])} 🍄"
+        return f"{fmt_amount(prize['mushrooms'])} {e_m}"
     if mode == "coins":
-        return f"{fmt_amount(prize['coins'])} 🪙"
+        return f"{fmt_amount(prize['coins'])} {e_c}"
     if mode == "both":
-        return f"{fmt_amount(prize['mushrooms'])} 🍄 + {fmt_amount(prize['coins'])} 🪙"
+        return f"{fmt_amount(prize['mushrooms'])} {e_m} + {fmt_amount(prize['coins'])} {e_c}"
     if mode == "choice":
         c = cur or "mushrooms"
-        return (f"{fmt_amount(prize['mushrooms'])} 🍄" if c == "mushrooms"
-                else f"{fmt_amount(prize['coins'])} 🪙")
+        return (f"{fmt_amount(prize['mushrooms'])} {e_m}" if c == "mushrooms"
+                else f"{fmt_amount(prize['coins'])} {e_c}")
     return "приз (лично)"
+
+
+def _esc(s: str) -> str:
+    """Экранирование для вставки имени в HTML."""
+    from html import escape
+    return escape(str(s))
 
 
 # ---------------- панель страйков ----------------
@@ -967,24 +980,40 @@ from zoneinfo import ZoneInfo
 async def worker(bot):
     """
     Фоновый цикл: автозавершение по таймеру + автоудаление завершённых через неделю.
-    Раз в минуту. Ошибки не роняют цикл.
+
+    Проверяем таймеры каждые 15 сек (не 60) — чтобы завершение было ближе к
+    назначенному времени. Само завершение (run_finish) для многих участников идёт
+    долго (проверка подписок каждого через Telegram API), поэтому оно НЕ должно
+    блокировать следующие тики: помечаем розыгрыш 'finishing' сразу, а тяжёлую работу
+    запускаем в отдельной задаче. Так таймер срабатывает вовремя, а не с накоплённым
+    смещением.
     """
     log.info("giveaway worker запущен")
     while True:
         try:
             now = datetime.now(ZoneInfo("Europe/Moscow"))
-            # таймеры
             due = await db.gw_due_timers(now)
             for gid in due:
                 log.info("автозавершение розыгрыша %s по таймеру", gid)
-                with contextlib.suppress(Exception):
-                    await run_finish(bot, gid)
-            # автоудаление завершённых старше недели
+                # сразу уводим из running, чтобы следующий тик не подхватил повторно
+                await db.gw_set_status(gid, "finishing")
+                asyncio.create_task(_finish_bg(bot, gid))
+            # автоудаление завершённых старше недели (редко, можно тут же)
             cutoff = now - timedelta(days=7)
-            old = await db.gw_finished_before(cutoff)
-            for gid in old:
+            for gid in await db.gw_finished_before(cutoff):
                 log.info("автоудаление старого розыгрыша %s", gid)
                 await db.gw_delete(gid)
         except Exception as e:
             log.warning("giveaway worker: %s", e)
-        await asyncio.sleep(60)
+        await asyncio.sleep(15)
+
+
+async def _finish_bg(bot, gid: int):
+    """Фоновое завершение — тяжёлую работу выносим из основного цикла воркера."""
+    try:
+        await run_finish(bot, gid)
+    except Exception as e:
+        log.warning("автозавершение %s упало: %s", gid, e)
+        # вернём в running, чтобы следующий тик попробовал снова
+        with contextlib.suppress(Exception):
+            await db.gw_set_status(gid, "running")

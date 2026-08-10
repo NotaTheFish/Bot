@@ -137,6 +137,21 @@ async def emoji(slot: str) -> str:
     return await get(f"emoji.{slot}", EMOJI_SLOTS[slot][1])
 
 
+async def emoji_html(slot: str) -> str:
+    """
+    Готовый премиум-эмодзи как <tg-emoji emoji-id="...">символ</tg-emoji>, если для
+    слота задан premium.<slot>. Иначе — просто символ. Нужно, чтобы эмодзи, которые
+    бот подставляет САМ (грибы/коины в списке победителей), были премиумными напрямую,
+    не полагаясь на свободные замены (которые могут быть отключены apply_free=False).
+    """
+    s = await load()
+    symbol = s.get(f"emoji.{slot}", EMOJI_SLOTS[slot][1])
+    cid = s.get(f"premium.{slot}")
+    if cid:
+        return f'<tg-emoji emoji-id="{cid}">{symbol}</tg-emoji>'
+    return symbol
+
+
 async def label(slot: str) -> str:
     return await get(f"label.{slot}", LABEL_SLOTS[slot][1])
 
