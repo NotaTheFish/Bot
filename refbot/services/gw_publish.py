@@ -26,6 +26,62 @@ async def _join_kb(bot, gid: int) -> InlineKeyboardMarkup:
         InlineKeyboardButton(text="🎉 Участвовать", url=url)]])
 
 
+async def _join_url(bot, gid: int) -> str:
+    me = await bot.get_me()
+    return f"https://t.me/{me.username}?start=gw_{gid}"
+
+
+async def _publish_to_channel(bot, channel_id: int, gw: dict, photo, join_url: str):
+    """
+    Публикация в КАНАЛ с сохранением премиум-эмодзи через чат-посредник.
+
+    В канал бот не может слать премиум напрямую. Обход (схема Notarian):
+      1. постим объявление в лог-чат (группа) — там премиум работает;
+      2. добавляем внизу текст-ссылку «⭢ Участвовать ⭠» (кнопку в канал не
+         прокинуть при пересылке, поэтому ссылкой в тексте);
+      3. forward из лог-чата в канал — пересылка СОХРАНЯЕТ премиум-эмодзи;
+      4. удаляем временный пост в лог-чате.
+
+    Плашка «Переслано от <бот>» в канале остаётся — это ограничение Telegram,
+    убрать нельзя. Если GW_LOG_CHAT_ID не задан — шлём в канал напрямую (без премиума).
+
+    Возвращает message_id пересланного поста в канале (для закрепа) или None.
+    """
+    from config import GW_LOG_CHAT_ID
+    # текст с приглашением-ссылкой (жирным) внизу
+    join_line = f'\n\n<b><a href="{join_url}">⭢ Участвовать ⭠</a></b>'
+    body = gw["announce_text"] + join_line
+
+    if not GW_LOG_CHAT_ID:
+        # посредника нет — прямая отправка в канал (премиум не сохранится)
+        if photo:
+            m = await bot.send_photo(channel_id, photo, caption=body)  # noqa: ui
+        else:
+            m = await bot.send_message(channel_id, body)  # noqa: ui
+        return m
+
+    # 1. постим в лог-чат (премиум работает, идём через ui/render)
+    if photo and len(body) <= CAPTION_LIMIT:
+        tmp = await ui.send_photo(bot, GW_LOG_CHAT_ID, photo, body, apply_free=False)
+    elif photo:
+        with contextlib.suppress(Exception):
+            await bot.send_photo(GW_LOG_CHAT_ID, photo)  # noqa: ui
+        tmp = await ui.send(bot, GW_LOG_CHAT_ID, body, apply_free=False)
+    else:
+        tmp = await ui.send(bot, GW_LOG_CHAT_ID, body, apply_free=False)
+
+    # 2. forward в канал — премиум сохраняется
+    try:
+        fwd = await bot.forward_message(channel_id, GW_LOG_CHAT_ID, tmp.message_id)
+    except Exception as e:
+        log.warning("forward в канал %s не удался: %s", channel_id, e)
+        fwd = None
+    # 3. удаляем временный пост в лог-чате (успех пересылки не обязателен для чистки)
+    with contextlib.suppress(Exception):
+        await bot.delete_message(GW_LOG_CHAT_ID, tmp.message_id)
+    return fwd
+
+
 # Лимит подписи к фото у Telegram — 1024 символа. Длиннее — шлём фото отдельно,
 # текст обычным сообщением (у него лимит 4096).
 CAPTION_LIMIT = 1000
@@ -43,16 +99,14 @@ async def publish(bot, gid: int) -> tuple[int, int, list[str]]:
     ok_count = 0
     errors = []
     photo = gw.get("announce_photo")
+    join_url = await _join_url(bot, gid)
     for ch in chats:
         try:
             if ch["kind"] == "channel":
-                # в канал — обычная отправка (от имени канала), premium вручную
-                if photo:
-                    m = await bot.send_photo(ch["chat_id"], photo,  # noqa: ui
-                                             caption=gw["announce_text"], reply_markup=kbd)
-                else:
-                    m = await bot.send_message(ch["chat_id"], gw["announce_text"],  # noqa: ui
-                                               reply_markup=kbd)
+                m = await _publish_to_channel(bot, ch["chat_id"], gw, photo, join_url)
+                if m is None:
+                    errors.append(f"{ch['title']}: не удалось опубликовать")
+                    continue
             else:
                 # в чат — через render, премиум-эмодзи работают
                 if photo and len(gw["announce_text"]) <= CAPTION_LIMIT:
