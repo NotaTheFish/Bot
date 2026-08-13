@@ -13,6 +13,7 @@ from config import MIN_WITHDRAW, HOLD_HOURS, PAYOUT_CHAT_ID, SUPER_ADMINS
 from services import settings, ui
 from services.render import edit as r_edit
 from services import referrals, withdrawals
+from services import casino as casino_svc
 from services.notify import push_admin_card, drop_admin_card
 
 router = Router()
@@ -124,7 +125,8 @@ async def start_plain(msg: Message, state: FSMContext):
         f"Награда зачисляется через <b>{HOLD_HOURS // 24} дня</b> после входа — "
         f"если реферал остался в чате.\n\n"
         f"Текущая валюта: {sx['e_' + u['currency']]} <b>{sx['l_' + u['currency']]}</b>",
-        reply_markup=await kb.main_menu(u["currency"], is_adm))
+        reply_markup=await kb.main_menu(u["currency"], is_adm,
+                                        show_casino=await casino_svc.visible(msg.from_user.id)))
 
 
 @router.message(F.text == "☰ Меню")
@@ -136,7 +138,8 @@ async def reply_menu_btn(msg: Message, state: FSMContext):
     u = await db.get_user(msg.from_user.id)
     is_adm = await _is_admin(msg.from_user.id)
     await ui.answer(msg, "🏠 <b>Главное меню</b>",
-                    reply_markup=await kb.main_menu(u["currency"], is_adm))
+                    reply_markup=await kb.main_menu(u["currency"], is_adm,
+                                        show_casino=await casino_svc.visible(msg.from_user.id)))
 
 
 @router.message(Command("свернуть", "hide"))
@@ -156,7 +159,8 @@ async def show_reply_kb(msg: Message, state: FSMContext):
     with contextlib.suppress(Exception):
         await msg.answer("Панель управления снизу 👇", reply_markup=kb.menu_reply())  # noqa: ui
     await ui.answer(msg, "🏠 <b>Главное меню</b>",
-                    reply_markup=await kb.main_menu(u["currency"], is_adm))
+                    reply_markup=await kb.main_menu(u["currency"], is_adm,
+                                        show_casino=await casino_svc.visible(msg.from_user.id)))
 
 
 @router.message(Command("promo"))
@@ -205,7 +209,8 @@ async def cb_menu(c: CallbackQuery, state: FSMContext):
     u = await db.get_user(c.from_user.id)
     is_adm = await _is_admin(c.from_user.id)
     await ui.edit(c.message, "🏠 <b>Главное меню</b>",
-                              reply_markup=await kb.main_menu(u["currency"], is_adm))
+                              reply_markup=await kb.main_menu(u["currency"], is_adm,
+                                        show_casino=await casino_svc.visible(msg.from_user.id)))
     await c.answer()
 
 
@@ -275,7 +280,8 @@ async def cb_toggle(c: CallbackQuery):
     new = "coins" if u["currency"] == "mushrooms" else "mushrooms"
     await db.pool().execute("UPDATE rb_users SET currency=$1 WHERE tg_id=$2", new, c.from_user.id)
     is_adm = await _is_admin(c.from_user.id)
-    await c.message.edit_reply_markup(reply_markup=await kb.main_menu(new, is_adm))
+    await c.message.edit_reply_markup(reply_markup=await kb.main_menu(new, is_adm,
+        show_casino=await casino_svc.visible(c.from_user.id)))
     await c.answer(
         f"Теперь получаешь: {await settings.label(new)}\n"
         f"Старый баланс никуда не делся. Уже висящие холды остаются в прежней валюте.",

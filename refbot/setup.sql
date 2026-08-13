@@ -164,6 +164,19 @@ CREATE TABLE IF NOT EXISTS rb_audit (
 );
 
 
+-- Лог открытий кейсов (казино). Для истории и антифрод-аналитики.
+CREATE TABLE IF NOT EXISTS rb_case_opens (
+    id         BIGSERIAL PRIMARY KEY,
+    tg_id      BIGINT NOT NULL,
+    case_key   TEXT NOT NULL,          -- small|medium|big
+    currency   TEXT NOT NULL,          -- mushrooms|coins
+    cost       BIGINT NOT NULL,        -- сколько заплатил (в валюте)
+    won        BIGINT NOT NULL,        -- сколько выиграл (в валюте)
+    multiplier NUMERIC NOT NULL,       -- множитель приза (0.25..10)
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+
 -- ---------- 3. Индексы (без них защита от накрутки не работает) ----------
 CREATE INDEX        IF NOT EXISTS rb_ledger_user_idx      ON rb_ledger (tg_id, created_at DESC);
 CREATE UNIQUE INDEX IF NOT EXISTS rb_referrals_alive_idx  ON rb_referrals (chat_id, invitee_id) WHERE status IN ('hold','paid');
@@ -173,6 +186,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS rb_withdrawals_one_pending ON rb_withdrawals (
 CREATE INDEX        IF NOT EXISTS rb_withdrawals_user_idx ON rb_withdrawals (tg_id, created_at DESC);
 CREATE UNIQUE INDEX IF NOT EXISTS rb_spins_daily          ON rb_spins (tg_id, spin_day);
 CREATE INDEX        IF NOT EXISTS rb_audit_idx            ON rb_audit (action, created_at DESC);
+CREATE INDEX        IF NOT EXISTS rb_case_opens_idx     ON rb_case_opens (tg_id, created_at DESC);
 
 
 
@@ -362,7 +376,7 @@ ALTER TABLE rb_giveaways ADD COLUMN IF NOT EXISTS finish_photo TEXT;
 
 -- ---------- 5. Проверка ----------
 SELECT
-  (SELECT count(*) FROM pg_tables WHERE tablename ~ '^rb_')                   AS tables_expect_21,
+  (SELECT count(*) FROM pg_tables WHERE tablename ~ '^rb_')                   AS tables_expect_22,
   (SELECT count(*) FROM pg_type   WHERE typname ~ '^rb_' AND typtype = 'e')   AS enums_expect_3,
   (SELECT count(*) FROM pg_indexes WHERE indexname IN
      ('rb_referrals_alive_idx','rb_withdrawals_one_pending','rb_spins_daily',

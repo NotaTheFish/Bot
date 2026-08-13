@@ -362,12 +362,21 @@ async def gw_due_timers(now):
     return [r["id"] for r in rows]
 
 
+async def log_case_open(tg_id: int, case_key: str, currency: str,
+                        cost: int, won: int, multiplier: float) -> None:
+    """Записать открытие кейса в лог (история + антифрод)."""
+    await pool().execute(
+        "INSERT INTO rb_case_opens (tg_id, case_key, currency, cost, won, multiplier) "
+        "VALUES ($1,$2,$3,$4,$5,$6)", tg_id, case_key, currency, cost, won, multiplier)
+
+
 EXPECTED_TABLES = [
     "rb_users", "rb_chats", "rb_admins", "rb_balances", "rb_ledger", "rb_ref_links",
     "rb_invites", "rb_targets", "rb_referrals", "rb_withdrawals", "rb_spins", "rb_audit",
     "rb_settings", "rb_roulette_budget", "rb_roulette_chats",
     "rb_contest_chats", "rb_week_msgs", "rb_week_draws",
     "rb_giveaways", "rb_giveaway_chats", "rb_giveaway_members",
+    "rb_case_opens",
 ]
 
 

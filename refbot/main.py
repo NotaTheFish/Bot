@@ -12,7 +12,7 @@ import db
 import roulette
 from config import (BOT_TOKEN, CONTEST_MIN_MSGS, CONTEST_MSGS_PER_TICKET,
                     CONTEST_TEST_MINUTES, UNLIMITED_SPIN_IDS)
-from handlers import admin, chat_events, contest, giveaway, roulette_cmd, skin, user
+from handlers import admin, casino, chat_events, contest, giveaway, roulette_cmd, skin, user
 from services import referrals, settings, ui
 
 logging.basicConfig(level=logging.INFO,
@@ -80,6 +80,7 @@ async def main():
     dp.include_router(roulette_cmd.router)
     dp.include_router(admin.router)
     dp.include_router(giveaway.router)
+    dp.include_router(casino.router)
     dp.include_router(skin.router)
     dp.include_router(user.router)
 

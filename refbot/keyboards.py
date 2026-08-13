@@ -6,16 +6,19 @@ from services import settings
 from services.ui import btn
 
 
-async def main_menu(currency: str, is_admin: bool) -> InlineKeyboardMarkup:
+async def main_menu(currency: str, is_admin: bool,
+                    show_casino: bool = False) -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
     await btn(kb, "Профиль", "profile", "profile")
     await btn(kb, "Моя ссылка", "mylink", "link")
     await btn(kb, f"Валюта: {await settings.label(currency)}", "toggle_cur", currency)
     await btn(kb, "Мои рефералы", "myrefs", "refs")
     await btn(kb, "Вывод", "wd_menu", "withdraw")
+    if show_casino:
+        await btn(kb, "🎰 Казино", "casino")
     if is_admin:
         await btn(kb, "Админка", "admin", "admin")
-    kb.adjust(2, 1, 2, 1)
+    kb.adjust(2, 1, 2, 1, 1)
     return kb.as_markup()
 
 
@@ -88,9 +91,10 @@ async def admin_menu(manage: bool = True) -> InlineKeyboardMarkup:
     await btn(kb, "🚫 Баны", "a_bans")
     if manage:
         await btn(kb, "🎁 Розыгрыши", "gw_menu")
+        await btn(kb, "🎰 Казино (доступ)", "casino_admin")
         await btn(kb, "🎨 Кастомизация", "a_skin")
     await btn(kb, "Назад", "menu", "back")
-    kb.adjust(2, 2, 2, 2, 1, 1)
+    kb.adjust(2, 2, 2, 2, 1, 1, 1)
     return kb.as_markup()
 
 
@@ -366,4 +370,55 @@ async def to_menu() -> InlineKeyboardMarkup:
     """Одна кнопка «☰ Главное меню» — выход в главное меню из любого тупика."""
     kb = InlineKeyboardBuilder()
     await btn(kb, "☰ Главное меню", "menu", "back")
+    return kb.as_markup()
+
+
+# ==================== КАЗИНО ====================
+async def casino_menu() -> InlineKeyboardMarkup:
+    """Меню казино: пока только кейсы (остальные игры — позже)."""
+    kb = InlineKeyboardBuilder()
+    await btn(kb, "📦 Кейсы", "casino_cases")
+    # заглушки на будущее (рулетка платная, карточки) добавим позже
+    await btn(kb, "Назад", "menu", "back")
+    kb.adjust(1)
+    return kb.as_markup()
+
+
+async def casino_cases(cases: list) -> InlineKeyboardMarkup:
+    """Список кейсов. cases: [(key, название, цена_в_грибах)]."""
+    kb = InlineKeyboardBuilder()
+    for key, title, price in cases:
+        await btn(kb, f"{title} — {price:,}".replace(",", " "), f"case:{key}")
+    await btn(kb, "Назад", "casino", "back")
+    kb.adjust(1)
+    return kb.as_markup()
+
+
+async def case_currency(case_key: str) -> InlineKeyboardMarkup:
+    """Выбор валюты оплаты кейса."""
+    kb = InlineKeyboardBuilder()
+    await btn(kb, "🍄 Грибами", f"casebuy:{case_key}:mushrooms")
+    await btn(kb, "🪙 Коинами", f"casebuy:{case_key}:coins")
+    await btn(kb, "Назад", "casino_cases", "back")
+    kb.adjust(2, 1)
+    return kb.as_markup()
+
+
+async def case_again(case_key: str) -> InlineKeyboardMarkup:
+    """После открытия: открыть ещё или назад."""
+    kb = InlineKeyboardBuilder()
+    await btn(kb, "🔁 Открыть ещё", f"case:{case_key}")
+    await btn(kb, "📦 К кейсам", "casino_cases")
+    await btn(kb, "Меню", "menu", "back")
+    kb.adjust(1)
+    return kb.as_markup()
+
+
+async def casino_admin_toggle(enabled: bool) -> InlineKeyboardMarkup:
+    """Переключатель доступа к казино в админке."""
+    kb = InlineKeyboardBuilder()
+    state = "🟢 Открыто всем" if enabled else "🔴 Только админ"
+    await btn(kb, f"Казино: {state} (переключить)", "casino_toggle")
+    await btn(kb, "Админка", "admin", "back")
+    kb.adjust(1)
     return kb.as_markup()
