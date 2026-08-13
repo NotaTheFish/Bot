@@ -141,6 +141,8 @@ async def _animate_case(c, case_key, cur, mult, won, new_bal):
     # подпись по редкости
     if mult == 10.0:
         head = "🎰💥 <b>ДЖЕКПОТ!!!</b> 💥🎰"
+    elif mult == 5.0:
+        head = "🔥💰 <b>ОГРОМНЫЙ ВЫИГРЫШ!</b> 💰🔥"
     elif mult >= 3.0:
         head = "💎 <b>КРУПНЫЙ ВЫИГРЫШ!</b>"
     elif mult >= 1.0:
