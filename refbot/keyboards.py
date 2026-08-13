@@ -92,9 +92,10 @@ async def admin_menu(manage: bool = True) -> InlineKeyboardMarkup:
     if manage:
         await btn(kb, "🎁 Розыгрыши", "gw_menu")
         await btn(kb, "🎰 Казино (доступ)", "casino_admin")
+        await btn(kb, "🎟 Промокоды", "promo_menu")
         await btn(kb, "🎨 Кастомизация", "a_skin")
     await btn(kb, "Назад", "menu", "back")
-    kb.adjust(2, 2, 2, 2, 1, 1, 1)
+    kb.adjust(2, 2, 2, 2, 1, 1, 1, 1)
     return kb.as_markup()
 
 
@@ -420,5 +421,42 @@ async def casino_admin_toggle(enabled: bool) -> InlineKeyboardMarkup:
     state = "🟢 Открыто всем" if enabled else "🔴 Только админ"
     await btn(kb, f"Казино: {state} (переключить)", "casino_toggle")
     await btn(kb, "Админка", "admin", "back")
+    kb.adjust(1)
+    return kb.as_markup()
+
+
+# ==================== ПРОМОКОДЫ ====================
+async def promo_menu() -> InlineKeyboardMarkup:
+    kb = InlineKeyboardBuilder()
+    await btn(kb, "📋 Все промо", "promo_all")
+    await btn(kb, "➕ Создать промо", "promo_new")
+    await btn(kb, "Админка", "admin", "back")
+    kb.adjust(1)
+    return kb.as_markup()
+
+
+async def promo_back() -> InlineKeyboardMarkup:
+    kb = InlineKeyboardBuilder()
+    await btn(kb, "Назад", "promo_menu", "back")
+    return kb.as_markup()
+
+
+async def promo_list_kb(rows) -> InlineKeyboardMarkup:
+    """Список промо: активные кликабельны (открыть карточку с удалением)."""
+    from services import promo as promo_svc
+    kb = InlineKeyboardBuilder()
+    for p in rows:
+        # активные кликабельны, просроченные — просто в тексте (кнопкой удалить тоже даём)
+        flag = "🔴" if not promo_svc.is_active(p) else "🟢"
+        await btn(kb, f"{flag} {p['code']}", f"promo_view:{p['id']}")
+    await btn(kb, "Назад", "promo_menu", "back")
+    kb.adjust(1)
+    return kb.as_markup()
+
+
+async def promo_card(pid: int) -> InlineKeyboardMarkup:
+    kb = InlineKeyboardBuilder()
+    await btn(kb, "🗑 Удалить", f"promo_del:{pid}")
+    await btn(kb, "Назад", "promo_all", "back")
     kb.adjust(1)
     return kb.as_markup()

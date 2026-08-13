@@ -177,6 +177,27 @@ CREATE TABLE IF NOT EXISTS rb_case_opens (
 );
 
 
+-- Промокоды: код + награда в грибах (коины по курсу), лимит активаций, срок.
+CREATE TABLE IF NOT EXISTS rb_promo (
+    id           BIGSERIAL PRIMARY KEY,
+    code         TEXT NOT NULL,             -- кодовое слово (храним как есть; сверяем без регистра)
+    reward_mush  BIGINT NOT NULL,           -- награда в грибах; коины = reward_mush * COIN_RATE
+    max_acts     INT,                       -- лимит активаций; NULL = безлимит
+    used         INT NOT NULL DEFAULT 0,    -- сколько раз активирован
+    expires_at   TIMESTAMPTZ,               -- срок; NULL = бессрочно
+    created_by   BIGINT,
+    created_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- Активации промокодов: кто какой код активировал (одна активация на человека).
+CREATE TABLE IF NOT EXISTS rb_promo_acts (
+    promo_id   BIGINT NOT NULL REFERENCES rb_promo(id) ON DELETE CASCADE,
+    tg_id      BIGINT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (promo_id, tg_id)
+);
+
+
 -- ---------- 3. Индексы (без них защита от накрутки не работает) ----------
 CREATE INDEX        IF NOT EXISTS rb_ledger_user_idx      ON rb_ledger (tg_id, created_at DESC);
 CREATE UNIQUE INDEX IF NOT EXISTS rb_referrals_alive_idx  ON rb_referrals (chat_id, invitee_id) WHERE status IN ('hold','paid');
@@ -187,6 +208,8 @@ CREATE INDEX        IF NOT EXISTS rb_withdrawals_user_idx ON rb_withdrawals (tg_
 CREATE UNIQUE INDEX IF NOT EXISTS rb_spins_daily          ON rb_spins (tg_id, spin_day);
 CREATE INDEX        IF NOT EXISTS rb_audit_idx            ON rb_audit (action, created_at DESC);
 CREATE INDEX        IF NOT EXISTS rb_case_opens_idx     ON rb_case_opens (tg_id, created_at DESC);
+CREATE INDEX        IF NOT EXISTS rb_promo_code_idx     ON rb_promo (lower(code));
+CREATE INDEX        IF NOT EXISTS rb_promo_acts_idx     ON rb_promo_acts (tg_id);
 
 
 
@@ -376,7 +399,7 @@ ALTER TABLE rb_giveaways ADD COLUMN IF NOT EXISTS finish_photo TEXT;
 
 -- ---------- 5. Проверка ----------
 SELECT
-  (SELECT count(*) FROM pg_tables WHERE tablename ~ '^rb_')                   AS tables_expect_22,
+  (SELECT count(*) FROM pg_tables WHERE tablename ~ '^rb_')                   AS tables_expect_24,
   (SELECT count(*) FROM pg_type   WHERE typname ~ '^rb_' AND typtype = 'e')   AS enums_expect_3,
   (SELECT count(*) FROM pg_indexes WHERE indexname IN
      ('rb_referrals_alive_idx','rb_withdrawals_one_pending','rb_spins_daily',

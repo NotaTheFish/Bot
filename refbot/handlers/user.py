@@ -163,44 +163,6 @@ async def show_reply_kb(msg: Message, state: FSMContext):
                                         show_casino=await casino_svc.visible(msg.from_user.id)))
 
 
-@router.message(Command("promo"))
-async def cmd_promo(msg: Message, command: CommandObject):
-    """
-    /promo <код> — активирует промокод из переменной PROMO_CODE.
-    Даёт 100k грибов или 2M коинов (по валюте юзера). БЕЗЛИМИТНЫЙ: тестовый
-    инструмент, активировать можно сколько угодно раз. Нет переменной / неверный
-    код — отвечаем «неверный», чтобы код не подбирали.
-    """
-    from config import PROMO_CODE, PROMO_REWARD
-    if not await guard(msg):
-        return
-    code = (command.args or "").strip()
-    if not code:
-        return await ui.answer(msg, "Использование: <code>/promo КОД</code>")
-    if not PROMO_CODE or code != PROMO_CODE:
-        return await ui.answer(msg, "❌ Неверный промокод.")
-
-    u = await db.get_user(msg.from_user.id)
-    cur = u["currency"]
-    amount = PROMO_REWARD[cur]
-    sx = await settings.ctx()
-
-    # Безлимит => каждое начисление уникально. db.apply идемпотентен по ключу,
-    # поэтому ключ должен быть РАЗНЫМ каждый раз, иначе второй /promo вернёт None
-    # и ничего не зачислит. Берём id из последовательности — гарантированно уникален.
-    async with db.pool().acquire() as conn:
-        async with conn.transaction():
-            uniq = await conn.fetchval("SELECT nextval('rb_promo_seq')")
-            bal = await db.apply(conn, msg.from_user.id, cur, amount,
-                                 "promo", f"promo:{uniq}")
-    await db.audit(msg.from_user.id, "promo", {"code": PROMO_CODE, "amount": amount})
-    await ui.answer(
-        msg,
-        f"✅ Промокод активирован!\n"
-        f"Начислено: <b>{amount:,}</b> {sx['e_' + cur]} {sx['l_' + cur]}\n"
-        f"Баланс: <b>{bal:,}</b>".replace(",", " "))
-
-
 @router.callback_query(F.data == "menu")
 async def cb_menu(c: CallbackQuery, state: FSMContext):
     await state.clear()
@@ -210,7 +172,7 @@ async def cb_menu(c: CallbackQuery, state: FSMContext):
     is_adm = await _is_admin(c.from_user.id)
     await ui.edit(c.message, "🏠 <b>Главное меню</b>",
                               reply_markup=await kb.main_menu(u["currency"], is_adm,
-                                        show_casino=await casino_svc.visible(msg.from_user.id)))
+                                        show_casino=await casino_svc.visible(c.from_user.id)))
     await c.answer()
 
 

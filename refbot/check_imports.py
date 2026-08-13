@@ -64,6 +64,36 @@ def check_file(path: str) -> list[str]:
     return out
 
 
+def check_undefined_names(path: str) -> list[str]:
+    """
+    Ловит использование частых имён-объектов (msg/c/callback...) там, где их нет ни
+    в аргументах функции, ни в присваиваниях. Классика при копипасте между
+    message- и callback-хендлерами (был баг: msg.from_user в функции с c: CallbackQuery).
+    """
+    import ast
+    SUSPECTS = {"msg", "c", "callback", "query"}
+    try:
+        tree = ast.parse(open(path).read())
+    except SyntaxError:
+        return []
+    out = []
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            local = {a.arg for a in node.args.args}
+            local |= {a.arg for a in node.args.kwonlyargs}
+            for n in ast.walk(node):
+                if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Store):
+                    local.add(n.id)
+                if isinstance(n, ast.arg):
+                    local.add(n.arg)
+            for n in ast.walk(node):
+                if (isinstance(n, ast.Name) and isinstance(n.ctx, ast.Load)
+                        and n.id in SUSPECTS and n.id not in local):
+                    out.append(f"{path}:{n.lineno} — '{n.id}' в {node.name}() не определён "
+                               f"(перепутан msg/c?)")
+    return out
+
+
 def main() -> int:
     problems = []
     for root, _, files in os.walk("."):
@@ -71,12 +101,14 @@ def main() -> int:
             continue
         for fn in files:
             if fn.endswith(".py"):
-                problems += check_file(os.path.join(root, fn))
+                p = os.path.join(root, fn)
+                problems += check_file(p)
+                problems += check_undefined_names(p)
     if problems:
-        print("НАЙДЕНЫ обращения к возможно-неимпортированным модулям:\n")
-        print("\n".join(problems))
+        print("НАЙДЕНЫ проблемы:\n")
+        print("\n".join(sorted(set(problems))))
         return 1
-    print("✔ импорты — чисто, все модульные обращения разрешаются")
+    print("✔ импорты и имена — чисто")
     return 0
 
 
