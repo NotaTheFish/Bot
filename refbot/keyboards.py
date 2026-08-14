@@ -15,7 +15,7 @@ async def main_menu(currency: str, is_admin: bool,
     await btn(kb, "Мои рефералы", "myrefs", "refs")
     await btn(kb, "Вывод", "wd_menu", "withdraw")
     if show_casino:
-        await btn(kb, "🎰 Казино", "casino")
+        await btn(kb, "Казино", "casino")
     if is_admin:
         await btn(kb, "Админка", "admin", "admin")
     kb.adjust(2, 1, 2, 1, 1)
@@ -397,7 +397,7 @@ async def wheel_again(bet: int, cur: str) -> InlineKeyboardMarkup:
 
 async def wheel_back() -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
-    await btn(kb, "🎰 Казино", "casino", "back")
+    await btn(kb, "Казино", "casino", "back")
     return kb.as_markup()
 
 

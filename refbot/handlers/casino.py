@@ -141,7 +141,7 @@ async def _animate_case(c, case_key, cur, mult, won, new_bal):
     frames = ["📦", "📦✨", "📦💥", "🎁"]
     for f in frames:
         with contextlib.suppress(Exception):
-            await ui.edit(c.message, f"<b>{title}</b>\n\n{f} открываем…")
+            await ui.edit(c.message, f"<b>{title}</b>\n\n<blockquote>{f} открываем…</blockquote>")
         await asyncio.sleep(0.5)
 
     # подпись по редкости
@@ -293,7 +293,7 @@ async def _animate_wheel(target, uid, bet_cur, cur, mult, won, new_bal, edit):
     msg = None
     for i, pos in enumerate(positions):
         speed = "🎰" if i < 8 else ("⏳" if i < 12 else "🎯")
-        frame = f"🎡 <b>Рулетка</b>\n\n{speed}  {_wheel_frame(pos)}"
+        frame = f"🎡 <b>Рулетка</b>\n\n<blockquote>{speed}  {_wheel_frame(pos)}</blockquote>"
         with contextlib.suppress(Exception):
             m = await show(frame)
             if m:
