@@ -61,3 +61,21 @@ def case_title(case_key: str) -> str:
 def all_cases() -> list[tuple[str, str, int]]:
     """Список (key, название, цена_в_грибах) для меню."""
     return [(k, v[0], v[1]) for k, v in CASES.items()]
+
+
+# ---------- рулетка (колесо) ----------
+def roll_wheel() -> float:
+    """Крутануть колесо. Возвращает множитель (0.0..50.0)."""
+    from config import WHEEL_SECTORS
+    r = secrets.randbelow(10**9) / 10**9
+    acc = 0.0
+    for mult, p in WHEEL_SECTORS:
+        acc += p
+        if r <= acc:
+            return mult
+    return WHEEL_SECTORS[-1][0]
+
+
+def wheel_bet_ok(bet_mush: int) -> bool:
+    from config import WHEEL_MIN_BET, WHEEL_MAX_BET
+    return WHEEL_MIN_BET <= bet_mush <= WHEEL_MAX_BET

@@ -13,15 +13,21 @@ import logging
 
 import asyncpg
 from aiogram import F, Router
-from aiogram.types import CallbackQuery
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
+from aiogram.types import CallbackQuery, Message
 
 import db
 import keyboards as kb
-from config import SUPER_ADMINS
+from config import SUPER_ADMINS, COIN_RATE, WHEEL_MIN_BET, WHEEL_MAX_BET
 from services import casino, settings, ui
 
 router = Router()
 log = logging.getLogger("casino")
+
+
+class Wheel(StatesGroup):
+    bet = State()
 
 
 async def _is_admin(uid: int) -> bool:
@@ -160,6 +166,172 @@ async def _animate_case(c, case_key, cur, mult, won, new_bal):
         f"{profit_line}\n\n"
         f"Баланс: <b>{new_bal:,}</b> {e_cur}".replace(",", " "),
         reply_markup=await kb.case_again(case_key))
+
+
+# ---------------- рулетка (колесо) ----------------
+@router.callback_query(F.data == "wheel")
+async def cb_wheel(c: CallbackQuery, state: FSMContext):
+    if not await casino_visible(c.from_user.id):
+        return await c.answer("Казино закрыто.", show_alert=True)
+    await state.set_state(Wheel.bet)
+    b = await db.balances(c.from_user.id)
+    sx = await settings.ctx()
+    await ui.edit(c.message,
+        f"🎡 <b>Рулетка</b>\n\n"
+        f"Крути колесо — множитель ×0…×50 на ставку!\n"
+        f"Сектора: ×0.5, ×1, ×2, ×3, ×5, ×10 и джекпот <b>×50</b>.\n\n"
+        f"Баланс: {sx['e_mushrooms']} {b['mushrooms']:,} · {sx['e_coins']} {b['coins']:,}\n\n"
+        f"Введи ставку от <b>{WHEEL_MIN_BET:,}</b> до <b>{WHEEL_MAX_BET:,}</b> грибов "
+        f"(коины по курсу). Например <code>5000</code> или <code>5к</code>."
+        .replace(",", " "),
+        reply_markup=await kb.wheel_back())
+    await c.answer()
+
+
+@router.message(Wheel.bet)
+async def wheel_bet_input(msg: Message, state: FSMContext):
+    if not await casino_visible(msg.from_user.id):
+        return await state.clear()
+    from services.amount_parse import parse_amount
+    bet = parse_amount(msg.text or "")
+    if bet is None or bet <= 0:
+        return await ui.answer(msg, "Нужно число. Например <code>5000</code> или <code>5к</code>.")
+    if not casino.wheel_bet_ok(bet):
+        return await ui.answer(msg,
+            f"Ставка от {WHEEL_MIN_BET:,} до {WHEEL_MAX_BET:,} грибов.".replace(",", " "))
+    await state.clear()
+    # валюта игрока
+    u = await db.get_user(msg.from_user.id)
+    cur = u["currency"]
+    bet_cur = bet * COIN_RATE if cur == "coins" else bet
+    await _spin_wheel(msg, msg.from_user.id, bet_cur, cur, edit=False)
+
+
+@router.callback_query(F.data.startswith("wheelspin:"))
+async def cb_wheel_again(c: CallbackQuery):
+    if not await casino_visible(c.from_user.id):
+        return await c.answer("Казино закрыто.", show_alert=True)
+    _, bet_s, cur = c.data.split(":")
+    bet_cur = int(bet_s)
+    await c.answer()
+    await _spin_wheel(c.message, c.from_user.id, bet_cur, cur, edit=True)
+
+
+async def _spin_wheel(target, uid: int, bet_cur: int, cur: str, edit: bool):
+    """
+    Крутить колесо. target — Message (для ответа/редактирования).
+    bet_cur — ставка в валюте игрока. Списываем ставку, начисляем выигрыш.
+    """
+    if await db.is_banned(uid):
+        return
+    b = await db.balances(uid)
+    if b[cur] < bet_cur:
+        sx = await settings.ctx()
+        txt = f"Не хватает: ставка {bet_cur:,} {sx['e_' + cur]}, у тебя {b[cur]:,}.".replace(",", " ")
+        return await (ui.edit(target, txt, reply_markup=await kb.wheel_back()) if edit
+                      else ui.answer(target, txt, reply_markup=await kb.wheel_back()))
+
+    mult = casino.roll_wheel()
+    won = int(bet_cur * mult)
+
+    # ставка -> выигрыш в одной транзакции
+    import time
+    idem = f"wheel:{uid}:{int(time.time()*1000)}:{cur}"
+    try:
+        async with db.pool().acquire() as conn:
+            async with conn.transaction():
+                await db.apply(conn, uid, cur, -bet_cur, "wheel_bet", idem + ":bet")
+                new_bal = await db.apply(conn, uid, cur, won, "wheel_win", idem + ":win")
+    except asyncpg.CheckViolationError:
+        return
+    except asyncpg.UniqueViolationError:
+        return
+
+    await db.audit(uid, "wheel_spin", {"bet": bet_cur, "mult": mult, "won": won, "cur": cur})
+    bet_mush = bet_cur // COIN_RATE if cur == "coins" else bet_cur
+    await db.log_case_open(uid, "wheel", cur, bet_cur, won, mult)
+
+    await _animate_wheel(target, uid, bet_cur, cur, mult, won, new_bal, edit)
+
+
+# лента секторов для анимации (по кругу)
+_WHEEL_STRIP = ["×0", "×0.5", "×1", "×2", "×3", "×5", "×10", "×50",
+                "×0", "×0.5", "×1", "×2", "×3", "×5"]
+
+
+def _wheel_frame(pos: int) -> str:
+    """Окно из 5 секторов с бегунком на pos."""
+    N = len(_WHEEL_STRIP)
+    parts = []
+    for i in range(pos - 2, pos + 3):
+        s = _WHEEL_STRIP[i % N]
+        parts.append(f"▸{s}◂" if i == pos else s)
+    return "  ".join(parts)
+
+
+async def _animate_wheel(target, uid, bet_cur, cur, mult, won, new_bal, edit):
+    e_cur = await settings.emoji_html(cur)
+
+    async def show(text, kb_markup=None):
+        if edit:
+            return await ui.edit(target, text, reply_markup=kb_markup)
+        # первый показ — отвечаем, дальше редактируем это же сообщение
+        return await ui.answer(target, text, reply_markup=kb_markup)
+
+    # найдём позицию сектора-результата в ленте
+    label = ("×0" if mult == 0 else f"×{mult:g}")
+    try:
+        stop = _WHEEL_STRIP.index(label)
+    except ValueError:
+        stop = 0
+
+    # кадры с замедлением: быстрая прокрутка -> подводим к stop
+    positions = [0, 3, 6, 9, 12, 2, 5, 8, 11, 1, 4, 7]  # бег
+    # последние кадры аккуратно подводим к результату
+    positions += [(stop - 2) % len(_WHEEL_STRIP), (stop - 1) % len(_WHEEL_STRIP), stop, stop]
+
+    msg = None
+    for i, pos in enumerate(positions):
+        speed = "🎰" if i < 8 else ("⏳" if i < 12 else "🎯")
+        frame = f"🎡 <b>Рулетка</b>\n\n{speed}  {_wheel_frame(pos)}"
+        with contextlib.suppress(Exception):
+            m = await show(frame)
+            if m:
+                msg = m
+        # после первого показа переключаемся на edit того же сообщения
+        if not edit and msg:
+            edit = True
+            target = msg
+        await asyncio.sleep(0.35 if i < 8 else 0.5)
+
+    # результат
+    bet_mush = bet_cur // COIN_RATE if cur == "coins" else bet_cur
+    if mult == 50.0:
+        head = ("🎡💥 <b>МЕГА-ДЖЕКПОТ КОЛЕСА!!!</b> 💥🎡\n"
+                "Колесо замерло на <b>×50</b> — такое видят единицы!\n"
+                "Шанс — 0.1%. Один на тысячу оборотов. Ты поймал его 🔥")
+    elif mult == 0.0:
+        head = "💨 <b>Мимо!</b> Колесо встало на ×0 — ставка сгорела. Крутанём ещё?"
+    elif mult >= 5.0:
+        head = f"🔥 <b>Крупно!</b> ×{mult:g}!"
+    elif mult >= 1.0:
+        head = f"✅ Выпало ×{mult:g}"
+    else:
+        head = f"🙂 Выпало ×{mult:g} — вернулась часть ставки"
+
+    profit = won - bet_cur
+    profit_line = (f"В плюс: <b>+{profit:,}</b>" if profit > 0
+                   else f"В минус: <b>{profit:,}</b>" if profit < 0
+                   else "Вернул ставку")
+    result = (
+        f"🎡 <b>Рулетка</b>\n\n{head}\n\n"
+        f"Ставка: {bet_cur:,} {e_cur} → множитель ×{mult:g}\n"
+        f"Выигрыш: <b>{won:,}</b> {e_cur}\n"
+        f"{profit_line}\n\n"
+        f"Баланс: <b>{new_bal:,}</b> {e_cur}"
+    ).replace(",", " ")
+    with contextlib.suppress(Exception):
+        await ui.edit(target, result, reply_markup=await kb.wheel_again(bet_mush, cur))
 
 
 # ---------------- админ: переключатель доступа ----------------

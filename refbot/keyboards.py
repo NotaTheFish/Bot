@@ -376,12 +376,28 @@ async def to_menu() -> InlineKeyboardMarkup:
 
 # ==================== КАЗИНО ====================
 async def casino_menu() -> InlineKeyboardMarkup:
-    """Меню казино: пока только кейсы (остальные игры — позже)."""
+    """Меню казино: кейсы и рулетка (колесо). Карточки/слоты — позже."""
     kb = InlineKeyboardBuilder()
     await btn(kb, "📦 Кейсы", "casino_cases")
-    # заглушки на будущее (рулетка платная, карточки) добавим позже
+    await btn(kb, "🎡 Рулетка", "wheel")
     await btn(kb, "Назад", "menu", "back")
     kb.adjust(1)
+    return kb.as_markup()
+
+
+async def wheel_again(bet: int, cur: str) -> InlineKeyboardMarkup:
+    """После спина колеса: крутить снова той же ставкой или назад."""
+    kb = InlineKeyboardBuilder()
+    await btn(kb, f"🎡 Крутить ещё ({bet:,})".replace(",", " "), f"wheelspin:{bet}:{cur}")
+    await btn(kb, "🎰 Другая ставка", "wheel")
+    await btn(kb, "Меню", "menu", "back")
+    kb.adjust(1)
+    return kb.as_markup()
+
+
+async def wheel_back() -> InlineKeyboardMarkup:
+    kb = InlineKeyboardBuilder()
+    await btn(kb, "🎰 Казино", "casino", "back")
     return kb.as_markup()
 
 
