@@ -121,15 +121,31 @@ async def num_start_cancel(message: Message, state: FSMContext):
 async def num_start_input(message: Message, state: FSMContext, db: Database):
     txt = (message.text or "").strip()
     if not txt.isdigit():
-        await message.answer("Нужно целое число, например 501. Попробуй ещё раз или /cancel.")
+        await message.answer("Нужно целое число, например 501 (без пробелов и букв). "
+                             "Попробуй ещё раз или /cancel.")
         return
     val = int(txt)
     if val < 1 or val > 10_000_000:
         await message.answer("Число должно быть от 1 до 10000000.")
         return
+    # Проверяем, что канал вообще подключён — иначе сохранять некуда
+    ch = await db.get_seller_channel(message.from_user.id)
+    if not ch or not ch["verified"]:
+        await state.clear()
+        await message.answer("⚠️ Сначала подключи и подтверди канал отзывов — "
+                             "без него нумерация не работает.")
+        return
     await state.clear()
-    await db.set_numbering(message.from_user.id, numbering_start=val)
-    await message.answer(f"✅ Стартовый номер: <b>{val}</b>")
+    saved = await db.set_numbering(message.from_user.id, numbering_start=val)
+    if not saved:
+        await message.answer("⚠️ Не удалось сохранить стартовый номер. "
+                             "Попробуй переоткрыть настройки нумерации и повторить.")
+        return
+    # Читаем обратно из БД — показываем то, что реально записалось
+    ch = await db.get_seller_channel(message.from_user.id)
+    real = ch.get("numbering_start", val) if ch else val
+    await message.answer(f"✅ Стартовый номер: <b>{real}</b>\n"
+                         f"Следующий новый отзыв получит номер <b>{real}</b>.")
     await _show_menu(message, db, message.from_user.id)
 
 

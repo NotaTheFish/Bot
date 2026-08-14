@@ -46,6 +46,8 @@ async def _place_review_number(bot, db, config, seller_id: int, review_id: int,
     записывает в БД. Возвращает True если поставлен."""
     try:
         cache_chat = getattr(config, "CACHE_CHAT_ID", None)
+        # Стартовый номер — нижняя граница: переиспользование не должно опускаться ниже него
+        start = (ch.get("numbering_start") or 1)
         # Умный последний: если самый большой номер указывает на отзыв,
         # которого уже нет в канале — переиспользуем его номер.
         last = await db.get_last_number_entry(seller_id)
@@ -53,8 +55,11 @@ async def _place_review_number(bot, db, config, seller_id: int, review_id: int,
         if last and last.get("channel_msg_id"):
             alive = await _msg_alive(bot, channel_id, last["channel_msg_id"], cache_chat)
             if not alive:
-                # Последний отзыв удалён — освобождаем его номер и подчищаем его сообщение-номер
-                reuse_number = last["number"]
+                # Последний отзыв удалён — освобождаем его номер и подчищаем его сообщение-номер.
+                # Но только если он не ниже стартового: иначе старые тестовые номера
+                # (напр. №1 от прежних тестов) перебили бы заданный numbering_start.
+                if last["number"] >= start:
+                    reuse_number = last["number"]
                 if last.get("number_msg_id"):
                     try:
                         await bot.delete_message(channel_id, last["number_msg_id"])

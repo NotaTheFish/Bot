@@ -1043,23 +1043,31 @@ class Database:
 
     # ── Нумерация отзывов в канале ────────────────────────────────────────
 
-    async def set_numbering(self, seller_id: int, **fields):
-        """Обновляет настройки нумерации (mode/start/template)."""
-        allowed = {"numbering_mode", "numbering_start", "numbering_template", "numbering_entities", "numbering_forward"}
+    async def set_numbering(self, seller_id: int, **fields) -> bool:
+        """Обновляет настройки нумерации. Возвращает True если запись реально изменена.
+        Если строки канала ещё нет — UPDATE затронул бы 0 строк и данные потерялись бы,
+        поэтому проверяем результат и сигнализируем вызывающему коду."""
+        allowed = {"numbering_mode", "numbering_start", "numbering_template",
+                   "numbering_entities", "numbering_forward"}
         bad = set(fields) - allowed
         if bad:
             raise ValueError(f"Недопустимые поля нумерации: {bad}")
         if not fields:
-            return
+            return False
         sets, vals = [], []
         for i, (k, v) in enumerate(fields.items(), start=1):
             sets.append(f"{k} = ${i}")
             vals.append(v)
         vals.append(seller_id)
         async with self.pool.acquire() as conn:
-            await conn.execute(
+            result = await conn.execute(
                 f"UPDATE rvb_seller_channels SET {', '.join(sets)} WHERE seller_id = ${len(vals)}",
                 *vals)
+        # result вида "UPDATE N" — N затронутых строк
+        try:
+            return int(result.split()[-1]) > 0
+        except (ValueError, IndexError):
+            return False
 
     async def next_review_number(self, seller_id: int) -> int:
         """Вычисляет номер для нового отзыва по «умной» модели:
