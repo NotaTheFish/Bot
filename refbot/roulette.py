@@ -39,9 +39,27 @@ def roll_mushrooms() -> int:
     return 250  # недостижимо, но пусть будет
 
 
-def roll(currency: str) -> int:
+def roll(currency: str) -> tuple[int, bool]:
+    """
+    Ежедневная прокрутка (!шайн). Возвращает (сумма, is_mega_jackpot).
+
+    Сначала бросаем на джекпоты (ROULETTE_JACKPOTS) — редкие фиксированные суммы.
+    Если ни один не выпал — обычная полоса (roll_mushrooms).
+    is_mega_jackpot=True только для джекпота с флагом пасты (миллион) — хендлер
+    покажет поздравление «1 на миллион».
+    Сумма в грибах; для коинов ×COIN_RATE.
+    """
+    from config import ROULETTE_JACKPOTS
+    r = _rand()
+    acc = 0.0
+    for amount, chance, has_paste in ROULETTE_JACKPOTS:
+        acc += chance
+        if r < acc:
+            m = amount
+            return (m * COIN_RATE if currency == "coins" else m), has_paste
+    # джекпот не выпал — обычная полоса
     m = roll_mushrooms()
-    return m * COIN_RATE if currency == "coins" else m
+    return (m * COIN_RATE if currency == "coins" else m), False
 
 
 def roll_jackpot(currency: str) -> tuple[int, bool]:
@@ -64,8 +82,11 @@ def roll_jackpot(currency: str) -> tuple[int, bool]:
 
 
 def expected_value(currency: str = "mushrooms") -> float:
-    """Сколько ты платишь в среднем за одну прокрутку. Запусти перед запуском бота."""
-    ev = sum(w / _TOTAL_W * (low + high) / 2 for low, high, w in ROULETTE_BANDS)
+    """Средняя выплата за прокрутку, с учётом джекпотов. Для проверки перед запуском."""
+    from config import ROULETTE_JACKPOTS
+    band_ev = sum(w / _TOTAL_W * (low + high) / 2 for low, high, w in ROULETTE_BANDS)
+    p_jack = sum(chance for _, chance, _ in ROULETTE_JACKPOTS)
+    ev = band_ev * (1 - p_jack) + sum(amt * chance for amt, chance, _ in ROULETTE_JACKPOTS)
     return ev * COIN_RATE if currency == "coins" else ev
 
 

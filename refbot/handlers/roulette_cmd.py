@@ -218,6 +218,13 @@ def _match(text: str) -> bool:
     return any(t == c or t.startswith(c + " ") for c in SPIN_COMMANDS)
 
 
+def _is_band_jackpot(amount: int, currency: str) -> bool:
+    """Сумма совпадает с одним из джекпотов рулетки (100к/1м, в нужной валюте)?"""
+    from config import ROULETTE_JACKPOTS, COIN_RATE
+    base = amount // COIN_RATE if currency == "coins" else amount
+    return any(base == jp_amount for jp_amount, _, _ in ROULETTE_JACKPOTS)
+
+
 @router.message(F.chat.type.in_({"group", "supergroup"}), F.text.func(_match))
 async def spin(msg: Message, bot: Bot):
     uid = msg.from_user.id
@@ -264,7 +271,7 @@ async def spin(msg: Message, bot: Bot):
                 msg, f"{e_rou} Ты уже крутил сегодня — выпало <b>{prev:,}</b> {e_cur}.\n"
                      f"Прокрутка одна в сутки. Возвращайся завтра.".replace(",", " "))
 
-    amount = roulette.roll(cur)
+    amount, is_mega = roulette.roll(cur)
 
     # ---------- ОЧЕРЕДЬ НА ЧАТ ----------
     # Пока в чате крутится чья-то анимация, ставим ждущему реакцию ожидания.
@@ -289,9 +296,11 @@ async def spin(msg: Message, bot: Bot):
             async with db.pool().acquire() as conn:
                 async with conn.transaction():
                     cost = amount // COIN_RATE if cur == "coins" else amount
-                    # джекпот-команда — бутафория для админа, бюджет чата НЕ трогает
+                    # бюджет чата НЕ тратят: безлимитные ID и джекпоты (100к/1м) —
+                    # редкие события мимо казны, чтобы не блокировать рулетку остальным.
+                    skip = (uid in UNLIMITED_SPIN_IDS) or is_mega or _is_band_jackpot(amount, cur)
                     await _charge_budget(conn, msg.chat.id, msg.chat.title or "", cost,
-                                         skip_budget=True)
+                                         skip_budget=skip)
 
                     if uid in UNLIMITED_SPIN_IDS:
                         # UNIQUE(tg_id, spin_day) не обходим — сносим сегодняшнюю строку
@@ -322,6 +331,15 @@ async def spin(msg: Message, bot: Bot):
             return  # чат выключили между проверкой и слотом — молчим
 
         await _animate(msg, e_rou, e_cur, label, amount, total, em)
+        # мега-джекпот (миллион) — паста «1 на 100 000», как у секретной !шaйн
+        if is_mega:
+            with contextlib.suppress(Exception):
+                await ui.reply(msg,
+                    f"🎰💥 ДЖЕКПОТ!!! 💥🎰\n"
+                    f"Ты выбил РОВНО <b>{amount:,}</b> {e_cur}\n".replace(",", " ") +
+                    f"Шанс этого — 0.001%.\n"
+                    f"Это один случай на сто тысяч. Буквально.")
+
 
 async def _animate(msg, e_rou, e_cur, label, amount, total, em):
     # анимация. Баланс уже начислен в транзакции выше — что бы ни случилось с
