@@ -175,6 +175,8 @@ async def cb_wheel(c: CallbackQuery, state: FSMContext):
         return await c.answer("Казино закрыто.", show_alert=True)
     await state.set_state(Wheel.bet)
     b = await db.balances(c.from_user.id)
+    u = await db.get_user(c.from_user.id)
+    style = u["wheel_anim"] if u and "wheel_anim" in u else "runner"
     sx = await settings.ctx()
     await ui.edit(c.message,
         f"🎡 <b>Рулетка</b>\n\n"
@@ -184,8 +186,22 @@ async def cb_wheel(c: CallbackQuery, state: FSMContext):
         f"Введи ставку от <b>{WHEEL_MIN_BET:,}</b> до <b>{WHEEL_MAX_BET:,}</b> грибов "
         f"(коины по курсу). Например <code>5000</code> или <code>5к</code>."
         .replace(",", " "),
-        reply_markup=await kb.wheel_back())
+        reply_markup=await kb.wheel_menu(style))
     await c.answer()
+
+
+@router.callback_query(F.data == "wheel_anim_toggle")
+async def cb_wheel_anim(c: CallbackQuery, state: FSMContext):
+    if not await casino_visible(c.from_user.id):
+        return await c.answer("Казино закрыто.", show_alert=True)
+    u = await db.get_user(c.from_user.id)
+    cur_style = u["wheel_anim"] if u and "wheel_anim" in u else "runner"
+    new_style = "drum" if cur_style == "runner" else "runner"
+    await db.set_wheel_anim(c.from_user.id, new_style)
+    name = "барабан (как в ежедневной)" if new_style == "drum" else "бегунок с иксами"
+    await c.answer(f"Анимация: {name}")
+    # перерисуем меню
+    await cb_wheel(c, state)
 
 
 @router.message(Wheel.bet)
@@ -251,7 +267,9 @@ async def _spin_wheel(target, uid: int, bet_cur: int, cur: str, edit: bool):
     bet_mush = bet_cur // COIN_RATE if cur == "coins" else bet_cur
     await db.log_case_open(uid, "wheel", cur, bet_cur, won, mult)
 
-    await _animate_wheel(target, uid, bet_cur, cur, mult, won, new_bal, edit)
+    u = await db.get_user(uid)
+    style = u["wheel_anim"] if u and "wheel_anim" in u else "runner"
+    await _animate_wheel(target, uid, bet_cur, cur, mult, won, new_bal, edit, style)
 
 
 # лента секторов для анимации (по кругу)
@@ -269,7 +287,7 @@ def _wheel_frame(pos: int) -> str:
     return "  ".join(parts)
 
 
-async def _animate_wheel(target, uid, bet_cur, cur, mult, won, new_bal, edit):
+async def _animate_wheel(target, uid, bet_cur, cur, mult, won, new_bal, edit, style="runner"):
     e_cur = await settings.emoji_html(cur)
 
     async def show(text, kb_markup=None):
@@ -278,31 +296,44 @@ async def _animate_wheel(target, uid, bet_cur, cur, mult, won, new_bal, edit):
         # первый показ — отвечаем, дальше редактируем это же сообщение
         return await ui.answer(target, text, reply_markup=kb_markup)
 
-    # найдём позицию сектора-результата в ленте
-    label = ("×0" if mult == 0 else f"×{mult:g}")
-    try:
-        stop = _WHEEL_STRIP.index(label)
-    except ValueError:
-        stop = 0
-
-    # кадры с замедлением: быстрая прокрутка -> подводим к stop
-    positions = [0, 3, 6, 9, 12, 2, 5, 8, 11, 1, 4, 7]  # бег
-    # последние кадры аккуратно подводим к результату
-    positions += [(stop - 2) % len(_WHEEL_STRIP), (stop - 1) % len(_WHEEL_STRIP), stop, stop]
-
-    msg = None
-    for i, pos in enumerate(positions):
-        speed = "🎰" if i < 8 else ("⏳" if i < 12 else "🎯")
-        frame = f"🎡 <b>Рулетка</b>\n\n<blockquote>{speed}  {_wheel_frame(pos)}</blockquote>"
-        with contextlib.suppress(Exception):
-            m = await show(frame)
-            if m:
-                msg = m
-        # после первого показа переключаемся на edit того же сообщения
-        if not edit and msg:
-            edit = True
-            target = msg
-        await asyncio.sleep(0.35 if i < 8 else 0.5)
+    if style == "drum":
+        # барабан как в ежедневной рулетке: окно эмодзи + растущая полоса
+        import roulette
+        msg = None
+        n_frames = 8
+        for i in range(n_frames):
+            frame = roulette.frame(i, "🎡")
+            with contextlib.suppress(Exception):
+                m = await show(frame)
+                if m:
+                    msg = m
+            if not edit and msg:
+                edit = True
+                target = msg
+            await asyncio.sleep(0.35 if i < 5 else 0.5)
+    else:
+        # бегунок по ленте секторов с иксами
+        label = ("×0" if mult == 0 else f"×{mult:g}")
+        try:
+            stop = _WHEEL_STRIP.index(label)
+        except ValueError:
+            stop = 0
+        # короче: ~6 кадров как в ежедневной (было 16 ≈ 6.5с, стало ≈ 2.7с).
+        # быстрый бег + аккуратный подвод к результату на последних кадрах.
+        N = len(_WHEEL_STRIP)
+        positions = [2, 7, 11, (stop - 1) % N, stop, stop]
+        msg = None
+        for i, pos in enumerate(positions):
+            speed = "🎰" if i < 3 else ("⏳" if i < 5 else "🎯")
+            frame = f"🎡 <b>Рулетка</b>\n\n<blockquote>{speed}  {_wheel_frame(pos)}</blockquote>"
+            with contextlib.suppress(Exception):
+                m = await show(frame)
+                if m:
+                    msg = m
+            if not edit and msg:
+                edit = True
+                target = msg
+            await asyncio.sleep(0.45)
 
     # результат
     bet_mush = bet_cur // COIN_RATE if cur == "coins" else bet_cur

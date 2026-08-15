@@ -89,6 +89,12 @@ async def get_user(tg_id: int):
     return await pool().fetchrow("SELECT * FROM rb_users WHERE tg_id = $1", tg_id)
 
 
+async def set_wheel_anim(tg_id: int, style: str) -> None:
+    """Стиль анимации платной рулетки: 'runner' (бегунок) | 'drum' (барабан)."""
+    await pool().execute(
+        "UPDATE rb_users SET wheel_anim=$2 WHERE tg_id=$1", tg_id, style)
+
+
 async def banned_users(limit: int = 100):
     return await pool().fetch(
         "SELECT tg_id, username, first_name, ban_reason, banned_at FROM rb_users "

@@ -402,6 +402,16 @@ async def wheel_back() -> InlineKeyboardMarkup:
     return kb.as_markup()
 
 
+async def wheel_menu(style: str) -> InlineKeyboardMarkup:
+    """Меню рулетки: переключатель стиля анимации + назад."""
+    kb = InlineKeyboardBuilder()
+    label = "🎞 Анимация: барабан" if style == "drum" else "🎞 Анимация: бегунок"
+    await btn(kb, label, "wheel_anim_toggle")
+    await btn(kb, "Казино", "casino", "back")
+    kb.adjust(1)
+    return kb.as_markup()
+
+
 async def casino_cases(cases: list) -> InlineKeyboardMarkup:
     """Список кейсов. cases: [(key, название, цена_в_грибах)]."""
     kb = InlineKeyboardBuilder()

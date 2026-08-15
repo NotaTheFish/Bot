@@ -97,6 +97,10 @@ async def btn(kb, text: str, callback_data: str, slot: str | None = None, **kw):
     for ch in sorted(em, key=len, reverse=True):
         if text.startswith(ch):
             rest = text[len(ch):].lstrip()
-            return kb.button(text=rest or text, callback_data=callback_data,
+            # если после выноса эмодзи текста не осталось (кнопка была ТОЛЬКО эмодзи),
+            # ставим невидимый символ — иначе `rest or text` вернул бы эмодзи обратно
+            # в текст, и он задвоился бы с premium-иконкой (баг двойного 💎).
+            label = rest if rest else "\u2063"
+            return kb.button(text=label, callback_data=callback_data,
                              icon_custom_emoji_id=em[ch], **kw)
     return kb.button(text=text, callback_data=callback_data, **kw)

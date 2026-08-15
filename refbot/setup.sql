@@ -27,6 +27,7 @@ CREATE TABLE IF NOT EXISTS rb_users (
     username   TEXT,
     first_name TEXT,
     currency   rb_currency NOT NULL DEFAULT 'mushrooms',
+    wheel_anim TEXT        NOT NULL DEFAULT 'runner',
     banned     BOOLEAN     NOT NULL DEFAULT FALSE,
     ban_reason TEXT,
     banned_by  BIGINT,
@@ -388,6 +389,7 @@ CREATE TABLE IF NOT EXISTS rb_giveaway_members (
 
 -- Страйки глобальные — храним счётчик прямо в rb_users. 3 страйка -> бан бота.
 ALTER TABLE rb_users ADD COLUMN IF NOT EXISTS strikes INT NOT NULL DEFAULT 0;
+ALTER TABLE rb_users ADD COLUMN IF NOT EXISTS wheel_anim TEXT NOT NULL DEFAULT 'runner';
 
 -- title_html: название розыгрыша с премиум-эмодзи (для сообщений). Обычный title
 -- остаётся plain — он идёт на кнопки, где HTML/премиум не рендерится.
