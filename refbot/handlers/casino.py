@@ -468,6 +468,10 @@ async def cb_mines_open(c: CallbackQuery, state: FSMContext):
     sx = await settings.ctx()
 
     if field[idx] == 0:
+        # ТЕСТ-режим: для MINES_NOLOSE_IDS бомба не проигрывает — всплывашка и мимо.
+        from config import MINES_NOLOSE_IDS
+        if uid in MINES_NOLOSE_IDS:
+            return await c.answer("💣 Бомба! (тест: не считается)", show_alert=False)
         # БОМБА — проигрыш, показываем всё поле
         opened = {i: ("💣" if field[i] == 0 else "💎") for i in range(g["total"])}
         await db.audit(uid, "mines_lose", {"bet": g["bet_cur"], "cur": g["cur"], "key": g["key"]})
