@@ -141,7 +141,8 @@ async def rban(msg: Message, command: CommandObject):
     await db.pool().execute(
         "UPDATE rb_users SET banned=TRUE, ban_reason=$1, banned_by=$2, banned_at=now() "
         "WHERE tg_id=$3", reason or "не указана", msg.from_user.id, target)
-    # гасим все холды и активную заявку забаненного
+    # гасим все холды и активную заявку забаненного. Замороженные под заявку средства
+    # НЕ возвращаем (бан = наказание за фрод, заморозка сгорает намеренно).
     await db.pool().execute(
         "UPDATE rb_referrals SET status='void', voided_at=now() "
         "WHERE inviter_id=$1 AND status='hold'", target)

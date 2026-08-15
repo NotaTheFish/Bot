@@ -489,6 +489,9 @@ async def cb_wd_cancel(c: CallbackQuery):
     if not row:
         return await c.answer("Активной заявки нет.", show_alert=True)
     await drop_admin_card(c.bot, row)
-    await ui.edit(c.message, "❌ Заявка отменена. Уведомление у админа удалено.",
-                              reply_markup=await kb.back_menu())
-    await c.answer()
+    amt = f"{row['amount']:,}".replace(",", " ")
+    await ui.edit(c.message,
+        f"❌ Заявка отменена. <b>{amt}</b> вернулись на баланс.\n"
+        f"Уведомление у админа удалено.",
+        reply_markup=await kb.back_menu())
+    await c.answer("Средства вернулись")

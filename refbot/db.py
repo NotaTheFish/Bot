@@ -37,9 +37,9 @@ async def apply(conn, tg_id: int, currency: str, delta: int,
     new_balance = await conn.fetchval(
         """
         INSERT INTO rb_balances (tg_id, currency, amount)
-        VALUES ($1, $2, GREATEST($3, 0))
+        VALUES ($1, $2, GREATEST($3::bigint, 0))
         ON CONFLICT (tg_id, currency)
-        DO UPDATE SET amount = rb_balances.amount + $3
+        DO UPDATE SET amount = rb_balances.amount + $3::bigint
         RETURNING amount
         """,
         tg_id, currency, delta,

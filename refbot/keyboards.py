@@ -524,7 +524,9 @@ async def mines_grid(total: int, opened: dict, mult: float = 1.0,
         if i in opened:
             await btn(kb, opened[i], "mnoop")
         else:
-            await btn(kb, "\u2063", f"mopen:{i}")  # невидимая пустая кнопка
+            # закрытая карта — видимый символ (невидимый \u2063 Telegram иногда
+            # схлопывал, и кнопка переставала нажиматься). 🎴 надёжно кликается.
+            await btn(kb, "🎴", f"mopen:{i}")
     rows = [cols] * ((total + cols - 1) // cols)
     if can_cashout:
         await btn(kb, f"💰 Забрать (×{mult:g})", "mcashout")
