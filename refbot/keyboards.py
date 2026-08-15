@@ -376,10 +376,11 @@ async def to_menu() -> InlineKeyboardMarkup:
 
 # ==================== КАЗИНО ====================
 async def casino_menu() -> InlineKeyboardMarkup:
-    """Меню казино: кейсы и рулетка (колесо). Карточки/слоты — позже."""
+    """Меню казино: кейсы, рулетка, карточки. Слоты — позже."""
     kb = InlineKeyboardBuilder()
     await btn(kb, "📦 Кейсы", "casino_cases")
     await btn(kb, "🎡 Рулетка", "wheel")
+    await btn(kb, "🃏 Карточки", "mines")
     await btn(kb, "Назад", "menu", "back")
     kb.adjust(1)
     return kb.as_markup()
@@ -474,5 +475,59 @@ async def promo_card(pid: int) -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
     await btn(kb, "🗑 Удалить", f"promo_del:{pid}")
     await btn(kb, "Назад", "promo_all", "back")
+    kb.adjust(1)
+    return kb.as_markup()
+
+
+# ==================== КАРТОЧКИ (mines) ====================
+async def mines_bet(bets: list) -> InlineKeyboardMarkup:
+    """Выбор ставки для карточек."""
+    kb = InlineKeyboardBuilder()
+    for b in bets:
+        await btn(kb, f"{b:,}".replace(",", " "), f"mbet:{b}")
+    await btn(kb, "Казино", "casino", "back")
+    kb.adjust(1)
+    return kb.as_markup()
+
+
+async def mines_field(presets: dict, bet: int) -> InlineKeyboardMarkup:
+    """Выбор поля (пресета) после ставки."""
+    kb = InlineKeyboardBuilder()
+    for key, (total, mines, label) in presets.items():
+        await btn(kb, label, f"mfield:{bet}:{key}")
+    await btn(kb, "Назад", "mines", "back")
+    kb.adjust(1)
+    return kb.as_markup()
+
+
+async def mines_grid(total: int, opened: dict, mult: float = 1.0,
+                     can_cashout: bool = False, cols: int = None) -> InlineKeyboardMarkup:
+    """
+    Игровое поле + кнопка «Забрать» снизу. opened: {index: '💎'|'💣'}.
+    Неоткрытые — пустые кнопки. Раскладка до 6 в ряд.
+    """
+    import math
+    if cols is None:
+        cols = {9: 3, 16: 4, 25: 5, 36: 6}.get(total, min(6, int(math.isqrt(total)) or 1))
+    kb = InlineKeyboardBuilder()
+    for i in range(total):
+        if i in opened:
+            await btn(kb, opened[i], "mnoop")
+        else:
+            await btn(kb, "\u2063", f"mopen:{i}")  # невидимая пустая кнопка
+    rows = [cols] * ((total + cols - 1) // cols)
+    if can_cashout:
+        await btn(kb, f"💰 Забрать (×{mult:g})", "mcashout")
+        rows.append(1)
+    kb.adjust(*rows)
+    return kb.as_markup()
+
+
+async def mines_after() -> InlineKeyboardMarkup:
+    """После раунда: играть ещё (та же ставка+поле) или к настройкам."""
+    kb = InlineKeyboardBuilder()
+    await btn(kb, "🔁 Играть ещё", "magain")
+    await btn(kb, "⚙️ Настройки", "mines")
+    await btn(kb, "Меню", "menu", "back")
     kb.adjust(1)
     return kb.as_markup()

@@ -79,3 +79,38 @@ def roll_wheel() -> float:
 def wheel_bet_ok(bet_mush: int) -> bool:
     from config import WHEEL_MIN_BET, WHEEL_MAX_BET
     return WHEEL_MIN_BET <= bet_mush <= WHEEL_MAX_BET
+
+
+# ---------- карточки (mines) ----------
+from math import comb
+
+
+def mines_multiplier(total: int, mines: int, picks: int) -> float:
+    """
+    Честный множитель после `picks` успешно открытых алмазов.
+    = RTP / P(открыть picks безопасных подряд).
+    P = C(safe, picks) / C(total, picks). RTP 92% держится на любом шаге.
+    """
+    if picks <= 0:
+        return 1.0
+    safe = total - mines
+    if picks > safe:
+        picks = safe
+    p_survive = comb(safe, picks) / comb(total, picks)
+    return 0.92 / p_survive
+
+
+def mines_new_field(total: int, mines: int) -> list[int]:
+    """Раскладка поля: 1=алмаз, 0=бомба. Позиции перемешаны (secrets)."""
+    field = [1] * (total - mines) + [0] * mines
+    # тасуем через secrets (криптостойко)
+    for i in range(len(field) - 1, 0, -1):
+        j = secrets.randbelow(i + 1)
+        field[i], field[j] = field[j], field[i]
+    return field
+
+
+def mines_preset(key: str):
+    """(всего, бомб, подпись) по ключу пресета."""
+    from config import MINES_PRESETS
+    return MINES_PRESETS[key]

@@ -334,6 +334,197 @@ async def _animate_wheel(target, uid, bet_cur, cur, mult, won, new_bal, edit):
         await ui.edit(target, result, reply_markup=await kb.wheel_again(bet_mush, cur))
 
 
+# ---------------- карточки (mines) ----------------
+@router.callback_query(F.data == "mines")
+async def cb_mines(c: CallbackQuery, state: FSMContext):
+    if not await casino_visible(c.from_user.id):
+        return await c.answer("Казино закрыто.", show_alert=True)
+    await state.clear()
+    from config import MINES_BETS
+    b = await db.balances(c.from_user.id)
+    sx = await settings.ctx()
+    await ui.edit(c.message,
+        f"🃏 <b>Карточки</b>\n\n"
+        f"Открывай карты: 💎 — множитель растёт, 💣 — ставка сгорела.\n"
+        f"Можешь забрать выигрыш в любой момент или рискнуть дальше.\n\n"
+        f"Баланс: {sx['e_mushrooms']} {b['mushrooms']:,} · {sx['e_coins']} {b['coins']:,}\n\n"
+        f"Выбери ставку:".replace(",", " "),
+        reply_markup=await kb.mines_bet(MINES_BETS))
+    await c.answer()
+
+
+@router.callback_query(F.data.startswith("mbet:"))
+async def cb_mines_bet(c: CallbackQuery):
+    if not await casino_visible(c.from_user.id):
+        return await c.answer("Казино закрыто.", show_alert=True)
+    from config import MINES_PRESETS
+    bet = int(c.data.split(":")[1])
+    await ui.edit(c.message,
+        f"🃏 <b>Карточки</b>\n\nСтавка: <b>{bet:,}</b>\n\nВыбери поле:".replace(",", " "),
+        reply_markup=await kb.mines_field(MINES_PRESETS, bet))
+    await c.answer()
+
+
+@router.callback_query(F.data.startswith("mfield:"))
+async def cb_mines_field(c: CallbackQuery, state: FSMContext):
+    if not await casino_visible(c.from_user.id):
+        return await c.answer("Казино закрыто.", show_alert=True)
+    _, bet_s, key = c.data.split(":")
+    bet = int(bet_s)
+    await _mines_start(c, state, bet, key)
+
+
+async def _mines_start(c, state, bet: int, key: str):
+    """Начать раунд: списать ставку, создать поле, показать сетку."""
+    uid = c.from_user.id
+    if await db.is_banned(uid):
+        return await c.answer("Ты заблокирован.", show_alert=True)
+    total, mines, label = casino.mines_preset(key)
+    u = await db.get_user(uid)
+    cur = u["currency"]
+    bet_cur = bet * COIN_RATE if cur == "coins" else bet
+
+    b = await db.balances(uid)
+    if b[cur] < bet_cur:
+        sx = await settings.ctx()
+        return await c.answer(
+            f"Не хватает: ставка {bet_cur:,}, у тебя {b[cur]:,}.".replace(",", " "),
+            show_alert=True)
+
+    # списываем ставку сразу
+    import time
+    idem = f"mines:{uid}:{int(time.time()*1000)}"
+    try:
+        async with db.pool().acquire() as conn:
+            async with conn.transaction():
+                await db.apply(conn, uid, cur, -bet_cur, "mines_bet", idem + ":bet")
+    except asyncpg.CheckViolationError:
+        return await c.answer("Не хватает баланса.", show_alert=True)
+    except asyncpg.UniqueViolationError:
+        return await c.answer("Повтори ещё раз.", show_alert=True)
+
+    field = casino.mines_new_field(total, mines)
+    # состояние игры в FSM
+    await state.update_data(mines={
+        "field": field, "total": total, "mines": mines, "key": key,
+        "bet": bet, "bet_cur": bet_cur, "cur": cur, "opened": [], "idem": idem,
+    })
+    sx = await settings.ctx()
+    await ui.edit(c.message,
+        f"🃏 <b>Карточки</b> · {label}\n\n"
+        f"Ставка: {bet_cur:,} {sx['e_' + cur]}\n"
+        f"Открой карту 👇".replace(",", " "),
+        reply_markup=await kb.mines_grid(total, {}, 1.0, False))
+    await c.answer()
+
+
+@router.callback_query(F.data == "mnoop")
+async def cb_mines_noop(c: CallbackQuery):
+    await c.answer()
+
+
+@router.callback_query(F.data.startswith("mopen:"))
+async def cb_mines_open(c: CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    g = data.get("mines")
+    if not g:
+        return await c.answer("Игра не активна. Начни заново.", show_alert=True)
+    idx = int(c.data.split(":")[1])
+    if idx in g["opened"]:
+        return await c.answer()
+    uid = c.from_user.id
+    field = g["field"]
+    sx = await settings.ctx()
+
+    if field[idx] == 0:
+        # БОМБА — проигрыш, показываем всё поле
+        opened = {i: ("💣" if field[i] == 0 else "💎") for i in range(g["total"])}
+        await db.audit(uid, "mines_lose", {"bet": g["bet_cur"], "cur": g["cur"], "key": g["key"]})
+        await db.log_case_open(uid, "mines", g["cur"], g["bet_cur"], 0, 0.0)
+        await state.update_data(mines=None)
+        await ui.edit(c.message,
+            f"💥 <b>Бомба!</b>\n\n"
+            f"Ставка {g['bet_cur']:,} {sx['e_' + g['cur']]} сгорела.\n"
+            f"Попробуешь ещё?".replace(",", " "),
+            reply_markup=await kb.mines_after())
+        # сохраним последнюю конфигурацию для «играть ещё»
+        await state.update_data(last_mines={"bet": g["bet"], "key": g["key"]})
+        return await c.answer("Бомба!")
+
+    # АЛМАЗ — открываем, множитель растёт
+    g["opened"].append(idx)
+    picks = len(g["opened"])
+    mult = casino.mines_multiplier(g["total"], g["mines"], picks)
+    await state.update_data(mines=g)
+
+    opened_map = {i: "💎" for i in g["opened"]}
+    safe = g["total"] - g["mines"]
+    if picks >= safe:
+        # открыл все алмазы — авто-выигрыш по максимуму
+        return await _mines_cashout(c, state, forced=True)
+
+    win_now = int(g["bet_cur"] * mult)
+    await ui.edit(c.message,
+        f"🃏 <b>Карточки</b> · {casino.mines_preset(g['key'])[2]}\n\n"
+        f"Открыто: {picks} · множитель <b>×{mult:g}</b>\n"
+        f"Заберёшь сейчас: <b>{win_now:,}</b> {sx['e_' + g['cur']]}".replace(",", " "),
+        reply_markup=await kb.mines_grid(g["total"], opened_map, mult, True))
+    await c.answer(f"💎 ×{mult:g}")
+
+
+@router.callback_query(F.data == "mcashout")
+async def cb_mines_cashout(c: CallbackQuery, state: FSMContext):
+    await _mines_cashout(c, state, forced=False)
+
+
+async def _mines_cashout(c, state, forced: bool):
+    data = await state.get_data()
+    g = data.get("mines")
+    if not g:
+        return await c.answer("Игра не активна.", show_alert=True)
+    uid = c.from_user.id
+    picks = len(g["opened"])
+    if picks == 0:
+        return await c.answer("Открой хотя бы одну карту.", show_alert=True)
+    mult = casino.mines_multiplier(g["total"], g["mines"], picks)
+    won = int(g["bet_cur"] * mult)
+    cur = g["cur"]
+    sx = await settings.ctx()
+
+    try:
+        async with db.pool().acquire() as conn:
+            async with conn.transaction():
+                new_bal = await db.apply(conn, uid, cur, won, "mines_win", g["idem"] + ":win")
+    except asyncpg.UniqueViolationError:
+        return await c.answer("Уже забрано.", show_alert=True)
+
+    await db.audit(uid, "mines_win", {"bet": g["bet_cur"], "mult": mult, "won": won, "cur": cur})
+    await db.log_case_open(uid, "mines", cur, g["bet_cur"], won, mult)
+    await state.update_data(mines=None, last_mines={"bet": g["bet"], "key": g["key"]})
+
+    profit = won - g["bet_cur"]
+    opened_map = {i: "💎" for i in g["opened"]}
+    head = "🏆 <b>Все алмазы собраны!</b>" if forced else "💰 <b>Забрал!</b>"
+    await ui.edit(c.message,
+        f"{head}\n\n"
+        f"Открыто {picks} · множитель ×{mult:g}\n"
+        f"Выигрыш: <b>{won:,}</b> {sx['e_' + cur]} (в плюс +{profit:,})\n"
+        f"Баланс: <b>{new_bal:,}</b> {sx['e_' + cur]}".replace(",", " "),
+        reply_markup=await kb.mines_after())
+    await c.answer("Забрал!")
+
+
+@router.callback_query(F.data == "magain")
+async def cb_mines_again(c: CallbackQuery, state: FSMContext):
+    if not await casino_visible(c.from_user.id):
+        return await c.answer("Казино закрыто.", show_alert=True)
+    data = await state.get_data()
+    last = data.get("last_mines")
+    if not last:
+        return await cb_mines(c, state)
+    await _mines_start(c, state, last["bet"], last["key"])
+
+
 # ---------------- админ: переключатель доступа ----------------
 @router.callback_query(F.data == "casino_admin")
 async def cb_casino_admin(c: CallbackQuery):
