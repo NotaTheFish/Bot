@@ -473,6 +473,7 @@ async def cb_mines_open(c: CallbackQuery, state: FSMContext):
         if uid in MINES_NOLOSE_IDS:
             return await c.answer("💣 Бомба! (тест: не считается)", show_alert=False)
         # БОМБА — проигрыш, показываем всё поле
+        _mines_cancel_redraw(uid)  # отменить отложенную перерисовку
         opened = {i: ("💣" if field[i] == 0 else "💎") for i in range(g["total"])}
         await db.audit(uid, "mines_lose", {"bet": g["bet_cur"], "cur": g["cur"], "key": g["key"]})
         await db.log_case_open(uid, "mines", g["cur"], g["bet_cur"], 0, 0.0)
@@ -486,25 +487,67 @@ async def cb_mines_open(c: CallbackQuery, state: FSMContext):
         await state.update_data(last_mines={"bet": g["bet"], "key": g["key"]})
         return await c.answer("Бомба!")
 
-    # АЛМАЗ — открываем, множитель растёт
+    # АЛМАЗ — открываем, множитель растёт.
+    # Логику делаем МГНОВЕННО (запись + ответ игроку), а перерисовку сетки —
+    # с дебаунсом: быстрые тапы схлопываются в одну правку, чтобы не упереться
+    # во флуд-лимит Telegram на editMessageText (тогда карты «не открывались»).
     g["opened"].append(idx)
     picks = len(g["opened"])
     mult = casino.mines_multiplier(g["total"], g["mines"], picks)
     await state.update_data(mines=g)
+    await c.answer(f"💎 ×{mult:g}")  # мгновенный отклик, не лимитируется
 
-    opened_map = {i: "💎" for i in g["opened"]}
     safe = g["total"] - g["mines"]
     if picks >= safe:
-        # открыл все алмазы — авто-выигрыш по максимуму
+        # открыл все алмазы — авто-выигрыш (отменим отложенную отрисовку)
+        _mines_cancel_redraw(uid)
         return await _mines_cashout(c, state, forced=True)
 
-    win_now = int(g["bet_cur"] * mult)
-    await ui.edit(c.message,
-        f"🃏 <b>Карточки</b> · {casino.mines_preset(g['key'])[2]}\n\n"
-        f"Открыто: {picks} · множитель <b>×{mult:g}</b>\n"
-        f"Заберёшь сейчас: <b>{win_now:,}</b> {sx['e_' + g['cur']]}".replace(",", " "),
-        reply_markup=await kb.mines_grid(g["total"], opened_map, mult, True))
-    await c.answer(f"💎 ×{mult:g}")
+    # запланировать перерисовку (схлопывает частые тапы)
+    _mines_schedule_redraw(c, state, uid)
+
+
+# ---- дебаунс-отрисовка поля карточек ----
+_mines_redraw_tasks: dict[int, asyncio.Task] = {}
+
+
+def _mines_cancel_redraw(uid: int):
+    t = _mines_redraw_tasks.pop(uid, None)
+    if t and not t.done():
+        t.cancel()
+
+
+def _mines_schedule_redraw(c, state, uid: int, delay: float = 0.4):
+    """Отложить перерисовку поля на delay сек, отменив прошлую отложенную."""
+    _mines_cancel_redraw(uid)
+    _mines_redraw_tasks[uid] = asyncio.create_task(_mines_redraw(c, state, uid, delay))
+
+
+async def _mines_redraw(c, state, uid: int, delay: float):
+    try:
+        await asyncio.sleep(delay)
+        data = await state.get_data()
+        g = data.get("mines")
+        if not g:
+            return
+        picks = len(g["opened"])
+        safe = g["total"] - g["mines"]
+        if picks >= safe or picks == 0:
+            return
+        mult = casino.mines_multiplier(g["total"], g["mines"], picks)
+        win_now = int(g["bet_cur"] * mult)
+        sx = await settings.ctx()
+        opened_map = {i: "💎" for i in g["opened"]}
+        with contextlib.suppress(Exception):
+            await ui.edit(c.message,
+                f"🃏 <b>Карточки</b> · {casino.mines_preset(g['key'])[2]}\n\n"
+                f"Открыто: {picks} · множитель <b>×{mult:g}</b>\n"
+                f"Заберёшь сейчас: <b>{win_now:,}</b> {sx['e_' + g['cur']]}".replace(",", " "),
+                reply_markup=await kb.mines_grid(g["total"], opened_map, mult, True))
+    except asyncio.CancelledError:
+        pass
+    finally:
+        _mines_redraw_tasks.pop(uid, None)
 
 
 @router.callback_query(F.data == "mcashout")
@@ -518,6 +561,7 @@ async def _mines_cashout(c, state, forced: bool):
     if not g:
         return await c.answer("Игра не активна.", show_alert=True)
     uid = c.from_user.id
+    _mines_cancel_redraw(uid)  # отменить отложенную перерисовку поля
     picks = len(g["opened"])
     if picks == 0:
         return await c.answer("Открой хотя бы одну карту.", show_alert=True)
