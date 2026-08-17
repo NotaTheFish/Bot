@@ -16,7 +16,7 @@ import time
 from config import (ANIM_DELAY, ANIM_FRAMES, COIN_RATE, ROULETTE_DAILY_BUDGET, ROULETTE_TZ,
                     SPIN_COMMANDS, SPIN_NAG_COOLDOWN, SUPER_ADMINS,
                     UNLIMITED_SPIN_IDS, JACKPOT_COMMAND, JACKPOT_IDS,
-                    JACKPOT_MAX, JACKPOT_SHOWN_CHANCE)
+                    JACKPOT_MAX, JACKPOT_SHOWN_CHANCE, FREE_SPIN_CHANCE)
 from services import settings, spin_queue, ui
 from services.render import edit as r_edit, reply as r_reply
 from services import reactions
@@ -86,6 +86,11 @@ class BudgetExhausted(Exception):
 
 
 class ChatBlocked(Exception):
+    pass
+
+
+class _NoFreeSpin(Exception):
+    """Фриспин увели параллельно между проверкой и списанием."""
     pass
 
 
@@ -260,16 +265,22 @@ async def spin(msg: Message, bot: Bot):
 
     # уже крутил сегодня? (быстрый предварительный отсев; финальная гарантия —
     # UNIQUE(tg_id, spin_day) внутри транзакции, от гонки)
+    # Доп-спин (фриспин) обходит лимит: если он есть — крутим сверх дневного.
+    used_free_spin = False
     if uid not in UNLIMITED_SPIN_IDS:
         prev = await db.pool().fetchval(
             "SELECT amount FROM rb_spins WHERE tg_id=$1 AND spin_day=$2", uid, today)
         if prev is not None:
-            log.info("  -> уже крутил сегодня (%s), выход", prev)
-            if not _should_nag(uid):
-                return
-            return await ui.reply(
-                msg, f"{e_rou} Ты уже крутил сегодня — выпало <b>{prev:,}</b> {e_cur}.\n"
-                     f"Прокрутка одна в сутки. Возвращайся завтра.".replace(",", " "))
+            # уже крутил — но, может, есть фриспин?
+            if await db.has_free_spin(uid):
+                used_free_spin = True  # спишем в транзакции ниже
+            else:
+                log.info("  -> уже крутил сегодня (%s), выход", prev)
+                if not _should_nag(uid):
+                    return
+                return await ui.reply(
+                    msg, f"{e_rou} Ты уже крутил сегодня — выпало <b>{prev:,}</b> {e_cur}.\n"
+                         f"Прокрутка одна в сутки. Возвращайся завтра.".replace(",", " "))
 
     amount, is_mega = roulette.roll(cur)
 
@@ -302,9 +313,14 @@ async def spin(msg: Message, bot: Bot):
                     await _charge_budget(conn, msg.chat.id, msg.chat.title or "", cost,
                                          skip_budget=skip)
 
-                    if uid in UNLIMITED_SPIN_IDS:
+                    if uid in UNLIMITED_SPIN_IDS or used_free_spin:
                         # UNIQUE(tg_id, spin_day) не обходим — сносим сегодняшнюю строку
-                        # и пишем заново. Индекс остаётся боевым для всех остальных.
+                        # и пишем заново. Для фриспина дополнительно списываем счётчик.
+                        if used_free_spin:
+                            ok_free = await db.use_free_spin(conn, uid)
+                            if not ok_free:
+                                # фриспин увели параллельно — откат, обычная блокировка
+                                raise _NoFreeSpin
                         await conn.execute(
                             "DELETE FROM rb_spins WHERE tg_id=$1 AND spin_day=$2", uid, today)
 
@@ -329,6 +345,16 @@ async def spin(msg: Message, bot: Bot):
                                    "Прокрутка не потрачена — заходи завтра.")
         except ChatBlocked:
             return  # чат выключили между проверкой и слотом — молчим
+        except _NoFreeSpin:
+            return  # фриспин увели параллельно — молча выходим
+
+        # розыгрыш доп-спина: с шансом FREE_SPIN_CHANCE выдаём фриспин (кроме
+        # безлимитных — им незачем). Игрок сам напишет !шайн снова.
+        import random as _rnd
+        got_free = False
+        if uid not in UNLIMITED_SPIN_IDS and _rnd.random() < FREE_SPIN_CHANCE:
+            await db.grant_free_spin(uid)
+            got_free = True
 
         await _animate(msg, e_rou, e_cur, label, amount, total, em)
         # мега-джекпот (миллион) — паста «1 на 100 000», как у секретной !шaйн
@@ -339,6 +365,12 @@ async def spin(msg: Message, bot: Bot):
                     f"Ты выбил РОВНО <b>{amount:,}</b> {e_cur}\n".replace(",", " ") +
                     f"Шанс этого — 0.001%.\n"
                     f"Это один случай на сто тысяч. Буквально.")
+        # доп-спин — сообщаем В ТОМ ЖЕ потоке (отдельной репликой после результата)
+        if got_free:
+            with contextlib.suppress(Exception):
+                await ui.reply(msg,
+                    f"🎁 <b>Вы выиграли дополнительный фриспин {e_rou}</b>\n"
+                    f"Напиши !шайн ещё раз — крутка сверх лимита!")
 
 
 async def _animate(msg, e_rou, e_cur, label, amount, total, em):

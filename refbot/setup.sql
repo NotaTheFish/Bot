@@ -28,6 +28,7 @@ CREATE TABLE IF NOT EXISTS rb_users (
     first_name TEXT,
     currency   rb_currency NOT NULL DEFAULT 'mushrooms',
     wheel_anim TEXT        NOT NULL DEFAULT 'runner',
+    free_spins INT         NOT NULL DEFAULT 0,
     banned     BOOLEAN     NOT NULL DEFAULT FALSE,
     ban_reason TEXT,
     banned_by  BIGINT,
@@ -398,6 +399,7 @@ ALTER TABLE rb_users ADD COLUMN IF NOT EXISTS wheel_anim TEXT NOT NULL DEFAULT '
 ALTER TABLE rb_promo ADD COLUMN IF NOT EXISTS reward_kind TEXT NOT NULL DEFAULT 'rate';
 -- Разрешаем отрицательный баланс (админ-штрафы). Снимаем старый CHECK, если он есть.
 ALTER TABLE rb_balances DROP CONSTRAINT IF EXISTS rb_balances_amount_check;
+ALTER TABLE rb_users ADD COLUMN IF NOT EXISTS free_spins INT NOT NULL DEFAULT 0;
 
 -- title_html: название розыгрыша с премиум-эмодзи (для сообщений). Обычный title
 -- остаётся plain — он идёт на кнопки, где HTML/премиум не рендерится.

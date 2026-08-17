@@ -107,6 +107,35 @@ async def set_wheel_anim(tg_id: int, style: str) -> None:
         "UPDATE rb_users SET wheel_anim=$2 WHERE tg_id=$1", tg_id, style)
 
 
+async def grant_free_spin(tg_id: int) -> None:
+    """Выдать игроку один доп-спин !шайн."""
+    await pool().execute(
+        "UPDATE rb_users SET free_spins = free_spins + 1 WHERE tg_id=$1", tg_id)
+
+
+async def active_roulette_chats() -> list[dict]:
+    """Чаты с активной рулеткой — для объявлений акции x5."""
+    rows = await pool().fetch(
+        "SELECT chat_id, title FROM rb_roulette_chats WHERE active = TRUE")
+    return [dict(r) for r in rows]
+
+
+async def use_free_spin(conn, tg_id: int) -> bool:
+    """
+    Списать один доп-спин, если есть. Возвращает True если списан (можно крутить
+    сверх лимита). Атомарно внутри переданной транзакции.
+    """
+    n = await conn.fetchval(
+        "UPDATE rb_users SET free_spins = free_spins - 1 "
+        "WHERE tg_id=$1 AND free_spins > 0 RETURNING free_spins", tg_id)
+    return n is not None
+
+
+async def has_free_spin(tg_id: int) -> bool:
+    n = await pool().fetchval("SELECT free_spins FROM rb_users WHERE tg_id=$1", tg_id)
+    return bool(n and n > 0)
+
+
 async def all_active_user_ids() -> list[int]:
     """Все незабаненные пользователи — для массовой рассылки."""
     rows = await pool().fetch("SELECT tg_id FROM rb_users WHERE banned = FALSE")

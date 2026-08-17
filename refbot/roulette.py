@@ -27,10 +27,12 @@ def _rand() -> float:
     return secrets.randbits(53) / (1 << 53)
 
 
-def roll_mushrooms() -> int:
-    r = _rand() * _TOTAL_W
+def roll_mushrooms(boosted: bool = False) -> int:
+    bands = boosted_bands() if boosted else ROULETTE_BANDS
+    tw = sum(w for *_, w in bands)
+    r = _rand() * tw
     acc = 0.0
-    for low, high, w in ROULETTE_BANDS:
+    for low, high, w in bands:
         acc += w
         if r <= acc:
             val = low + _rand() * (high - low)
@@ -44,22 +46,61 @@ def roll(currency: str) -> tuple[int, bool]:
     Ежедневная прокрутка (!шайн). Возвращает (сумма, is_mega_jackpot).
 
     Сначала бросаем на джекпоты (ROULETTE_JACKPOTS) — редкие фиксированные суммы.
-    Если ни один не выпал — обычная полоса (roll_mushrooms).
-    is_mega_jackpot=True только для джекпота с флагом пасты (миллион) — хендлер
-    покажет поздравление «1 на миллион».
+    Если ни один не выпал — полоса (roll_mushrooms).
+    Если активна акция x5 (boost_active()) — джекпоты ×BOOST_JACKPOT_MULT и
+    бустнутые полосы (крупное ×5, мелочь просажена).
+    is_mega_jackpot=True только для джекпота с флагом пасты (миллион).
     Сумма в грибах; для коинов ×COIN_RATE.
     """
-    from config import ROULETTE_JACKPOTS
+    from config import ROULETTE_JACKPOTS, BOOST_JACKPOT_MULT
+    boost = boost_active()
     r = _rand()
     acc = 0.0
     for amount, chance, has_paste in ROULETTE_JACKPOTS:
-        acc += chance
+        eff = chance * BOOST_JACKPOT_MULT if boost else chance
+        acc += eff
         if r < acc:
             m = amount
             return (m * COIN_RATE if currency == "coins" else m), has_paste
-    # джекпот не выпал — обычная полоса
-    m = roll_mushrooms()
+    # джекпот не выпал — полоса (бустнутая или обычная)
+    m = roll_mushrooms(boosted=boost)
     return (m * COIN_RATE if currency == "coins" else m), False
+
+
+# ---------- акция x5 ----------
+_boost_until: float = 0.0
+
+
+def boost_active() -> bool:
+    import time
+    return time.time() < _boost_until
+
+
+def boost_start(duration_sec: float) -> None:
+    global _boost_until
+    import time
+    _boost_until = time.time() + duration_sec
+
+
+def boost_stop() -> None:
+    global _boost_until
+    _boost_until = 0.0
+
+
+def boost_seconds_left() -> int:
+    import time
+    return max(0, int(_boost_until - time.time()))
+
+
+def boosted_bands():
+    """Полосы во время акции: выше среднего ×5, ниже — /5."""
+    tw = sum(w for *_, w in ROULETTE_BANDS)
+    avg = sum(w / tw * (lo + hi) / 2 for lo, hi, w in ROULETTE_BANDS)
+    out = []
+    for lo, hi, w in ROULETTE_BANDS:
+        mid = (lo + hi) / 2
+        out.append((lo, hi, w * 5 if mid > avg else w / 5))
+    return out
 
 
 def roll_jackpot(currency: str) -> tuple[int, bool]:
