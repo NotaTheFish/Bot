@@ -121,14 +121,21 @@ async def admin_menu(manage: bool = True) -> InlineKeyboardMarkup:
     await btn(kb, "📊 Сводка", "a_stats")
     await btn(kb, "Чаты", "a_chats", "chat")
     await btn(kb, "🚫 Баны", "a_bans")
+    n_main = 7  # кнопок до блока manage
     if manage:
         await btn(kb, "🎁 Розыгрыши", "gw_menu")
         await btn(kb, "🎰 Казино (доступ)", "casino_admin")
         await btn(kb, "🎟 Промокоды", "promo_menu")
         await btn(kb, "🎨 Кастомизация", "a_skin")
         await btn(kb, "📢 Разослать меню", "a_kbcast")
+        n_main += 5
     await btn(kb, "Назад", "menu", "back")
-    kb.adjust(2, 2, 2, 2, 1, 1, 1, 1, 1)
+    # все кнопки по 2 в ряд; «Назад» всегда одна в своём ряду.
+    rows = [2] * (n_main // 2)
+    if n_main % 2:
+        rows.append(1)
+    rows.append(1)  # «Назад»
+    kb.adjust(*rows)
     return kb.as_markup()
 
 
@@ -243,7 +250,13 @@ async def free_list(pairs: dict) -> InlineKeyboardMarkup:
         await btn(kb, f"{ch}  ✕", f"sk_free_del:{ch}")
     await btn(kb, "➕ Добавить замену", "sk_free_add")
     await btn(kb, "Кастомизация", "a_skin", "back")
-    kb.adjust(4, 1, 1)
+    # замены — по 4 в ряд (компактно, а не башней); две кнопки-действия — по одной.
+    n = len(pairs)
+    rows = [4] * (n // 4)
+    if n % 4:
+        rows.append(n % 4)
+    rows += [1, 1]  # «Добавить замену» и «Кастомизация» — каждая своим рядом
+    kb.adjust(*rows)
     return kb.as_markup()
 
 
