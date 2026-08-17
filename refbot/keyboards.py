@@ -462,6 +462,16 @@ async def promo_menu() -> InlineKeyboardMarkup:
     return kb.as_markup()
 
 
+async def promo_kind() -> InlineKeyboardMarkup:
+    """Выбор валюты выдачи промокода."""
+    kb = InlineKeyboardBuilder()
+    await btn(kb, "🍄🪙 По курсу", "pkind:rate")
+    await btn(kb, "🍄 Только грибы", "pkind:mushrooms")
+    await btn(kb, "🪙 Только коины", "pkind:coins")
+    kb.adjust(1)
+    return kb.as_markup()
+
+
 async def promo_back() -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
     await btn(kb, "Назад", "promo_menu", "back")

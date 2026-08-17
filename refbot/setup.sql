@@ -182,13 +182,18 @@ CREATE TABLE IF NOT EXISTS rb_case_opens (
 CREATE TABLE IF NOT EXISTS rb_promo (
     id           BIGSERIAL PRIMARY KEY,
     code         TEXT NOT NULL,             -- кодовое слово (храним как есть; сверяем без регистра)
-    reward_mush  BIGINT NOT NULL,           -- награда в грибах; коины = reward_mush * COIN_RATE
+    reward_mush  BIGINT NOT NULL,           -- сумма награды (трактуется по reward_kind)
+    reward_kind  TEXT NOT NULL DEFAULT 'rate',  -- rate|mushrooms|coins (см. ниже)
     max_acts     INT,                       -- лимит активаций; NULL = безлимит
     used         INT NOT NULL DEFAULT 0,    -- сколько раз активирован
     expires_at   TIMESTAMPTZ,               -- срок; NULL = бессрочно
     created_by   BIGINT,
     created_at   TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+-- reward_kind:
+--   rate      — reward_mush в грибах, игрок получает в СВОЕЙ валюте (коины = ×COIN_RATE)
+--   mushrooms — все получают reward_mush ГРИБОВ независимо от своей валюты
+--   coins     — все получают reward_mush КОИНОВ независимо от своей валюты
 
 -- Активации промокодов: кто какой код активировал (одна активация на человека).
 CREATE TABLE IF NOT EXISTS rb_promo_acts (
@@ -390,6 +395,7 @@ CREATE TABLE IF NOT EXISTS rb_giveaway_members (
 -- Страйки глобальные — храним счётчик прямо в rb_users. 3 страйка -> бан бота.
 ALTER TABLE rb_users ADD COLUMN IF NOT EXISTS strikes INT NOT NULL DEFAULT 0;
 ALTER TABLE rb_users ADD COLUMN IF NOT EXISTS wheel_anim TEXT NOT NULL DEFAULT 'runner';
+ALTER TABLE rb_promo ADD COLUMN IF NOT EXISTS reward_kind TEXT NOT NULL DEFAULT 'rate';
 
 -- title_html: название розыгрыша с премиум-эмодзи (для сообщений). Обычный title
 -- остаётся plain — он идёт на кнопки, где HTML/премиум не рендерится.

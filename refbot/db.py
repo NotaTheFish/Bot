@@ -377,11 +377,11 @@ async def log_case_open(tg_id: int, case_key: str, currency: str,
 
 
 async def promo_create(code: str, reward_mush: int, max_acts: int | None,
-                       expires_at, created_by: int) -> int:
+                       expires_at, created_by: int, reward_kind: str = "rate") -> int:
     return await pool().fetchval(
-        "INSERT INTO rb_promo (code, reward_mush, max_acts, expires_at, created_by) "
-        "VALUES ($1,$2,$3,$4,$5) RETURNING id",
-        code, reward_mush, max_acts, expires_at, created_by)
+        "INSERT INTO rb_promo (code, reward_mush, reward_kind, max_acts, expires_at, created_by) "
+        "VALUES ($1,$2,$3,$4,$5,$6) RETURNING id",
+        code, reward_mush, reward_kind, max_acts, expires_at, created_by)
 
 
 async def promo_list() -> list:
@@ -400,10 +400,10 @@ async def promo_delete(pid: int) -> None:
 async def promo_activate(tg_id: int, code: str, coin_rate: int):
     """
     Активировать промокод по кодовому слову (без учёта регистра). Атомарно.
-    Возвращает (status, amount, currency):
+    Возвращает (status, reward_mush, pid, reward_kind):
       status: 'ok' | 'notfound' | 'expired' | 'used_up' | 'already'
-    Начисление делает вызывающий (у него валюта игрока), тут только резерв активации.
-    Возвращаем reward_mush — вызывающий пересчитает в валюту игрока.
+    Начисление делает вызывающий: reward_kind говорит, как трактовать reward_mush
+    (rate — в валюте игрока; mushrooms/coins — фиксированная валюта).
     """
     async with pool().acquire() as conn:
         async with conn.transaction():
@@ -411,26 +411,27 @@ async def promo_activate(tg_id: int, code: str, coin_rate: int):
                 "SELECT * FROM rb_promo WHERE lower(code)=lower($1) "
                 "ORDER BY created_at DESC LIMIT 1 FOR UPDATE", code)
             if not p:
-                return ("notfound", 0, None)
+                return ("notfound", 0, None, None)
             # срок
             if p["expires_at"] is not None:
                 exp = await conn.fetchval("SELECT $1::timestamptz < now()", p["expires_at"])
                 if exp:
-                    return ("expired", 0, None)
+                    return ("expired", 0, None, None)
             # лимит активаций
             if p["max_acts"] is not None and p["used"] >= p["max_acts"]:
-                return ("used_up", 0, None)
+                return ("used_up", 0, None, None)
             # уже активировал этот человек?
             dup = await conn.fetchval(
                 "SELECT 1 FROM rb_promo_acts WHERE promo_id=$1 AND tg_id=$2", p["id"], tg_id)
             if dup:
-                return ("already", 0, None)
+                return ("already", 0, None, None)
             # резервируем активацию
             await conn.execute(
                 "INSERT INTO rb_promo_acts (promo_id, tg_id) VALUES ($1,$2)", p["id"], tg_id)
             await conn.execute(
                 "UPDATE rb_promo SET used = used + 1 WHERE id=$1", p["id"])
-            return ("ok", p["reward_mush"], p["id"])
+            kind = p["reward_kind"] if "reward_kind" in p else "rate"
+            return ("ok", p["reward_mush"], p["id"], kind)
 
 
 EXPECTED_TABLES = [
