@@ -142,12 +142,6 @@ async def reply_menu_btn(msg: Message, state: FSMContext):
                                         show_casino=await casino_svc.visible(msg.from_user.id)))
 
 
-@router.message(Command("свернуть", "hide"))
-async def hide_reply_kb(msg: Message):
-    """Свернуть reply-клавиатуру."""
-    await msg.answer("Панель свёрнута. Вернуть — /меню", reply_markup=kb.menu_reply_hide())  # noqa: ui
-
-
 @router.message(Command("меню", "menu"))
 async def show_reply_kb(msg: Message, state: FSMContext):
     """Развернуть reply-клавиатуру и показать меню."""

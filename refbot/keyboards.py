@@ -1,5 +1,5 @@
 from aiogram.types import (InlineKeyboardButton, InlineKeyboardMarkup,
-                           KeyboardButton, ReplyKeyboardMarkup, ReplyKeyboardRemove)
+                           KeyboardButton, ReplyKeyboardMarkup)
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from services import settings
@@ -46,14 +46,37 @@ async def wd_currency() -> InlineKeyboardMarkup:
 
 async def find_card(tg_id: int, banned: bool, manage: bool = True) -> InlineKeyboardMarkup:
     """Тумблер под найденным юзером: не забанен -> «🥳 бан» (забанит),
-    забанен -> «😡 бан» (разбанит). У второстепенного тумблера нет — он не банит."""
+    забанен -> «😡 бан» (разбанит). У второстепенного тумблера нет — он не банит.
+    Плюс начисление/изъятие валюты (только главный админ)."""
     kb = InlineKeyboardBuilder()
     if manage:
+        await btn(kb, "➕ Зачислить", f"a_give:{tg_id}")
+        await btn(kb, "➖ Изъять", f"a_take:{tg_id}")
         if banned:
             await btn(kb, "😡 бан", f"a_toggleban:{tg_id}")
         else:
             await btn(kb, "🥳 бан", f"a_toggleban:{tg_id}")
     await btn(kb, "Админка", "admin", "back")
+    kb.adjust(2, 1, 1)
+    return kb.as_markup()
+
+
+async def adj_currency(tg_id: int, action: str) -> InlineKeyboardMarkup:
+    """Выбор валюты для начисления/изъятия. action = give|take."""
+    kb = InlineKeyboardBuilder()
+    await btn(kb, "🍄 Грибы", f"a_adjcur:{action}:{tg_id}:mushrooms")
+    await btn(kb, "🪙 Коины", f"a_adjcur:{action}:{tg_id}:coins")
+    await btn(kb, "Отмена", f"a_findback:{tg_id}", "back")
+    kb.adjust(2, 1)
+    return kb.as_markup()
+
+
+async def adj_amount(tg_id: int, action: str, cur: str, show_max: bool) -> InlineKeyboardMarkup:
+    """Кнопка max (только для изъятия) + отмена. Сумму игрок вводит текстом."""
+    kb = InlineKeyboardBuilder()
+    if show_max:
+        await btn(kb, "Забрать всё (max)", f"a_adjmax:{action}:{tg_id}:{cur}")
+    await btn(kb, "Отмена", f"a_findback:{tg_id}", "back")
     kb.adjust(1)
     return kb.as_markup()
 
@@ -70,6 +93,15 @@ async def admin_wd_card(wid: int, version: int, tg_id: int | None = None,
         kb.button(text=f"👤 {name}", url=url)
     await btn(kb, "✅ Подтвердить вывод", f"wdok:{wid}:{version}")
     await btn(kb, "🚫 Отклонить", f"wdno:{wid}:{version}")
+    kb.adjust(1)
+    return kb.as_markup()
+
+
+async def confirm_kbcast() -> InlineKeyboardMarkup:
+    """Подтверждение массовой рассылки reply-клавиатуры."""
+    kb = InlineKeyboardBuilder()
+    await btn(kb, "📢 Запустить рассылку", "a_kbcast_go")
+    await btn(kb, "Отмена", "admin", "back")
     kb.adjust(1)
     return kb.as_markup()
 
@@ -94,8 +126,9 @@ async def admin_menu(manage: bool = True) -> InlineKeyboardMarkup:
         await btn(kb, "🎰 Казино (доступ)", "casino_admin")
         await btn(kb, "🎟 Промокоды", "promo_menu")
         await btn(kb, "🎨 Кастомизация", "a_skin")
+        await btn(kb, "📢 Разослать меню", "a_kbcast")
     await btn(kb, "Назад", "menu", "back")
-    kb.adjust(2, 2, 2, 2, 1, 1, 1, 1)
+    kb.adjust(2, 2, 2, 2, 1, 1, 1, 1, 1)
     return kb.as_markup()
 
 
@@ -342,20 +375,16 @@ def menu_reply() -> ReplyKeyboardMarkup:
     """
     Reply-клавиатура внизу: одна кнопка «☰ Меню».
 
-    is_persistent НЕ ставим (=False по умолчанию) — тогда Telegram показывает
-    НАТИВНУЮ кнопку сворачивания/разворачивания у поля ввода (стрелка возле
-    скрепки), как у других ботов. С is_persistent=True эта кнопка есть, но НЕ
-    работает (баг Telegram) — поэтому её не трогаем.
+    is_persistent НЕ ставим: с ним Telegram ломает нативную кнопку
+    сворачивания/разворачивания (видна, но не жмётся — подтверждено багтрекером
+    Telegram). Кнопка сворачивания для пользователя важнее вечного залипания.
+    Если клавиатура пропала (Telegram сбрасывает её при синхронизации/долгих
+    сессиях) — пользователь возвращает её командой /start.
     """
     return ReplyKeyboardMarkup(
         keyboard=[[KeyboardButton(text="☰ Меню")]],
         resize_keyboard=True,
         input_field_placeholder="Жми ☰ Меню или пиши сообщение")
-
-
-def menu_reply_hide() -> ReplyKeyboardRemove:
-    """Свернуть reply-клавиатуру (убрать панель снизу)."""
-    return ReplyKeyboardRemove()
 
 
 async def gw_skip_photo(step: str) -> InlineKeyboardMarkup:

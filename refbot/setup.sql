@@ -64,7 +64,7 @@ CREATE TABLE IF NOT EXISTS rb_admins (
 CREATE TABLE IF NOT EXISTS rb_balances (
     tg_id    BIGINT NOT NULL REFERENCES rb_users(tg_id) ON DELETE CASCADE,
     currency rb_currency NOT NULL,
-    amount   BIGINT NOT NULL DEFAULT 0 CHECK (amount >= 0),
+    amount   BIGINT NOT NULL DEFAULT 0,  -- может быть <0 после админ-штрафа (изъятие в минус)
     PRIMARY KEY (tg_id, currency)
 );
 
@@ -396,6 +396,8 @@ CREATE TABLE IF NOT EXISTS rb_giveaway_members (
 ALTER TABLE rb_users ADD COLUMN IF NOT EXISTS strikes INT NOT NULL DEFAULT 0;
 ALTER TABLE rb_users ADD COLUMN IF NOT EXISTS wheel_anim TEXT NOT NULL DEFAULT 'runner';
 ALTER TABLE rb_promo ADD COLUMN IF NOT EXISTS reward_kind TEXT NOT NULL DEFAULT 'rate';
+-- Разрешаем отрицательный баланс (админ-штрафы). Снимаем старый CHECK, если он есть.
+ALTER TABLE rb_balances DROP CONSTRAINT IF EXISTS rb_balances_amount_check;
 
 -- title_html: название розыгрыша с премиум-эмодзи (для сообщений). Обычный title
 -- остаётся plain — он идёт на кнопки, где HTML/премиум не рендерится.

@@ -69,6 +69,9 @@ def check_undefined_names(path: str) -> list[str]:
     Ловит использование частых имён-объектов (msg/c/callback...) там, где их нет ни
     в аргументах функции, ни в присваиваниях. Классика при копипасте между
     message- и callback-хендлерами (был баг: msg.from_user в функции с c: CallbackQuery).
+
+    Учитывает замыкания: имя, определённое в РОДИТЕЛЬСКОЙ функции, видно во
+    вложенной (иначе ложные срабатывания на nested-функциях вроде refresh()).
     """
     import ast
     SUSPECTS = {"msg", "c", "callback", "query"}
@@ -77,21 +80,51 @@ def check_undefined_names(path: str) -> list[str]:
     except SyntaxError:
         return []
     out = []
-    for node in ast.walk(tree):
+
+    def locals_of(node) -> set:
+        """Локальные имена функции: аргументы + присваивания (без вложенных функций)."""
+        loc = {a.arg for a in node.args.args}
+        loc |= {a.arg for a in node.args.kwonlyargs}
+        if node.args.vararg:
+            loc.add(node.args.vararg.arg)
+        if node.args.kwarg:
+            loc.add(node.args.kwarg.arg)
+        for n in ast.walk(node):
+            if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Store):
+                loc.add(n.id)
+            if isinstance(n, ast.arg):
+                loc.add(n.arg)
+        return loc
+
+    def visit(node, enclosing: set):
+        """enclosing — имена, доступные из родительских функций (замыкание)."""
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            local = {a.arg for a in node.args.args}
-            local |= {a.arg for a in node.args.kwonlyargs}
-            for n in ast.walk(node):
-                if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Store):
-                    local.add(n.id)
-                if isinstance(n, ast.arg):
-                    local.add(n.arg)
-            for n in ast.walk(node):
-                if (isinstance(n, ast.Name) and isinstance(n.ctx, ast.Load)
-                        and n.id in SUSPECTS and n.id not in local):
-                    out.append(f"{path}:{n.lineno} — '{n.id}' в {node.name}() не определён "
-                               f"(перепутан msg/c?)")
+            scope = enclosing | locals_of(node)
+            # проверяем прямые Name-Load этой функции (не углубляясь в под-функции —
+            # их обойдём рекурсивно с их собственным scope)
+            for n in ast.iter_child_nodes(node):
+                _check_body(n, node, scope, out, path, SUSPECTS)
+            for child in ast.iter_child_nodes(node):
+                visit(child, scope)
+        else:
+            for child in ast.iter_child_nodes(node):
+                visit(child, enclosing)
+
+    visit(tree, set())
     return out
+
+
+def _check_body(n, fn, scope, out, path, SUSPECTS):
+    """Обойти тело узла n, НЕ заходя во вложенные функции, и проверить Name-Load."""
+    import ast
+    if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)):
+        return  # вложенные функции проверит visit() со своим scope
+    if (isinstance(n, ast.Name) and isinstance(n.ctx, ast.Load)
+            and n.id in SUSPECTS and n.id not in scope):
+        out.append(f"{path}:{n.lineno} — '{n.id}' в {fn.name}() не определён "
+                   f"(перепутан msg/c?)")
+    for child in ast.iter_child_nodes(n):
+        _check_body(child, fn, scope, out, path, SUSPECTS)
 
 
 def main() -> int:

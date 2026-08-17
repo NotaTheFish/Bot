@@ -1,3 +1,4 @@
+import asyncio
 import contextlib
 from datetime import datetime, timezone
 
@@ -42,6 +43,10 @@ async def can_payout(uid: int) -> bool:
 
 class Find(StatesGroup):
     query = State()
+
+
+class Adjust(StatesGroup):
+    amount = State()
 
 
 def fmt(n: int) -> str:
@@ -518,3 +523,208 @@ async def cb_wd_no(c: CallbackQuery):
         await ui.send(c.bot, row["tg_id"], "🚫 Твоя заявка на вывод отклонена админом. "
                                            "Баланс не тронут.")
     await c.answer("Отклонено.")
+
+
+# ==================== рассылка reply-клавиатуры ====================
+# защита от параллельных рассылок
+_kbcast_running = False
+
+
+@router.callback_query(F.data == "a_kbcast")
+async def cb_kbcast_ask(c: CallbackQuery):
+    if c.from_user.id not in SUPER_ADMINS and not await db.admin_chats(c.from_user.id):
+        return await c.answer("Только для главного админа.", show_alert=True)
+    ids = await db.all_active_user_ids()
+    await ui.edit(c.message,
+        f"📢 <b>Рассылка меню</b>\n\n"
+        f"Отправлю кнопку «☰ Меню» всем незабаненным пользователям "
+        f"(<b>{len(ids)}</b> чел.). У кого пропала клавиатура — вернётся.\n\n"
+        f"Идёт с паузами (~20/сек), займёт ~{max(1, len(ids)//20//60)} мин. "
+        f"Прогресс буду показывать здесь.\n\n"
+        f"Запустить?",
+        reply_markup=await kb.confirm_kbcast())
+    await c.answer()
+
+
+@router.callback_query(F.data == "a_kbcast_go")
+async def cb_kbcast_go(c: CallbackQuery):
+    global _kbcast_running
+    if c.from_user.id not in SUPER_ADMINS and not await db.admin_chats(c.from_user.id):
+        return await c.answer("Только для главного админа.", show_alert=True)
+    if _kbcast_running:
+        return await c.answer("Рассылка уже идёт.", show_alert=True)
+    _kbcast_running = True
+    await c.answer("Запускаю…")
+    ids = await db.all_active_user_ids()
+    total = len(ids)
+    sent = 0        # успешно доставлено
+    blocked = 0     # заблокировали бота / недоступны
+    done = 0        # обработано всего
+    last_edit = 0.0
+
+    async def refresh(force=False):
+        nonlocal last_edit
+        import time as _t
+        now = _t.time()
+        if not force and now - last_edit < 3:
+            return
+        last_edit = now
+        with contextlib.suppress(Exception):
+            await ui.edit(c.message,
+                f"📢 <b>Рассылка меню</b>\n\n"
+                f"Обработано: <b>{done}/{total}</b>\n"
+                f"✅ Доставлено: <b>{sent}</b>\n"
+                f"🚫 Заблокировали бота: <b>{blocked}</b>",
+                reply_markup=None)
+
+    for uid in ids:
+        try:
+            await c.bot.send_message(uid, "\u2063", reply_markup=kb.menu_reply())  # noqa: ui
+            sent += 1
+        except Exception:
+            blocked += 1
+        done += 1
+        # темп ~20/сек — безопасно ниже лимита Telegram (30/сек)
+        await asyncio.sleep(0.05)
+        if done % 25 == 0:
+            await refresh()
+    await refresh(force=True)
+    _kbcast_running = False
+    with contextlib.suppress(Exception):
+        await ui.edit(c.message,
+            f"✅ <b>Рассылка завершена</b>\n\n"
+            f"Всего: <b>{total}</b>\n"
+            f"✅ Доставлено: <b>{sent}</b>\n"
+            f"🚫 Заблокировали бота: <b>{blocked}</b>\n\n"
+            f"У всех, кто получил, клавиатура теперь на месте.",
+            reply_markup=await kb.back_menu())
+
+
+# ==================== админ: начисление / изъятие валюты ====================
+async def _adj_show_user_card(c, tg_id):
+    """Перерисовать карточку юзера (после операции или отмены)."""
+    row = await db.get_user(tg_id)
+    if not row:
+        return
+    b = await db.balances(tg_id)
+    sx = await settings.ctx()
+    await ui.edit(c.message,
+        f"{sx['e_profile']} <b>{row['first_name']}</b> @{row['username'] or '—'}\n"
+        f"<code>{row['tg_id']}</code>{' 🚫 БАН' if row['banned'] else ''}\n\n"
+        f"{sx['e_balance']} {sx['e_mushrooms']} {fmt(b['mushrooms'])} | "
+        f"{sx['e_coins']} {fmt(b['coins'])}",
+        reply_markup=await kb.find_card(tg_id, row["banned"], await can_manage(c.from_user.id)))
+
+
+@router.callback_query(F.data.startswith("a_findback:"))
+async def cb_adj_back(c: CallbackQuery, state: FSMContext):
+    await state.clear()
+    await _adj_show_user_card(c, int(c.data.split(":")[1]))
+    await c.answer()
+
+
+@router.callback_query(F.data.startswith("a_give:"))
+async def cb_adj_give(c: CallbackQuery):
+    if not await can_manage(c.from_user.id):
+        return await c.answer("Только главный админ.", show_alert=True)
+    tg_id = int(c.data.split(":")[1])
+    await ui.edit(c.message, "➕ <b>Зачисление</b>\n\nВыбери валюту:",
+                  reply_markup=await kb.adj_currency(tg_id, "give"))
+    await c.answer()
+
+
+@router.callback_query(F.data.startswith("a_take:"))
+async def cb_adj_take(c: CallbackQuery):
+    if not await can_manage(c.from_user.id):
+        return await c.answer("Только главный админ.", show_alert=True)
+    tg_id = int(c.data.split(":")[1])
+    await ui.edit(c.message, "➖ <b>Изъятие</b>\n\nВыбери валюту:",
+                  reply_markup=await kb.adj_currency(tg_id, "take"))
+    await c.answer()
+
+
+@router.callback_query(F.data.startswith("a_adjcur:"))
+async def cb_adj_currency(c: CallbackQuery, state: FSMContext):
+    if not await can_manage(c.from_user.id):
+        return await c.answer("Только главный админ.", show_alert=True)
+    _, action, tg_id_s, cur = c.data.split(":")
+    tg_id = int(tg_id_s)
+    await state.set_state(Adjust.amount)
+    await state.update_data(adj={"action": action, "tg_id": tg_id, "cur": cur})
+    sx = await settings.ctx()
+    verb = "зачислить" if action == "give" else "изъять"
+    b = await db.balances(tg_id)
+    await ui.edit(c.message,
+        f"{'➕' if action=='give' else '➖'} <b>{verb.capitalize()}</b> "
+        f"{sx['e_' + cur]}\n\n"
+        f"Баланс игрока: {fmt(b[cur])}\n\n"
+        f"Напиши сумму. Понимаю <code>100000</code>, <code>100к</code>, <code>1м</code>."
+        + ("\n\n⚠️ Изъятие может увести баланс в минус (штраф)." if action == "take" else ""),
+        reply_markup=await kb.adj_amount(tg_id, action, cur, show_max=(action == "take")))
+    await c.answer()
+
+
+@router.callback_query(F.data.startswith("a_adjmax:"))
+async def cb_adj_max(c: CallbackQuery, state: FSMContext):
+    if not await can_manage(c.from_user.id):
+        return await c.answer("Только главный админ.", show_alert=True)
+    _, action, tg_id_s, cur = c.data.split(":")
+    tg_id = int(tg_id_s)
+    b = await db.balances(tg_id)
+    amount = b[cur]  # забрать всё, что есть
+    if amount <= 0:
+        return await c.answer("У игрока нет этой валюты.", show_alert=True)
+    await state.clear()
+    await _apply_adjust(c, tg_id, "take", cur, amount)
+
+
+@router.message(Adjust.amount)
+async def adj_amount_input(msg: Message, state: FSMContext):
+    if not await can_manage(msg.from_user.id):
+        return await state.clear()
+    data = await state.get_data()
+    adj = data.get("adj")
+    if not adj:
+        return await state.clear()
+    from services.amount_parse import parse_amount
+    amount = parse_amount(msg.text or "")
+    if amount is None or amount <= 0:
+        return await ui.answer(msg, "Нужно положительное число. Например <code>100к</code>.")
+    await state.clear()
+    await _apply_adjust(msg, adj["tg_id"], adj["action"], adj["cur"], amount)
+
+
+async def _apply_adjust(event, tg_id: int, action: str, cur: str, amount: int):
+    """Применить начисление/изъятие. event — Message или CallbackQuery."""
+    admin_id = event.from_user.id
+    delta = amount if action == "give" else -amount
+    sx = await settings.ctx()
+    import time as _t
+    idem = f"adminadj:{admin_id}:{tg_id}:{int(_t.time()*1000)}"
+    # Изъятие может уводить в минус (штраф) — обычный db.apply не даёт отрицательный
+    # баланс (CHECK amount>=0). Поэтому для минуса пишем напрямую с allow_negative.
+    new_bal = await db.apply_admin(tg_id, cur, delta, "admin_" + action, idem, allow_negative=True)
+    await db.audit(admin_id, "admin_adjust",
+                   {"target": tg_id, "action": action, "amount": amount, "cur": cur, "new": new_bal})
+
+    # уведомляем игрока
+    with contextlib.suppress(Exception):
+        if action == "give":
+            await ui.send(event.bot if hasattr(event, "bot") else event.message.bot, tg_id,
+                f"🎁 Тебе начислили <b>{fmt(amount)}</b> {sx['e_' + cur]}!\n"
+                f"Баланс: {fmt(new_bal)} {sx['e_' + cur]}")
+        else:
+            await ui.send(event.bot if hasattr(event, "bot") else event.message.bot, tg_id,
+                f"⚠️ У тебя изъяли <b>{fmt(amount)}</b> {sx['e_' + cur]}.\n"
+                f"Баланс: {fmt(new_bal)} {sx['e_' + cur]}")
+
+    # подтверждение админу
+    verb = "зачислено" if action == "give" else "изъято"
+    text = (f"✅ <b>{verb.capitalize()}</b> {fmt(amount)} {sx['e_' + cur]}\n"
+            f"Игрок {tg_id}, новый баланс: {fmt(new_bal)} {sx['e_' + cur]}")
+    reply_kb = await kb.admin_menu(await can_manage(admin_id))
+    if hasattr(event, "message"):  # CallbackQuery
+        await ui.edit(event.message, text, reply_markup=reply_kb)
+        await event.answer("Готово.")
+    else:  # Message
+        await ui.answer(event, text, reply_markup=reply_kb)

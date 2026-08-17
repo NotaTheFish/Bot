@@ -23,21 +23,33 @@ def pool() -> asyncpg.Pool:
 # Единственная точка, где меняется баланс. Больше нигде UPDATE rb_balances не пишем.
 
 async def apply(conn, tg_id: int, currency: str, delta: int,
-                reason: str, idem: str, ref_id: int | None = None) -> int | None:
+                reason: str, idem: str, ref_id: int | None = None,
+                allow_negative: bool = False) -> int | None:
     """
     Начислить/списать. idem — ключ идемпотентности, повтор просто ничего не сделает.
     Возвращает новый баланс или None, если проводка уже была.
-    Бросает asyncpg.CheckViolationError при попытке уйти в минус.
+    При списании (delta<0) и allow_negative=False бросает asyncpg.CheckViolationError,
+    если денег не хватает (защита от овердрафта — CHECK снят со схемы, проверяем в коде).
+    allow_negative=True разрешает уйти в минус (админ-штрафы).
     ВСЕГДА вызывать внутри transaction().
     """
     exists = await conn.fetchval("SELECT 1 FROM rb_ledger WHERE idempotency_key = $1", idem)
     if exists:
         return None
 
+    if delta < 0 and not allow_negative:
+        cur_bal = await conn.fetchval(
+            "SELECT COALESCE(amount,0) FROM rb_balances WHERE tg_id=$1 AND currency=$2",
+            tg_id, currency) or 0
+        if cur_bal + delta < 0:
+            # эмулируем прежнее поведение (casino/withdrawals ловят CheckViolationError)
+            raise asyncpg.CheckViolationError(
+                f"overdraft: balance {cur_bal} + delta {delta} < 0")
+
     new_balance = await conn.fetchval(
         """
         INSERT INTO rb_balances (tg_id, currency, amount)
-        VALUES ($1, $2, GREATEST($3::bigint, 0))
+        VALUES ($1, $2, $3::bigint)
         ON CONFLICT (tg_id, currency)
         DO UPDATE SET amount = rb_balances.amount + $3::bigint
         RETURNING amount
@@ -93,6 +105,30 @@ async def set_wheel_anim(tg_id: int, style: str) -> None:
     """Стиль анимации платной рулетки: 'runner' (бегунок) | 'drum' (барабан)."""
     await pool().execute(
         "UPDATE rb_users SET wheel_anim=$2 WHERE tg_id=$1", tg_id, style)
+
+
+async def all_active_user_ids() -> list[int]:
+    """Все незабаненные пользователи — для массовой рассылки."""
+    rows = await pool().fetch("SELECT tg_id FROM rb_users WHERE banned = FALSE")
+    return [r["tg_id"] for r in rows]
+
+
+async def apply_admin(tg_id: int, currency: str, delta: int, reason: str,
+                      idem: str, allow_negative: bool = False) -> int:
+    """
+    Админское начисление/изъятие в своей транзакции. allow_negative=True разрешает
+    отрицательный баланс (штрафы). Возвращает новый баланс.
+    """
+    async with pool().acquire() as conn:
+        async with conn.transaction():
+            bal = await apply(conn, tg_id, currency, delta, reason, idem,
+                              allow_negative=allow_negative)
+            if bal is None:
+                # проводка уже была (дубль idem) — вернём текущий баланс
+                bal = await conn.fetchval(
+                    "SELECT COALESCE(amount,0) FROM rb_balances WHERE tg_id=$1 AND currency=$2",
+                    tg_id, currency) or 0
+    return bal
 
 
 async def banned_users(limit: int = 100):
