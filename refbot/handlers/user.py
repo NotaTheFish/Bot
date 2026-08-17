@@ -9,7 +9,7 @@ from aiogram.types import CallbackQuery, Message
 
 import db
 import keyboards as kb
-from config import MIN_WITHDRAW, HOLD_HOURS, PAYOUT_CHAT_ID, SUPER_ADMINS
+from config import MIN_WITHDRAW, WITHDRAW_STEP, HOLD_HOURS, PAYOUT_CHAT_ID, SUPER_ADMINS
 from services import settings, ui
 from services.render import edit as r_edit
 from services import referrals, withdrawals
@@ -422,7 +422,9 @@ async def cb_wd_currency_pick(c: CallbackQuery, state: FSMContext):
     await ui.edit(c.message,
         f"✍️ <b>Сумма вывода</b> в {e}\n\n"
         f"Твой баланс: <b>{fmt(b[cur])}</b> {e}\n"
-        f"Минимум: <b>{fmt(MIN_WITHDRAW[cur])}</b> {e}\n\n"
+        f"Минимум: <b>{fmt(MIN_WITHDRAW[cur])}</b> {e}\n"
+        f"Кратно: <b>{fmt(WITHDRAW_STEP[cur])}</b> {e} (например {fmt(MIN_WITHDRAW[cur])}, "
+        f"{fmt(MIN_WITHDRAW[cur] + WITHDRAW_STEP[cur])})\n\n"
         f"Пришли число. Понимаю: <code>100к</code>=100000, <code>1м</code>=1млн, "
         f"<code>1.5м</code>, пробелы.",
         reply_markup=await kb.back_menu())
@@ -447,6 +449,13 @@ async def wd_amount_input(msg: Message, state: FSMContext):
     if amount < MIN_WITHDRAW[cur]:
         return await ui.answer(msg, f"Минимум для вывода — <b>{fmt(MIN_WITHDRAW[cur])}</b> {e}. "
                                f"Ты ввёл меньше.")
+    if amount % WITHDRAW_STEP[cur] != 0:
+        step = WITHDRAW_STEP[cur]
+        lo = (amount // step) * step
+        hi = lo + step
+        return await ui.answer(msg,
+            f"Сумма должна быть кратна <b>{fmt(step)}</b> {e}. "
+            f"Ближайшие: <b>{fmt(lo)}</b> или <b>{fmt(hi)}</b>.")
     b = await db.balances(msg.from_user.id)
     if amount > b[cur]:
         return await ui.answer(msg, f"На балансе только <b>{fmt(b[cur])}</b> {e}, "

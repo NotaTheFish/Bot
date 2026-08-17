@@ -18,6 +18,9 @@ COIN_RATE = 20
 
 REWARD = {"mushrooms": 5_000, "coins": 100_000}
 MIN_WITHDRAW = {"mushrooms": 100_000, "coins": 2_000_000}
+# Сумма вывода должна быть кратна шагу: грибы — 10к, коины — 1м.
+# 100к/150к грибов можно, 122к — нельзя.
+WITHDRAW_STEP = {"mushrooms": 10_000, "coins": 1_000_000}
 HOLD_HOURS = 72
 
 CURRENCY_NAME = {"mushrooms": "Грибы", "coins": "Коины"}

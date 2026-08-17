@@ -2,45 +2,72 @@
 Выводы.
 
 Опасное место всей системы. Защита:
-  1. Один pending на юзера — UNIQUE INDEX в БД, а не проверка в коде.
+  1. Один pending на юзера — UNIQUE INDEX в БД + предпроверка в create().
   2. version растёт при каждом изменении суммы. В callback_data админа зашит
      version. Пришёл старый version -> кнопка мертва. Так админ не может
      подтвердить сумму, которую юзер уже поменял.
   3. SELECT ... FOR UPDATE на строке вывода — два админа не подтвердят дважды.
-  4. Списание идёт через db.apply с idem-ключом wd:<id>. CHECK(amount>=0) на
-     балансе — последняя линия обороны.
-  5. Баланс перепроверяется в момент подтверждения, а не в момент заявки.
+  4. Средства ЗАМОРАЖИВАЮТСЯ при создании заявки (списываются сразу), чтобы их
+     нельзя было потратить в казино. Возврат — при отмене/отклонении.
+     db.apply с idem-ключами wdhold/wdret. CHECK(amount>=0) — последняя оборона.
 """
 import asyncpg
 
 import db
-from config import MIN_WITHDRAW
+from config import MIN_WITHDRAW, WITHDRAW_STEP
+
+
+class _AlreadyPending(Exception):
+    """Внутренний сигнал: у юзера уже есть активная заявка (гонка при создании)."""
+
+
+def _step_error(currency: str, amount: int) -> str | None:
+    """Проверка кратности шагу вывода. Возвращает текст ошибки или None если ок."""
+    step = WITHDRAW_STEP[currency]
+    if amount % step != 0:
+        return (f"Сумма должна быть кратна {step:,}. "
+                f"Например {(amount // step) * step:,} или "
+                f"{(amount // step + 1) * step:,}.").replace(",", " ")
+    return None
 
 
 async def create(tg_id: int, chat_id: int, currency: str, amount: int) -> tuple[int | None, str]:
     if amount < MIN_WITHDRAW[currency]:
         return None, f"Минимум для вывода: {MIN_WITHDRAW[currency]:,}".replace(",", " ")
+    step_err = _step_error(currency, amount)
+    if step_err:
+        return None, step_err
     if await db.is_banned(tg_id):
         return None, "Аккаунт заблокирован."
 
     # Замораживаем средства СРАЗУ: списываем с баланса при создании заявки, чтобы их
     # нельзя было потратить в казино, пока админ думает. Возврат — при отмене/отклонении.
-    async with db.pool().acquire() as conn:
-        async with conn.transaction():
-            bal = await conn.fetchval(
-                "SELECT COALESCE(amount,0) FROM rb_balances WHERE tg_id=$1 AND currency=$2",
-                tg_id, currency) or 0
-            if amount > bal:
-                return None, f"Недостаточно средств. Баланс: {bal:,}".replace(",", " ")
-            try:
-                wid = await conn.fetchval(
-                    "INSERT INTO rb_withdrawals (tg_id, chat_id, currency, amount) "
-                    "VALUES ($1,$2,$3,$4) RETURNING id", tg_id, chat_id, currency, amount)
-            except asyncpg.UniqueViolationError:
-                return None, "У тебя уже есть активная заявка. Измени её или отмени."
-            # замораживаем (списываем) под этот wid
-            await db.apply(conn, tg_id, currency, -amount,
-                           "wd_hold", f"wdhold:{wid}", wid)
+    # Один вывод за раз: если уже есть pending — не создаём новую.
+    # Проверяем заранее (UNIQUE-индекс rb_withdrawals_one_pending — страховка от гонки).
+    existing = await db.pool().fetchval(
+        "SELECT 1 FROM rb_withdrawals WHERE tg_id=$1 AND status='pending'", tg_id)
+    if existing:
+        return None, "У тебя уже есть активная заявка. Измени её или отмени."
+
+    try:
+        async with db.pool().acquire() as conn:
+            async with conn.transaction():
+                bal = await conn.fetchval(
+                    "SELECT COALESCE(amount,0) FROM rb_balances WHERE tg_id=$1 AND currency=$2",
+                    tg_id, currency) or 0
+                if amount > bal:
+                    return None, f"Недостаточно средств. Баланс: {bal:,}".replace(",", " ")
+                try:
+                    wid = await conn.fetchval(
+                        "INSERT INTO rb_withdrawals (tg_id, chat_id, currency, amount) "
+                        "VALUES ($1,$2,$3,$4) RETURNING id", tg_id, chat_id, currency, amount)
+                except asyncpg.UniqueViolationError:
+                    raise _AlreadyPending  # гонка — прерываем транзакцию корректно
+                # замораживаем (списываем) под этот wid
+                await db.apply(conn, tg_id, currency, -amount,
+                               "wd_hold", f"wdhold:{wid}", wid)
+    except _AlreadyPending:
+        return None, "У тебя уже есть активная заявка. Измени её или отмени."
     await db.audit(tg_id, "wd_create", {"id": wid, "amount": amount, "currency": currency})
     return wid, ""
 
@@ -54,6 +81,9 @@ async def change_amount(tg_id: int, amount: int) -> tuple[dict | None, str]:
                 return None, "Активной заявки нет."
             if amount < MIN_WITHDRAW[wd["currency"]]:
                 return None, f"Минимум: {MIN_WITHDRAW[wd['currency']]:,}".replace(",", " ")
+            step_err = _step_error(wd["currency"], amount)
+            if step_err:
+                return None, step_err
             # старая сумма уже заморожена. Доступно для новой = текущий баланс + старая заморозка.
             bal = await conn.fetchval(
                 "SELECT COALESCE(amount,0) FROM rb_balances WHERE tg_id=$1 AND currency=$2",

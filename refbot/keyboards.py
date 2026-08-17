@@ -463,9 +463,9 @@ async def promo_menu() -> InlineKeyboardMarkup:
 
 
 async def promo_kind() -> InlineKeyboardMarkup:
-    """Выбор валюты выдачи промокода."""
+    """Выбор валюты выдачи промокода. По одному эмодзи на кнопку (премиум)."""
     kb = InlineKeyboardBuilder()
-    await btn(kb, "🍄🪙 По курсу", "pkind:rate")
+    await btn(kb, "🔁 По курсу", "pkind:rate")
     await btn(kb, "🍄 Только грибы", "pkind:mushrooms")
     await btn(kb, "🪙 Только коины", "pkind:coins")
     kb.adjust(1)
