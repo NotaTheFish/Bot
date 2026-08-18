@@ -43,6 +43,20 @@ async def on_join(ev: ChatMemberUpdated, bot: Bot):
             f"Зачислится через 3 дня, если он останется в чате."
             .replace(",", " "))
 
+    # публичное приветствие реферала в чате, куда он зашёл
+    with contextlib.suppress(Exception):
+        invitee_link = f'<a href="tg://user?id={u.id}">{u.first_name}</a>'
+        # имя пригласившего: кликабельная ссылка если знаем, иначе «Грибной Гурман»
+        inv = await db.get_user(ref["inviter_id"])
+        if inv and inv["first_name"]:
+            inviter_txt = f'<a href="tg://user?id={ref["inviter_id"]}">{inv["first_name"]}</a>'
+        else:
+            inviter_txt = "Грибной Гурман"
+        await ui.send(
+            bot, ev.chat.id,
+            f"🎉 {invitee_link} залетел по приглашению от {inviter_txt}!\n"
+            f"Реферал засчитан. Добро пожаловать 🔥")
+
 
 @router.chat_member(ChatMemberUpdatedFilter(IS_MEMBER >> IS_NOT_MEMBER))
 async def on_leave(ev: ChatMemberUpdated, bot: Bot):
