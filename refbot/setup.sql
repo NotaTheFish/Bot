@@ -9,8 +9,13 @@
 -- ============================================================
 -- ---------- 1. Типы ----------
 DO $$ BEGIN
-    CREATE TYPE rb_currency AS ENUM ('mushrooms', 'coins');
+    CREATE TYPE rb_currency AS ENUM ('mushrooms', 'coins', 'shimcoins');
 EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+
+-- Для существующей базы (enum создан без shimcoins) — добавляем значение.
+-- ADD VALUE автокоммитится отдельным стейтментом (psql без глобальной транзакции),
+-- поэтому доступно для использования ниже.
+ALTER TYPE rb_currency ADD VALUE IF NOT EXISTS 'shimcoins';
 
 DO $$ BEGIN
     CREATE TYPE rb_ref_status AS ENUM ('hold', 'paid', 'void');

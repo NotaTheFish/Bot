@@ -75,7 +75,7 @@ async def balance(tg_id: int, currency: str) -> int:
 
 async def balances(tg_id: int) -> dict[str, int]:
     rows = await pool().fetch("SELECT currency, amount FROM rb_balances WHERE tg_id = $1", tg_id)
-    out = {"mushrooms": 0, "coins": 0}
+    out = {"mushrooms": 0, "coins": 0, "shimcoins": 0}
     for r in rows:
         out[r["currency"]] = r["amount"]
     return out

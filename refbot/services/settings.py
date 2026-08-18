@@ -22,6 +22,7 @@ log = logging.getLogger(__name__)
 EMOJI_SLOTS = {
     "mushrooms": ("Грибы", "🍄"),
     "coins":     ("Коины", "🪙"),
+    "shimcoins": ("Шимкоины", "💠"),
     "profile":   ("Заголовок профиля", "👤"),
     "balance":   ("Баланс", "💰"),
     "hold":      ("На удержании", "⏳"),
@@ -41,6 +42,7 @@ EMOJI_SLOTS = {
 LABEL_SLOTS = {
     "mushrooms": ("Название валюты 1", "Грибы"),
     "coins":     ("Название валюты 2", "Коины"),
+    "shimcoins": ("Название валюты 3", "Шимкоины"),
 }
 
 DEFAULT_PROFILE = """{e_profile} <b>Профиль</b>
@@ -49,6 +51,7 @@ ID: <code>{id}</code>
 {e_balance} <b>Баланс</b>
 {e_mushrooms} {l_mushrooms}: <b>{bal_m}</b>
 {e_coins} {l_coins}: <b>{bal_c}</b>
+{e_shimcoins} {l_shimcoins}: <b>{bal_s}</b>
 
 {e_hold} <b>На удержании</b>
 {e_mushrooms} {hold_m}   {e_coins} {hold_c}
@@ -61,7 +64,7 @@ ID: <code>{id}</code>
 {e_settings} Валюта: {e_cur} {l_cur}"""
 
 # все плейсхолдеры, которые доступны в шаблоне профиля
-PROFILE_KEYS = ["id", "bal_m", "bal_c", "hold_m", "hold_c", "paid", "hold", "lost",
+PROFILE_KEYS = ["id", "bal_m", "bal_c", "bal_s", "hold_m", "hold_c", "paid", "hold", "lost",
                 "chats", "e_cur", "l_cur"] + \
                [f"e_{s}" for s in EMOJI_SLOTS] + [f"l_{s}" for s in LABEL_SLOTS]
 

@@ -212,6 +212,7 @@ async def cb_profile(c: CallbackQuery):
         **sctx,
         "id": c.from_user.id,
         "bal_m": fmt(b["mushrooms"]), "bal_c": fmt(b["coins"]),
+        "bal_s": fmt(b["shimcoins"]),
         "hold_m": fmt(holds.get("mushrooms", 0)), "hold_c": fmt(holds.get("coins", 0)),
         "paid": row["paid"], "hold": row["hold"], "lost": row["lost"],
         "chats": chats_block,

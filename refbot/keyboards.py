@@ -66,8 +66,9 @@ async def adj_currency(tg_id: int, action: str) -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
     await btn(kb, "🍄 Грибы", f"a_adjcur:{action}:{tg_id}:mushrooms")
     await btn(kb, "🪙 Коины", f"a_adjcur:{action}:{tg_id}:coins")
+    await btn(kb, "💠 Шимкоины", f"a_adjcur:{action}:{tg_id}:shimcoins")
     await btn(kb, "Отмена", f"a_findback:{tg_id}", "back")
-    kb.adjust(2, 1)
+    kb.adjust(2, 1, 1)
     return kb.as_markup()
 
 
