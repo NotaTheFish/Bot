@@ -118,15 +118,11 @@ async def offer_currency(tg_id: int) -> InlineKeyboardMarkup:
 
 
 async def offers_my_list(offers: list) -> InlineKeyboardMarkup:
-    """Список акций игрока (покупка)."""
+    """Список акций игрока. Кнопки чистые: «💠 Предложение N» с гибкой нумерацией
+    (номер = позиция в текущем списке, не id). Детали — в тексте сообщения."""
     kb = InlineKeyboardBuilder()
-    for o in offers:
-        parts = []
-        if o["price_mush"]:
-            parts.append(f"🍄{o['price_mush']}💠/млн")
-        if o["price_coin"]:
-            parts.append(f"🪙{o['price_coin']}💠/100млн")
-        await btn(kb, " · ".join(parts) or f"Акция #{o['id']}", f"offb:{o['id']}")
+    for i, o in enumerate(offers):
+        await btn(kb, f"💠 Предложение {i + 1}", f"offb:{o['id']}")
     await btn(kb, "Назад", "menu", "back")
     kb.adjust(1)
     return kb.as_markup()

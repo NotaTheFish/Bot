@@ -300,9 +300,21 @@ async def cb_my_offers(c: CallbackQuery):
     live = [o for o in offers if await db.offer_is_live(o)]
     if not live:
         return await c.answer("У тебя пока нет доступных предложений.", show_alert=True)
-    await ui.edit(c.message,
-        "🏷 <b>Особые предложения</b>\n\nВыбери, что купить за Шимкоины:",
-        reply_markup=await kb.offers_my_list(live))
+    sx = await settings.ctx()
+    # текст с расшифровкой по номерам; кнопки — чистые «💠 Предложение N»
+    lines = ["🏷 <b>Особые предложения</b>\n"]
+    nums = "1️⃣2️⃣3️⃣4️⃣5️⃣6️⃣7️⃣8️⃣9️⃣🔟"
+    for i, o in enumerate(live):
+        badge = nums[i] if i < len(nums) else f"{i+1}."
+        parts = []
+        if o["price_mush"]:
+            parts.append(f"{sx['e_mushrooms']} {o['price_mush']}💠/млн")
+        if o["price_coin"]:
+            parts.append(f"{sx['e_coins']} {o['price_coin']}💠/100млн")
+        lines.append(f"{badge} {' · '.join(parts)}")
+    lines.append("\nВыбери предложение кнопкой ниже:")
+    await ui.edit(c.message, "\n".join(lines),
+                  reply_markup=await kb.offers_my_list(live))
     await c.answer()
 
 
