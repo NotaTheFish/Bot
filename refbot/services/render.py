@@ -172,6 +172,12 @@ async def _safe(primary, fallback, retries: int = 2):
             # исчерпали попытки — пусть флуд всплывёт, его словит глобальный обработчик
             raise
         except TelegramBadRequest as e:
+            msg = str(e).lower()
+            # «message is not modified» — контент идентичен предыдущему (повторное
+            # нажатие той же кнопки). Это НЕ отклонение премиум-entities! Фолбэк на
+            # обычный HTML здесь сбрасывал бы премиум-эмодзи. Просто выходим тихо.
+            if "not modified" in msg:
+                return None
             # entities не приняты (нет премиума / чужой набор) — честный фолбэк
             log.warning("премиум-эмодзи отклонены (%s), шлю обычным HTML", e)
             try:
@@ -179,6 +185,11 @@ async def _safe(primary, fallback, retries: int = 2):
             except TelegramRetryAfter as e2:
                 await asyncio.sleep(e2.retry_after + 1)
                 return await fallback()
+            except TelegramBadRequest as e3:
+                # фолбэк тоже упал на «not modified» — тоже тихо выходим
+                if "not modified" in str(e3).lower():
+                    return None
+                raise
 
 
 async def send(bot, chat_id: int, html_text: str, emoji_map=None, apply_free=True, **kw):
