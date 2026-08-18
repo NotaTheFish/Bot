@@ -64,6 +64,15 @@ async def _payout_chat() -> int | None:
         "SELECT chat_id FROM rb_chats ORDER BY created_at, chat_id LIMIT 1")
 
 
+async def _has_live_offers(uid: int) -> bool:
+    """Есть ли у игрока хотя бы одна действующая акция (для кнопки в меню)."""
+    offers = await db.offers_for_user(uid)
+    for o in offers:
+        if await db.offer_is_live(o):
+            return True
+    return False
+
+
 async def guard(event) -> bool:
     """Единая точка проверки бана. Забаненный не может вообще ничего."""
     uid = event.from_user.id
@@ -126,7 +135,8 @@ async def start_plain(msg: Message, state: FSMContext):
         f"если реферал остался в чате.\n\n"
         f"Текущая валюта: {sx['e_' + u['currency']]} <b>{sx['l_' + u['currency']]}</b>",
         reply_markup=await kb.main_menu(u["currency"], is_adm,
-                                        show_casino=await casino_svc.visible(msg.from_user.id)))
+                                        show_casino=await casino_svc.visible(msg.from_user.id),
+                                        show_offers=await _has_live_offers(msg.from_user.id)))
 
 
 @router.message(F.text == "☰ Меню")
@@ -139,7 +149,8 @@ async def reply_menu_btn(msg: Message, state: FSMContext):
     is_adm = await _is_admin(msg.from_user.id)
     await ui.answer(msg, "🏠 <b>Главное меню</b>",
                     reply_markup=await kb.main_menu(u["currency"], is_adm,
-                                        show_casino=await casino_svc.visible(msg.from_user.id)))
+                                        show_casino=await casino_svc.visible(msg.from_user.id),
+                                        show_offers=await _has_live_offers(msg.from_user.id)))
 
 
 @router.message(Command("меню", "menu"))
@@ -154,7 +165,8 @@ async def show_reply_kb(msg: Message, state: FSMContext):
         await msg.answer("Панель управления снизу 👇", reply_markup=kb.menu_reply())  # noqa: ui
     await ui.answer(msg, "🏠 <b>Главное меню</b>",
                     reply_markup=await kb.main_menu(u["currency"], is_adm,
-                                        show_casino=await casino_svc.visible(msg.from_user.id)))
+                                        show_casino=await casino_svc.visible(msg.from_user.id),
+                                        show_offers=await _has_live_offers(msg.from_user.id)))
 
 
 @router.callback_query(F.data == "menu")
@@ -166,7 +178,8 @@ async def cb_menu(c: CallbackQuery, state: FSMContext):
     is_adm = await _is_admin(c.from_user.id)
     await ui.edit(c.message, "🏠 <b>Главное меню</b>",
                               reply_markup=await kb.main_menu(u["currency"], is_adm,
-                                        show_casino=await casino_svc.visible(c.from_user.id)))
+                                        show_casino=await casino_svc.visible(c.from_user.id),
+                                        show_offers=await _has_live_offers(c.from_user.id)))
     await c.answer()
 
 
@@ -238,7 +251,8 @@ async def cb_toggle(c: CallbackQuery):
     await db.pool().execute("UPDATE rb_users SET currency=$1 WHERE tg_id=$2", new, c.from_user.id)
     is_adm = await _is_admin(c.from_user.id)
     await c.message.edit_reply_markup(reply_markup=await kb.main_menu(new, is_adm,
-        show_casino=await casino_svc.visible(c.from_user.id)))
+        show_casino=await casino_svc.visible(c.from_user.id),
+                                        show_offers=await _has_live_offers(c.from_user.id)))
     await c.answer(
         f"Теперь получаешь: {await settings.label(new)}\n"
         f"Старый баланс никуда не делся. Уже висящие холды остаются в прежней валюте.",

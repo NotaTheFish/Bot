@@ -7,18 +7,25 @@ from services.ui import btn
 
 
 async def main_menu(currency: str, is_admin: bool,
-                    show_casino: bool = False) -> InlineKeyboardMarkup:
+                    show_casino: bool = False,
+                    show_offers: bool = False) -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
     await btn(kb, "Профиль", "profile", "profile")
     await btn(kb, "Моя ссылка", "mylink", "link")
     await btn(kb, f"Валюта: {await settings.label(currency)}", "toggle_cur", currency)
     await btn(kb, "Мои рефералы", "myrefs", "refs")
     await btn(kb, "Вывод", "wd_menu", "withdraw")
+    rows = [2, 1, 2]
+    if show_offers:
+        await btn(kb, "🏷 Особые предложения", "off_my")
+        rows.append(1)
     if show_casino:
         await btn(kb, "🎰 Казино", "casino")
+        rows.append(1)
     if is_admin:
         await btn(kb, "Админка", "admin", "admin")
-    kb.adjust(2, 1, 2, 1, 1)
+        rows.append(1)
+    kb.adjust(*rows)
     return kb.as_markup()
 
 
@@ -107,6 +114,53 @@ async def offer_currency(tg_id: int) -> InlineKeyboardMarkup:
     await btn(kb, "Обе валюты", f"off_cur:{tg_id}:both")
     await btn(kb, "Отмена", "admin", "back")
     kb.adjust(2, 1, 1)
+    return kb.as_markup()
+
+
+async def offers_my_list(offers: list) -> InlineKeyboardMarkup:
+    """Список акций игрока (покупка)."""
+    kb = InlineKeyboardBuilder()
+    for o in offers:
+        parts = []
+        if o["price_mush"]:
+            parts.append(f"🍄{o['price_mush']}💠/млн")
+        if o["price_coin"]:
+            parts.append(f"🪙{o['price_coin']}💠/100млн")
+        await btn(kb, " · ".join(parts) or f"Акция #{o['id']}", f"offb:{o['id']}")
+    await btn(kb, "Назад", "menu", "back")
+    kb.adjust(1)
+    return kb.as_markup()
+
+
+async def offer_buy_currency(oid: int) -> InlineKeyboardMarkup:
+    kb = InlineKeyboardBuilder()
+    await btn(kb, "🍄 Грибы", f"offbc:{oid}:mushrooms")
+    await btn(kb, "🪙 Коины", f"offbc:{oid}:coins")
+    await btn(kb, "Назад", "off_my", "back")
+    kb.adjust(2, 1)
+    return kb.as_markup()
+
+
+async def offer_buy_cancel() -> InlineKeyboardMarkup:
+    kb = InlineKeyboardBuilder()
+    await btn(kb, "Отмена", "off_my", "back")
+    kb.adjust(1)
+    return kb.as_markup()
+
+
+async def offer_buy_confirm() -> InlineKeyboardMarkup:
+    kb = InlineKeyboardBuilder()
+    await btn(kb, "✅ Купить", "offbuy_go")
+    await btn(kb, "Отмена", "off_my", "back")
+    kb.adjust(1)
+    return kb.as_markup()
+
+
+async def offers_back_user() -> InlineKeyboardMarkup:
+    kb = InlineKeyboardBuilder()
+    await btn(kb, "🏷 Ещё предложения", "off_my")
+    await btn(kb, "Меню", "menu", "back")
+    kb.adjust(1)
     return kb.as_markup()
 
 

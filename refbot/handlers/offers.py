@@ -283,3 +283,227 @@ async def cb_offer_del(c: CallbackQuery):
                              reply_markup=await kb.offers_back())
     await ui.edit(c.message, "🏷 <b>Акции</b>\n\nВыбери:",
                   reply_markup=await kb.offers_list(offers))
+
+
+# ==================== ПОКУПКА ИГРОКОМ ====================
+class OfferBuy(StatesGroup):
+    amount = State()
+
+
+MUSH_UNIT = 1_000_000       # цена задаётся за 1 млн грибов
+COIN_UNIT = 100_000_000     # цена задаётся за 100 млн коинов
+
+
+@router.callback_query(F.data == "off_my")
+async def cb_my_offers(c: CallbackQuery):
+    offers = await db.offers_for_user(c.from_user.id)
+    live = [o for o in offers if await db.offer_is_live(o)]
+    if not live:
+        return await c.answer("У тебя пока нет доступных предложений.", show_alert=True)
+    await ui.edit(c.message,
+        "🏷 <b>Особые предложения</b>\n\nВыбери, что купить за Шимкоины:",
+        reply_markup=await kb.offers_my_list(live))
+    await c.answer()
+
+
+@router.callback_query(F.data.startswith("offb:"))
+async def cb_offer_pick(c: CallbackQuery, state: FSMContext):
+    oid = int(c.data.split(":")[1])
+    o = await db.offer_get(oid)
+    if not o or not await db.offer_is_live(o):
+        return await c.answer("Предложение больше не действует.", show_alert=True)
+    has_m = o["price_mush"] is not None
+    has_c = o["price_coin"] is not None
+    # если обе валюты — спросим какую; если одна — сразу к вводу
+    if has_m and has_c:
+        await ui.edit(c.message, "Что покупаешь?",
+                      reply_markup=await kb.offer_buy_currency(oid))
+        return await c.answer()
+    cur = "mushrooms" if has_m else "coins"
+    await _ask_buy_amount(c, state, oid, cur)
+
+
+@router.callback_query(F.data.startswith("offbc:"))
+async def cb_offer_pick_currency(c: CallbackQuery, state: FSMContext):
+    _, oid_s, cur = c.data.split(":")
+    await _ask_buy_amount(c, state, int(oid_s), cur)
+
+
+async def _ask_buy_amount(c, state: FSMContext, oid: int, cur: str):
+    o = await db.offer_get(oid)
+    if not o or not await db.offer_is_live(o):
+        return await c.answer("Предложение больше не действует.", show_alert=True)
+    price = o["price_mush"] if cur == "mushrooms" else o["price_coin"]
+    unit = MUSH_UNIT if cur == "mushrooms" else COIN_UNIT
+    ename = "🍄 грибы" if cur == "mushrooms" else "🪙 коины"
+    unit_txt = "1 млн" if cur == "mushrooms" else "100 млн"
+    bal = await db.balances(c.from_user.id)
+    await state.set_state(OfferBuy.amount)
+    await state.update_data(buy={"oid": oid, "cur": cur})
+    await ui.edit(c.message,
+        f"🏷 Покупка: <b>{ename}</b>\n"
+        f"Курс: <b>{price}</b> Шимк. за {unit_txt}\n"
+        f"У тебя: <b>{fmt(bal['shimcoins'])}</b> 💠\n\n"
+        f"Сколько хочешь? Варианты ввода:\n"
+        f"• <code>5м</code> — купить 5 млн {('грибов' if cur=='mushrooms' else 'коинов')}\n"
+        f"• <code>5$</code> — потратить 5 Шимкоинов (получишь по курсу)",
+        reply_markup=await kb.offer_buy_cancel())
+    await c.answer()
+
+
+def _compute_deal(price: int, unit: int, cur: str, text: str):
+    """
+    По вводу вернуть (amount_currency, cost_shimcoins) или (None, ошибка-строка).
+    '5м' -> купить 5млн валюты, стоимость = round(5млн/unit*price).
+    '5$' -> потратить 5 Шимкоинов, получить = round(5/price*unit) валюты.
+    Всегда пропорционально (дробно): на 6 Шимк при курсе 5/млн -> 1.2млн.
+    """
+    t = (text or "").strip().lower().replace(" ", "")
+    if not t:
+        return None, "Пусто. Введи число."
+    # режим Шимкоинов: заканчивается на $ или шимк
+    if t.endswith("$") or t.endswith("шимк") or t.endswith("ш"):
+        num = t.rstrip("$шимк")
+        val = parse_amount(num)
+        if val is None or val <= 0:
+            return None, "Не понял количество Шимкоинов."
+        spend = val
+        # получаем валюты пропорционально: (spend / price) * unit
+        got = int(spend / price * unit)
+        if got <= 0:
+            return None, "Слишком мало для покупки хоть чего-то."
+        return got, spend
+    # режим количества валюты: '5м', '100к', '1000000'
+    amt = parse_amount(t)
+    if amt is None or amt <= 0:
+        return None, "Не понял количество."
+    # стоимость в Шимкоинах пропорционально: (amt / unit) * price, округляем вверх
+    import math
+    cost = math.ceil(amt / unit * price)
+    return amt, cost
+
+
+@router.message(OfferBuy.amount)
+async def offer_buy_input(msg: Message, state: FSMContext):
+    data = await state.get_data()
+    buy = data.get("buy")
+    if not buy:
+        return await state.clear()
+    o = await db.offer_get(buy["oid"])
+    if not o or not await db.offer_is_live(o):
+        await state.clear()
+        return await ui.answer(msg, "Предложение больше не действует.")
+    cur = buy["cur"]
+    price = o["price_mush"] if cur == "mushrooms" else o["price_coin"]
+    unit = MUSH_UNIT if cur == "mushrooms" else COIN_UNIT
+    amount, cost_or_err = _compute_deal(price, unit, cur, msg.text or "")
+    if amount is None:
+        return await ui.answer(msg, cost_or_err)
+    cost = cost_or_err
+
+    # проверка лимита акции
+    sold = o["sold_mush"] if cur == "mushrooms" else o["sold_coin"]
+    limit = o["limit_mush"] if cur == "mushrooms" else o["limit_coin"]
+    if limit is not None and sold + amount > limit:
+        left = limit - sold
+        return await ui.answer(msg,
+            f"По этой акции осталось только <b>{fmt(left)}</b>. "
+            f"Введи меньше.")
+
+    # проверка баланса Шимкоинов
+    bal = await db.balances(msg.from_user.id)
+    if cost > bal["shimcoins"]:
+        return await ui.answer(msg,
+            f"Не хватает Шимкоинов. Нужно <b>{fmt(cost)}</b> 💠, "
+            f"у тебя <b>{fmt(bal['shimcoins'])}</b> 💠.")
+
+    # предпросмотр с подтверждением
+    await state.update_data(buy={**buy, "amount": amount, "cost": cost})
+    ename = "🍄 грибов" if cur == "mushrooms" else "🪙 коинов"
+    await ui.answer(msg,
+        f"🧾 <b>Проверь покупку</b>\n\n"
+        f"Получишь: <b>{fmt(amount)}</b> {ename}\n"
+        f"Заплатишь: <b>{fmt(cost)}</b> 💠 Шимкоинов\n"
+        f"Курс: {price} Шимк. за {'1млн' if cur=='mushrooms' else '100млн'}\n\n"
+        f"Уверен?",
+        reply_markup=await kb.offer_buy_confirm())
+
+
+@router.callback_query(F.data == "offbuy_go")
+async def cb_offer_buy_go(c: CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    buy = data.get("buy")
+    if not buy or "amount" not in buy:
+        await state.clear()
+        return await c.answer("Покупка устарела, начни заново.", show_alert=True)
+    oid, cur, amount, cost = buy["oid"], buy["cur"], buy["amount"], buy["cost"]
+    uid = c.from_user.id
+    await state.clear()
+
+    import time as _t
+    idem = f"offer:{oid}:{uid}:{int(_t.time()*1000)}"
+    col_sold = "sold_mush" if cur == "mushrooms" else "sold_coin"
+    col_limit = "limit_mush" if cur == "mushrooms" else "limit_coin"
+
+    try:
+        async with db.pool().acquire() as conn:
+            async with conn.transaction():
+                # перечитываем акцию под блокировкой
+                o = await conn.fetchrow("SELECT * FROM rb_offers WHERE id=$1 FOR UPDATE", oid)
+                if not o or not o["active"]:
+                    raise _OfferGone
+                if o["expires_at"] is not None:
+                    exp = await conn.fetchval("SELECT $1::timestamptz <= now()", o["expires_at"])
+                    if exp:
+                        raise _OfferGone
+                sold = o[col_sold]
+                limit = o[col_limit]
+                if limit is not None and sold + amount > limit:
+                    raise _LimitHit
+                # списываем Шимкоины (не в минус)
+                try:
+                    await db.apply(conn, uid, "shimcoins", -cost, "offer_buy", idem + ":pay")
+                except Exception:
+                    raise _NoShim
+                # начисляем валюту
+                await db.apply(conn, uid, cur, amount, "offer_get", idem + ":get")
+                # двигаем счётчик продаж
+                await conn.execute(
+                    f"UPDATE rb_offers SET {col_sold} = {col_sold} + $1 WHERE id=$2", amount, oid)
+    except _OfferGone:
+        return await c.answer("Предложение больше не действует.", show_alert=True)
+    except _LimitHit:
+        return await c.answer("Не хватило лимита — кто-то успел раньше.", show_alert=True)
+    except _NoShim:
+        return await c.answer("Не хватает Шимкоинов.", show_alert=True)
+
+    sx = await settings.ctx()
+    ename = sx["e_mushrooms"] if cur == "mushrooms" else sx["e_coins"]
+    await ui.edit(c.message,
+        f"✅ <b>Куплено!</b>\n\n"
+        f"+{fmt(amount)} {ename}\n"
+        f"−{fmt(cost)} 💠 Шимкоинов",
+        reply_markup=await kb.offers_back_user())
+    await c.answer("Готово!")
+
+    # уведомление админу-создателю акции
+    o = await db.offer_get(oid)
+    admin_id = o.get("created_by") if o else None
+    if admin_id:
+        with contextlib.suppress(Exception):
+            await ui.send(c.bot, admin_id,
+                f"🛒 Покупка по акции #{oid}\n"
+                f"Игрок <code>{uid}</code> купил {fmt(amount)} "
+                f"{'грибов' if cur=='mushrooms' else 'коинов'} за {fmt(cost)} 💠.")
+
+
+class _OfferGone(Exception):
+    pass
+
+
+class _LimitHit(Exception):
+    pass
+
+
+class _NoShim(Exception):
+    pass
