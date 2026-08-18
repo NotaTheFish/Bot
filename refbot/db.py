@@ -120,6 +120,54 @@ async def active_roulette_chats() -> list[dict]:
     return [dict(r) for r in rows]
 
 
+# ======================= ОСОБЫЕ ПРЕДЛОЖЕНИЯ (акции) =======================
+async def offer_create(tg_id: int, price_mush: int | None, price_coin: int | None,
+                       limit_mush: int | None, limit_coin: int | None,
+                       expires_at, created_by: int) -> int:
+    return await pool().fetchval(
+        "INSERT INTO rb_offers (tg_id, price_mush, price_coin, limit_mush, limit_coin, "
+        "expires_at, created_by) VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id",
+        tg_id, price_mush, price_coin, limit_mush, limit_coin, expires_at, created_by)
+
+
+async def offer_get(offer_id: int) -> dict | None:
+    r = await pool().fetchrow("SELECT * FROM rb_offers WHERE id=$1", offer_id)
+    return dict(r) if r else None
+
+
+async def offers_for_user(tg_id: int) -> list[dict]:
+    """Активные, не истёкшие акции игрока."""
+    rows = await pool().fetch(
+        "SELECT * FROM rb_offers WHERE tg_id=$1 AND active=TRUE "
+        "AND (expires_at IS NULL OR expires_at > now()) ORDER BY created_at DESC", tg_id)
+    return [dict(r) for r in rows]
+
+
+async def offers_all() -> list[dict]:
+    """Все акции (для админа) — активные и нет."""
+    rows = await pool().fetch("SELECT * FROM rb_offers ORDER BY created_at DESC LIMIT 100")
+    return [dict(r) for r in rows]
+
+
+async def offer_delete(offer_id: int) -> None:
+    await pool().execute("DELETE FROM rb_offers WHERE id=$1", offer_id)
+
+
+async def offer_is_live(o: dict) -> bool:
+    """Акция ещё действует (активна, не истекла, лимит не выбран полностью)?"""
+    import datetime as _dt
+    if not o["active"]:
+        return False
+    if o["expires_at"] is not None and o["expires_at"] <= _dt.datetime.now(_dt.timezone.utc):
+        return False
+    # если оба лимита заданы и оба выбраны — мертва
+    mush_left = o["price_mush"] is not None and (
+        o["limit_mush"] is None or o["sold_mush"] < o["limit_mush"])
+    coin_left = o["price_coin"] is not None and (
+        o["limit_coin"] is None or o["sold_coin"] < o["limit_coin"])
+    return mush_left or coin_left
+
+
 async def use_free_spin(conn, tg_id: int) -> bool:
     """
     Списать один доп-спин, если есть. Возвращает True если списан (можно крутить
@@ -506,6 +554,7 @@ EXPECTED_TABLES = [
     "rb_contest_chats", "rb_week_msgs", "rb_week_draws",
     "rb_giveaways", "rb_giveaway_chats", "rb_giveaway_members",
     "rb_case_opens", "rb_promo", "rb_promo_acts",
+    "rb_offers",
 ]
 
 

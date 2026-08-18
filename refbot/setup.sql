@@ -209,6 +209,26 @@ CREATE TABLE IF NOT EXISTS rb_promo_acts (
     PRIMARY KEY (promo_id, tg_id)
 );
 
+-- Особые предложения (акции обмена Шимкоинов на грибы/коины). Адресные —
+-- создаются для конкретного игрока. Цена динамическая, задаётся админом.
+CREATE TABLE IF NOT EXISTS rb_offers (
+    id              BIGSERIAL PRIMARY KEY,
+    tg_id           BIGINT NOT NULL,          -- кому адресована акция
+    -- цена в Шимкоинах: за 1млн грибов и/или за 100млн коинов. NULL = валюта недоступна.
+    price_mush      BIGINT,                    -- Шимкоинов за 1_000_000 грибов
+    price_coin      BIGINT,                    -- Шимкоинов за 100_000_000 коинов
+    -- лимит на ВСЮ акцию (сколько всего грибов/коинов можно купить). NULL = без лимита.
+    limit_mush      BIGINT,
+    limit_coin      BIGINT,
+    sold_mush       BIGINT NOT NULL DEFAULT 0, -- уже куплено грибов
+    sold_coin       BIGINT NOT NULL DEFAULT 0, -- уже куплено коинов
+    expires_at      TIMESTAMPTZ,               -- срок; NULL = бессрочно
+    active          BOOLEAN NOT NULL DEFAULT TRUE,  -- админ может выключить/удалить
+    created_by      BIGINT,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS rb_offers_user_idx ON rb_offers (tg_id) WHERE active = TRUE;
+
 
 -- ---------- 3. Индексы (без них защита от накрутки не работает) ----------
 CREATE INDEX        IF NOT EXISTS rb_ledger_user_idx      ON rb_ledger (tg_id, created_at DESC);
@@ -416,7 +436,7 @@ ALTER TABLE rb_giveaways ADD COLUMN IF NOT EXISTS finish_photo TEXT;
 
 -- ---------- 5. Проверка ----------
 SELECT
-  (SELECT count(*) FROM pg_tables WHERE tablename ~ '^rb_')                   AS tables_expect_24,
+  (SELECT count(*) FROM pg_tables WHERE tablename ~ '^rb_')                   AS tables_expect_25,
   (SELECT count(*) FROM pg_type   WHERE typname ~ '^rb_' AND typtype = 'e')   AS enums_expect_3,
   (SELECT count(*) FROM pg_indexes WHERE indexname IN
      ('rb_referrals_alive_idx','rb_withdrawals_one_pending','rb_spins_daily',

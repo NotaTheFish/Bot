@@ -52,12 +52,13 @@ async def find_card(tg_id: int, banned: bool, manage: bool = True) -> InlineKeyb
     if manage:
         await btn(kb, "➕ Зачислить", f"a_give:{tg_id}")
         await btn(kb, "➖ Изъять", f"a_take:{tg_id}")
+        await btn(kb, "🏷 Предложить акцию", f"off_new:{tg_id}")
         if banned:
             await btn(kb, "😡 бан", f"a_toggleban:{tg_id}")
         else:
             await btn(kb, "🥳 бан", f"a_toggleban:{tg_id}")
     await btn(kb, "Админка", "admin", "back")
-    kb.adjust(2, 1, 1)
+    kb.adjust(2, 1, 1, 1)
     return kb.as_markup()
 
 
@@ -98,6 +99,46 @@ async def admin_wd_card(wid: int, version: int, tg_id: int | None = None,
     return kb.as_markup()
 
 
+async def offer_currency(tg_id: int) -> InlineKeyboardMarkup:
+    """Выбор валюты для новой акции."""
+    kb = InlineKeyboardBuilder()
+    await btn(kb, "🍄 Грибы", f"off_cur:{tg_id}:mush")
+    await btn(kb, "🪙 Коины", f"off_cur:{tg_id}:coin")
+    await btn(kb, "Обе валюты", f"off_cur:{tg_id}:both")
+    await btn(kb, "Отмена", "admin", "back")
+    kb.adjust(2, 1, 1)
+    return kb.as_markup()
+
+
+async def offers_back() -> InlineKeyboardMarkup:
+    kb = InlineKeyboardBuilder()
+    await btn(kb, "🏷 Акции", "off_menu")
+    await btn(kb, "Админка", "admin", "back")
+    kb.adjust(1)
+    return kb.as_markup()
+
+
+async def offers_list(offers: list) -> InlineKeyboardMarkup:
+    """Список акций для админа."""
+    kb = InlineKeyboardBuilder()
+    for o in offers:
+        mark = "🟢" if o["active"] else "🔴"
+        await btn(kb, f"{mark} #{o['id']} · {o['tg_id']}", f"off_view:{o['id']}")
+    await btn(kb, "Админка", "admin", "back")
+    n = len(offers)
+    rows = [1] * n + [1]
+    kb.adjust(*rows)
+    return kb.as_markup()
+
+
+async def offer_card(oid: int) -> InlineKeyboardMarkup:
+    kb = InlineKeyboardBuilder()
+    await btn(kb, "🗑 Удалить акцию", f"off_del:{oid}")
+    await btn(kb, "Назад", "off_menu", "back")
+    kb.adjust(1)
+    return kb.as_markup()
+
+
 async def confirm_kbcast() -> InlineKeyboardMarkup:
     """Подтверждение массовой рассылки reply-клавиатуры."""
     kb = InlineKeyboardBuilder()
@@ -127,9 +168,10 @@ async def admin_menu(manage: bool = True) -> InlineKeyboardMarkup:
         await btn(kb, "🎁 Розыгрыши", "gw_menu")
         await btn(kb, "🎰 Казино (доступ)", "casino_admin")
         await btn(kb, "🎟 Промокоды", "promo_menu")
+        await btn(kb, "🏷 Акции", "off_menu")
         await btn(kb, "🎨 Кастомизация", "a_skin")
         await btn(kb, "📢 Разослать меню", "a_kbcast")
-        n_main += 5
+        n_main += 6
     await btn(kb, "Назад", "menu", "back")
     # все кнопки по 2 в ряд; «Назад» всегда одна в своём ряду.
     rows = [2] * (n_main // 2)
