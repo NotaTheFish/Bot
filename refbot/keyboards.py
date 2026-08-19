@@ -16,6 +16,8 @@ async def main_menu(currency: str, is_admin: bool,
     await btn(kb, "Мои рефералы", "myrefs", "refs")
     await btn(kb, "Вывод", "wd_menu", "withdraw")
     rows = [2, 1, 2]
+    await btn(kb, "🏦 Банк", "bank")
+    rows.append(1)
     if show_offers:
         await btn(kb, "🏷 Особые предложения", "off_my")
         rows.append(1)
@@ -219,9 +221,10 @@ async def admin_menu(manage: bool = True) -> InlineKeyboardMarkup:
         await btn(kb, "🎰 Казино (доступ)", "casino_admin")
         await btn(kb, "🎟 Промокоды", "promo_menu")
         await btn(kb, "🏷 Акции", "off_menu")
+        await btn(kb, "🏦 Управление банком", "bank_admin")
         await btn(kb, "🎨 Кастомизация", "a_skin")
         await btn(kb, "📢 Разослать меню", "a_kbcast")
-        n_main += 6
+        n_main += 7
     await btn(kb, "Назад", "menu", "back")
     # все кнопки по 2 в ряд; «Назад» всегда одна в своём ряду.
     rows = [2] * (n_main // 2)

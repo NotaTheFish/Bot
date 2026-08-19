@@ -84,19 +84,94 @@ def _seconds_until_random_time_today_or_tomorrow(now: datetime) -> float:
     return (target - now).total_seconds()
 
 
+# ---------- хранение расписания в БД (переживает рестарты) ----------
+# rb_settings: boost.day='YYYY-MM-DD', boost.at='HH:MM' (МСК), boost.done='0'|'1'
+async def _today_str() -> str:
+    return datetime.now(_TZ).strftime("%Y-%m-%d")
+
+
+async def _plan_today(now: datetime) -> datetime:
+    """
+    Назначить время акции на СЕГОДНЯ (случайное), записать в БД, уведомить админа.
+    Возвращает datetime запланированного старта (МСК).
+    """
+    from services import settings
+    day_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    max_sec = 24 * 3600 - BOOST_DURATION_MIN * 60 - 1
+    rnd = random.randint(0, max_sec)
+    target = day_start + timedelta(seconds=rnd)
+    await settings.set("boost.day", now.strftime("%Y-%m-%d"))
+    await settings.set("boost.at", target.strftime("%H:%M"))
+    await settings.set("boost.done", "0")
+    return target
+
+
+async def _notify_admins_schedule(bot, target: datetime):
+    """Утреннее уведомление админам: во сколько сегодня акция."""
+    hhmm = target.strftime("%H:%M")
+    for admin_id in SUPER_ADMINS:
+        with contextlib.suppress(Exception):
+            await ui.send(bot, admin_id,
+                f"📅 Сегодня акция ×5 будет в <b>{hhmm}</b> МСК "
+                f"(длительность {BOOST_DURATION_MIN} мин).\n"
+                f"Это только для тебя — в чатах объявится громко при старте.")
+
+
 async def worker(bot):
-    """Вечный воркер: раз в сутки запускает акцию в случайное время МСК."""
-    # небольшой стартовый разброс, чтобы не совпасть с рестартами
-    await asyncio.sleep(random.uniform(5, 30))
+    """
+    Вечный воркер акции ×5. Раз в сутки:
+      - в 00:01 МСК назначает случайное время акции, пишет админу, ждёт и проводит;
+      - переживает рестарты: расписание в БД. При старте бота — восстанавливает.
+    """
+    from services import settings
+    await asyncio.sleep(random.uniform(5, 20))
     while True:
         try:
             now = datetime.now(_TZ)
-            wait = _seconds_until_random_time_today_or_tomorrow(now)
-            log.info("следующая акция x5 через %.0f мин", wait / 60)
-            await asyncio.sleep(wait)
-            await _run_one_event(bot)
+            today = now.strftime("%Y-%m-%d")
+            plan_day = await settings.get("boost.day", "")
+            plan_at = await settings.get("boost.at", "")
+            done = await settings.get("boost.done", "0")
+
+            # есть ли валидное расписание на сегодня?
+            if plan_day == today and plan_at:
+                hh, mm = map(int, plan_at.split(":"))
+                target = now.replace(hour=hh, minute=mm, second=0, microsecond=0)
+                if done == "1":
+                    # акция сегодня уже была — ждём до 00:01 следующего дня
+                    await _sleep_until_next_plan(now)
+                    continue
+                if now < target:
+                    # ещё не время — ждём до старта
+                    wait = (target - now).total_seconds()
+                    log.info("акция x5 сегодня в %s МСК, через %.0f мин", plan_at, wait / 60)
+                    await asyncio.sleep(wait)
+                    await _run_one_event(bot)
+                    await settings.set("boost.done", "1")
+                    continue
+                else:
+                    # ВРЕМЯ УЖЕ ПРОШЛО, а акция не проведена (бот падал) — проводим СРАЗУ
+                    log.info("акция x5 пропущена (рестарт), провожу немедленно")
+                    await _run_one_event(bot)
+                    await settings.set("boost.done", "1")
+                    continue
+
+            # расписания на сегодня нет (новый день или первый запуск) — назначаем
+            target = await _plan_today(now)
+            await _notify_admins_schedule(bot, target)
+            # если назначенное время уже прошло к моменту назначения (маловероятно,
+            # т.к. рандом по всем суткам) — проведём сразу
+            if now >= target:
+                await _run_one_event(bot)
+                await settings.set("boost.done", "1")
         except asyncio.CancelledError:
             raise
         except Exception:
-            log.exception("ошибка в акции x5, продолжаю через час")
-            await asyncio.sleep(3600)
+            log.exception("ошибка в акции x5, продолжаю через 10 мин")
+            await asyncio.sleep(600)
+
+
+async def _sleep_until_next_plan(now: datetime):
+    """Спать до 00:01 следующего дня (когда назначим новую акцию)."""
+    tomorrow = (now + timedelta(days=1)).replace(hour=0, minute=1, second=0, microsecond=0)
+    await asyncio.sleep(max(30, (tomorrow - now).total_seconds()))

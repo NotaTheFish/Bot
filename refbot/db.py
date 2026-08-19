@@ -555,6 +555,7 @@ EXPECTED_TABLES = [
     "rb_giveaways", "rb_giveaway_chats", "rb_giveaway_members",
     "rb_case_opens", "rb_promo", "rb_promo_acts",
     "rb_offers",
+    "rb_bank_exch",
 ]
 
 

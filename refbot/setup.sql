@@ -229,6 +229,15 @@ CREATE TABLE IF NOT EXISTS rb_offers (
 );
 CREATE INDEX IF NOT EXISTS rb_offers_user_idx ON rb_offers (tg_id) WHERE active = TRUE;
 
+-- Счётчик дневных обменов грибы<->коины в банке (лимит 2/день, сброс в полночь МСК).
+-- exch_day — дата по МСК (YYYY-MM-DD строкой).
+CREATE TABLE IF NOT EXISTS rb_bank_exch (
+    tg_id     BIGINT NOT NULL,
+    exch_day  TEXT   NOT NULL,
+    cnt       INT    NOT NULL DEFAULT 0,
+    PRIMARY KEY (tg_id, exch_day)
+);
+
 
 -- ---------- 3. Индексы (без них защита от накрутки не работает) ----------
 CREATE INDEX        IF NOT EXISTS rb_ledger_user_idx      ON rb_ledger (tg_id, created_at DESC);
@@ -436,7 +445,7 @@ ALTER TABLE rb_giveaways ADD COLUMN IF NOT EXISTS finish_photo TEXT;
 
 -- ---------- 5. Проверка ----------
 SELECT
-  (SELECT count(*) FROM pg_tables WHERE tablename ~ '^rb_')                   AS tables_expect_25,
+  (SELECT count(*) FROM pg_tables WHERE tablename ~ '^rb_')                   AS tables_expect_26,
   (SELECT count(*) FROM pg_type   WHERE typname ~ '^rb_' AND typtype = 'e')   AS enums_expect_3,
   (SELECT count(*) FROM pg_indexes WHERE indexname IN
      ('rb_referrals_alive_idx','rb_withdrawals_one_pending','rb_spins_daily',
