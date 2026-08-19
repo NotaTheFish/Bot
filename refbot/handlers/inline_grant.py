@@ -197,10 +197,8 @@ async def cb_grab(c: CallbackQuery):
     if g["used"]:
         return await c.answer("Уже активировано.", show_alert=True)
 
-    # защита: принимаем только в приватном чате (не в общем — чтобы не перехватили)
-    # у callback от inline-сообщения message нет, ориентируемся на исходный chat_type.
-    if g.get("chat_type") not in ("private", "sender", None):
-        return await c.answer("Это работает только в личке.", show_alert=True)
+    # Работает и в личке (быстрая выдача), и в общем чате (розыгрыш «кто быстрее»).
+    # Первый нажавший забирает. Изъятие тоже разрешено — админ контролирует запуск.
 
     grabber_id = c.from_user.id
     sign, amount, cur = g["sign"], g["amount"], g["cur"]
