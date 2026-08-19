@@ -12,7 +12,7 @@ import db
 import roulette
 from config import (BOT_TOKEN, CONTEST_MIN_MSGS, CONTEST_MSGS_PER_TICKET,
                     CONTEST_TEST_MINUTES, UNLIMITED_SPIN_IDS)
-from handlers import admin, bank, casino, chat_events, contest, giveaway, inline_grant, offers, promo, roulette_cmd, skin, user
+from handlers import admin, bank, casino, casino_chat, chat_events, contest, giveaway, inline_grant, offers, promo, roulette_cmd, skin, user
 from services import boost, referrals, settings, ui
 
 logging.basicConfig(level=logging.INFO,
@@ -77,6 +77,7 @@ async def main():
 
     dp.message.outer_middleware(contest.CounterMiddleware())
     dp.include_router(contest.router)
+    dp.include_router(casino_chat.router)
     dp.include_router(chat_events.router)
     dp.include_router(roulette_cmd.router)
     dp.include_router(admin.router)
