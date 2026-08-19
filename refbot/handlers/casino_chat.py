@@ -13,6 +13,7 @@
 
 Доступно только при включённом casino.enabled (тумблер в админке).
 """
+import asyncio
 import contextlib
 import logging
 import time
@@ -128,10 +129,228 @@ async def _launch(msg_or_c, uid: int, game: str, bet: int, cur: str, again_of):
     elif game == "wheel":
         await _play_wheel_chat(msg_or_c, uid, bet, cur, again_of)
     elif game == "mines":
-        # карточки в чате — в v83
         target = msg_or_c.message if hasattr(msg_or_c, "message") else msg_or_c
+        await _mines_choose_field(target, uid, bet, cur)
+
+
+# ================= КАРТОЧКИ (MINES) В ЧАТЕ =================
+# Состояние игр по message_id (в чате несколько игроков одновременно — каждая
+# игра под своим сообщением, привязана к автору). Не FSM, чтобы не путать игроков.
+_chat_mines: dict[int, dict] = {}
+_cm_redraw: dict[int, asyncio.Task] = {}
+
+
+async def _mines_choose_field(target, uid: int, bet: int, cur: str):
+    """Показать выбор поля (пресета) после !казино карты."""
+    rate = _rate(cur)
+    if bet not in [b * rate for b in MINES_BETS]:
+        prices = " / ".join(fmt(b * rate) for b in MINES_BETS)
         with contextlib.suppress(Exception):
-            await ui.reply(target, "🃏 Карточки в чате скоро появятся. Пока — в личке бота.")
+            await ui.reply(target, f"🃏 Ставка карточек: {prices}. Выбери одну.")
+        return
+    k = InlineKeyboardBuilder()
+    for key, (total, mines, label) in MINES_PRESETS.items():
+        k.button(text=label, callback_data=f"cmfield:{uid}:{bet}:{cur}:{key}")
+    k.button(text="Отмена", callback_data=f"cmcancel:{uid}")
+    k.adjust(1)
+    e = "🪙" if cur == "coins" else "🍄"
+    with contextlib.suppress(Exception):
+        await ui.reply(target,
+            f"🃏 <b>Карточки</b> · ставка {fmt(bet)} {e}\n\nВыбери поле:",
+            reply_markup=k.as_markup())
+
+
+@router.callback_query(F.data.startswith("cmcancel:"))
+async def cb_cm_cancel(c: CallbackQuery):
+    owner = int(c.data.split(":")[1])
+    if c.from_user.id != owner:
+        return  # молча
+    await c.answer()
+    with contextlib.suppress(Exception):
+        await ui.edit(c.message, "🃏 Отменено.")
+
+
+@router.callback_query(F.data.startswith("cmfield:"))
+async def cb_cm_field(c: CallbackQuery):
+    try:
+        _, owner_s, bet_s, cur, key = c.data.split(":")
+        owner, bet = int(owner_s), int(bet_s)
+    except ValueError:
+        return
+    if c.from_user.id != owner:
+        return  # чужой — молча
+    if not await _casino_on():
+        return await c.answer("Казино закрыто.", show_alert=True)
+    total, mines, label = casino.mines_preset(key)
+    # списываем ставку
+    idem = f"cchmines:{owner}:{int(time.time()*1000)}"
+    try:
+        async with db.pool().acquire() as conn:
+            async with conn.transaction():
+                await db.apply(conn, owner, cur, -bet, "cch_mines_bet", idem + ":bet")
+    except Exception:
+        b = await db.balances(owner)
+        return await c.answer(f"Не хватает: у тебя {fmt(b[cur])}.", show_alert=True)
+
+    field = casino.mines_new_field(total, mines)
+    mid = c.message.message_id
+    _chat_mines[mid] = {
+        "owner": owner, "field": field, "total": total, "mines": mines,
+        "key": key, "bet": bet, "cur": cur, "opened": [], "idem": idem,
+    }
+    sx = await settings.ctx()
+    await c.answer()
+    with contextlib.suppress(Exception):
+        await ui.edit(c.message,
+            f"🃏 <b>Карточки</b> · {label}\n\n"
+            f"Ставка: {fmt(bet)} {sx['e_' + cur]}\n"
+            f"Открывай карты 👇",
+            reply_markup=await _cm_grid(total, {}, 1.0, False))
+
+
+async def _cm_grid(total, opened, mult, can_cashout):
+    import math
+    cols = {9: 3, 16: 4, 25: 5, 36: 6}.get(total, min(6, int(math.isqrt(total)) or 1))
+    if total <= 8:
+        cols = total if total <= 5 else (total + 1) // 2
+    k = InlineKeyboardBuilder()
+    for i in range(total):
+        if i in opened:
+            k.button(text=opened[i], callback_data="cmnoop")
+        else:
+            k.button(text="🎴", callback_data=f"cmopen:{i}")
+    rows = [cols] * ((total + cols - 1) // cols)
+    if can_cashout:
+        k.button(text=f"💰 Забрать (×{mult:g})", callback_data="cmcash")
+        rows.append(1)
+    k.adjust(*rows)
+    return k.as_markup()
+
+
+@router.callback_query(F.data == "cmnoop")
+async def cb_cm_noop(c: CallbackQuery):
+    await c.answer()
+
+
+@router.callback_query(F.data.startswith("cmopen:"))
+async def cb_cm_open(c: CallbackQuery):
+    mid = c.message.message_id
+    g = _chat_mines.get(mid)
+    if not g:
+        return await c.answer("Игра не активна.", show_alert=True)
+    if c.from_user.id != g["owner"]:
+        return  # чужой игрок — молча
+    idx = int(c.data.split(":")[1])
+    if idx in g["opened"]:
+        return await c.answer()
+    field = g["field"]
+    sx = await settings.ctx()
+
+    if field[idx] == 0:
+        # бомба — проигрыш
+        _cm_cancel_redraw(mid)
+        opened = {i: ("💣" if field[i] == 0 else "💎") for i in range(g["total"])}
+        _chat_mines.pop(mid, None)
+        with contextlib.suppress(Exception):
+            await ui.edit(c.message,
+                f"💥 <b>Бомба!</b>\n"
+                f"Ставка {fmt(g['bet'])} {sx['e_' + g['cur']]} сгорела.",
+                reply_markup=await _cm_grid(g["total"], opened, 1.0, False))
+        # кнопка «ещё» отдельным сообщением
+        with contextlib.suppress(Exception):
+            await ui.reply(c.message, "Попробовать снова?",
+                           reply_markup=_again_kb(g["owner"], "mines", g["bet"], g["cur"]))
+        return await c.answer("Бомба!")
+
+    # алмаз
+    g["opened"].append(idx)
+    picks = len(g["opened"])
+    mult = casino.mines_multiplier(g["total"], g["mines"], picks)
+    await c.answer(f"💎 ×{mult:g}")
+    safe = g["total"] - g["mines"]
+    if picks >= safe:
+        _cm_cancel_redraw(mid)
+        return await _cm_cashout(c, mid, forced=True)
+    _cm_schedule_redraw(c, mid)
+
+
+def _cm_cancel_redraw(mid: int):
+    t = _cm_redraw.pop(mid, None)
+    if t and not t.done():
+        t.cancel()
+
+
+def _cm_schedule_redraw(c, mid: int, delay: float = 0.4):
+    _cm_cancel_redraw(mid)
+    _cm_redraw[mid] = asyncio.create_task(_cm_redraw_do(c, mid, delay))
+
+
+async def _cm_redraw_do(c, mid: int, delay: float):
+    try:
+        await asyncio.sleep(delay)
+        g = _chat_mines.get(mid)
+        if not g:
+            return
+        picks = len(g["opened"])
+        safe = g["total"] - g["mines"]
+        if picks >= safe or picks == 0:
+            return
+        mult = casino.mines_multiplier(g["total"], g["mines"], picks)
+        win_now = int(g["bet"] * mult)
+        sx = await settings.ctx()
+        opened_map = {i: "💎" for i in g["opened"]}
+        with contextlib.suppress(Exception):
+            await ui.edit(c.message,
+                f"🃏 <b>Карточки</b> · {casino.mines_preset(g['key'])[2]}\n\n"
+                f"Открыто: {picks} · множитель <b>×{mult:g}</b>\n"
+                f"Заберёшь: <b>{fmt(win_now)}</b> {sx['e_' + g['cur']]}",
+                reply_markup=await _cm_grid(g["total"], opened_map, mult, True))
+    except asyncio.CancelledError:
+        pass
+    finally:
+        _cm_redraw.pop(mid, None)
+
+
+@router.callback_query(F.data == "cmcash")
+async def cb_cm_cash(c: CallbackQuery):
+    mid = c.message.message_id
+    g = _chat_mines.get(mid)
+    if not g:
+        return await c.answer("Игра не активна.", show_alert=True)
+    if c.from_user.id != g["owner"]:
+        return  # чужой — молча
+    await _cm_cashout(c, mid, forced=False)
+
+
+async def _cm_cashout(c, mid: int, forced: bool):
+    g = _chat_mines.get(mid)
+    if not g:
+        return
+    _cm_cancel_redraw(mid)
+    picks = len(g["opened"])
+    if picks == 0:
+        return await c.answer("Открой хотя бы одну карту.", show_alert=True)
+    mult = casino.mines_multiplier(g["total"], g["mines"], picks)
+    won = int(g["bet"] * mult)
+    _chat_mines.pop(mid, None)
+    idem = g["idem"]
+    with contextlib.suppress(Exception):
+        async with db.pool().acquire() as conn:
+            async with conn.transaction():
+                new_bal = await db.apply(conn, g["owner"], g["cur"], won,
+                                         "cch_mines_win", idem + ":win")
+    sx = await settings.ctx()
+    e = sx["e_" + g["cur"]]
+    opened_map = {i: "💎" for i in g["opened"]}
+    with contextlib.suppress(Exception):
+        await ui.edit(c.message,
+            f"💰 <b>Забрал ×{mult:g}!</b>\n"
+            f"Выигрыш: <b>{fmt(won)}</b> {e}",
+            reply_markup=await _cm_grid(g["total"], opened_map, mult, False))
+    with contextlib.suppress(Exception):
+        await ui.reply(c.message, "Ещё разок?",
+                       reply_markup=_again_kb(g["owner"], "mines", g["bet"], g["cur"]))
+    await c.answer("Забрал!")
 
 
 def _again_kb(uid: int, game: str, bet: int, cur: str):
@@ -178,11 +397,43 @@ async def _play_case_chat(msg_or_c, uid: int, bet: int, cur: str, again_of):
     sx = await settings.ctx()
     e = sx["e_" + cur]
     title = CASES[case_key][0]
-    text = (f"🎁 <b>{title}</b>\n"
-            f"Ставка: {fmt(price)} {e}\n"
+
+    # анимация открытия: отправляем сообщение и редактируем кадрами (создаёт напряжение)
+    anim_msg = None
+    if again_of is not None:
+        anim_msg = target  # повтор — редактируем существующее
+    frames = ["📦 открываем…", "📦✨ открываем…", "📦💥 почти…", "🎁 готово!"]
+    for i, f in enumerate(frames):
+        body = f"🎁 <b>{title}</b>\n\n<blockquote>{f}</blockquote>"
+        with contextlib.suppress(Exception):
+            if anim_msg is None:
+                anim_msg = await ui.reply(target, body)
+            else:
+                await ui.edit(anim_msg, body)
+        await asyncio.sleep(0.6)
+
+    # заголовок по редкости
+    if mult >= 10:
+        head = "🎰💥 <b>ДЖЕКПОТ!!!</b> 💥🎰"
+    elif mult >= 5:
+        head = "🔥💰 <b>ОГРОМНЫЙ ВЫИГРЫШ!</b>"
+    elif mult >= 3:
+        head = "💎 <b>КРУПНЫЙ ВЫИГРЫШ!</b>"
+    elif mult >= 1:
+        head = "🔥 <b>Неплохо!</b>"
+    else:
+        head = "🎁 <b>Открыто</b>"
+
+    text = (f"{head}\n"
+            f"«{title}» · ставка {fmt(price)} {e}\n"
             f"Выпало: <b>×{mult:g}</b> → <b>{fmt(won)}</b> {e}\n"
             f"Баланс: {fmt(new_bal)} {e}")
-    await _send_result(msg_or_c, target, text, uid, "cases", price, cur, again_of)
+    markup = _again_kb(uid, "cases", price, cur)
+    with contextlib.suppress(Exception):
+        if anim_msg is not None:
+            await ui.edit(anim_msg, text, reply_markup=markup)
+        else:
+            await ui.reply(target, text, reply_markup=markup)
 
 
 # ---------------- рулетка в чате ----------------
@@ -212,22 +463,41 @@ async def _play_wheel_chat(msg_or_c, uid: int, bet: int, cur: str, again_of):
 
     sx = await settings.ctx()
     e = sx["e_" + cur]
-    text = (f"🎡 <b>Рулетка</b>\n"
+
+    # анимация вращения колеса
+    anim_msg = target if again_of is not None else None
+    spin_frames = ["🎡 крутится…", "🎡💨 крутится…", "🎡💨 замедляется…", "🎯 стоп!"]
+    for f in spin_frames:
+        body = f"🎡 <b>Рулетка</b>\n\n<blockquote>{f}</blockquote>"
+        with contextlib.suppress(Exception):
+            if anim_msg is None:
+                anim_msg = await ui.reply(target, body)
+            else:
+                await ui.edit(anim_msg, body)
+        await asyncio.sleep(0.6)
+
+    if mult >= 50:
+        head = "🎰💥 <b>ДЖЕКПОТ КОЛЕСА!!!</b>"
+    elif mult >= 5:
+        head = "🔥💰 <b>ОГРОМНЫЙ ВЫИГРЫШ!</b>"
+    elif mult >= 2:
+        head = "💎 <b>Хороший занос!</b>"
+    elif mult >= 1:
+        head = "🔥 <b>Неплохо!</b>"
+    elif mult > 0:
+        head = "🙂 <b>Половина назад</b>"
+    else:
+        head = "💨 <b>Мимо</b>"
+
+    text = (f"{head}\n"
             f"Ставка: {fmt(bet)} {e}\n"
             f"Выпало: <b>×{mult:g}</b> → <b>{fmt(won)}</b> {e}\n"
             f"Баланс: {fmt(new_bal)} {e}")
-    await _send_result(msg_or_c, target, text, uid, "wheel", bet, cur, again_of)
-
-
-async def _send_result(msg_or_c, target, text, uid, game, bet, cur, again_of):
-    """Отправить/обновить результат с кнопкой «Крутить ещё»."""
-    markup = _again_kb(uid, game, bet, cur)
-    if again_of is not None:
-        # это повтор — редактируем существующее сообщение
-        with contextlib.suppress(Exception):
-            await ui.edit(target, text, reply_markup=markup)
-    else:
-        with contextlib.suppress(Exception):
+    markup = _again_kb(uid, "wheel", bet, cur)
+    with contextlib.suppress(Exception):
+        if anim_msg is not None:
+            await ui.edit(anim_msg, text, reply_markup=markup)
+        else:
             await ui.reply(target, text, reply_markup=markup)
 
 
