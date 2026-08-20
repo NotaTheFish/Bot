@@ -99,7 +99,7 @@ def _grant_kb(token: str, active=True):
 
 
 # ---------------- inline-запрос ----------------
-@router.inline_query()
+@router.inline_query(~F.query.regexp(r"(?i)^\s*секрет\b"))
 async def on_inline(q: InlineQuery):
     if not await _is_admin(q.from_user.id):
         # не админ — показываем пустую подсказку-отказ
