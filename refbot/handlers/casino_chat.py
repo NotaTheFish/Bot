@@ -66,11 +66,16 @@ def _is_group(msg) -> bool:
 
 
 async def _err(msg_or_target, uid: int, text: str):
-    """Ошибка/уведомление игроку: в группе — эфемерно (только ему), в личке — обычно."""
+    """Ошибка/уведомление игроку: в группе — эфемерно (только ему), в личке — обычно.
+    Ошибки не палят баланс, поэтому если эфемерка не сработала — показываем публично
+    (текст ошибки вроде «недостаточно средств» не критичен), но публичный дубль от
+    _NotEphemeral удаляем и шлём обычным reply один раз."""
     target = msg_or_target
     chat = getattr(target, "chat", None)
     if chat and chat.type in ("group", "supergroup"):
         sent = await ui.send_ephemeral(target.bot, chat.id, uid, text)
+        if isinstance(sent, ui._NotEphemeral):
+            return  # публичное уже отправлено Telegram-ом, дублировать не нужно
         if sent is not None:
             return
     with contextlib.suppress(Exception):
@@ -120,9 +125,16 @@ async def cmd_balance_profile(msg: Message):
     # в личке — обычный ответ; в группе — эфемерно (если не public)
     if _is_group(msg) and not public:
         sent = await ui.send_ephemeral(msg.bot, msg.chat.id, uid, text)
-        if sent is None:
-            # эфемерка не сработала — фолбэк на обычный ответ
-            await ui.reply(msg, text)
+        if isinstance(sent, ui._NotEphemeral):
+            # Telegram отправил ПУБЛИЧНОЕ вместо эфемерного — удаляем, чтобы не палить баланс
+            with contextlib.suppress(Exception):
+                await sent.msg.delete()
+            with contextlib.suppress(Exception):
+                await ui.reply(msg, "⚠️ Не удалось показать приватно. Проверь баланс в личке бота.")
+        elif sent is None:
+            # эфемерка не отправилась совсем — молчим о балансе, зовём в личку
+            with contextlib.suppress(Exception):
+                await ui.reply(msg, "⚠️ Не удалось показать приватно. Проверь баланс в личке бота.")
     else:
         await ui.reply(msg, text)
 
@@ -452,12 +464,19 @@ async def _animate_and_finish(msg_or_c, target, uid, frames, result, markup, aga
         eph = None
         eph_id = None
         try:
+            first = True
             for f in frames:
-                if eph is None:
+                if first:
                     eph = await ui.send_ephemeral(target.bot, chat.id, uid, f)
-                    if eph is None:
+                    if eph is None or isinstance(eph, ui._NotEphemeral):
+                        # эфемерка не сработала — удалим публичный дубль, если был,
+                        # и уйдём в обычный публичный режим ниже
+                        if isinstance(eph, ui._NotEphemeral):
+                            with contextlib.suppress(Exception):
+                                await eph.msg.delete()
                         raise RuntimeError("ephemeral failed")
                     eph_id = getattr(eph, "ephemeral_message_id", None)
+                    first = False
                 else:
                     if eph_id:
                         await ui.edit_ephemeral(target.bot, chat.id, uid, eph_id, f)

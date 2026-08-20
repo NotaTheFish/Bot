@@ -43,24 +43,46 @@ async def send_ephemeral(bot, chat_id: int, receiver_user_id: int, html_text: st
     """
     Эфемерное сообщение в групповой чат — видит только receiver_user_id и бот.
     Возвращает Message (с ephemeral_message_id) или None при ошибке.
-    Премиум-эмодзи через render; при отклонении entities — обычный HTML.
-    Работает только в группах/супергруппах (в личке receiver_user_id не нужен).
+
+    ДИАГНОСТИКА: логируем реальный ответ/ошибку Telegram, чтобы видеть, почему
+    эфемерка не срабатывает. Также проверяем, что Telegram действительно пометил
+    сообщение эфемерным (ephemeral_message_id != None / message_id == 0) — если нет,
+    значит receiver_user_id проигнорирован и это НЕ приватное сообщение.
     """
+    import logging as _log
+    lg = _log.getLogger("ephemeral")
     em = await _em()
     text, ents = render.render(html_text, em)
     try:
         if ents is not None:
-            return await bot.send_message(chat_id, text, receiver_user_id=receiver_user_id,
-                                          entities=ents, parse_mode=None, **kw)
-        return await bot.send_message(chat_id, html_text,
-                                      receiver_user_id=receiver_user_id, **kw)
-    except Exception:
-        # фолбэк на обычный HTML
-        try:
-            return await bot.send_message(chat_id, html_text,
-                                          receiver_user_id=receiver_user_id, **kw)
-        except Exception:
-            return None
+            msg = await bot.send_message(chat_id, text, receiver_user_id=receiver_user_id,
+                                         entities=ents, parse_mode=None, **kw)
+        else:
+            msg = await bot.send_message(chat_id, html_text,
+                                         receiver_user_id=receiver_user_id, **kw)
+    except Exception as e:
+        lg.warning("эфемерка НЕ отправлена (ошибка API): %r", e)
+        return None
+
+    # проверяем, действительно ли сообщение эфемерное
+    eph_id = getattr(msg, "ephemeral_message_id", None)
+    mid = getattr(msg, "message_id", None)
+    recv = getattr(msg, "receiver_user", None)
+    lg.info("эфемерка отправлена: message_id=%s ephemeral_message_id=%s receiver_user=%s",
+            mid, eph_id, recv)
+    if eph_id is None and mid not in (0, None):
+        # Telegram проигнорировал receiver_user_id и отправил ОБЫЧНОЕ (публичное).
+        lg.warning("эфемерка НЕ сработала: пришло обычное сообщение (mid=%s). "
+                   "Приватность НЕ обеспечена.", mid)
+        # возвращаем спец-маркер, чтобы вызывающий знал: это публичное, надо удалить
+        return _NotEphemeral(msg)
+    return msg
+
+
+class _NotEphemeral:
+    """Маркер: Telegram отправил обычное сообщение вместо эфемерного."""
+    def __init__(self, msg):
+        self.msg = msg
 
 
 async def edit_ephemeral(bot, chat_id: int, receiver_user_id: int,
