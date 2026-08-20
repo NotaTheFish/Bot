@@ -32,13 +32,6 @@ async def _is_admin(uid: int) -> bool:
     return uid in SUPER_ADMINS or bool(await db.admin_chats(uid))
 
 
-# пары обмена: (src, dst, подпись)
-PAIRS = {
-    "s2m": ("shimcoins", "mushrooms", "💠 → 🍄 Шимкоины в грибы"),
-    "s2c": ("shimcoins", "coins", "💠 → 🪙 Шимкоины в коины"),
-    "m2c": ("mushrooms", "coins", "🍄 → 🪙 Грибы в коины"),
-    "c2m": ("coins", "mushrooms", "🪙 → 🍄 Коины в грибы"),
-}
 
 
 class Exch(StatesGroup):
@@ -71,33 +64,65 @@ async def cb_bank(c: CallbackQuery):
 
 
 async def _bank_menu(stopped: bool):
+    """Шаг 1: что ПОЛУЧИТЬ. Один эмодзи на кнопку."""
     k = InlineKeyboardBuilder()
-    await btn(k, "💠 → 🍄 Шимкоины в грибы", "exch:s2m")
-    await btn(k, "💠 → 🪙 Шимкоины в коины", "exch:s2c")
-    if not stopped:
-        await btn(k, "🍄 → 🪙 Грибы в коины", "exch:m2c")
-        await btn(k, "🪙 → 🍄 Коины в грибы", "exch:c2m")
+    await btn(k, "🍄 Получить грибы", "bankget:mushrooms")
+    await btn(k, "🪙 Получить коины", "bankget:coins")
     await btn(k, "Меню", "menu", "back")
     k.adjust(1)
     return k.as_markup()
 
 
-@router.callback_query(F.data.startswith("exch:"))
-async def cb_exch_pick(c: CallbackQuery, state: FSMContext):
-    key = c.data.split(":")[1]
-    if key not in PAIRS:
-        return await c.answer("Неизвестный обмен.", show_alert=True)
-    src, dst, label = PAIRS[key]
-    # стоп для грибы<->коины
+# что можно отдать за каждую цель (src). Порядок: сначала шимкоины (без лимита/комиссии).
+_PAY_FOR = {
+    "mushrooms": [("shimcoins", "💠 Платить шимкоинами"), ("coins", "🪙 Платить коинами")],
+    "coins": [("shimcoins", "💠 Платить шимкоинами"), ("mushrooms", "🍄 Платить грибами")],
+}
+
+
+@router.callback_query(F.data.startswith("bankget:"))
+async def cb_bank_get(c: CallbackQuery, state: FSMContext):
+    dst = c.data.split(":")[1]
+    if dst not in ("mushrooms", "coins"):
+        return await c.answer("Ошибка.", show_alert=True)
+    stopped = await bank.is_stopped()
+    k = InlineKeyboardBuilder()
+    dst_name = "грибы" if dst == "mushrooms" else "коины"
+    for src, label in _PAY_FOR[dst]:
+        # обмен грибы<->коины заблокирован при стопе; шимкоины — всегда доступны
+        if {src, dst} == {"mushrooms", "coins"} and stopped:
+            continue
+        await btn(k, label, f"exch2:{src}:{dst}")
+    await btn(k, "Назад", "bank", "back")
+    k.adjust(1)
+    kb_markup = k.as_markup()
+    note = ""
+    if stopped and dst in ("mushrooms", "coins"):
+        note = "\n\n🛑 Обмен грибы↔коины остановлен — доступны только шимкоины."
+    await ui.edit(c.message,
+        f"🏦 <b>Получить {dst_name}</b>\n\nЧем платишь?{note}",
+        reply_markup=kb_markup)
+    await c.answer()
+
+
+@router.callback_query(F.data.startswith("exch2:"))
+async def cb_exch2_pick(c: CallbackQuery, state: FSMContext):
+    try:
+        _, src, dst = c.data.split(":")
+    except ValueError:
+        return await c.answer("Ошибка.", show_alert=True)
     if {src, dst} == {"mushrooms", "coins"} and await bank.is_stopped():
         return await c.answer("🛑 Обмен грибы↔коины сейчас остановлен.", show_alert=True)
     await state.set_state(Exch.amount)
-    await state.update_data(exch={"src": src, "dst": dst, "key": key})
+    await state.update_data(exch={"src": src, "dst": dst})
     b = await db.balances(c.from_user.id)
     src_name = {"mushrooms": "грибов", "coins": "коинов", "shimcoins": "шимкоинов"}[src]
+    fee_note = ""
+    if {src, dst} != {"mushrooms", "coins"}:
+        fee_note = "\nОбмен шимкоинов — без комиссии."
     await ui.edit(c.message,
-        f"🏦 <b>{label}</b>\n\n"
-        f"У тебя: <b>{fmt(b[src])}</b> {src_name}\n\n"
+        f"🏦 Платишь <b>{src_name}</b>\n\n"
+        f"У тебя: <b>{fmt(b[src])}</b> {src_name}{fee_note}\n\n"
         f"Сколько {src_name} обменять? Напиши число (<code>100к</code>, <code>1м</code>).",
         reply_markup=await _exch_cancel())
     await c.answer()

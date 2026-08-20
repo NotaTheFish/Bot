@@ -98,6 +98,11 @@ async def quote(src: str, dst: str, amount: int) -> tuple[int, float, str]:
         return 0, 0.0, "Одинаковые валюты."
 
     fee = await fee_pct() / 100.0
+    # Комиссия ТОЛЬКО на обмен грибы<->коины (спекулятивный). Операции с шимкоинами
+    # (трата денег игрока: ШК->грибы, ШК->коины) — БЕЗ комиссии.
+    is_gm = {src, dst} == {"mushrooms", "coins"}
+    if not is_gm:
+        fee = 0.0
 
     # стоимость src в ШК
     if src == "mushrooms":
