@@ -39,6 +39,48 @@ async def send(bot, chat_id: int, html_text: str, apply_free=True, **kw):
     return await render.send(bot, chat_id, html_text, await _em(), apply_free, **kw)
 
 
+async def send_ephemeral(bot, chat_id: int, receiver_user_id: int, html_text: str, **kw):
+    """
+    Эфемерное сообщение в групповой чат — видит только receiver_user_id и бот.
+    Возвращает Message (с ephemeral_message_id) или None при ошибке.
+    Премиум-эмодзи через render; при отклонении entities — обычный HTML.
+    Работает только в группах/супергруппах (в личке receiver_user_id не нужен).
+    """
+    em = await _em()
+    text, ents = render.render(html_text, em)
+    try:
+        if ents is not None:
+            return await bot.send_message(chat_id, text, receiver_user_id=receiver_user_id,
+                                          entities=ents, parse_mode=None, **kw)
+        return await bot.send_message(chat_id, html_text,
+                                      receiver_user_id=receiver_user_id, **kw)
+    except Exception:
+        # фолбэк на обычный HTML
+        try:
+            return await bot.send_message(chat_id, html_text,
+                                          receiver_user_id=receiver_user_id, **kw)
+        except Exception:
+            return None
+
+
+async def edit_ephemeral(bot, chat_id: int, receiver_user_id: int,
+                         ephemeral_message_id: int, html_text: str, **kw):
+    """Редактировать эфемерное сообщение (для анимации). None при ошибке."""
+    em = await _em()
+    text, ents = render.render(html_text, em)
+    try:
+        if ents is not None:
+            return await bot.edit_ephemeral_message_text(
+                chat_id=chat_id, receiver_user_id=receiver_user_id,
+                ephemeral_message_id=ephemeral_message_id,
+                text=text, entities=ents, parse_mode=None, **kw)
+        return await bot.edit_ephemeral_message_text(
+            chat_id=chat_id, receiver_user_id=receiver_user_id,
+            ephemeral_message_id=ephemeral_message_id, text=html_text, **kw)
+    except Exception:
+        return None
+
+
 async def send_photo(bot, chat_id: int, photo: str, caption: str, apply_free=True, **kw):
     """Фото с премиум-подписью через render."""
     return await render.send_photo(bot, chat_id, photo, caption, await _em(), apply_free, **kw)

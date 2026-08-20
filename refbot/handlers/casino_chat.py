@@ -56,6 +56,77 @@ async def _casino_on() -> bool:
     return await settings.get("casino.enabled", "0") == "1"
 
 
+async def _anim_ephemeral() -> bool:
+    """Тумблер: анимация казино в чате эфемерно (тестово). Выкл -> публично как раньше."""
+    return await settings.get("chat.anim_ephemeral", "0") == "1"
+
+
+def _is_group(msg) -> bool:
+    return msg.chat.type in ("group", "supergroup")
+
+
+async def _err(msg_or_target, uid: int, text: str):
+    """Ошибка/уведомление игроку: в группе — эфемерно (только ему), в личке — обычно."""
+    target = msg_or_target
+    chat = getattr(target, "chat", None)
+    if chat and chat.type in ("group", "supergroup"):
+        sent = await ui.send_ephemeral(target.bot, chat.id, uid, text)
+        if sent is not None:
+            return
+    with contextlib.suppress(Exception):
+        await ui.reply(target, text)
+
+
+# ---------------- !баланс / !профиль ----------------
+@router.message(F.text.lower().in_({"!баланс", "!balance", "!баланс!", "!профиль", "!profile", "!профиль!"}))
+async def cmd_balance_profile(msg: Message):
+    text_l = (msg.text or "").lower().strip()
+    public = text_l.endswith("!")  # !баланс! = показать всем; !баланс = только мне
+    is_profile = "профил" in text_l or "profile" in text_l
+    uid = msg.from_user.id
+    b = await db.balances(uid)
+    sx = await settings.ctx()
+
+    if is_profile:
+        # полный профиль по шаблону
+        row = await db.get_user(uid)
+        hold_sum = await db.pool().fetch(
+            "SELECT currency, COALESCE(SUM(amount),0) s FROM rb_withdrawals "
+            "WHERE tg_id=$1 AND status='pending' GROUP BY currency", uid) if row else []
+        holds = {r["currency"]: r["s"] for r in hold_sum}
+        tpl = await settings.profile_template()
+        data = {
+            **sx, "id": uid,
+            "bal_m": fmt(b["mushrooms"]), "bal_c": fmt(b["coins"]), "bal_s": fmt(b["shimcoins"]),
+            "hold_m": fmt(holds.get("mushrooms", 0)), "hold_c": fmt(holds.get("coins", 0)),
+            "paid": row["paid"] if row else 0, "hold": row["hold"] if row else 0,
+            "lost": row["lost"] if row else 0, "chats": "",
+            "e_cur": sx.get(f"e_{row['currency']}", "🍄") if row else "🍄",
+            "l_cur": sx.get(f"l_{row['currency']}", "Грибы") if row else "Грибы",
+        }
+        try:
+            text = tpl.format(**data)
+        except Exception:
+            text = (f"{sx['e_profile']} <b>Профиль</b>\nID: <code>{uid}</code>\n\n"
+                    f"{sx['e_mushrooms']} {fmt(b['mushrooms'])} · "
+                    f"{sx['e_coins']} {fmt(b['coins'])} · "
+                    f"{sx['e_shimcoins']} {fmt(b['shimcoins'])}")
+    else:
+        text = (f"{sx['e_balance']} <b>Баланс</b>\n"
+                f"{sx['e_mushrooms']} {fmt(b['mushrooms'])}\n"
+                f"{sx['e_coins']} {fmt(b['coins'])}\n"
+                f"{sx['e_shimcoins']} {fmt(b['shimcoins'])}")
+
+    # в личке — обычный ответ; в группе — эфемерно (если не public)
+    if _is_group(msg) and not public:
+        sent = await ui.send_ephemeral(msg.bot, msg.chat.id, uid, text)
+        if sent is None:
+            # эфемерка не сработала — фолбэк на обычный ответ
+            await ui.reply(msg, text)
+    else:
+        await ui.reply(msg, text)
+
+
 # ---------------- парсинг команды ----------------
 def _parse(text: str):
     """«!казино кейсы 100к грибы» -> (game, bet, cur) или None (нужна справка)."""
@@ -363,6 +434,59 @@ def _again_kb(uid: int, game: str, bet: int, cur: str):
     return k.as_markup()
 
 
+async def _animate_and_finish(msg_or_c, target, uid, frames, result, markup, again_of):
+    """
+    Проиграть кадры анимации, затем показать результат.
+
+    Режим по тумблеру chat.anim_ephemeral (тестовый):
+      ВЫКЛ (по умолчанию): всё публично — сообщение редактируется кадрами, потом результат.
+      ВКЛ + группа: кадры анимации эфемерно (только игроку), финал — публично всем.
+    Эфемерка новая и может глючить, поэтому при любой осечке — фолбэк на публичный режим.
+    """
+    chat = getattr(target, "chat", None)
+    is_group = chat and chat.type in ("group", "supergroup")
+    ephemeral = is_group and await _anim_ephemeral() and again_of is None
+
+    if ephemeral:
+        # кадры — эфемерно, редактируя одно эфемерное сообщение
+        eph = None
+        eph_id = None
+        try:
+            for f in frames:
+                if eph is None:
+                    eph = await ui.send_ephemeral(target.bot, chat.id, uid, f)
+                    if eph is None:
+                        raise RuntimeError("ephemeral failed")
+                    eph_id = getattr(eph, "ephemeral_message_id", None)
+                else:
+                    if eph_id:
+                        await ui.edit_ephemeral(target.bot, chat.id, uid, eph_id, f)
+                await asyncio.sleep(0.6)
+            # финал — публичное сообщение всем
+            await ui.reply(target, result, reply_markup=markup)
+            return
+        except Exception:
+            # эфемерка сломалась — просто покажем результат публично
+            with contextlib.suppress(Exception):
+                await ui.reply(target, result, reply_markup=markup)
+            return
+
+    # обычный публичный режим: редактируем одно сообщение кадрами
+    anim_msg = target if again_of is not None else None
+    for f in frames:
+        with contextlib.suppress(Exception):
+            if anim_msg is None:
+                anim_msg = await ui.reply(target, f)
+            else:
+                await ui.edit(anim_msg, f)
+        await asyncio.sleep(0.6)
+    with contextlib.suppress(Exception):
+        if anim_msg is not None:
+            await ui.edit(anim_msg, result, reply_markup=markup)
+        else:
+            await ui.reply(target, result, reply_markup=markup)
+
+
 # ---------------- кейсы в чате ----------------
 async def _play_case_chat(msg_or_c, uid: int, bet: int, cur: str, again_of):
     # bet должен совпасть с ценой одного из кейсов (в валюте игрока)
@@ -391,26 +515,12 @@ async def _play_case_chat(msg_or_c, uid: int, bet: int, cur: str, again_of):
     except Exception:
         with contextlib.suppress(Exception):
             b = await db.balances(uid)
-            await ui.reply(target, f"Недостаточно средств. У тебя {fmt(b[cur])}.")
+            await _err(target, uid, f"Недостаточно средств. У тебя {fmt(b[cur])}.")
         return
 
     sx = await settings.ctx()
     e = sx["e_" + cur]
     title = CASES[case_key][0]
-
-    # анимация открытия: отправляем сообщение и редактируем кадрами (создаёт напряжение)
-    anim_msg = None
-    if again_of is not None:
-        anim_msg = target  # повтор — редактируем существующее
-    frames = ["📦 открываем…", "📦✨ открываем…", "📦💥 почти…", "🎁 готово!"]
-    for i, f in enumerate(frames):
-        body = f"🎁 <b>{title}</b>\n\n<blockquote>{f}</blockquote>"
-        with contextlib.suppress(Exception):
-            if anim_msg is None:
-                anim_msg = await ui.reply(target, body)
-            else:
-                await ui.edit(anim_msg, body)
-        await asyncio.sleep(0.6)
 
     # заголовок по редкости
     if mult >= 10:
@@ -423,17 +533,14 @@ async def _play_case_chat(msg_or_c, uid: int, bet: int, cur: str, again_of):
         head = "🔥 <b>Неплохо!</b>"
     else:
         head = "🎁 <b>Открыто</b>"
-
-    text = (f"{head}\n"
-            f"«{title}» · ставка {fmt(price)} {e}\n"
-            f"Выпало: <b>×{mult:g}</b> → <b>{fmt(won)}</b> {e}\n"
-            f"Баланс: {fmt(new_bal)} {e}")
+    result = (f"{head}\n"
+              f"«{title}» · ставка {fmt(price)} {e}\n"
+              f"Выпало: <b>×{mult:g}</b> → <b>{fmt(won)}</b> {e}\n"
+              f"Баланс: {fmt(new_bal)} {e}")
+    frames = [f"🎁 <b>{title}</b>\n\n<blockquote>{f}</blockquote>"
+              for f in ["📦 открываем…", "📦✨ открываем…", "📦💥 почти…", "🎁 готово!"]]
     markup = _again_kb(uid, "cases", price, cur)
-    with contextlib.suppress(Exception):
-        if anim_msg is not None:
-            await ui.edit(anim_msg, text, reply_markup=markup)
-        else:
-            await ui.reply(target, text, reply_markup=markup)
+    await _animate_and_finish(msg_or_c, target, uid, frames, result, markup, again_of)
 
 
 # ---------------- рулетка в чате ----------------
@@ -458,23 +565,11 @@ async def _play_wheel_chat(msg_or_c, uid: int, bet: int, cur: str, again_of):
     except Exception:
         with contextlib.suppress(Exception):
             b = await db.balances(uid)
-            await ui.reply(target, f"Недостаточно средств. У тебя {fmt(b[cur])}.")
+            await _err(target, uid, f"Недостаточно средств. У тебя {fmt(b[cur])}.")
         return
 
     sx = await settings.ctx()
     e = sx["e_" + cur]
-
-    # анимация вращения колеса
-    anim_msg = target if again_of is not None else None
-    spin_frames = ["🎡 крутится…", "🎡💨 крутится…", "🎡💨 замедляется…", "🎯 стоп!"]
-    for f in spin_frames:
-        body = f"🎡 <b>Рулетка</b>\n\n<blockquote>{f}</blockquote>"
-        with contextlib.suppress(Exception):
-            if anim_msg is None:
-                anim_msg = await ui.reply(target, body)
-            else:
-                await ui.edit(anim_msg, body)
-        await asyncio.sleep(0.6)
 
     if mult >= 50:
         head = "🎰💥 <b>ДЖЕКПОТ КОЛЕСА!!!</b>"
@@ -488,17 +583,14 @@ async def _play_wheel_chat(msg_or_c, uid: int, bet: int, cur: str, again_of):
         head = "🙂 <b>Половина назад</b>"
     else:
         head = "💨 <b>Мимо</b>"
-
-    text = (f"{head}\n"
-            f"Ставка: {fmt(bet)} {e}\n"
-            f"Выпало: <b>×{mult:g}</b> → <b>{fmt(won)}</b> {e}\n"
-            f"Баланс: {fmt(new_bal)} {e}")
+    result = (f"{head}\n"
+              f"Ставка: {fmt(bet)} {e}\n"
+              f"Выпало: <b>×{mult:g}</b> → <b>{fmt(won)}</b> {e}\n"
+              f"Баланс: {fmt(new_bal)} {e}")
+    frames = [f"🎡 <b>Рулетка</b>\n\n<blockquote>{f}</blockquote>"
+              for f in ["🎡 крутится…", "🎡💨 крутится…", "🎡💨 замедляется…", "🎯 стоп!"]]
     markup = _again_kb(uid, "wheel", bet, cur)
-    with contextlib.suppress(Exception):
-        if anim_msg is not None:
-            await ui.edit(anim_msg, text, reply_markup=markup)
-        else:
-            await ui.reply(target, text, reply_markup=markup)
+    await _animate_and_finish(msg_or_c, target, uid, frames, result, markup, again_of)
 
 
 # ---------------- «Крутить ещё» ----------------

@@ -580,11 +580,13 @@ async def case_again(case_key: str) -> InlineKeyboardMarkup:
     return kb.as_markup()
 
 
-async def casino_admin_toggle(enabled: bool) -> InlineKeyboardMarkup:
-    """Переключатель доступа к казино в админке."""
+async def casino_admin_toggle(enabled: bool, anim_eph: bool = False) -> InlineKeyboardMarkup:
+    """Переключатель доступа к казино + тумблер эфемерной анимации (тестовый)."""
     kb = InlineKeyboardBuilder()
     state = "🟢 Открыто всем" if enabled else "🔴 Только админ"
     await btn(kb, f"Казино: {state} (переключить)", "casino_toggle")
+    anim_state = "🟢 вкл" if anim_eph else "🔴 выкл"
+    await btn(kb, f"Анимация в чате приватно: {anim_state}", "casino_anim_toggle")
     await btn(kb, "Админка", "admin", "back")
     kb.adjust(1)
     return kb.as_markup()

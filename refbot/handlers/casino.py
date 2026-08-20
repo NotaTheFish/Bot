@@ -609,12 +609,29 @@ async def cb_mines_again(c: CallbackQuery, state: FSMContext):
 async def cb_casino_admin(c: CallbackQuery):
     if not await _is_admin(c.from_user.id):
         return await c.answer("Нет доступа.", show_alert=True)
+    anim = await settings.get("chat.anim_ephemeral", "0") == "1"
     await ui.edit(c.message,
         "🎰 <b>Казино — доступ</b>\n\n"
         "🔴 Только админ — клиенты не видят кнопку «Казино».\n"
-        "🟢 Открыто всем — кнопка появляется у всех.",
-        reply_markup=await kb.casino_admin_toggle(await casino_enabled()))
+        "🟢 Открыто всем — кнопка появляется у всех.\n\n"
+        "<i>Анимация в чате приватно</i> — тестовая фича: анимация игры видна "
+        "только игроку (эфемерно), результат — всем. Если глючит — выключи.",
+        reply_markup=await kb.casino_admin_toggle(await casino_enabled(), anim))
     await c.answer()
+
+
+@router.callback_query(F.data == "casino_anim_toggle")
+async def cb_casino_anim_toggle(c: CallbackQuery):
+    if not await _is_admin(c.from_user.id):
+        return await c.answer("Нет доступа.", show_alert=True)
+    new = "0" if await settings.get("chat.anim_ephemeral", "0") == "1" else "1"
+    await settings.set("chat.anim_ephemeral", new, c.from_user.id)
+    await c.answer("Готово")
+    await ui.edit(c.message,
+        "🎰 <b>Казино — доступ</b>\n\n"
+        + ("🟢 Приватная анимация включена (тест)." if new == "1"
+           else "🔴 Приватная анимация выключена — всё публично."),
+        reply_markup=await kb.casino_admin_toggle(await casino_enabled(), new == "1"))
 
 
 @router.callback_query(F.data == "casino_toggle")
@@ -624,8 +641,9 @@ async def cb_casino_toggle(c: CallbackQuery):
     new = "0" if await casino_enabled() else "1"
     await settings.set("casino.enabled", new, c.from_user.id)
     await db.audit(c.from_user.id, "casino_toggle", {"enabled": new})
+    anim = await settings.get("chat.anim_ephemeral", "0") == "1"
     await ui.edit(c.message,
         "🎰 <b>Казино — доступ</b>\n\n"
         + ("🟢 Теперь открыто всем." if new == "1" else "🔴 Теперь только админ."),
-        reply_markup=await kb.casino_admin_toggle(new == "1"))
+        reply_markup=await kb.casino_admin_toggle(new == "1", anim))
     await c.answer("Готово")
