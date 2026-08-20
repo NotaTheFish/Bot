@@ -1,3 +1,5 @@
+import contextlib
+
 import asyncpg
 from config import DATABASE_URL
 
@@ -99,6 +101,27 @@ async def upsert_user(tg_id: int, username: str | None, first_name: str | None):
 
 async def get_user(tg_id: int):
     return await pool().fetchrow("SELECT * FROM rb_users WHERE tg_id = $1", tg_id)
+
+
+async def remember_username(username: str, tg_id: int) -> None:
+    """Запомнить username -> tg_id (для резолва @username в шёпотах). Без @, нижний регистр."""
+    if not username:
+        return
+    u = username.lstrip("@").lower()
+    if not u:
+        return
+    with contextlib.suppress(Exception):
+        await pool().execute(
+            "INSERT INTO rb_usernames (username, tg_id, last_seen) VALUES ($1,$2,now()) "
+            "ON CONFLICT (username) DO UPDATE SET tg_id=$2, last_seen=now()", u, tg_id)
+
+
+async def resolve_username(username: str):
+    """@username -> tg_id или None, если бот не видел этого юзера."""
+    u = (username or "").lstrip("@").lower()
+    if not u:
+        return None
+    return await pool().fetchval("SELECT tg_id FROM rb_usernames WHERE username=$1", u)
 
 
 async def set_wheel_anim(tg_id: int, style: str) -> None:
@@ -556,6 +579,7 @@ EXPECTED_TABLES = [
     "rb_case_opens", "rb_promo", "rb_promo_acts",
     "rb_offers",
     "rb_bank_exch",
+    "rb_usernames",
 ]
 
 

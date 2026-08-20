@@ -12,7 +12,7 @@ import db
 import roulette
 from config import (BOT_TOKEN, CONTEST_MIN_MSGS, CONTEST_MSGS_PER_TICKET,
                     CONTEST_TEST_MINUTES, UNLIMITED_SPIN_IDS)
-from handlers import admin, bank, casino, casino_chat, chat_events, contest, giveaway, inline_grant, offers, promo, roulette_cmd, skin, user
+from handlers import admin, bank, casino, casino_chat, chat_events, contest, giveaway, inline_grant, offers, promo, roulette_cmd, skin, user, whisper
 from services import boost, referrals, settings, ui
 
 logging.basicConfig(level=logging.INFO,
@@ -76,6 +76,8 @@ async def main():
         return True  # апдейт «обработан» — бот не падает
 
     dp.message.outer_middleware(contest.CounterMiddleware())
+    dp.message.outer_middleware(whisper.UsernameMiddleware())
+    dp.include_router(whisper.router)
     dp.include_router(contest.router)
     dp.include_router(casino_chat.router)
     dp.include_router(chat_events.router)
@@ -112,6 +114,16 @@ async def main():
     asyncio.create_task(giveaway.worker(bot))
     asyncio.create_task(boost.worker(bot))
     await bot.delete_webhook(drop_pending_updates=True)
+    # регистрируем /secret как ЭФЕМЕРНУЮ команду (невидимый ввод в группах).
+    # Фича свежая — если Telegram/версия не примут is_ephemeral, команда всё равно
+    # зарегистрируется как обычная (шёпот дойдёт, но ввод будет виден). Не критично.
+    with contextlib.suppress(Exception):
+        from aiogram.types import BotCommand
+        await bot.set_my_commands([
+            BotCommand(command="secret", description="Шепнуть приватно: /secret @user текст",
+                       is_ephemeral=True),
+        ])
+        log.info("команда /secret зарегистрирована как эфемерная")
     try:
         await dp.start_polling(bot, allowed_updates=ALLOWED)
     finally:

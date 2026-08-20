@@ -378,10 +378,42 @@ async def _animate(msg, e_rou, e_cur, label, amount, total, em):
     # сообщениями (флуд-контроль), выигрыш не потеряется. Кадры необязательны,
     # важна финальная карточка.
     #
-    # Шкала заполняется за один проход (кадры 0..BAR_LEN), затем сразу карточка —
-    # без второго круга и без лишней паузы после заполнения. Карточка приходит
-    # на том же интервале, что и кадры.
+    # Если включён тумблер chat.anim_ephemeral и это группа — кадры анимации идут
+    # ЭФЕМЕРНО (видит только игрок), а карточка-результат — публично всем. При любом
+    # сбое эфемерки откатываемся на обычный публичный режим.
+    from services import settings, ui as _ui
     card = roulette.result_card(msg.from_user.first_name, amount, e_cur, label, total, e_rou)
+
+    is_group = msg.chat.type in ("group", "supergroup")
+    anim_eph = is_group and await settings.get("chat.anim_ephemeral", "0") == "1"
+
+    if anim_eph:
+        uid = msg.from_user.id
+        eph = await _ui.send_ephemeral(msg.bot, msg.chat.id, uid, roulette.frame(0, e_rou))
+        if eph is not None and not isinstance(eph, _ui._NotEphemeral):
+            eph_id = getattr(eph, "ephemeral_message_id", None)
+            for i in range(1, ANIM_FRAMES):
+                await asyncio.sleep(ANIM_DELAY)
+                if eph_id:
+                    with contextlib.suppress(Exception):
+                        await _ui.edit_ephemeral(msg.bot, msg.chat.id, uid, eph_id,
+                                                 roulette.frame(i, e_rou))
+            await asyncio.sleep(ANIM_DELAY)
+            # карточка — публично всем
+            with contextlib.suppress(Exception):
+                await r_reply(msg, card, em)
+            return
+        else:
+            # эфемерка не сработала — удалим публичный дубль кадра, если он был,
+            # и просто покажем публичную карточку
+            if isinstance(eph, _ui._NotEphemeral):
+                with contextlib.suppress(Exception):
+                    await eph.msg.delete()
+            with contextlib.suppress(Exception):
+                await r_reply(msg, card, em)
+            return
+
+    # обычный публичный режим
     m = None
     with contextlib.suppress(Exception):
         m = await r_reply(msg, roulette.frame(0, e_rou), em)

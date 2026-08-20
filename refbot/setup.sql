@@ -229,6 +229,15 @@ CREATE TABLE IF NOT EXISTS rb_offers (
 );
 CREATE INDEX IF NOT EXISTS rb_offers_user_idx ON rb_offers (tg_id) WHERE active = TRUE;
 
+-- Карта username -> tg_id, чтобы резолвить @username в шёпотах (!секрет).
+-- Заполняется при каждом сообщении в чате (кого бот видел). last_seen — для свежести.
+CREATE TABLE IF NOT EXISTS rb_usernames (
+    username   TEXT PRIMARY KEY,   -- в нижнем регистре, без @
+    tg_id      BIGINT NOT NULL,
+    last_seen  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS rb_usernames_tgid_idx ON rb_usernames (tg_id);
+
 -- Счётчик дневных обменов грибы<->коины в банке (лимит 2/день, сброс в полночь МСК).
 -- exch_day — дата по МСК (YYYY-MM-DD строкой).
 CREATE TABLE IF NOT EXISTS rb_bank_exch (
@@ -445,7 +454,7 @@ ALTER TABLE rb_giveaways ADD COLUMN IF NOT EXISTS finish_photo TEXT;
 
 -- ---------- 5. Проверка ----------
 SELECT
-  (SELECT count(*) FROM pg_tables WHERE tablename ~ '^rb_')                   AS tables_expect_26,
+  (SELECT count(*) FROM pg_tables WHERE tablename ~ '^rb_')                   AS tables_expect_27,
   (SELECT count(*) FROM pg_type   WHERE typname ~ '^rb_' AND typtype = 'e')   AS enums_expect_3,
   (SELECT count(*) FROM pg_indexes WHERE indexname IN
      ('rb_referrals_alive_idx','rb_withdrawals_one_pending','rb_spins_daily',

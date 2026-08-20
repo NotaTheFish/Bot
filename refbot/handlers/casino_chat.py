@@ -122,19 +122,24 @@ async def cmd_balance_profile(msg: Message):
                 f"{sx['e_coins']} {fmt(b['coins'])}\n"
                 f"{sx['e_shimcoins']} {fmt(b['shimcoins'])}")
 
-    # в личке — обычный ответ; в группе — эфемерно (если не public)
+    # Приватность: баланс чувствителен (сумма на виду) — при сбое эфемерки прячем.
+    # Профиль менее критичен — при сбое показываем публично (лучше показать, чем спрятать).
     if _is_group(msg) and not public:
         sent = await ui.send_ephemeral(msg.bot, msg.chat.id, uid, text)
         if isinstance(sent, ui._NotEphemeral):
-            # Telegram отправил ПУБЛИЧНОЕ вместо эфемерного — удаляем, чтобы не палить баланс
-            with contextlib.suppress(Exception):
-                await sent.msg.delete()
-            with contextlib.suppress(Exception):
-                await ui.reply(msg, "⚠️ Не удалось показать приватно. Проверь баланс в личке бота.")
+            if is_profile:
+                # профиль: публичное сообщение уже отправлено Telegram-ом — оставляем как есть
+                pass
+            else:
+                # баланс: удаляем публичный дубль, чтобы не палить сумму
+                with contextlib.suppress(Exception):
+                    await sent.msg.delete()
+                with contextlib.suppress(Exception):
+                    await ui.reply(msg, "⚠️ Не удалось показать баланс приватно. Смотри в личке бота.")
         elif sent is None:
-            # эфемерка не отправилась совсем — молчим о балансе, зовём в личку
+            # эфемерка не отправилась совсем — показываем публично (иначе пусто)
             with contextlib.suppress(Exception):
-                await ui.reply(msg, "⚠️ Не удалось показать приватно. Проверь баланс в личке бота.")
+                await ui.reply(msg, text)
     else:
         await ui.reply(msg, text)
 
@@ -628,4 +633,9 @@ async def cb_again(c: CallbackQuery):
     if not await _casino_on():
         return await c.answer("Казино закрыто.", show_alert=True)
     await c.answer()
-    await _launch(c, owner, game, bet, cur, again_of=True)
+    # убираем кнопку со старого сообщения (чтобы не жали повторно)
+    with contextlib.suppress(Exception):
+        await c.message.edit_reply_markup(reply_markup=None)
+    # запускаем НОВУЮ крутку как свежую: again_of=None -> эфемерная анимация (если
+    # тумблер включён) + результат НОВЫМ публичным сообщением, а не правкой старого
+    await _launch(c, owner, game, bet, cur, again_of=None)
