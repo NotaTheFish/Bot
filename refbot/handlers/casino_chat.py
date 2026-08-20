@@ -93,25 +93,36 @@ async def cmd_balance_profile(msg: Message):
     sx = await settings.ctx()
 
     if is_profile:
-        # полный профиль по шаблону
-        row = await db.get_user(uid)
-        hold_sum = await db.pool().fetch(
-            "SELECT currency, COALESCE(SUM(amount),0) s FROM rb_withdrawals "
-            "WHERE tg_id=$1 AND status='pending' GROUP BY currency", uid) if row else []
-        holds = {r["currency"]: r["s"] for r in hold_sum}
-        tpl = await settings.profile_template()
-        data = {
-            **sx, "id": uid,
-            "bal_m": fmt(b["mushrooms"]), "bal_c": fmt(b["coins"]), "bal_s": fmt(b["shimcoins"]),
-            "hold_m": fmt(holds.get("mushrooms", 0)), "hold_c": fmt(holds.get("coins", 0)),
-            "paid": row["paid"] if row else 0, "hold": row["hold"] if row else 0,
-            "lost": row["lost"] if row else 0, "chats": "",
-            "e_cur": sx.get(f"e_{row['currency']}", "🍄") if row else "🍄",
-            "l_cur": sx.get(f"l_{row['currency']}", "Грибы") if row else "Грибы",
-        }
+        # полный профиль по шаблону. Статистика рефералов — из rb_referrals
+        # (в rb_users колонок paid/hold/lost НЕТ). Всё в try: профиль не должен
+        # молча падать — при любой ошибке показываем краткую версию.
         try:
-            text = tpl.format(**data)
+            row = await db.get_user(uid)
+            stat = await db.pool().fetchrow(
+                """
+                SELECT
+                  count(*) FILTER (WHERE status='paid') AS paid,
+                  count(*) FILTER (WHERE status='hold') AS hold,
+                  count(*) FILTER (WHERE status='void') AS lost
+                FROM rb_referrals WHERE inviter_id = $1
+                """, uid)
+            hold_sum = await db.pool().fetch(
+                "SELECT currency, sum(amount) s FROM rb_referrals "
+                "WHERE inviter_id=$1 AND status='hold' GROUP BY currency", uid)
+            holds = {r["currency"]: r["s"] for r in hold_sum}
+            cur = row["currency"] if row else "mushrooms"
+            data = {
+                **sx, "id": uid,
+                "bal_m": fmt(b["mushrooms"]), "bal_c": fmt(b["coins"]), "bal_s": fmt(b["shimcoins"]),
+                "hold_m": fmt(holds.get("mushrooms", 0)), "hold_c": fmt(holds.get("coins", 0)),
+                "paid": stat["paid"] if stat else 0, "hold": stat["hold"] if stat else 0,
+                "lost": stat["lost"] if stat else 0, "chats": "",
+                "e_cur": sx.get(f"e_{cur}", "🍄"), "l_cur": sx.get(f"l_{cur}", "Грибы"),
+            }
+            text = await settings.profile_template()
+            text = text.format(**data)
         except Exception:
+            log.exception("!профиль упал на построении текста")
             text = (f"{sx['e_profile']} <b>Профиль</b>\nID: <code>{uid}</code>\n\n"
                     f"{sx['e_mushrooms']} {fmt(b['mushrooms'])} · "
                     f"{sx['e_coins']} {fmt(b['coins'])} · "
