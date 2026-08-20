@@ -51,7 +51,7 @@ async def cb_bank(c: CallbackQuery):
     lines = [
         "🏦 <b>Банк</b>\n",
         f"Курс: <b>{pm:g}</b> 💠 за 1 млн 🍄 · <b>{pc:g}</b> 💠 за 10 млн 🪙",
-        f"Комиссия обмена: <b>{fee:g}%</b>",
+        f"Комиссия грибы↔коины: <b>{fee:g}%</b> · обмен шимкоинов без комиссии",
         f"Твой баланс: {fmt(b['mushrooms'])} 🍄 · {fmt(b['coins'])} 🪙 · {fmt(b['shimcoins'])} 💠\n",
     ]
     if stopped:
@@ -156,12 +156,17 @@ async def exch_amount(msg: Message, state: FSMContext):
     await state.update_data(exch={**ex, "amount": amount, "got": got})
     src_e = {"mushrooms": "🍄", "coins": "🪙", "shimcoins": "💠"}[src]
     dst_e = {"mushrooms": "🍄", "coins": "🪙", "shimcoins": "💠"}[dst]
-    fee = await bank.fee_pct()
+    is_gm = {src, dst} == {"mushrooms", "coins"}
+    if is_gm:
+        fee = await bank.fee_pct()
+        fee_line = f"Комиссия банка: {fee:g}%\n"
+    else:
+        fee_line = "Обмен шимкоинов — без комиссии.\n"
     await ui.answer(msg,
         f"🧾 <b>Проверь обмен</b>\n\n"
         f"Отдаёшь: <b>{fmt(amount)}</b> {src_e}\n"
         f"Получаешь: <b>{fmt(got)}</b> {dst_e}\n"
-        f"Комиссия банка: {fee:g}%\n\n"
+        f"{fee_line}\n"
         f"Подтверждаешь?",
         reply_markup=await _exch_confirm())
 
