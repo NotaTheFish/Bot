@@ -333,13 +333,19 @@ async def find_input(msg: Message, state: FSMContext):
         "SELECT reason, delta, currency, created_at FROM rb_ledger WHERE tg_id=$1 "
         "ORDER BY id DESC LIMIT 10", row["tg_id"])
     sx = await settings.ctx()
+    def _delta_fmt(delta, cur):
+        if cur == "shimcoins":
+            sign = "+" if delta >= 0 else "−"
+            return f"{sign}{shk_fmt(abs(delta))}"
+        return f"{delta:+}"
     hist = "\n".join(f"  {r['created_at']:%d.%m %H:%M} {r['reason']} "
-                     f"{r['delta']:+} {sx['e_' + r['currency']]}" for r in led) or "  пусто"
+                     f"{_delta_fmt(r['delta'], r['currency'])} {sx['e_' + r['currency']]}" for r in led) or "  пусто"
     await ui.answer(msg, 
         f"{sx['e_profile']} <b>{row['first_name']}</b> @{row['username'] or '—'}\n"
         f"<code>{row['tg_id']}</code>{' 🚫 БАН' if row['banned'] else ''}\n\n"
         f"{sx['e_balance']} {sx['e_mushrooms']} {fmt(b['mushrooms'])} | "
-        f"{sx['e_coins']} {fmt(b['coins'])}\n"
+        f"{sx['e_coins']} {fmt(b['coins'])} | "
+        f"{sx['e_shimcoins']} {shk_fmt(b['shimcoins'])}\n"
         f"{sx['e_refs']} {sx['e_paid']} {st['paid']} | {sx['e_hold']} {st['hold']} | "
         f"{sx['e_lost']} {st['lost']}\n"
         f"📅 В боте с {row['created_at']:%d.%m.%Y}\n\n"
@@ -616,7 +622,8 @@ async def _adj_show_user_card(c, tg_id):
         f"{sx['e_profile']} <b>{row['first_name']}</b> @{row['username'] or '—'}\n"
         f"<code>{row['tg_id']}</code>{' 🚫 БАН' if row['banned'] else ''}\n\n"
         f"{sx['e_balance']} {sx['e_mushrooms']} {fmt(b['mushrooms'])} | "
-        f"{sx['e_coins']} {fmt(b['coins'])}",
+        f"{sx['e_coins']} {fmt(b['coins'])} | "
+        f"{sx['e_shimcoins']} {shk_fmt(b['shimcoins'])}",
         reply_markup=await kb.find_card(tg_id, row["banned"], await can_manage(c.from_user.id)))
 
 
