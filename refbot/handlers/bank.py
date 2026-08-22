@@ -17,7 +17,7 @@ import db
 import keyboards as kb
 from config import SUPER_ADMINS, BANK_MUSH_UNIT, BANK_COIN_UNIT, BANK_EXCH_DAILY_LIMIT
 from services import bank, settings, ui
-from services.amount_parse import parse_amount
+from services.amount_parse import parse_amount, shk_parse, shk_fmt
 from keyboards import btn
 
 router = Router()
@@ -52,22 +52,32 @@ async def cb_bank(c: CallbackQuery):
         "🏦 <b>Банк</b>\n",
         f"Курс: <b>{pm:g}</b> 💠 за 1 млн 🍄 · <b>{pc:g}</b> 💠 за 10 млн 🪙",
         f"Комиссия грибы↔коины: <b>{fee:g}%</b> · обмен шимкоинов без комиссии",
-        f"Твой баланс: {fmt(b['mushrooms'])} 🍄 · {fmt(b['coins'])} 🪙 · {fmt(b['shimcoins'])} 💠\n",
+        f"Твой баланс: {fmt(b['mushrooms'])} 🍄 · {fmt(b['coins'])} 🪙 · {shk_fmt(b['shimcoins'])} 💠\n",
     ]
     if stopped:
         lines.append("🛑 Обмен грибы↔коины сейчас <b>остановлен</b>.")
     else:
         lines.append(f"Обменов грибы↔коины сегодня осталось: <b>{left}</b> из {BANK_EXCH_DAILY_LIMIT}")
+    # пометка о выключенных товарах
+    off = []
+    if not await bank.item_enabled("mushrooms"):
+        off.append("грибы 🍄")
+    if not await bank.item_enabled("coins"):
+        off.append("коины 🪙")
+    if off:
+        lines.append(f"⛔️ Сейчас недоступны: {', '.join(off)}")
     lines.append("\nВыбери обмен:")
     await ui.edit(c.message, "\n".join(lines), reply_markup=await _bank_menu(stopped))
     await c.answer()
 
 
 async def _bank_menu(stopped: bool):
-    """Шаг 1: что ПОЛУЧИТЬ. Один эмодзи на кнопку."""
+    """Шаг 1: что ПОЛУЧИТЬ. Один эмодзи на кнопку. Выключенные товары скрыты."""
     k = InlineKeyboardBuilder()
-    await btn(k, "🍄 Получить грибы", "bankget:mushrooms")
-    await btn(k, "🪙 Получить коины", "bankget:coins")
+    if await bank.item_enabled("mushrooms"):
+        await btn(k, "🍄 Получить грибы", "bankget:mushrooms")
+    if await bank.item_enabled("coins"):
+        await btn(k, "🪙 Получить коины", "bankget:coins")
     await btn(k, "Меню", "menu", "back")
     k.adjust(1)
     return k.as_markup()
@@ -85,12 +95,17 @@ async def cb_bank_get(c: CallbackQuery, state: FSMContext):
     dst = c.data.split(":")[1]
     if dst not in ("mushrooms", "coins"):
         return await c.answer("Ошибка.", show_alert=True)
+    if not await bank.item_enabled(dst):
+        return await c.answer("Этот товар сейчас недоступен.", show_alert=True)
     stopped = await bank.is_stopped()
     k = InlineKeyboardBuilder()
     dst_name = "грибы" if dst == "mushrooms" else "коины"
     for src, label in _PAY_FOR[dst]:
         # обмен грибы<->коины заблокирован при стопе; шимкоины — всегда доступны
         if {src, dst} == {"mushrooms", "coins"} and stopped:
+            continue
+        # нельзя платить выключенным товаром (грибы/коины)
+        if src in ("mushrooms", "coins") and not await bank.item_enabled(src):
             continue
         await btn(k, label, f"exch2:{src}:{dst}")
     await btn(k, "Назад", "bank", "back")
@@ -117,14 +132,26 @@ async def cb_exch2_pick(c: CallbackQuery, state: FSMContext):
     await state.update_data(exch={"src": src, "dst": dst})
     b = await db.balances(c.from_user.id)
     src_name = {"mushrooms": "грибов", "coins": "коинов", "shimcoins": "шимкоинов"}[src]
-    fee_note = ""
-    if {src, dst} != {"mushrooms", "coins"}:
-        fee_note = "\nОбмен шимкоинов — без комиссии."
-    await ui.edit(c.message,
-        f"🏦 Платишь <b>{src_name}</b>\n\n"
-        f"У тебя: <b>{fmt(b[src])}</b> {src_name}{fee_note}\n\n"
-        f"Сколько {src_name} обменять? Напиши число (<code>100к</code>, <code>1м</code>).",
-        reply_markup=await _exch_cancel())
+    dst_name = {"mushrooms": "грибов", "coins": "коинов"}.get(dst, "")
+    if src == "shimcoins":
+        # два режима ввода для покупки за шимкоины
+        await ui.edit(c.message,
+            f"🏦 Платишь <b>шимкоинами</b> 💠 — без комиссии\n"
+            f"У тебя: <b>{shk_fmt(b['shimcoins'])}</b> 💠\n\n"
+            f"Два способа указать сумму:\n"
+            f"• <code>25$</code> — <b>отдать</b> 25 шимкоинов (получишь сколько выйдет)\n"
+            f"• <code>25м</code> — <b>получить</b> 25 млн {dst_name} (спишется нужное число 💠)\n\n"
+            f"Знак <b>$</b> = считать в шимкоинах. Без него — сколько {dst_name} хочешь получить.",
+            reply_markup=await _exch_cancel())
+    else:
+        fee_note = ""
+        if {src, dst} != {"mushrooms", "coins"}:
+            fee_note = "\nОбмен шимкоинов — без комиссии."
+        await ui.edit(c.message,
+            f"🏦 Платишь <b>{src_name}</b>\n\n"
+            f"У тебя: <b>{fmt(b[src])}</b> {src_name}{fee_note}\n\n"
+            f"Сколько {src_name} обменять? Напиши число (<code>100к</code>, <code>1м</code>).",
+            reply_markup=await _exch_cancel())
     await c.answer()
 
 
@@ -141,21 +168,60 @@ async def exch_amount(msg: Message, state: FSMContext):
     ex = data.get("exch")
     if not ex:
         return await state.clear()
-    amount = parse_amount(msg.text or "")
-    if amount is None or amount <= 0:
-        return await ui.answer(msg, "Нужно положительное число.")
     src, dst = ex["src"], ex["dst"]
-    # баланс
+    raw = (msg.text or "").strip()
+
+    # Для оплаты шимкоинами два режима ввода:
+    #   "25$" / "$25" / "25 $"  -> отдать 25 ШК (прямой расчёт), ввод в ЦЕНТАХ
+    #   "25м"  (без $)          -> хочу получить 25м dst, посчитать сколько ШК (обратный)
+    # Для грибы<->коины знак $ не нужен — всегда прямой расчёт по отдаваемой валюте.
+    has_dollar = "$" in raw
+    buy_mode = (src == "shimcoins") and not has_dollar
+
     b = await db.balances(msg.from_user.id)
-    if amount > b[src]:
-        return await ui.answer(msg, f"Недостаточно. У тебя {fmt(b[src])}.")
-    got, shk_after, err = await bank.quote(src, dst, amount)
-    if err:
-        return await ui.answer(msg, f"⚠️ {err}")
+
+    if buy_mode:
+        # обратный расчёт: raw = желаемое кол-во dst (грибы/коины, целое)
+        amount = parse_amount(raw)
+        if amount is None or amount <= 0:
+            return await ui.answer(msg, "Нужно положительное число.")
+        need_cents, got, err = await bank.quote_reverse(dst, amount)
+        if err:
+            return await ui.answer(msg, f"⚠️ {err}")
+        if need_cents > b["shimcoins"]:
+            return await ui.answer(msg,
+                f"Нужно <b>{shk_fmt(need_cents)}</b> 💠, а у тебя {shk_fmt(b['shimcoins'])} 💠.")
+        spend, real_got = need_cents, got
+    elif src == "shimcoins":
+        # прямой расчёт, платишь шимкоинами: ввод в ШК ($), парсим в ЦЕНТЫ
+        spend_cents = shk_parse(raw)
+        if spend_cents is None or spend_cents <= 0:
+            return await ui.answer(msg, "Нужно положительное число.")
+        if spend_cents > b["shimcoins"]:
+            return await ui.answer(msg, f"Недостаточно. У тебя {shk_fmt(b['shimcoins'])} 💠.")
+        got, cents_after, err = await bank.quote(src, dst, spend_cents)
+        if err:
+            return await ui.answer(msg, f"⚠️ {err}")
+        spend, real_got = spend_cents, got
+    else:
+        # прямой расчёт, отдаёшь грибы/коины (целые)
+        amount = parse_amount(raw)
+        if amount is None or amount <= 0:
+            return await ui.answer(msg, "Нужно положительное число.")
+        if amount > b[src]:
+            return await ui.answer(msg, f"Недостаточно. У тебя {fmt(b[src])}.")
+        got, cents_after, err = await bank.quote(src, dst, amount)
+        if err:
+            return await ui.answer(msg, f"⚠️ {err}")
+        spend, real_got = amount, got
+
     # предпросмотр
-    await state.update_data(exch={**ex, "amount": amount, "got": got})
+    await state.update_data(exch={**ex, "amount": spend, "got": real_got})
     src_e = {"mushrooms": "🍄", "coins": "🪙", "shimcoins": "💠"}[src]
     dst_e = {"mushrooms": "🍄", "coins": "🪙", "shimcoins": "💠"}[dst]
+    # ШК показываем с копейками (shk_fmt), грибы/коины — обычным fmt
+    spend_s = shk_fmt(spend) if src == "shimcoins" else fmt(spend)
+    got_s = shk_fmt(real_got) if dst == "shimcoins" else fmt(real_got)
     is_gm = {src, dst} == {"mushrooms", "coins"}
     if is_gm:
         fee = await bank.fee_pct()
@@ -164,8 +230,8 @@ async def exch_amount(msg: Message, state: FSMContext):
         fee_line = "Обмен шимкоинов — без комиссии.\n"
     await ui.answer(msg,
         f"🧾 <b>Проверь обмен</b>\n\n"
-        f"Отдаёшь: <b>{fmt(amount)}</b> {src_e}\n"
-        f"Получаешь: <b>{fmt(got)}</b> {dst_e}\n"
+        f"Отдаёшь: <b>{spend_s}</b> {src_e}\n"
+        f"Получаешь: <b>{got_s}</b> {dst_e}\n"
         f"{fee_line}\n"
         f"Подтверждаешь?",
         reply_markup=await _exch_confirm())
@@ -196,10 +262,12 @@ async def cb_exch_go(c: CallbackQuery, state: FSMContext):
         return await c.answer(err, show_alert=True)
     src_e = {"mushrooms": "🍄", "coins": "🪙", "shimcoins": "💠"}[src]
     dst_e = {"mushrooms": "🍄", "coins": "🪙", "shimcoins": "💠"}[dst]
+    spend_s = shk_fmt(amount) if src == "shimcoins" else fmt(amount)
+    got_s = shk_fmt(got) if dst == "shimcoins" else fmt(got)
     await ui.edit(c.message,
         f"✅ <b>Обмен выполнен!</b>\n\n"
-        f"−{fmt(amount)} {src_e}\n"
-        f"+{fmt(got)} {dst_e}",
+        f"−{spend_s} {src_e}\n"
+        f"+{got_s} {dst_e}",
         reply_markup=await _back_bank())
     await c.answer("Готово!")
 
@@ -231,27 +299,47 @@ async def _show_bank_admin(c):
     pc = await bank.price_coin()
     fee = await bank.fee_pct()
     stopped = await bank.is_stopped()
+    mush_on = await bank.item_enabled("mushrooms")
+    coin_on = await bank.item_enabled("coins")
     await ui.edit(c.message,
         f"🏦 <b>Управление банком</b>\n\n"
         f"Курс грибов: <b>{pm:g}</b> 💠 за 1 млн 🍄\n"
         f"Курс коинов: <b>{pc:g}</b> 💠 за 10 млн 🪙\n"
         f"Комиссия: <b>{fee:g}%</b>\n"
-        f"Обмен грибы↔коины: {'🛑 ОСТАНОВЛЕН' if stopped else '🟢 работает'}",
-        reply_markup=await _bank_admin_kb(stopped))
+        f"Обмен грибы↔коины: {'🛑 ОСТАНОВЛЕН' if stopped else '🟢 работает'}\n"
+        f"Грибы в банке: {'🟢 вкл' if mush_on else '🔴 выкл'}\n"
+        f"Коины в банке: {'🟢 вкл' if coin_on else '🔴 выкл'}",
+        reply_markup=await _bank_admin_kb(stopped, mush_on, coin_on))
     if hasattr(c, "answer"):
         with contextlib.suppress(Exception):
             await c.answer()
 
 
-async def _bank_admin_kb(stopped: bool):
+async def _bank_admin_kb(stopped: bool, mush_on: bool = True, coin_on: bool = True):
     k = InlineKeyboardBuilder()
     await btn(k, "🍄 Задать курс грибов", "bankset:mush")
     await btn(k, "🪙 Задать курс коинов", "bankset:coin")
     await btn(k, "💸 Задать комиссию", "bankset:fee")
     await btn(k, "🟢 Включить обмен" if stopped else "🛑 Остановить обмен", "bank_stop")
+    # тумблеры товаров: выключенный товар пропадает из всех операций банка
+    await btn(k, f"🍄 Грибы: {'выключить' if mush_on else 'включить'}", "bankitem:mushrooms")
+    await btn(k, f"🪙 Коины: {'выключить' if coin_on else 'включить'}", "bankitem:coins")
     await btn(k, "Админка", "admin", "back")
-    k.adjust(2, 1, 1, 1)
+    k.adjust(2, 1, 1, 2, 1)
     return k.as_markup()
+
+
+@router.callback_query(F.data.startswith("bankitem:"))
+async def cb_bank_item(c: CallbackQuery):
+    if not await _is_admin(c.from_user.id):
+        return await c.answer("Нет доступа.", show_alert=True)
+    item = c.data.split(":")[1]
+    if item not in ("mushrooms", "coins"):
+        return await c.answer("Ошибка.", show_alert=True)
+    now_on = await bank.toggle_item(item, c.from_user.id)
+    name = "Грибы" if item == "mushrooms" else "Коины"
+    await c.answer(f"{name}: {'включены' if now_on else 'выключены'}")
+    await _show_bank_admin(c)
 
 
 @router.callback_query(F.data == "bank_stop")

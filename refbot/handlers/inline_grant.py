@@ -56,9 +56,10 @@ _CUR_WORDS = {
 def _parse_command(text: str):
     """
     «+1м грибы» -> (sign=+1, amount, currency). «-500к коины» -> (-1, ...).
-    Возвращает (sign, amount, currency) или None.
+    Для шимкоинов amount возвращается в ЦЕНТАХ (1 ШК = 100 центов), с поддержкой
+    дробей: «+20.50 шимкоины» -> 2050 центов. Возвращает (sign, amount, currency) или None.
     """
-    from services.amount_parse import parse_amount
+    from services.amount_parse import parse_amount, shk_parse
     t = (text or "").strip().lower()
     if not t:
         return None
@@ -69,9 +70,7 @@ def _parse_command(text: str):
     parts = t.split()
     if len(parts) < 2:
         return None
-    amount = parse_amount(parts[0])
-    if amount is None or amount <= 0:
-        return None
+    # сначала определяем валюту (от неё зависит парсинг суммы)
     cur = None
     for w in parts[1:]:
         if w in _CUR_WORDS:
@@ -79,13 +78,28 @@ def _parse_command(text: str):
             break
     if cur is None:
         return None
+    # шимкоины парсим в центы (дробные), остальное — целыми
+    if cur == "shimcoins":
+        amount = shk_parse(parts[0])
+    else:
+        amount = parse_amount(parts[0])
+    if amount is None or amount <= 0:
+        return None
     return sign, amount, cur
 
 
-def _text_plain(sign, amount, cur_emoji):
+def _fmt_grant(amount, cur):
+    """Сумма гранта: шимкоины с копейками (центы -> shk_fmt), остальное целыми."""
+    from services.amount_parse import shk_fmt
+    if cur == "shimcoins":
+        return shk_fmt(amount)
+    return f"{amount:,}".replace(",", " ")
+
+
+def _text_plain(sign, amount, cur_emoji, cur="mushrooms"):
     """Текст с ОБЫЧНЫМ эмодзи (для первичной отправки через inline)."""
     verb = "Начислить" if sign > 0 else "Изъять"
-    amt = f"{amount:,}".replace(",", " ")
+    amt = _fmt_grant(amount, cur)
     return (f"🎁 <b>{verb} {amt} {cur_emoji}</b>\n\n"
             f"Нажми «Подтвердить», чтобы получить.")
 
@@ -119,7 +133,7 @@ async def on_inline(q: InlineQuery):
     sx = await settings.ctx()
     cur_emoji_plain = {"mushrooms": "🍄", "coins": "🪙", "shimcoins": "💠"}[cur]
     verb = "Начислить" if sign > 0 else "Изъять"
-    amt = f"{amount:,}".replace(",", " ")
+    amt = _fmt_grant(amount, cur)
 
     _grants[token] = {
         "sign": sign, "amount": amount, "cur": cur,
@@ -133,7 +147,7 @@ async def on_inline(q: InlineQuery):
         title=f"{verb} {amt} {cur_emoji_plain}",
         description="Нажми — отправится карточка с кнопкой «Подтвердить»",
         input_message_content=InputTextMessageContent(
-            message_text=_text_plain(sign, amount, cur_emoji_plain),
+            message_text=_text_plain(sign, amount, cur_emoji_plain, cur),
             parse_mode="HTML"),
         reply_markup=_grant_kb(token))
     await q.answer([result], cache_time=0, is_personal=True)
@@ -153,7 +167,7 @@ async def on_chosen(ch: ChosenInlineResult):
     sx = await settings.ctx()
     with contextlib.suppress(Exception):
         text, ents = render.render(
-            _text_plain(g["sign"], g["amount"], sx["e_" + g["cur"]]), await _em())
+            _text_plain(g["sign"], g["amount"], sx["e_" + g["cur"]], g["cur"]), await _em())
         if ents is not None:
             await ch.bot.edit_message_text(
                 inline_message_id=ch.inline_message_id,
@@ -217,14 +231,15 @@ async def cb_grab(c: CallbackQuery):
 
     sx = await settings.ctx()
     e = sx["e_" + cur]
-    amt = f"{amount:,}".replace(",", " ")
+    amt = _fmt_grant(amount, cur)
+    bal_s = _fmt_grant(new_bal, cur)
     verb_done = "начислено" if sign > 0 else "изъято"
 
     # редактируем inline-сообщение — результат
     with contextlib.suppress(Exception):
         text, ents = render.render(
             f"✅ <b>Готово!</b> {'+' if sign>0 else '−'}{amt} {e}\n"
-            f"Баланс: {new_bal:,} {e}".replace(",", " "), await _em())
+            f"Баланс: {bal_s} {e}", await _em())
         if ents is not None:
             await c.bot.edit_message_text(
                 inline_message_id=g["inline_message_id"],
@@ -243,6 +258,6 @@ async def cb_grab(c: CallbackQuery):
         await ui.send(c.bot, g["admin_id"],
             f"🔔 Активацию забрал: {uname} (<code>{grabber_id}</code>)\n"
             f"{verb_done.capitalize()}: <b>{amt}</b> {e}\n"
-            f"Его баланс: {new_bal:,} {e}".replace(",", " "))
+            f"Его баланс: {bal_s} {e}")
 
     _grants.pop(token, None)

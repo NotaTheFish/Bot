@@ -73,61 +73,112 @@ async def toggle_stop(actor: int) -> bool:
     return new == "1"
 
 
-# ---------------- цена валюты в ШК (за 1 единицу) ----------------
-async def _shk_per_mushroom() -> float:
-    return (await price_mush()) / BANK_MUSH_UNIT
+# ---------------- вкл/выкл конкретного товара ----------------
+# Если товар выключен, он пропадает из ВСЕХ операций банка: нельзя купить его
+# за шимкоины и нельзя получить/отдать его в обмене грибы<->коины.
+async def item_enabled(item: str) -> bool:
+    """item из {mushrooms, coins}. По умолчанию включён."""
+    return await settings.get(f"bank.item_off.{item}", "0") != "1"
 
 
-async def _shk_per_coin() -> float:
-    return (await price_coin()) / BANK_COIN_UNIT
+async def toggle_item(item: str, actor: int) -> bool:
+    """Переключить доступность товара. Возвращает новое состояние (True = включён)."""
+    now_on = await item_enabled(item)
+    await settings.set(f"bank.item_off.{item}", "1" if now_on else "0", actor)
+    return not now_on
+
+
+# ---------------- цена валюты в ЦЕНТАХ шимкоина (за 1 единицу) ----------------
+# Шимкоин хранится в центах (1 ШК = 100 центов). Курс price_mush = ШК за 1 млн грибов,
+# значит в центах за 1 гриб: price_mush * 100 / BANK_MUSH_UNIT.
+async def _cents_per_mushroom() -> float:
+    return (await price_mush()) * 100.0 / BANK_MUSH_UNIT
+
+
+async def _cents_per_coin() -> float:
+    return (await price_coin()) * 100.0 / BANK_COIN_UNIT
 
 
 # ---------------- расчёт обмена (без записи) ----------------
-async def quote(src: str, dst: str, amount: int) -> tuple[int, float, str]:
+async def quote(src: str, dst: str, amount: int) -> tuple[int, int, str]:
     """
     Рассчитать обмен amount единиц src -> dst.
-    Возвращает (получит_dst, стоимость_в_ШК_после_комиссии, ошибка|"").
-    src/dst из {mushrooms, coins, shimcoins}. Всегда округление ВНИЗ.
-    Комиссия удерживается со стоимости в ШК (уменьшает выдачу).
+    ВАЖНО: для src/dst = shimcoins величина в ЦЕНТАХ (шимкоин хранится в центах).
+    Для грибов/коинов — в обычных единицах.
+    Возвращает (получит_dst, стоимость_в_центах_после_комиссии, ошибка|"").
+    Округление ВНИЗ (в пользу казны). Комиссия только грибы<->коины.
     """
     if amount <= 0:
-        return 0, 0.0, "Сумма должна быть больше нуля."
+        return 0, 0, "Сумма должна быть больше нуля."
     if dst == "shimcoins":
-        return 0, 0.0, "Менять на шимкоины нельзя."
+        return 0, 0, "Менять на шимкоины нельзя."
     if src == dst:
-        return 0, 0.0, "Одинаковые валюты."
+        return 0, 0, "Одинаковые валюты."
+    # выключенный товар недоступен ни как получаемый (dst), ни как отдаваемый (src)
+    for side in (src, dst):
+        if side in ("mushrooms", "coins") and not await item_enabled(side):
+            name = "Грибы" if side == "mushrooms" else "Коины"
+            return 0, 0, f"{name} сейчас недоступны в банке."
 
     fee = await fee_pct() / 100.0
-    # Комиссия ТОЛЬКО на обмен грибы<->коины (спекулятивный). Операции с шимкоинами
-    # (трата денег игрока: ШК->грибы, ШК->коины) — БЕЗ комиссии.
     is_gm = {src, dst} == {"mushrooms", "coins"}
     if not is_gm:
         fee = 0.0
 
-    # стоимость src в ШК
+    # стоимость src в ЦЕНТАХ
     if src == "mushrooms":
-        shk = amount * await _shk_per_mushroom()
+        cents = amount * await _cents_per_mushroom()
     elif src == "coins":
-        shk = amount * await _shk_per_coin()
+        cents = amount * await _cents_per_coin()
     elif src == "shimcoins":
-        shk = float(amount)
+        cents = float(amount)   # amount уже в центах
     else:
-        return 0, 0.0, "Неизвестная валюта."
+        return 0, 0, "Неизвестная валюта."
 
     # комиссия срезает часть стоимости
-    shk_after = shk * (1.0 - fee)
+    cents_after = cents * (1.0 - fee)
 
-    # конвертируем ШК -> dst
+    # конвертируем центы -> dst
     if dst == "mushrooms":
-        got = int(shk_after / await _shk_per_mushroom())
+        got = int(cents_after / await _cents_per_mushroom())
     elif dst == "coins":
-        got = int(shk_after / await _shk_per_coin())
+        got = int(cents_after / await _cents_per_coin())
     else:
-        return 0, 0.0, "Неизвестная валюта."
+        return 0, 0, "Неизвестная валюта."
 
     if got <= 0:
-        return 0, 0.0, "Слишком мало — на выходе ноль. Увеличь сумму."
-    return got, shk_after, ""
+        return 0, 0, "Слишком мало — на выходе ноль. Увеличь сумму."
+    # стоимость в центах округляем ВНИЗ до целого цента (списываем целые центы)
+    return got, int(cents_after), ""
+
+
+async def quote_reverse(dst: str, want: int) -> tuple[int, int, str]:
+    """
+    Обратный расчёт для ПОКУПКИ за шимкоины: игрок хочет получить `want` единиц dst
+    (грибы/коины) — сколько ЦЕНТОВ шимкоина отдать и сколько реально получит.
+    Возвращает (нужно_центов, реально_получит_dst, ошибка|"").
+    Без комиссии (покупка за ШК). Центы округляем ВВЕРХ — игрок получит не меньше
+    запрошенного; фактическая выдача пересчитывается от округлённых центов.
+    """
+    import math
+    if want <= 0:
+        return 0, 0, "Сумма должна быть больше нуля."
+    if dst in ("mushrooms", "coins") and not await item_enabled(dst):
+        name = "Грибы" if dst == "mushrooms" else "Коины"
+        return 0, 0, f"{name} сейчас недоступны в банке."
+    if dst == "mushrooms":
+        per = await _cents_per_mushroom()
+    elif dst == "coins":
+        per = await _cents_per_coin()
+    else:
+        return 0, 0, "Купить можно грибы или коины."
+    if per <= 0:
+        return 0, 0, "Курс не задан."
+    need_cents = math.ceil(want * per)
+    if need_cents <= 0:
+        need_cents = 1
+    got = int(need_cents / per)
+    return need_cents, got, ""
 
 
 # ---------------- дневной лимит грибы<->коины ----------------

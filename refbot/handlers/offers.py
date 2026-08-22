@@ -24,7 +24,7 @@ import db
 import keyboards as kb
 from config import SUPER_ADMINS
 from services import settings, ui
-from services.amount_parse import parse_amount
+from services.amount_parse import parse_amount, shk_fmt, shk_parse
 
 router = Router()
 log = logging.getLogger("offers")
@@ -355,7 +355,7 @@ async def _ask_buy_amount(c, state: FSMContext, oid: int, cur: str):
     await ui.edit(c.message,
         f"🏷 Покупка: <b>{ename}</b>\n"
         f"Курс: <b>{price}</b> Шимк. за {unit_txt}\n"
-        f"У тебя: <b>{fmt(bal['shimcoins'])}</b> 💠\n\n"
+        f"У тебя: <b>{shk_fmt(bal['shimcoins'])}</b> 💠\n\n"
         f"Сколько хочешь? Варианты ввода:\n"
         f"• <code>5м</code> — купить 5 млн {('грибов' if cur=='mushrooms' else 'коинов')}\n"
         f"• <code>5$</code> — потратить 5 Шимкоинов (получишь по курсу)",
@@ -365,33 +365,34 @@ async def _ask_buy_amount(c, state: FSMContext, oid: int, cur: str):
 
 def _compute_deal(price: int, unit: int, cur: str, text: str):
     """
-    По вводу вернуть (amount_currency, cost_shimcoins) или (None, ошибка-строка).
-    '5м' -> купить 5млн валюты, стоимость = round(5млн/unit*price).
-    '5$' -> потратить 5 Шимкоинов, получить = round(5/price*unit) валюты.
-    Всегда пропорционально (дробно): на 6 Шимк при курсе 5/млн -> 1.2млн.
+    По вводу вернуть (amount_currency, cost_ЦЕНТОВ) или (None, ошибка-строка).
+    Цена оффера (price) задаётся продавцом в ШК за unit. Шимкоины хранятся в ЦЕНТАХ,
+    поэтому стоимость возвращаем в центах (price * 100).
+    '5м' -> купить 5млн валюты, стоимость в центах = ceil(5млн/unit*price*100).
+    '5$' -> потратить 5 Шимкоинов (500 центов), получить пропорционально валюты.
     """
+    import math
     t = (text or "").strip().lower().replace(" ", "")
     if not t:
         return None, "Пусто. Введи число."
+    price_cents = price * 100  # цена за unit в центах
     # режим Шимкоинов: заканчивается на $ или шимк
     if t.endswith("$") or t.endswith("шимк") or t.endswith("ш"):
         num = t.rstrip("$шимк")
-        val = parse_amount(num)
-        if val is None or val <= 0:
+        spend_cents = shk_parse(num)   # ввод ШК -> центы (поддержка дробных)
+        if spend_cents is None or spend_cents <= 0:
             return None, "Не понял количество Шимкоинов."
-        spend = val
-        # получаем валюты пропорционально: (spend / price) * unit
-        got = int(spend / price * unit)
+        # получаем валюты пропорционально: (spend_cents / price_cents) * unit
+        got = int(spend_cents / price_cents * unit)
         if got <= 0:
             return None, "Слишком мало для покупки хоть чего-то."
-        return got, spend
+        return got, spend_cents
     # режим количества валюты: '5м', '100к', '1000000'
     amt = parse_amount(t)
     if amt is None or amt <= 0:
         return None, "Не понял количество."
-    # стоимость в Шимкоинах пропорционально: (amt / unit) * price, округляем вверх
-    import math
-    cost = math.ceil(amt / unit * price)
+    # стоимость в центах пропорционально, округляем вверх
+    cost = math.ceil(amt / unit * price_cents)
     return amt, cost
 
 
@@ -426,8 +427,8 @@ async def offer_buy_input(msg: Message, state: FSMContext):
     bal = await db.balances(msg.from_user.id)
     if cost > bal["shimcoins"]:
         return await ui.answer(msg,
-            f"Не хватает Шимкоинов. Нужно <b>{fmt(cost)}</b> 💠, "
-            f"у тебя <b>{fmt(bal['shimcoins'])}</b> 💠.")
+            f"Не хватает Шимкоинов. Нужно <b>{shk_fmt(cost)}</b> 💠, "
+            f"у тебя <b>{shk_fmt(bal['shimcoins'])}</b> 💠.")
 
     # предпросмотр с подтверждением
     await state.update_data(buy={**buy, "amount": amount, "cost": cost})
@@ -435,7 +436,7 @@ async def offer_buy_input(msg: Message, state: FSMContext):
     await ui.answer(msg,
         f"🧾 <b>Проверь покупку</b>\n\n"
         f"Получишь: <b>{fmt(amount)}</b> {ename}\n"
-        f"Заплатишь: <b>{fmt(cost)}</b> 💠 Шимкоинов\n"
+        f"Заплатишь: <b>{shk_fmt(cost)}</b> 💠 Шимкоинов\n"
         f"Курс: {price} Шимк. за {'1млн' if cur=='mushrooms' else '100млн'}\n\n"
         f"Уверен?",
         reply_markup=await kb.offer_buy_confirm())
@@ -494,7 +495,7 @@ async def cb_offer_buy_go(c: CallbackQuery, state: FSMContext):
     await ui.edit(c.message,
         f"✅ <b>Куплено!</b>\n\n"
         f"+{fmt(amount)} {ename}\n"
-        f"−{fmt(cost)} 💠 Шимкоинов",
+        f"−{shk_fmt(cost)} 💠 Шимкоинов",
         reply_markup=await kb.offers_back_user())
     await c.answer("Готово!")
 
@@ -506,7 +507,7 @@ async def cb_offer_buy_go(c: CallbackQuery, state: FSMContext):
             await ui.send(c.bot, admin_id,
                 f"🛒 Покупка по акции #{oid}\n"
                 f"Игрок <code>{uid}</code> купил {fmt(amount)} "
-                f"{'грибов' if cur=='mushrooms' else 'коинов'} за {fmt(cost)} 💠.")
+                f"{'грибов' if cur=='mushrooms' else 'коинов'} за {shk_fmt(cost)} 💠.")
 
 
 class _OfferGone(Exception):

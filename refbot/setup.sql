@@ -248,6 +248,18 @@ CREATE TABLE IF NOT EXISTS rb_bank_exch (
 );
 
 
+-- МИГРАЦИЯ: шимкоины переходят на хранение В ЦЕНТАХ (1 ШК = 100 центов).
+-- Выполняется ОДИН раз. Повторный запуск setup.sql не задваивает — флаг в rb_settings.
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM rb_settings WHERE key = 'shk.cents_migrated') THEN
+        UPDATE rb_balances SET amount = amount * 100 WHERE currency = 'shimcoins';
+        INSERT INTO rb_settings (key, value) VALUES ('shk.cents_migrated', '1')
+            ON CONFLICT (key) DO UPDATE SET value = '1';
+    END IF;
+END $$;
+
+
 -- ---------- 3. Индексы (без них защита от накрутки не работает) ----------
 CREATE INDEX        IF NOT EXISTS rb_ledger_user_idx      ON rb_ledger (tg_id, created_at DESC);
 CREATE UNIQUE INDEX IF NOT EXISTS rb_referrals_alive_idx  ON rb_referrals (chat_id, invitee_id) WHERE status IN ('hold','paid');

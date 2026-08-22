@@ -27,7 +27,7 @@ import keyboards as kb
 from config import (CASES, COIN_RATE, WHEEL_MIN_BET, WHEEL_MAX_BET, MINES_BETS,
                     MINES_PRESETS)
 from services import casino, settings, ui
-from services.amount_parse import parse_amount
+from services.amount_parse import parse_amount, shk_fmt, shk_parse
 from keyboards import btn
 
 router = Router()
@@ -113,7 +113,7 @@ async def cmd_balance_profile(msg: Message):
             cur = row["currency"] if row else "mushrooms"
             data = {
                 **sx, "id": uid,
-                "bal_m": fmt(b["mushrooms"]), "bal_c": fmt(b["coins"]), "bal_s": fmt(b["shimcoins"]),
+                "bal_m": fmt(b["mushrooms"]), "bal_c": fmt(b["coins"]), "bal_s": shk_fmt(b["shimcoins"]),
                 "hold_m": fmt(holds.get("mushrooms", 0)), "hold_c": fmt(holds.get("coins", 0)),
                 "paid": stat["paid"] if stat else 0, "hold": stat["hold"] if stat else 0,
                 "lost": stat["lost"] if stat else 0, "chats": "",
@@ -126,12 +126,12 @@ async def cmd_balance_profile(msg: Message):
             text = (f"{sx['e_profile']} <b>Профиль</b>\nID: <code>{uid}</code>\n\n"
                     f"{sx['e_mushrooms']} {fmt(b['mushrooms'])} · "
                     f"{sx['e_coins']} {fmt(b['coins'])} · "
-                    f"{sx['e_shimcoins']} {fmt(b['shimcoins'])}")
+                    f"{sx['e_shimcoins']} {shk_fmt(b['shimcoins'])}")
     else:
         text = (f"{sx['e_balance']} <b>Баланс</b>\n"
                 f"{sx['e_mushrooms']} {fmt(b['mushrooms'])}\n"
                 f"{sx['e_coins']} {fmt(b['coins'])}\n"
-                f"{sx['e_shimcoins']} {fmt(b['shimcoins'])}")
+                f"{sx['e_shimcoins']} {shk_fmt(b['shimcoins'])}")
 
     # Приватность: баланс чувствителен (сумма на виду) — при сбое эфемерки прячем.
     # Профиль менее критичен — при сбое показываем публично (лучше показать, чем спрятать).
