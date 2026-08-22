@@ -49,6 +49,9 @@ class Adjust(StatesGroup):
     amount = State()
 
 
+from services.amount_parse import shk_fmt
+
+
 def fmt(n: int) -> str:
     return f"{n:,}".replace(",", " ")
 
@@ -200,7 +203,8 @@ async def cb_top(c: CallbackQuery):
     for i, r in enumerate(rows, 1):
         name = f"@{r['username']}" if r["username"] else (r["first_name"] or str(r["tg_id"]))
         mark = "🚫" if r["banned"] else ""
-        lines.append(f"{i}. {mark}{name} — {fmt(r['amount'])} {sx['e_' + r['currency']]} "
+        amt_s = shk_fmt(r["amount"]) if r["currency"] == "shimcoins" else fmt(r["amount"])
+        lines.append(f"{i}. {mark}{name} — {amt_s} {sx['e_' + r['currency']]} "
                      f"<code>{r['tg_id']}</code>")
     await ui.edit(c.message, f"{sx['e_top']} <b>Топ-25 по балансу</b>\n\n" + ("\n".join(lines) or "пусто"),
                               reply_markup=await kb.admin_menu(await can_manage(c.from_user.id)))

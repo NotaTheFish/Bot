@@ -115,13 +115,17 @@ def shk_parse(text: str) -> int | None:
 def shk_fmt(cents: int) -> str:
     """
     Центы -> строка для показа: '15439678753' -> '154 396 787.53'.
-    Всегда 2 знака после точки (это деньги). Отрицательные — со знаком.
+    Целое число шимкоинов — без дробной части: '200000000' -> '2 000 000'.
+    Дробное — с двумя знаками: '2000050' -> '20 000.50'. Отрицательные со знаком.
     """
     neg = cents < 0
     cents = abs(int(cents))
     whole, cc = divmod(cents, SHK_CENTS)
     whole_s = f"{whole:,}".replace(",", " ")
-    return f"{'-' if neg else ''}{whole_s}.{cc:02d}"
+    sign = "-" if neg else ""
+    if cc == 0:
+        return f"{sign}{whole_s}"
+    return f"{sign}{whole_s}.{cc:02d}"
 
 
 def shk_to_float(cents: int) -> float:
