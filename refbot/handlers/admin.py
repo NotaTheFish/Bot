@@ -665,11 +665,16 @@ async def cb_adj_currency(c: CallbackQuery, state: FSMContext):
     sx = await settings.ctx()
     verb = "зачислить" if action == "give" else "изъять"
     b = await db.balances(tg_id)
+    bal_s = shk_fmt(b[cur]) if cur == "shimcoins" else fmt(b[cur])
+    # для шимкоинов подсказываем дробный ввод
+    hint = ("Напиши сумму. Для шимкоинов можно дробно: <code>10</code>, <code>2.28</code>."
+            if cur == "shimcoins"
+            else "Напиши сумму. Понимаю <code>100000</code>, <code>100к</code>, <code>1м</code>.")
     await ui.edit(c.message,
         f"{'➕' if action=='give' else '➖'} <b>{verb.capitalize()}</b> "
         f"{sx['e_' + cur]}\n\n"
-        f"Баланс игрока: {fmt(b[cur])}\n\n"
-        f"Напиши сумму. Понимаю <code>100000</code>, <code>100к</code>, <code>1м</code>."
+        f"Баланс игрока: {bal_s}\n\n"
+        f"{hint}"
         + ("\n\n⚠️ Изъятие может увести баланс в минус (штраф)." if action == "take" else ""),
         reply_markup=await kb.adj_amount(tg_id, action, cur, show_max=(action == "take")))
     await c.answer()
@@ -697,8 +702,13 @@ async def adj_amount_input(msg: Message, state: FSMContext):
     adj = data.get("adj")
     if not adj:
         return await state.clear()
-    from services.amount_parse import parse_amount
-    amount = parse_amount(msg.text or "")
+    from services.amount_parse import parse_amount, shk_parse
+    # шимкоины вводятся и хранятся в ЦЕНТАХ (поддержка дробей: 228 -> 22800 центов,
+    # 228.50 -> 22850). Грибы/коины — целыми.
+    if adj["cur"] == "shimcoins":
+        amount = shk_parse(msg.text or "")
+    else:
+        amount = parse_amount(msg.text or "")
     if amount is None or amount <= 0:
         return await ui.answer(msg, "Нужно положительное число. Например <code>100к</code>.")
     await state.clear()
@@ -718,21 +728,25 @@ async def _apply_adjust(event, tg_id: int, action: str, cur: str, amount: int):
     await db.audit(admin_id, "admin_adjust",
                    {"target": tg_id, "action": action, "amount": amount, "cur": cur, "new": new_bal})
 
+    # форматирование по валюте: шимкоины с центами, остальное целыми
+    amt_s = shk_fmt(amount) if cur == "shimcoins" else fmt(amount)
+    bal_s = shk_fmt(new_bal) if cur == "shimcoins" else fmt(new_bal)
+
     # уведомляем игрока
     with contextlib.suppress(Exception):
         if action == "give":
             await ui.send(event.bot if hasattr(event, "bot") else event.message.bot, tg_id,
-                f"🎁 Тебе начислили <b>{fmt(amount)}</b> {sx['e_' + cur]}!\n"
-                f"Баланс: {fmt(new_bal)} {sx['e_' + cur]}")
+                f"🎁 Тебе начислили <b>{amt_s}</b> {sx['e_' + cur]}!\n"
+                f"Баланс: {bal_s} {sx['e_' + cur]}")
         else:
             await ui.send(event.bot if hasattr(event, "bot") else event.message.bot, tg_id,
-                f"⚠️ У тебя изъяли <b>{fmt(amount)}</b> {sx['e_' + cur]}.\n"
-                f"Баланс: {fmt(new_bal)} {sx['e_' + cur]}")
+                f"⚠️ У тебя изъяли <b>{amt_s}</b> {sx['e_' + cur]}.\n"
+                f"Баланс: {bal_s} {sx['e_' + cur]}")
 
     # подтверждение админу
     verb = "зачислено" if action == "give" else "изъято"
-    text = (f"✅ <b>{verb.capitalize()}</b> {fmt(amount)} {sx['e_' + cur]}\n"
-            f"Игрок {tg_id}, новый баланс: {fmt(new_bal)} {sx['e_' + cur]}")
+    text = (f"✅ <b>{verb.capitalize()}</b> {amt_s} {sx['e_' + cur]}\n"
+            f"Игрок {tg_id}, новый баланс: {bal_s} {sx['e_' + cur]}")
     reply_kb = await kb.admin_menu(await can_manage(admin_id))
     if hasattr(event, "message"):  # CallbackQuery
         await ui.edit(event.message, text, reply_markup=reply_kb)
