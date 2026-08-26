@@ -241,3 +241,18 @@ async def reply(message, html_text: str, emoji_map=None, **kw):
     return await _safe(
         lambda: message.reply(text, entities=ents, parse_mode=None, **kw),
         lambda: message.reply(html_text, **kw))
+
+
+async def edit_by_id(bot, chat_id: int, message_id: int, html_text: str,
+                     emoji_map=None, **kw):
+    """Правка сообщения по chat_id+message_id с премиум-эмодзи (для карточек у разных
+    получателей, где нет объекта Message). При отказе Telegram — обычный HTML."""
+    text, ents = render(html_text, emoji_map)
+    if ents is None:
+        return await _safe(
+            lambda: bot.edit_message_text(html_text, chat_id=chat_id, message_id=message_id, **kw),
+            lambda: bot.edit_message_text(html_text, chat_id=chat_id, message_id=message_id, **kw))
+    return await _safe(
+        lambda: bot.edit_message_text(text, chat_id=chat_id, message_id=message_id,
+                                      entities=ents, parse_mode=None, **kw),
+        lambda: bot.edit_message_text(html_text, chat_id=chat_id, message_id=message_id, **kw))

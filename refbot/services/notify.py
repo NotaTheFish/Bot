@@ -163,18 +163,19 @@ def _basket_card_text(sx, wid, uname, w, items) -> str:
 def _basket_card_kb(wid, items):
     from aiogram.utils.keyboard import InlineKeyboardBuilder
     k = InlineKeyboardBuilder()
-    tok_e = {"revive": "❤️‍🔥", "max": "🔱", "partials": "🧩",
-             "mushrooms": "🍄", "coins": "🪙", "shimcoins": "💠"}
+    cur_name = {"revive": "Revive", "max": "Max", "partials": "Partials",
+                "mushrooms": "Грибы", "coins": "Коины", "shimcoins": "Шимкоины"}
     has_pending = False
     for it in items:
         if it["status"] != "pending":
             continue
         has_pending = True
-        e = tok_e.get(it["currency"], "🎫")
+        nm = cur_name.get(it["currency"], it["currency"])
         amt = _fmt_amt(it["currency"], it["amount"])
-        k.button(text=f"✅ Выдал {e} {amt}", callback_data=f"wdi_ok:{it['id']}")
-        k.button(text=f"❌ Отклонить {e} {amt}", callback_data=f"wdi_no:{it['id']}")
-    k.adjust(2)
+        # одна кнопка — один эмодзи в начале (✅/❌), валюта словом
+        k.button(text=f"✅ Выдал {nm} {amt}", callback_data=f"wdi_ok:{it['id']}")
+        k.button(text=f"❌ Отклонить {nm} {amt}", callback_data=f"wdi_no:{it['id']}")
+    k.adjust(1)
     return k.as_markup() if has_pending else None
 
 
@@ -210,7 +211,8 @@ async def refresh_basket_cards(bot, wid: int):
     sx = await settings.ctx()
     text = _basket_card_text(sx, wid, uname, w, items)
     markup = _basket_card_kb(wid, items)
+    em = await settings.emoji_map()
+    from services import render
     for chat_id, msg_id in cards:
         with contextlib.suppress(Exception):
-            await bot.edit_message_text(text, chat_id=chat_id, message_id=msg_id,
-                                        reply_markup=markup, parse_mode="HTML")
+            await render.edit_by_id(bot, chat_id, msg_id, text, em, reply_markup=markup)
