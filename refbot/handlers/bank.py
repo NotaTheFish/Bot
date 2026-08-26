@@ -185,35 +185,35 @@ async def exch_amount(msg: Message, state: FSMContext):
         # обратный расчёт: raw = желаемое кол-во dst (грибы/коины, целое)
         amount = parse_amount(raw)
         if amount is None or amount <= 0:
-            return await ui.answer(msg, "Нужно положительное число.")
+            return await ui.answer_smart(msg, msg.from_user.id, "Нужно положительное число.")
         need_cents, got, err = await bank.quote_reverse(dst, amount)
         if err:
-            return await ui.answer(msg, f"⚠️ {err}")
+            return await ui.answer_smart(msg, msg.from_user.id, f"⚠️ {err}")
         if need_cents > b["shimcoins"]:
-            return await ui.answer(msg,
+            return await ui.answer_smart(msg, msg.from_user.id,
                 f"Нужно <b>{shk_fmt(need_cents)}</b> 💠, а у тебя {shk_fmt(b['shimcoins'])} 💠.")
         spend, real_got = need_cents, got
     elif src == "shimcoins":
         # прямой расчёт, платишь шимкоинами: ввод в ШК ($), парсим в ЦЕНТЫ
         spend_cents = shk_parse(raw)
         if spend_cents is None or spend_cents <= 0:
-            return await ui.answer(msg, "Нужно положительное число.")
+            return await ui.answer_smart(msg, msg.from_user.id, "Нужно положительное число.")
         if spend_cents > b["shimcoins"]:
-            return await ui.answer(msg, f"Недостаточно. У тебя {shk_fmt(b['shimcoins'])} 💠.")
+            return await ui.answer_smart(msg, msg.from_user.id, f"Недостаточно. У тебя {shk_fmt(b['shimcoins'])} 💠.")
         got, cents_after, err = await bank.quote(src, dst, spend_cents)
         if err:
-            return await ui.answer(msg, f"⚠️ {err}")
+            return await ui.answer_smart(msg, msg.from_user.id, f"⚠️ {err}")
         spend, real_got = spend_cents, got
     else:
         # прямой расчёт, отдаёшь грибы/коины (целые)
         amount = parse_amount(raw)
         if amount is None or amount <= 0:
-            return await ui.answer(msg, "Нужно положительное число.")
+            return await ui.answer_smart(msg, msg.from_user.id, "Нужно положительное число.")
         if amount > b[src]:
-            return await ui.answer(msg, f"Недостаточно. У тебя {fmt(b[src])}.")
+            return await ui.answer_smart(msg, msg.from_user.id, f"Недостаточно. У тебя {fmt(b[src])}.")
         got, cents_after, err = await bank.quote(src, dst, amount)
         if err:
-            return await ui.answer(msg, f"⚠️ {err}")
+            return await ui.answer_smart(msg, msg.from_user.id, f"⚠️ {err}")
         spend, real_got = amount, got
 
     # предпросмотр
@@ -229,7 +229,7 @@ async def exch_amount(msg: Message, state: FSMContext):
         fee_line = f"Комиссия банка: {fee:g}%\n"
     else:
         fee_line = "Обмен шимкоинов — без комиссии.\n"
-    await ui.answer(msg,
+    await ui.answer_smart(msg, msg.from_user.id,
         f"🧾 <b>Проверь обмен</b>\n\n"
         f"Отдаёшь: <b>{spend_s}</b> {src_e}\n"
         f"Получаешь: <b>{got_s}</b> {dst_e}\n"

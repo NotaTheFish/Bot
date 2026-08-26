@@ -47,6 +47,24 @@ async def answer(message, html_text: str, **kw):
         return await message.answer(html_text, **kw)
 
 
+async def answer_smart(message, uid: int, html_text: str, **kw):
+    """
+    Ответ на ввод (FSM). Если игрок в ГРУППЕ и включил эфемерное меню — отвечаем
+    эфемерно (видит только он). Иначе обычным сообщением.
+    Возвращает Message (обычный или эфемерный). Для приватности ответов на ввод сумм.
+    """
+    from services import menu_owner
+    in_group = message.chat.type in ("group", "supergroup")
+    if in_group and menu_owner.wants_ephemeral(uid):
+        sent = await send_ephemeral(message.bot, message.chat.id, uid, html_text, **kw)
+        if sent is not None and not isinstance(sent, _NotEphemeral):
+            return sent
+        if isinstance(sent, _NotEphemeral):
+            # эфемерка не сработала — публичный дубль уже отправлен, вернём его
+            return sent.msg
+    return await answer(message, html_text, **kw)
+
+
 async def send(bot, chat_id: int, html_text: str, apply_free=True, **kw):
     return await render.send(bot, chat_id, html_text, await _em(), apply_free, **kw)
 

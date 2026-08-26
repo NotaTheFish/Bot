@@ -131,30 +131,30 @@ async def msg_tokbuy_qty(msg: Message, state: FSMContext):
         # потратить N pay-валюты -> сколько токенов
         budget = shk_parse(raw) if pay == "shk" else parse_amount(raw.replace("$", "").strip())
         if budget is None or budget <= 0:
-            return await ui.answer(msg, "Нужно положительное число.")
+            return await ui.answer_smart(msg, msg.from_user.id, "Нужно положительное число.")
         qty, cost, err = await tokens.quote_buy_reverse(code, pay, budget)
         if err:
-            return await ui.answer(msg, f"⚠️ {err}")
+            return await ui.answer_smart(msg, msg.from_user.id, f"⚠️ {err}")
     else:
         qty = parse_amount(raw)
         if qty is None or qty <= 0:
-            return await ui.answer(msg, "Нужно положительное число.")
+            return await ui.answer_smart(msg, msg.from_user.id, "Нужно положительное число.")
         cost, err = await tokens.quote_buy(code, pay, qty)
         if err:
-            return await ui.answer(msg, f"⚠️ {err}")
+            return await ui.answer_smart(msg, msg.from_user.id, f"⚠️ {err}")
 
     if cost > bal_pay:
         pay_e = "💠" if pay == "shk" else "🍄"
         have = shk_fmt(bal_pay) if pay == "shk" else fmt(bal_pay)
         need = shk_fmt(cost) if pay == "shk" else fmt(cost)
-        return await ui.answer(msg, f"Недостаточно. Нужно {need} {pay_e}, у тебя {have} {pay_e}.")
+        return await ui.answer_smart(msg, msg.from_user.id, f"Недостаточно. Нужно {need} {pay_e}, у тебя {have} {pay_e}.")
 
     await state.update_data(tokbuy={**tb, "qty": qty, "cost": cost})
     e = await settings.emoji(code)
     pay_e = "💠" if pay == "shk" else "🍄"
     cost_s = shk_fmt(cost) if pay == "shk" else fmt(cost)
     tier = "опт" if qty >= tokens.WHOLESALE_FROM else "розница"
-    await ui.answer(msg,
+    await ui.answer_smart(msg, msg.from_user.id,
         f"🧾 <b>Проверь покупку</b>\n\n"
         f"Получаешь: <b>{fmt(qty)}</b> {e} {tokens.TOKENS[code]}\n"
         f"Платишь: <b>{cost_s}</b> {pay_e}\n"
