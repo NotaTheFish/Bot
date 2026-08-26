@@ -39,6 +39,7 @@ TOKEN_WORDS = {
 }
 
 WHOLESALE_FROM = 1000   # >= 1000 токенов за раз — опт, иначе розница
+RETAIL_SHK_STEP = 50    # розница за шимкоины кратна 50 шт (опт и грибы — без кратности)
 WITHDRAW_STEP = 50      # вывод токенов кратен 50, минимум 50
 
 
@@ -80,6 +81,14 @@ async def quote_buy(token: str, pay: str, qty: int) -> tuple[int, str]:
         return 0, "Неизвестный токен."
     if qty <= 0:
         return 0, "Количество должно быть больше нуля."
+    # розница за шимкоины кратна 50 (цена за штуку мелкая — набираем нормальными партиями).
+    # опт (>=WHOLESALE_FROM) и покупка за грибы — без кратности.
+    if pay == "shk" and qty < WHOLESALE_FROM and qty % RETAIL_SHK_STEP != 0:
+        lo = (qty // RETAIL_SHK_STEP) * RETAIL_SHK_STEP
+        hi = lo + RETAIL_SHK_STEP
+        near = f"{lo} или {hi}" if lo > 0 else f"{hi}"
+        return 0, (f"За шимкоины в розницу — кратно {RETAIL_SHK_STEP} шт "
+                   f"(до {WHOLESALE_FROM}). Ближайшее: {near}.")
     per = await get_price(token, pay, _tier(qty))
     if per <= 0:
         return 0, "Цена не задана — обратись к админу."
@@ -110,6 +119,9 @@ async def quote_buy_reverse(token: str, pay: str, budget: int) -> tuple[int, int
     candidates = []
     if per_retail > 0:
         q = budget // per_retail
+        # розница за шимкоины — кратно 50 (округляем ВНИЗ, в пользу казны)
+        if pay == "shk":
+            q = (q // RETAIL_SHK_STEP) * RETAIL_SHK_STEP
         if q > 0 and q < WHOLESALE_FROM:      # розница валидна только ниже опта
             candidates.append((q, q * per_retail))
     if per_whole > 0:
@@ -117,8 +129,8 @@ async def quote_buy_reverse(token: str, pay: str, budget: int) -> tuple[int, int
         if q >= WHOLESALE_FROM:               # опт валиден только от порога
             candidates.append((q, q * per_whole))
     if not candidates:
-        # бюджета не хватает даже на 1 по рознице
-        return 0, 0, "Недостаточно на покупку хотя бы одного токена."
+        # бюджета не хватает даже на минимальную партию
+        return 0, 0, f"Недостаточно. Розница за шимкоины — от {RETAIL_SHK_STEP} шт."
     # выбираем вариант, где игрок получает больше токенов
     q, cost = max(candidates, key=lambda x: x[0])
     return q, cost, ""

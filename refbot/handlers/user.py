@@ -505,7 +505,7 @@ async def cb_wd_currency_pick(c: CallbackQuery, state: FSMContext):
     await c.answer()
 
 
-@router.message(WD.amount)
+@router.message(WD.amount, ~F.text.startswith("/"), F.text != "☰ Меню")
 async def wd_amount_input(msg: Message, state: FSMContext):
     if not await guard(msg):
         return

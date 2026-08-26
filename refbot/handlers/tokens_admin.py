@@ -81,7 +81,7 @@ async def _show_token_prices(c, code: str):
     for pay, tier, label in _PAY_TIER:
         val = await tokens.get_price(code, pay, tier)
         lines.append(f"{label}: <b>{_price_show(pay, val)}</b>")
-        await btn(k, f"Задать: {label}", f"tokset:{code}:{pay}:{tier}")
+        await btn(k, f"{label} — задать", f"tokset:{code}:{pay}:{tier}")
     await btn(k, "Назад", "tok_admin", "back")
     k.adjust(1)
     await ui.edit(c.message, "\n".join(lines), reply_markup=k.as_markup())
@@ -105,7 +105,7 @@ async def cb_tok_set(c: CallbackQuery, state: FSMContext):
     await c.answer()
 
 
-@router.message(TokPrice.value)
+@router.message(TokPrice.value, ~F.text.startswith("/"), F.text != "☰ Меню")
 async def msg_tok_value(msg: Message, state: FSMContext):
     if not await _is_admin(msg.from_user.id):
         return await state.clear()
@@ -121,10 +121,23 @@ async def msg_tok_value(msg: Message, state: FSMContext):
         val = parse_amount(msg.text or "")
     if val is None or val <= 0:
         return await ui.answer(msg, "Нужно положительное число.")
-    await tokens.set_price(tok["code"], pay, tok["tier"], val, msg.from_user.id)
+    code = tok["code"]
+    await tokens.set_price(code, pay, tok["tier"], val, msg.from_user.id)
     await state.clear()
-    e = await settings.emoji(tok["code"])
-    await ui.answer(msg,
-        f"✅ Цена задана: {tokens.TOKENS[tok['code']]} — "
-        f"{_price_show(pay, val)} за штуку "
-        f"({'опт' if tok['tier']=='whole' else 'розница'}).")
+
+    # сразу показываем обновлённое меню цен этого токена новым сообщением —
+    # чтобы не нажимать заново «меню -> админка -> цены».
+    name = tokens.TOKENS[code]
+    e = await settings.emoji(code)
+    tier_s = "опт" if tok["tier"] == "whole" else "розница"
+    head = (f"✅ Задано: {_price_show(pay, val)} за штуку ({tier_s}).\n\n"
+            f"{e} <b>{name} — цены за 1 штуку</b>\n")
+    lines = [head]
+    k = InlineKeyboardBuilder()
+    for p, tier, label in _PAY_TIER:
+        v = await tokens.get_price(code, p, tier)
+        lines.append(f"{label}: <b>{_price_show(p, v)}</b>")
+        await btn(k, f"{label} — задать", f"tokset:{code}:{p}:{tier}")
+    await btn(k, "К токенам", "tok_admin", "back")
+    k.adjust(1)
+    await ui.answer(msg, "\n".join(lines), reply_markup=k.as_markup())

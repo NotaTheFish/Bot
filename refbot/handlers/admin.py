@@ -708,7 +708,7 @@ async def cb_adj_max(c: CallbackQuery, state: FSMContext):
     await _apply_adjust(c, tg_id, "take", cur, amount)
 
 
-@router.message(Adjust.amount)
+@router.message(Adjust.amount, ~F.text.startswith("/"), F.text != "☰ Меню")
 async def adj_amount_input(msg: Message, state: FSMContext):
     if not await can_manage(msg.from_user.id):
         return await state.clear()

@@ -163,7 +163,7 @@ async def _exch_cancel():
     return k.as_markup()
 
 
-@router.message(Exch.amount)
+@router.message(Exch.amount, ~F.text.startswith("/"), F.text != "☰ Меню")
 async def exch_amount(msg: Message, state: FSMContext):
     data = await state.get_data()
     ex = data.get("exch")

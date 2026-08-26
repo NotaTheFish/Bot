@@ -86,12 +86,16 @@ async def cb_tokpay(c: CallbackQuery, state: FSMContext):
     pay_e = "💠" if pay == "shk" else "🍄"
     pr_s = (shk_fmt(pr) if pay == "shk" else fmt(pr)) if pr > 0 else "—"
     pw_s = (shk_fmt(pw) if pay == "shk" else fmt(pw)) if pw > 0 else "—"
+    step_hint = ""
+    if pay == "shk":
+        step_hint = (f"\n💠 В розницу (до {tokens.WHOLESALE_FROM}) — кратно "
+                     f"{tokens.RETAIL_SHK_STEP} шт (50, 100, 950…). От {tokens.WHOLESALE_FROM} — любое.")
     await ui.edit(c.message,
         f"{e} <b>{tokens.TOKENS[code]}</b> · платишь {pay_e}\n\n"
         f"Цена за 1 шт: розница {pr_s} · опт (от {tokens.WHOLESALE_FROM}) {pw_s}\n\n"
         f"Сколько купить? Напиши число (<code>500</code>, <code>1000</code>).\n"
         f"Или сумму с <b>$</b> — потратить столько {pay_e} "
-        f"(<code>300$</code>).",
+        f"(<code>300$</code>).{step_hint}",
         reply_markup=await _cancel_kb())
     await c.answer()
 
@@ -111,7 +115,7 @@ async def _confirm_kb():
     return k.as_markup()
 
 
-@router.message(TokBuy.qty)
+@router.message(TokBuy.qty, ~F.text.startswith("/"), F.text != "☰ Меню")
 async def msg_tokbuy_qty(msg: Message, state: FSMContext):
     data = await state.get_data()
     tb = data.get("tokbuy")

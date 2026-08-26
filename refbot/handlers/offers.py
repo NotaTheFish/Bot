@@ -396,7 +396,7 @@ def _compute_deal(price: int, unit: int, cur: str, text: str):
     return amt, cost
 
 
-@router.message(OfferBuy.amount)
+@router.message(OfferBuy.amount, ~F.text.startswith("/"), F.text != "☰ Меню")
 async def offer_buy_input(msg: Message, state: FSMContext):
     data = await state.get_data()
     buy = data.get("buy")
