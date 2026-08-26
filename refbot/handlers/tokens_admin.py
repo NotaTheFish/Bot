@@ -42,7 +42,8 @@ _PAY_TIER = [
 def _price_show(pay: str, val: int) -> str:
     if val <= 0:
         return "не задана"
-    return f"{shk_fmt(val)} 💠" if pay == "shk" else f"{fmt(val)} 🍄"
+    # ШК — цена за партию из 50, грибы — за 1 штуку
+    return f"{shk_fmt(val)} 💠 / 50шт" if pay == "shk" else f"{fmt(val)} 🍄 / шт"
 
 
 @router.callback_query(F.data == "tok_admin")
@@ -76,7 +77,8 @@ async def cb_tok_one(c: CallbackQuery):
 async def _show_token_prices(c, code: str):
     name = tokens.TOKENS[code]
     e = await settings.emoji(code)
-    lines = [f"{e} <b>{name} — цены за 1 штуку</b>\n"]
+    lines = [f"{e} <b>{name} — цены</b>\n"
+             f"<i>Шимкоины — за партию 50 шт · Грибы — за 1 шт</i>\n"]
     k = InlineKeyboardBuilder()
     for pay, tier, label in _PAY_TIER:
         val = await tokens.get_price(code, pay, tier)
@@ -97,11 +99,18 @@ async def cb_tok_set(c: CallbackQuery, state: FSMContext):
     _, code, pay, tier = c.data.split(":")
     await state.set_state(TokPrice.value)
     await state.update_data(tok={"code": code, "pay": pay, "tier": tier})
-    unit = "шимкоинах (можно дробно: 5, 4.50)" if pay == "shk" else "грибах (100000, 100к, 1м)"
-    await ui.edit(c.message,
-        f"Цена за <b>1 {tokens.TOKENS[code]}</b> в {unit}?\n\n"
-        f"Напиши число.",
-        reply_markup=None)
+    tier_s = "опт (≥1000)" if tier == "whole" else "розница (<1000)"
+    if pay == "shk":
+        prompt = (f"Цена за <b>партию 50 шт</b> {tokens.TOKENS[code]} "
+                  f"в <b>шимкоинах</b> ({tier_s})?\n\n"
+                  f"Можно дробно: <code>0.25</code>, <code>5</code>, <code>4.50</code>.\n"
+                  f"Напиши число.")
+    else:
+        prompt = (f"Цена за <b>1 шт</b> {tokens.TOKENS[code]} "
+                  f"в <b>грибах</b> ({tier_s})?\n\n"
+                  f"<code>100000</code>, <code>100к</code>, <code>1м</code>.\n"
+                  f"Напиши число.")
+    await ui.edit(c.message, prompt, reply_markup=None)
     await c.answer()
 
 
@@ -130,7 +139,7 @@ async def msg_tok_value(msg: Message, state: FSMContext):
     name = tokens.TOKENS[code]
     e = await settings.emoji(code)
     tier_s = "опт" if tok["tier"] == "whole" else "розница"
-    head = (f"✅ Задано: {_price_show(pay, val)} за штуку ({tier_s}).\n\n"
+    head = (f"✅ Задано: {_price_show(pay, val)} ({tier_s}).\n\n"
             f"{e} <b>{name} — цены за 1 штуку</b>\n")
     lines = [head]
     k = InlineKeyboardBuilder()

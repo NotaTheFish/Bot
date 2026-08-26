@@ -86,13 +86,13 @@ async def cb_tokpay(c: CallbackQuery, state: FSMContext):
     pay_e = "💠" if pay == "shk" else "🍄"
     pr_s = (shk_fmt(pr) if pay == "shk" else fmt(pr)) if pr > 0 else "—"
     pw_s = (shk_fmt(pw) if pay == "shk" else fmt(pw)) if pw > 0 else "—"
-    step_hint = ""
+    step_hint = f"\nПокупка кратна {tokens.BUY_STEP} шт (50, 100, 1000, 1050…)."
     if pay == "shk":
-        step_hint = (f"\n💠 В розницу (до {tokens.WHOLESALE_FROM}) — кратно "
-                     f"{tokens.RETAIL_SHK_STEP} шт (50, 100, 950…). От {tokens.WHOLESALE_FROM} — любое.")
+        step_hint += "\n💠 Цена указана за партию 50 шт."
+    unit_s = "за 50 шт" if pay == "shk" else "за 1 шт"
     await ui.edit(c.message,
         f"{e} <b>{tokens.TOKENS[code]}</b> · платишь {pay_e}\n\n"
-        f"Цена за 1 шт: розница {pr_s} · опт (от {tokens.WHOLESALE_FROM}) {pw_s}\n\n"
+        f"Цена {unit_s}: розница {pr_s} · опт (от {tokens.WHOLESALE_FROM}) {pw_s}\n\n"
         f"Сколько купить? Напиши число (<code>500</code>, <code>1000</code>).\n"
         f"Или сумму с <b>$</b> — потратить столько {pay_e} "
         f"(<code>300$</code>).{step_hint}",
