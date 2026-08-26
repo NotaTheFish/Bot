@@ -136,35 +136,78 @@ async def start_plain(msg: Message, state: FSMContext):
         f"Награда зачисляется через <b>{HOLD_HOURS // 24} дня</b> после входа — "
         f"если реферал остался в чате.\n\n"
         f"Текущая валюта: {sx['e_' + u['currency']]} <b>{sx['l_' + u['currency']]}</b>")
-    markup = await kb.main_menu(u["currency"], is_adm,
-                                show_casino=await casino_svc.visible(msg.from_user.id),
-                                show_offers=await _has_live_offers(msg.from_user.id))
     in_group = msg.chat.type in ("group", "supergroup")
+    markup = await _menu_markup(msg.from_user.id, in_group)
     # reply-клавиатура «☰ Меню»: в группе selective (только вызвавшему), в личке обычная.
-    # Ставим отдельным reply-сообщением на сообщение пользователя (чтобы selective сработал).
     with contextlib.suppress(Exception):
         await msg.reply("Панель управления снизу 👇",
                         reply_markup=kb.menu_reply(selective=in_group))  # noqa: ui
-    # само инлайн-меню — обычным сообщением (редактируется штатно, навигация работает)
+    from services import menu_owner
+    if in_group and menu_owner.wants_ephemeral(msg.from_user.id):
+        sent = await ui.send_ephemeral(msg.bot, msg.chat.id, msg.from_user.id,
+                                       menu_text, reply_markup=markup)
+        if sent is None or isinstance(sent, ui._NotEphemeral):
+            if isinstance(sent, ui._NotEphemeral):
+                with contextlib.suppress(Exception):
+                    await sent.msg.delete()
+            s2 = await ui.answer(msg, menu_text, reply_markup=markup)
+            if s2 is not None:
+                menu_owner.register(msg.chat.id, s2.message_id, msg.from_user.id)
+        return
+    # обычным сообщением (owner-check)
     sent = await ui.answer(msg, menu_text, reply_markup=markup)
-    # в группе помечаем сообщение владельцем — чужие не нажмут кнопки
     if in_group and sent is not None:
-        from services import menu_owner
         menu_owner.register(msg.chat.id, sent.message_id, msg.from_user.id)
 
 
-async def _open_menu(msg, uid: int, header="🏠 <b>Главное меню</b>"):
-    """Показать главное меню обычным сообщением (редактируется штатно, навигация ок).
-    В группе помечаем владельца, чтобы чужие не нажали кнопки."""
+async def _menu_markup(uid: int, in_group: bool):
     u = await db.get_user(uid)
     is_adm = await _is_admin(uid)
-    markup = await kb.main_menu(u["currency"], is_adm,
-                                show_casino=await casino_svc.visible(uid),
-                                show_offers=await _has_live_offers(uid))
+    from services import menu_owner
+    return await kb.main_menu(u["currency"], is_adm,
+                              show_casino=await casino_svc.visible(uid),
+                              show_offers=await _has_live_offers(uid),
+                              in_group=in_group,
+                              eph_on=menu_owner.wants_ephemeral(uid) if in_group else False)
+
+
+async def _open_menu(msg, uid: int, header="🏠 <b>Главное меню</b>"):
+    """Показать главное меню. В группе: обычным сообщением (owner-check) или
+    эфемерным, если пользователь включил тумблер «показать только мне»."""
+    from services import menu_owner
+    in_group = msg.chat.type in ("group", "supergroup")
+    markup = await _menu_markup(uid, in_group)
+
+    if in_group and menu_owner.wants_ephemeral(uid):
+        sent = await ui.send_ephemeral(msg.bot, msg.chat.id, uid, header, reply_markup=markup)
+        if sent is None or isinstance(sent, ui._NotEphemeral):
+            if isinstance(sent, ui._NotEphemeral):
+                with contextlib.suppress(Exception):
+                    await sent.msg.delete()
+            # эфемерка не сработала — обычным сообщением
+            sent2 = await ui.answer(msg, header, reply_markup=markup)
+            if sent2 is not None:
+                menu_owner.register(msg.chat.id, sent2.message_id, uid)
+        return
+
     sent = await ui.answer(msg, header, reply_markup=markup)
-    if msg.chat.type in ("group", "supergroup") and sent is not None:
-        from services import menu_owner
+    if in_group and sent is not None:
         menu_owner.register(msg.chat.id, sent.message_id, uid)
+
+
+@router.callback_query(F.data == "menu_eph_toggle")
+async def cb_menu_eph_toggle(c: CallbackQuery, state: FSMContext):
+    """Тумблер: переключить меню между обычным и эфемерным (только в группе)."""
+    from services import menu_owner
+    if c.message.chat.type not in ("group", "supergroup"):
+        return await c.answer()
+    now = not menu_owner.wants_ephemeral(c.from_user.id)
+    menu_owner.set_ephemeral(c.from_user.id, now)
+    await c.answer("Теперь меню видно только тебе 🙈" if now else "Меню снова обычное 👁")
+    # удаляем текущее сообщение-меню и открываем заново в новом режиме
+    with contextlib.suppress(Exception):
+        await c.message.delete()
+    await _open_menu(c.message, c.from_user.id)
 
 
 @router.message(F.text == "☰ Меню")
@@ -194,12 +237,9 @@ async def cb_menu(c: CallbackQuery, state: FSMContext):
     await state.clear()
     if not await guard(c):
         return
-    u = await db.get_user(c.from_user.id)
-    is_adm = await _is_admin(c.from_user.id)
+    in_group = c.message.chat.type in ("group", "supergroup")
     await ui.edit(c.message, "🏠 <b>Главное меню</b>",
-                              reply_markup=await kb.main_menu(u["currency"], is_adm,
-                                        show_casino=await casino_svc.visible(c.from_user.id),
-                                        show_offers=await _has_live_offers(c.from_user.id)))
+                  reply_markup=await _menu_markup(c.from_user.id, in_group))
     await c.answer()
 
 

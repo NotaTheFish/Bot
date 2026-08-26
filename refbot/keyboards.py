@@ -8,7 +8,9 @@ from services.ui import btn
 
 async def main_menu(currency: str, is_admin: bool,
                     show_casino: bool = False,
-                    show_offers: bool = False) -> InlineKeyboardMarkup:
+                    show_offers: bool = False,
+                    in_group: bool = False,
+                    eph_on: bool = False) -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
     await btn(kb, "Профиль", "profile", "profile")
     await btn(kb, "Моя ссылка", "mylink", "link")
@@ -26,6 +28,11 @@ async def main_menu(currency: str, is_admin: bool,
         rows.append(1)
     if is_admin:
         await btn(kb, "Админка", "admin", "admin")
+        rows.append(1)
+    # тумблер эфемерного меню — только в группе
+    if in_group:
+        await btn(kb, "🙈 Показать меню только мне" if not eph_on
+                  else "👁 Обычное меню (видно всем)", "menu_eph_toggle")
         rows.append(1)
     kb.adjust(*rows)
     return kb.as_markup()

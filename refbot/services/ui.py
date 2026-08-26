@@ -16,6 +16,18 @@ async def _em():
 
 
 async def edit(message, html_text: str, **kw):
+    # Эфемерное сообщение (message_id==0, есть ephemeral_message_id) редактируем
+    # спец-методом edit_ephemeral_message_text — обычный edit по message_id упадёт.
+    eph_id = getattr(message, "ephemeral_message_id", None)
+    if eph_id:
+        recv = getattr(message, "receiver_user", None)
+        recv_id = getattr(recv, "id", None)
+        if recv_id is not None:
+            res = await edit_ephemeral(message.bot, message.chat.id, recv_id,
+                                       eph_id, html_text, **kw)
+            if res is not None:
+                return res
+            # спец-метод не сработал — падаем на обычный edit ниже (диагностика)
     return await render.edit(message, html_text, await _em(), **kw)
 
 
