@@ -139,40 +139,32 @@ async def start_plain(msg: Message, state: FSMContext):
     markup = await kb.main_menu(u["currency"], is_adm,
                                 show_casino=await casino_svc.visible(msg.from_user.id),
                                 show_offers=await _has_live_offers(msg.from_user.id))
-    # В ГРУППЕ меню приватное (эфемерное) — видит только вызвавший, чужие не нажмут.
-    if msg.chat.type in ("group", "supergroup"):
-        sent = await ui.send_ephemeral(msg.bot, msg.chat.id, msg.from_user.id,
-                                       menu_text, reply_markup=markup)
-        if sent is None or isinstance(sent, ui._NotEphemeral):
-            if isinstance(sent, ui._NotEphemeral):
-                with contextlib.suppress(Exception):
-                    await sent.msg.delete()
-            with contextlib.suppress(Exception):
-                await ui.reply(msg, "🔒 Открой меню в личке бота — в чате оно приватное.")
-        return
-    # в личке — обычное меню + reply-клавиатура
+    in_group = msg.chat.type in ("group", "supergroup")
+    # reply-клавиатура «☰ Меню»: в группе selective (только вызвавшему), в личке обычная.
+    # Ставим отдельным reply-сообщением на сообщение пользователя (чтобы selective сработал).
     with contextlib.suppress(Exception):
-        await msg.answer("Панель управления снизу 👇", reply_markup=kb.menu_reply())  # noqa: ui
-    await ui.answer(msg, menu_text, reply_markup=markup)
+        await msg.reply("Панель управления снизу 👇",
+                        reply_markup=kb.menu_reply(selective=in_group))  # noqa: ui
+    # само инлайн-меню — обычным сообщением (редактируется штатно, навигация работает)
+    sent = await ui.answer(msg, menu_text, reply_markup=markup)
+    # в группе помечаем сообщение владельцем — чужие не нажмут кнопки
+    if in_group and sent is not None:
+        from services import menu_owner
+        menu_owner.register(msg.chat.id, sent.message_id, msg.from_user.id)
 
 
 async def _open_menu(msg, uid: int, header="🏠 <b>Главное меню</b>"):
-    """Показать главное меню: в группе — эфемерно (приватно), в личке — обычно."""
+    """Показать главное меню обычным сообщением (редактируется штатно, навигация ок).
+    В группе помечаем владельца, чтобы чужие не нажали кнопки."""
     u = await db.get_user(uid)
     is_adm = await _is_admin(uid)
     markup = await kb.main_menu(u["currency"], is_adm,
                                 show_casino=await casino_svc.visible(uid),
                                 show_offers=await _has_live_offers(uid))
-    if msg.chat.type in ("group", "supergroup"):
-        sent = await ui.send_ephemeral(msg.bot, msg.chat.id, uid, header, reply_markup=markup)
-        if sent is None or isinstance(sent, ui._NotEphemeral):
-            if isinstance(sent, ui._NotEphemeral):
-                with contextlib.suppress(Exception):
-                    await sent.msg.delete()
-            with contextlib.suppress(Exception):
-                await ui.reply(msg, "🔒 Открой меню в личке бота — в чате оно приватное.")
-        return
-    await ui.answer(msg, header, reply_markup=markup)
+    sent = await ui.answer(msg, header, reply_markup=markup)
+    if msg.chat.type in ("group", "supergroup") and sent is not None:
+        from services import menu_owner
+        menu_owner.register(msg.chat.id, sent.message_id, uid)
 
 
 @router.message(F.text == "☰ Меню")
@@ -190,10 +182,10 @@ async def show_reply_kb(msg: Message, state: FSMContext):
     await state.clear()
     if not await guard(msg):
         return
-    # reply-клавиатуру ставим только в личке (в группе она не нужна и не приватна)
-    if msg.chat.type == "private":
-        with contextlib.suppress(Exception):
-            await msg.answer("Панель управления снизу 👇", reply_markup=kb.menu_reply())  # noqa: ui
+    in_group = msg.chat.type in ("group", "supergroup")
+    with contextlib.suppress(Exception):
+        await msg.reply("Панель управления снизу 👇",
+                        reply_markup=kb.menu_reply(selective=in_group))  # noqa: ui
     await _open_menu(msg, msg.from_user.id)
 
 

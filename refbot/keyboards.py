@@ -496,19 +496,22 @@ async def gw_currency_choice(gid: int) -> InlineKeyboardMarkup:
 
 
 # ==================== REPLY-КЛАВИАТУРА ====================
-def menu_reply() -> ReplyKeyboardMarkup:
+def menu_reply(selective: bool = False) -> ReplyKeyboardMarkup:
     """
     Reply-клавиатура внизу: одна кнопка «☰ Меню».
+
+    selective=True (для групп): клавиатура показывается ТОЛЬКО тому, на чьё
+    сообщение бот ответил (reply) или кого упомянул — то есть приватно вызвавшему.
+    В личке selective не нужен.
 
     is_persistent НЕ ставим: с ним Telegram ломает нативную кнопку
     сворачивания/разворачивания (видна, но не жмётся — подтверждено багтрекером
     Telegram). Кнопка сворачивания для пользователя важнее вечного залипания.
-    Если клавиатура пропала (Telegram сбрасывает её при синхронизации/долгих
-    сессиях) — пользователь возвращает её командой /start.
     """
     return ReplyKeyboardMarkup(
         keyboard=[[KeyboardButton(text="☰ Меню")]],
         resize_keyboard=True,
+        selective=selective,
         input_field_placeholder="Жми ☰ Меню или пиши сообщение")
 
 

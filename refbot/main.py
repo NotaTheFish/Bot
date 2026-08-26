@@ -77,6 +77,8 @@ async def main():
 
     dp.message.outer_middleware(contest.CounterMiddleware())
     dp.message.outer_middleware(whisper.UsernameMiddleware())
+    from services.menu_owner import MenuOwnerMiddleware
+    dp.callback_query.outer_middleware(MenuOwnerMiddleware())
     dp.include_router(whisper.router)
     dp.include_router(contest.router)
     dp.include_router(casino_chat.router)
