@@ -78,6 +78,7 @@ async def _bank_menu(stopped: bool):
         await btn(k, "🍄 Получить грибы", "bankget:mushrooms")
     if await bank.item_enabled("coins"):
         await btn(k, "🪙 Получить коины", "bankget:coins")
+    await btn(k, "🎫 Токены", "tokbuy")
     await btn(k, "Меню", "menu", "back")
     k.adjust(1)
     return k.as_markup()

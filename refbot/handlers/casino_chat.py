@@ -26,7 +26,7 @@ import db
 import keyboards as kb
 from config import (CASES, COIN_RATE, WHEEL_MIN_BET, WHEEL_MAX_BET, MINES_BETS,
                     MINES_PRESETS)
-from services import casino, settings, ui
+from services import casino, settings, tokens, ui
 from services.amount_parse import parse_amount, shk_fmt, shk_parse
 from keyboards import btn
 
@@ -121,6 +121,9 @@ async def cmd_balance_profile(msg: Message):
             }
             text = await settings.profile_template()
             text = text.format(**data)
+            tl = await tokens.owned_lines(b)
+            if tl:
+                text += "\n\n" + "\n".join(tl)
         except Exception:
             log.exception("!профиль упал на построении текста")
             text = (f"{sx['e_profile']} <b>Профиль</b>\nID: <code>{uid}</code>\n\n"
@@ -132,6 +135,9 @@ async def cmd_balance_profile(msg: Message):
                 f"{sx['e_mushrooms']} {fmt(b['mushrooms'])}\n"
                 f"{sx['e_coins']} {fmt(b['coins'])}\n"
                 f"{sx['e_shimcoins']} {shk_fmt(b['shimcoins'])}")
+        tl = await tokens.owned_lines(b)
+        if tl:
+            text += "\n" + "\n".join(tl)
 
     # Приватность: баланс чувствителен (сумма на виду) — при сбое эфемерки прячем.
     # Профиль менее критичен — при сбое показываем публично (лучше показать, чем спрятать).

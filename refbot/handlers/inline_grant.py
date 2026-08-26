@@ -51,6 +51,9 @@ _CUR_WORDS = {
     "шимкоины": "shimcoins", "шимкоин": "shimcoins", "шимкоинов": "shimcoins",
     "shim": "shimcoins", "шим": "shimcoins",
 }
+# токены (revive/max/partials) — синонимы из общего модуля
+from services.tokens import TOKEN_WORDS as _TOKEN_WORDS
+_CUR_WORDS.update(_TOKEN_WORDS)
 
 
 def _parse_command(text: str):
@@ -131,7 +134,8 @@ async def on_inline(q: InlineQuery):
     sign, amount, cur = parsed
     token = uuid.uuid4().hex[:12]
     sx = await settings.ctx()
-    cur_emoji_plain = {"mushrooms": "🍄", "coins": "🪙", "shimcoins": "💠"}[cur]
+    cur_emoji_plain = {"mushrooms": "🍄", "coins": "🪙", "shimcoins": "💠",
+                       "revive": "❤️‍🔥", "max": "⚡️", "partials": "🧩"}.get(cur, "🎫")
     verb = "Начислить" if sign > 0 else "Изъять"
     amt = _fmt_grant(amount, cur)
 

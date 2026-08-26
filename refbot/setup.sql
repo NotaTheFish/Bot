@@ -16,6 +16,10 @@ EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 -- ADD VALUE автокоммитится отдельным стейтментом (psql без глобальной транзакции),
 -- поэтому доступно для использования ниже.
 ALTER TYPE rb_currency ADD VALUE IF NOT EXISTS 'shimcoins';
+-- Токены (Revive/Max/Partials): целые, только купить и вывести.
+ALTER TYPE rb_currency ADD VALUE IF NOT EXISTS 'revive';
+ALTER TYPE rb_currency ADD VALUE IF NOT EXISTS 'max';
+ALTER TYPE rb_currency ADD VALUE IF NOT EXISTS 'partials';
 
 DO $$ BEGIN
     CREATE TYPE rb_ref_status AS ENUM ('hold', 'paid', 'void');
@@ -140,8 +144,8 @@ CREATE TABLE IF NOT EXISTS rb_withdrawals (
     id            BIGSERIAL PRIMARY KEY,
     tg_id         BIGINT NOT NULL,
     chat_id       BIGINT NOT NULL,
-    currency      rb_currency  NOT NULL,
-    amount        BIGINT       NOT NULL CHECK (amount > 0),
+    currency      rb_currency,                        -- legacy (старые заявки); в корзине NULL
+    amount        BIGINT CHECK (amount IS NULL OR amount > 0),
     status        rb_wd_status NOT NULL DEFAULT 'pending',
     version       INT NOT NULL DEFAULT 1,
     admin_chat_id BIGINT,
@@ -151,6 +155,33 @@ CREATE TABLE IF NOT EXISTS rb_withdrawals (
     decided_by    BIGINT,
     comment       TEXT
 );
+
+-- Позиции корзины вывода. Одна заявка (rb_withdrawals) -> много позиций.
+-- Вариант А: у каждой позиции свой статус — админ подтверждает/отклоняет по отдельности.
+-- Отклонённая позиция -> заморозка возвращается игроку; подтверждённая -> выдана в игре.
+-- Заявка закрывается, когда все её позиции обработаны.
+CREATE TABLE IF NOT EXISTS rb_wd_items (
+    id          BIGSERIAL PRIMARY KEY,
+    wid         BIGINT NOT NULL REFERENCES rb_withdrawals(id) ON DELETE CASCADE,
+    currency    rb_currency  NOT NULL,
+    amount      BIGINT       NOT NULL CHECK (amount > 0),
+    status      rb_wd_status NOT NULL DEFAULT 'pending',
+    decided_at  TIMESTAMPTZ,
+    decided_by  BIGINT,
+    comment     TEXT
+);
+CREATE INDEX IF NOT EXISTS rb_wd_items_wid_idx ON rb_wd_items (wid);
+
+-- Миграция существующей rb_withdrawals: для корзины currency/amount становятся NULL-able.
+DO $$
+BEGIN
+    BEGIN
+        ALTER TABLE rb_withdrawals ALTER COLUMN currency DROP NOT NULL;
+    EXCEPTION WHEN others THEN NULL; END;
+    BEGIN
+        ALTER TABLE rb_withdrawals ALTER COLUMN amount DROP NOT NULL;
+    EXCEPTION WHEN others THEN NULL; END;
+END $$;
 
 CREATE TABLE IF NOT EXISTS rb_spins (
     id         BIGSERIAL PRIMARY KEY,
@@ -466,7 +497,7 @@ ALTER TABLE rb_giveaways ADD COLUMN IF NOT EXISTS finish_photo TEXT;
 
 -- ---------- 5. Проверка ----------
 SELECT
-  (SELECT count(*) FROM pg_tables WHERE tablename ~ '^rb_')                   AS tables_expect_27,
+  (SELECT count(*) FROM pg_tables WHERE tablename ~ '^rb_')                   AS tables_expect_28,
   (SELECT count(*) FROM pg_type   WHERE typname ~ '^rb_' AND typtype = 'e')   AS enums_expect_3,
   (SELECT count(*) FROM pg_indexes WHERE indexname IN
      ('rb_referrals_alive_idx','rb_withdrawals_one_pending','rb_spins_daily',

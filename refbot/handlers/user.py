@@ -6,9 +6,11 @@ from aiogram.filters import Command, CommandObject, CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, Message
+from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 import db
 import keyboards as kb
+from keyboards import btn
 from config import MIN_WITHDRAW, WITHDRAW_STEP, HOLD_HOURS, PAYOUT_CHAT_ID, SUPER_ADMINS
 from services import settings, ui
 from services.render import edit as r_edit
@@ -20,11 +22,12 @@ router = Router()
 
 
 class WD(StatesGroup):
-    currency = State()
-    amount = State()
+    currency = State()   # выбор валюты для добавления позиции
+    amount = State()     # ввод суммы позиции
 
 
 from services.amount_parse import shk_fmt, shk_parse
+from services import wd_basket
 
 
 def fmt(n: int) -> str:
@@ -240,6 +243,11 @@ async def cb_profile(c: CallbackQuery):
         # админ сломал шаблон -> не роняем профиль юзеру, откатываемся на дефолт
         text = settings.DEFAULT_PROFILE.format(**data)
 
+    from services import tokens as _tok
+    tl = await _tok.owned_lines(b)
+    if tl:
+        text += "\n\n" + "\n".join(tl)
+
     await r_edit(c.message, text, await settings.emoji_map(), reply_markup=await kb.back_menu())
     await c.answer()
 
@@ -384,40 +392,90 @@ async def cb_refs(c: CallbackQuery):
 
 
 # ---------------- вывод ----------------
+# ==================== КОРЗИНА ВЫВОДА ====================
+# Игрок собирает позиции (валюта+сумма) в FSM (debt не заморожен до отправки),
+# может добавлять/убирать, потом «Отправить» -> wd_basket.create_basket (заморозка всех).
+
+_TOK_E = {"revive": "❤️‍🔥", "max": "⚡️", "partials": "🧩"}
+
+
+def _cur_e(sx, cur):
+    return sx.get("e_" + cur, _TOK_E.get(cur, "🎫"))
+
+
+def _fmt_cur(cur, amt):
+    return shk_fmt(amt) if cur == "shimcoins" else fmt(amt)
+
+
+async def _basket_text(uid, sx, cart: list):
+    b = await db.balances(uid)
+    lines = [f"{sx['e_withdraw']} <b>Вывод — корзина</b>\n"]
+    if cart:
+        lines.append("В корзине:")
+        for i, (cur, amt) in enumerate(cart, 1):
+            lines.append(f"  {i}. {_cur_e(sx, cur)} {_fmt_cur(cur, amt)}")
+        lines.append("")
+    else:
+        lines.append("Корзина пуста. Добавь валюту для вывода.\n")
+    lines.append(f"Баланс: {sx['e_mushrooms']} {fmt(b['mushrooms'])} · "
+                 f"{sx['e_coins']} {fmt(b['coins'])}")
+    from services import tokens as _tok
+    tl = await _tok.owned_lines(b)
+    if tl:
+        lines.append(" · ".join(tl))
+    return "\n".join(lines)
+
+
+async def _basket_kb(cart: list):
+    k = InlineKeyboardBuilder()
+    await btn(k, "➕ Добавить валюту", "wd_add")
+    if cart:
+        await btn(k, "🗑 Убрать позицию", "wd_del")
+        await btn(k, "✅ Отправить заявку", "wd_send")
+    await btn(k, "Меню", "menu", "back")
+    k.adjust(1)
+    return k.as_markup()
+
+
 @router.callback_query(F.data == "wd_menu")
-async def cb_wd_menu(c: CallbackQuery):
+async def cb_wd_menu(c: CallbackQuery, state: FSMContext):
     if not await guard(c):
         return
-    act = await withdrawals.active(c.from_user.id)
-    b = await db.balances(c.from_user.id)
     sx = await settings.ctx()
-    head = (f"{sx['e_withdraw']} <b>Вывод</b>\n\n"
-            f"Минимум: <b>{fmt(MIN_WITHDRAW['mushrooms'])}</b> {sx['e_mushrooms']} "
-            f"или <b>{fmt(MIN_WITHDRAW['coins'])}</b> {sx['e_coins']}\n"
-            f"Баланс: {sx['e_mushrooms']} {fmt(b['mushrooms'])} | "
-            f"{sx['e_coins']} {fmt(b['coins'])}\n\n")
-    if act:
-        head += (f"📌 Активная заявка: <b>{fmt(act['amount'])}</b> "
-                 f"{sx['e_' + act['currency']]}\n"
-                 f"Статус: ожидает админа. Пока он не подтвердил — можешь менять или отменить.")
-    else:
-        head += "Активных заявок нет."
-    await ui.edit(c.message, head, reply_markup=await kb.wd_menu(bool(act)))
+    # если есть активная (отправленная) заявка — показываем её, новую собрать нельзя
+    w, items = await wd_basket.active_basket(c.from_user.id)
+    if w:
+        lines = [f"{sx['e_withdraw']} <b>Активная заявка #{w['id']}</b>\n"]
+        for it in items:
+            st = {"pending": "⏳", "confirmed": "✅", "rejected": "❌",
+                  "cancelled": "🚫"}.get(it["status"], "•")
+            lines.append(f"  {st} {_cur_e(sx, it['currency'])} {_fmt_cur(it['currency'], it['amount'])}")
+        lines.append("\nЖдёт обработки админом. Можно отменить целиком (вернём незакрытые позиции).")
+        kk = InlineKeyboardBuilder()
+        await btn(kk, "❌ Отменить заявку", "wd_cancel")
+        await btn(kk, "Меню", "menu", "back")
+        kk.adjust(1)
+        return await _finish_menu(c, "\n".join(lines), kk.as_markup())
+    # иначе — собираем корзину (из FSM)
+    data = await state.get_data()
+    cart = data.get("cart") or []
+    await state.update_data(cart=cart)
+    await _finish_menu(c, await _basket_text(c.from_user.id, sx, cart), await _basket_kb(cart))
+
+
+async def _finish_menu(c, text, markup):
+    await ui.edit(c.message, text, reply_markup=markup)
     await c.answer()
 
 
-@router.callback_query(F.data == "wd_cur")
-async def cb_wd_cur(c: CallbackQuery, state: FSMContext):
+@router.callback_query(F.data == "wd_add")
+async def cb_wd_add(c: CallbackQuery, state: FSMContext):
     if not await guard(c):
         return
-    await state.set_state(WD.currency)
-    sx = await settings.ctx()
+    if await wd_basket.has_active(c.from_user.id):
+        return await c.answer("У тебя уже есть отправленная заявка.", show_alert=True)
     b = await db.balances(c.from_user.id)
-    await ui.edit(c.message,
-        f"💸 <b>Вывод</b>\n\n"
-        f"Выбери валюту:\n"
-        f"{sx['e_mushrooms']} {fmt(b['mushrooms'])} · {sx['e_coins']} {fmt(b['coins'])}",
-        reply_markup=await kb.wd_currency())
+    await ui.edit(c.message, "Выбери валюту для вывода:", reply_markup=await kb.wd_currency(b))
     await c.answer()
 
 
@@ -426,19 +484,23 @@ async def cb_wd_currency_pick(c: CallbackQuery, state: FSMContext):
     if not await guard(c):
         return
     cur = c.data.split(":")[1]
+    if cur not in MIN_WITHDRAW:
+        return await c.answer("Эту валюту вывести нельзя.", show_alert=True)
+    data = await state.get_data()
+    cart = data.get("cart") or []
+    # нельзя добавить валюту, которая уже в корзине (одна позиция на валюту)
+    if any(x[0] == cur for x in cart):
+        return await c.answer("Эта валюта уже в корзине. Убери её, чтобы изменить.", show_alert=True)
     await state.update_data(wd_currency=cur)
     await state.set_state(WD.amount)
     sx = await settings.ctx()
     b = await db.balances(c.from_user.id)
-    e = sx['e_' + cur]
+    e = _cur_e(sx, cur)
     await ui.edit(c.message,
-        f"✍️ <b>Сумма вывода</b> в {e}\n\n"
-        f"Твой баланс: <b>{fmt(b[cur])}</b> {e}\n"
-        f"Минимум: <b>{fmt(MIN_WITHDRAW[cur])}</b> {e}\n"
-        f"Кратно: <b>{fmt(WITHDRAW_STEP[cur])}</b> {e} (например {fmt(MIN_WITHDRAW[cur])}, "
-        f"{fmt(MIN_WITHDRAW[cur] + WITHDRAW_STEP[cur])})\n\n"
-        f"Пришли число. Понимаю: <code>100к</code>=100000, <code>1м</code>=1млн, "
-        f"<code>1.5м</code>, пробелы.",
+        f"✍️ <b>Сумма</b> в {e}\n\n"
+        f"Баланс: <b>{_fmt_cur(cur, b[cur])}</b> {e}\n"
+        f"Минимум: <b>{fmt(MIN_WITHDRAW[cur])}</b> · кратно <b>{fmt(WITHDRAW_STEP[cur])}</b>\n\n"
+        f"Пришли число (<code>100к</code>, <code>1м</code>).",
         reply_markup=await kb.back_menu())
     await c.answer()
 
@@ -449,70 +511,108 @@ async def wd_amount_input(msg: Message, state: FSMContext):
         return
     from services.amount_parse import parse_amount
     amount = parse_amount(msg.text or "")
-    if amount is None:
-        return await ui.answer(msg, "Не понял сумму. Например: <code>100к</code>, "
-                               "<code>1.5м</code> или <code>100000</code>. Ещё раз.")
+    if amount is None or amount <= 0:
+        return await ui.answer(msg, "Не понял сумму. Например: <code>100к</code>, <code>1м</code>.")
     data = await state.get_data()
-    cur = data.get("wd_currency") or (await db.get_user(msg.from_user.id))["currency"]
-    sx = await settings.ctx()
-    e = sx['e_' + cur]
-
-    # проверки: минимум и баланс
-    if amount < MIN_WITHDRAW[cur]:
-        return await ui.answer(msg, f"Минимум для вывода — <b>{fmt(MIN_WITHDRAW[cur])}</b> {e}. "
-                               f"Ты ввёл меньше.")
-    if amount % WITHDRAW_STEP[cur] != 0:
-        step = WITHDRAW_STEP[cur]
-        lo = (amount // step) * step
-        hi = lo + step
-        return await ui.answer(msg,
-            f"Сумма должна быть кратна <b>{fmt(step)}</b> {e}. "
-            f"Ближайшие: <b>{fmt(lo)}</b> или <b>{fmt(hi)}</b>.")
-    b = await db.balances(msg.from_user.id)
-    if amount > b[cur]:
-        return await ui.answer(msg, f"На балансе только <b>{fmt(b[cur])}</b> {e}, "
-                               f"а ты хочешь вывести {fmt(amount)}. Введи сумму не больше баланса.")
-
-    act = await withdrawals.active(msg.from_user.id)
-    if act:
-        row, err = await withdrawals.change_amount(msg.from_user.id, amount)
-        if err:
-            return await ui.answer(msg, f"⚠️ {err}")
-        await drop_admin_card(msg.bot, act)
-        await push_admin_card(msg.bot, row)
-        await state.clear()
-        return await ui.answer(msg, f"✏️ Сумма изменена на <b>{fmt(amount)}</b> {e}. "
-                               f"Админу ушло новое уведомление.",
-                               reply_markup=await kb.back_menu())
-
-    chat_id = await _payout_chat()
-    if not chat_id:
-        return await ui.answer(msg, "⚠️ Пока некому обработать вывод — нет ни одного "
-                               "чата с ботом. Напиши админу напрямую.")
-    wid, err = await withdrawals.create(msg.from_user.id, chat_id, cur, amount)
+    cur = data.get("wd_currency")
+    if not cur:
+        await state.set_state(None)
+        return await ui.answer(msg, "Начни заново через меню вывода.")
+    # валидация через сервис (минимум, кратность)
+    err = wd_basket.validate_item(cur, amount)
     if err:
         return await ui.answer(msg, f"⚠️ {err}")
-    row = await db.pool().fetchrow("SELECT * FROM rb_withdrawals WHERE id=$1", wid)
-    await push_admin_card(msg.bot, dict(row))
-    await state.clear()
-    await ui.answer(msg,
-        f"{sx['e_paid']} Заявка создана: <b>{fmt(amount)}</b> {e}\n"
-        f"Админ получил уведомление. Пока он не подтвердил — сумму можно менять или отменить.\n"
-        f"Списание произойдёт только в момент подтверждения.",
+    # проверка баланса с учётом уже добавленного в корзину этой валюты
+    cart = data.get("cart") or []
+    b = await db.balances(msg.from_user.id)
+    already = sum(a for cc, a in cart if cc == cur)
+    if amount + already > b[cur]:
+        e_ = _cur_e(await settings.ctx(), cur)
+        return await ui.answer(msg,
+            f"На балансе {_fmt_cur(cur, b[cur])} {e_}, а в корзине уже {_fmt_cur(cur, already)}. "
+            f"Не хватает.")
+    cart.append([cur, amount])
+    await state.update_data(cart=cart, wd_currency=None)
+    await state.set_state(None)
+    sx = await settings.ctx()
+    await ui.answer(msg, await _basket_text(msg.from_user.id, sx, cart),
+                    reply_markup=await _basket_kb(cart))
+
+
+@router.callback_query(F.data == "wd_del")
+async def cb_wd_del(c: CallbackQuery, state: FSMContext):
+    if not await guard(c):
+        return
+    data = await state.get_data()
+    cart = data.get("cart") or []
+    if not cart:
+        return await c.answer("Корзина пуста.", show_alert=True)
+    sx = await settings.ctx()
+    k = InlineKeyboardBuilder()
+    for i, (cur, amt) in enumerate(cart):
+        await btn(k, f"🗑 {_cur_e(sx, cur)} {_fmt_cur(cur, amt)}", f"wddel:{i}")
+    await btn(k, "Назад", "wd_menu", "back")
+    k.adjust(1)
+    await ui.edit(c.message, "Что убрать из корзины?", reply_markup=k.as_markup())
+    await c.answer()
+
+
+@router.callback_query(F.data.startswith("wddel:"))
+async def cb_wd_del_one(c: CallbackQuery, state: FSMContext):
+    if not await guard(c):
+        return
+    idx = int(c.data.split(":")[1])
+    data = await state.get_data()
+    cart = data.get("cart") or []
+    if 0 <= idx < len(cart):
+        cart.pop(idx)
+        await state.update_data(cart=cart)
+    sx = await settings.ctx()
+    await ui.edit(c.message, await _basket_text(c.from_user.id, sx, cart),
+                  reply_markup=await _basket_kb(cart))
+    await c.answer("Убрано")
+
+
+@router.callback_query(F.data == "wd_send")
+async def cb_wd_send(c: CallbackQuery, state: FSMContext):
+    if not await guard(c):
+        return
+    data = await state.get_data()
+    cart = data.get("cart") or []
+    if not cart:
+        return await c.answer("Корзина пуста.", show_alert=True)
+    chat_id = await _payout_chat()
+    if not chat_id:
+        return await c.answer("Некому обработать вывод — нет чата с ботом.", show_alert=True)
+    items = [(cur, amt) for cur, amt in cart]
+    wid, err = await wd_basket.create_basket(c.from_user.id, chat_id, items)
+    if err:
+        return await c.answer(f"⚠️ {err}", show_alert=True)
+    await state.update_data(cart=[])
+    # уведомление админам (карточка с кнопками — в v106; пока текстовая заявка)
+    from services import notify
+    with contextlib.suppress(Exception):
+        await notify.push_basket_card(c.bot, wid)
+    sx = await settings.ctx()
+    await ui.edit(c.message,
+        f"{sx['e_paid']} <b>Заявка #{wid} отправлена!</b>\n\n"
+        f"Средства заморожены. Админ обработает каждую позицию.\n"
+        f"Можешь отменить заявку, пока позиции не обработаны.",
         reply_markup=await kb.back_menu())
+    await c.answer("Отправлено!")
 
 
 @router.callback_query(F.data == "wd_cancel")
 async def cb_wd_cancel(c: CallbackQuery):
     if not await guard(c):
         return
-    row = await withdrawals.cancel(c.from_user.id)
-    if not row:
+    w = await wd_basket.cancel_basket(c.from_user.id)
+    if not w:
         return await c.answer("Активной заявки нет.", show_alert=True)
-    await drop_admin_card(c.bot, row)
-    amt = f"{row['amount']:,}".replace(",", " ")
+    with contextlib.suppress(Exception):
+        from services import notify
+        await notify.drop_basket_card(c.bot, w["id"])
     await ui.edit(c.message,
-        f"❌ Заявка отменена. <b>{amt}</b> вернулись на баланс.\n"
-        f"Уведомление у админа удалено.",
+        "❌ Заявка отменена. Незакрытые позиции вернулись на баланс.",
         reply_markup=await kb.back_menu())
-    await c.answer("Средства вернулись")
+    await c.answer("Отменено")

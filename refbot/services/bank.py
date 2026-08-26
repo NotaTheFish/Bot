@@ -110,6 +110,10 @@ async def quote(src: str, dst: str, amount: int) -> tuple[int, int, str]:
     """
     if amount <= 0:
         return 0, 0, "Сумма должна быть больше нуля."
+    # токены (revive/max/partials) нельзя обменивать — только купить и вывести
+    from services.tokens import is_token
+    if is_token(src) or is_token(dst):
+        return 0, 0, "Токены нельзя обменивать."
     if dst == "shimcoins":
         return 0, 0, "Менять на шимкоины нельзя."
     if src == dst:

@@ -43,13 +43,25 @@ async def wd_menu(has_active: bool) -> InlineKeyboardMarkup:
     return kb.as_markup()
 
 
-async def wd_currency() -> InlineKeyboardMarkup:
-    """Выбор валюты вывода."""
+async def wd_currency(bal: dict | None = None) -> InlineKeyboardMarkup:
+    """Выбор валюты вывода. Токены показываем только если у юзера они есть."""
     kb = InlineKeyboardBuilder()
     await btn(kb, "🍄 Грибы", "wdcur:mushrooms")
     await btn(kb, "🪙 Коины", "wdcur:coins")
+    rows = [2]
+    if bal:
+        from services import tokens
+        tok_emoji = {"revive": "❤️‍🔥", "max": "⚡️", "partials": "🧩"}
+        added = 0
+        for code, name in tokens.TOKENS.items():
+            if (bal.get(code, 0) or 0) > 0:
+                await btn(kb, f"{tok_emoji.get(code,'🎫')} {name}", f"wdcur:{code}")
+                added += 1
+        if added:
+            rows.append(added)
     await btn(kb, "Назад", "wd_menu", "back")
-    kb.adjust(2, 1)
+    rows.append(1)
+    kb.adjust(*rows)
     return kb.as_markup()
 
 
@@ -77,8 +89,11 @@ async def adj_currency(tg_id: int, action: str) -> InlineKeyboardMarkup:
     await btn(kb, "🍄 Грибы", f"a_adjcur:{action}:{tg_id}:mushrooms")
     await btn(kb, "🪙 Коины", f"a_adjcur:{action}:{tg_id}:coins")
     await btn(kb, "💠 Шимкоины", f"a_adjcur:{action}:{tg_id}:shimcoins")
+    await btn(kb, "❤️‍🔥 Revive", f"a_adjcur:{action}:{tg_id}:revive")
+    await btn(kb, "⚡️ Max", f"a_adjcur:{action}:{tg_id}:max")
+    await btn(kb, "🧩 Partials", f"a_adjcur:{action}:{tg_id}:partials")
     await btn(kb, "Отмена", f"a_findback:{tg_id}", "back")
-    kb.adjust(2, 1, 1)
+    kb.adjust(2, 1, 3, 1)
     return kb.as_markup()
 
 
@@ -222,9 +237,10 @@ async def admin_menu(manage: bool = True) -> InlineKeyboardMarkup:
         await btn(kb, "🎟 Промокоды", "promo_menu")
         await btn(kb, "🏷 Акции", "off_menu")
         await btn(kb, "🏦 Управление банком", "bank_admin")
+        await btn(kb, "🎫 Цены токенов", "tok_admin")
         await btn(kb, "🎨 Кастомизация", "a_skin")
         await btn(kb, "📢 Разослать меню", "a_kbcast")
-        n_main += 7
+        n_main += 8
     await btn(kb, "Назад", "menu", "back")
     # все кнопки по 2 в ряд; «Назад» всегда одна в своём ряду.
     rows = [2] * (n_main // 2)

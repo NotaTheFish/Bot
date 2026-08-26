@@ -52,6 +52,18 @@ class Adjust(StatesGroup):
 from services.amount_parse import shk_fmt
 
 
+def _tok_line(b: dict) -> str:
+    """Строка с ненулевыми токенами для карточки: '\n❤️‍🔥 Revive: 1 200 | ...' или ''."""
+    from services import tokens
+    parts = []
+    _emoji = {"revive": "❤️‍🔥", "max": "⚡️", "partials": "🧩"}
+    for code, name in tokens.TOKENS.items():
+        v = b.get(code, 0) or 0
+        if v > 0:
+            parts.append(f"{_emoji.get(code,'🎫')} {name}: {v:,}".replace(",", " "))
+    return ("\n" + " | ".join(parts)) if parts else ""
+
+
 def fmt(n: int) -> str:
     return f"{n:,}".replace(",", " ")
 
@@ -346,6 +358,7 @@ async def find_input(msg: Message, state: FSMContext):
         f"{sx['e_balance']} {sx['e_mushrooms']} {fmt(b['mushrooms'])} | "
         f"{sx['e_coins']} {fmt(b['coins'])} | "
         f"{sx['e_shimcoins']} {shk_fmt(b['shimcoins'])}\n"
+        f"{_tok_line(b)}"
         f"{sx['e_refs']} {sx['e_paid']} {st['paid']} | {sx['e_hold']} {st['hold']} | "
         f"{sx['e_lost']} {st['lost']}\n"
         f"📅 В боте с {row['created_at']:%d.%m.%Y}\n\n"
@@ -623,7 +636,8 @@ async def _adj_show_user_card(c, tg_id):
         f"<code>{row['tg_id']}</code>{' 🚫 БАН' if row['banned'] else ''}\n\n"
         f"{sx['e_balance']} {sx['e_mushrooms']} {fmt(b['mushrooms'])} | "
         f"{sx['e_coins']} {fmt(b['coins'])} | "
-        f"{sx['e_shimcoins']} {shk_fmt(b['shimcoins'])}",
+        f"{sx['e_shimcoins']} {shk_fmt(b['shimcoins'])}"
+        f"{_tok_line(b)}",
         reply_markup=await kb.find_card(tg_id, row["banned"], await can_manage(c.from_user.id)))
 
 
@@ -753,3 +767,48 @@ async def _apply_adjust(event, tg_id: int, action: str, cur: str, amount: int):
         await event.answer("Готово.")
     else:  # Message
         await ui.answer(event, text, reply_markup=reply_kb)
+
+
+# ==================== ОБРАБОТКА КОРЗИНЫ ПО ПОЗИЦИЯМ ====================
+@router.callback_query(F.data.startswith("wdi_ok:"))
+async def cb_wd_item_ok(c: CallbackQuery):
+    from config import PAYOUT_ADMINS
+    from services import wd_basket, notify
+    if (not await db.admin_chats(c.from_user.id) and c.from_user.id not in SUPER_ADMINS
+            and c.from_user.id not in PAYOUT_ADMINS):
+        return await c.answer("Нет доступа.", show_alert=True)
+    item_id = int(c.data.split(":")[1])
+    it, err = await wd_basket.confirm_item(c.from_user.id, item_id)
+    if err:
+        return await c.answer(f"⚠️ {err}", show_alert=True)
+    await c.answer("✅ Позиция выдана")
+    # уведомить игрока
+    w = await db.pool().fetchrow("SELECT * FROM rb_withdrawals WHERE id=$1", it["wid"])
+    sx = await settings.ctx()
+    e = sx.get("e_" + it["currency"], "🎫")
+    amt = shk_fmt(it["amount"]) if it["currency"] == "shimcoins" else fmt(it["amount"])
+    with contextlib.suppress(Exception):
+        await ui.send(c.bot, w["tg_id"], f"✅ Вывод выдан: <b>{amt}</b> {e}")
+    await notify.refresh_basket_cards(c.bot, it["wid"])
+
+
+@router.callback_query(F.data.startswith("wdi_no:"))
+async def cb_wd_item_no(c: CallbackQuery):
+    from config import PAYOUT_ADMINS
+    from services import wd_basket, notify
+    if (not await db.admin_chats(c.from_user.id) and c.from_user.id not in SUPER_ADMINS
+            and c.from_user.id not in PAYOUT_ADMINS):
+        return await c.answer("Нет доступа.", show_alert=True)
+    item_id = int(c.data.split(":")[1])
+    it, err = await wd_basket.reject_item(c.from_user.id, item_id)
+    if err:
+        return await c.answer(f"⚠️ {err}", show_alert=True)
+    await c.answer("❌ Позиция отклонена, средства возвращены игроку")
+    w = await db.pool().fetchrow("SELECT * FROM rb_withdrawals WHERE id=$1", it["wid"])
+    sx = await settings.ctx()
+    e = sx.get("e_" + it["currency"], "🎫")
+    amt = shk_fmt(it["amount"]) if it["currency"] == "shimcoins" else fmt(it["amount"])
+    with contextlib.suppress(Exception):
+        await ui.send(c.bot, w["tg_id"],
+                      f"❌ Вывод отклонён: <b>{amt}</b> {e}. Средства вернулись на баланс.")
+    await notify.refresh_basket_cards(c.bot, it["wid"])
