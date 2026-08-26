@@ -396,7 +396,7 @@ async def cb_refs(c: CallbackQuery):
 # Игрок собирает позиции (валюта+сумма) в FSM (debt не заморожен до отправки),
 # может добавлять/убирать, потом «Отправить» -> wd_basket.create_basket (заморозка всех).
 
-_TOK_E = {"revive": "❤️‍🔥", "max": "⚡️", "partials": "🧩"}
+_TOK_E = {"revive": "❤️‍🔥", "max": "🔱", "partials": "🧩"}
 
 
 def _cur_e(sx, cur):

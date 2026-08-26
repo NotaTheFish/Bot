@@ -24,7 +24,7 @@ EMOJI_SLOTS = {
     "coins":     ("Коины", "🪙"),
     "shimcoins": ("Шимкоины", "💠"),
     "revive":    ("Revive", "❤️‍🔥"),
-    "max":       ("Max", "⚡️"),
+    "max":       ("Max", "🔱"),
     "partials":  ("Partials", "🧩"),
     "profile":   ("Заголовок профиля", "👤"),
     "balance":   ("Баланс", "💰"),

@@ -56,7 +56,7 @@ def _tok_line(b: dict) -> str:
     """Строка с ненулевыми токенами для карточки: '\n❤️‍🔥 Revive: 1 200 | ...' или ''."""
     from services import tokens
     parts = []
-    _emoji = {"revive": "❤️‍🔥", "max": "⚡️", "partials": "🧩"}
+    _emoji = {"revive": "❤️‍🔥", "max": "🔱", "partials": "🧩"}
     for code, name in tokens.TOKENS.items():
         v = b.get(code, 0) or 0
         if v > 0:

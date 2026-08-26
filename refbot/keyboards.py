@@ -51,7 +51,7 @@ async def wd_currency(bal: dict | None = None) -> InlineKeyboardMarkup:
     rows = [2]
     if bal:
         from services import tokens
-        tok_emoji = {"revive": "❤️‍🔥", "max": "⚡️", "partials": "🧩"}
+        tok_emoji = {"revive": "❤️‍🔥", "max": "🔱", "partials": "🧩"}
         added = 0
         for code, name in tokens.TOKENS.items():
             if (bal.get(code, 0) or 0) > 0:
@@ -90,7 +90,7 @@ async def adj_currency(tg_id: int, action: str) -> InlineKeyboardMarkup:
     await btn(kb, "🪙 Коины", f"a_adjcur:{action}:{tg_id}:coins")
     await btn(kb, "💠 Шимкоины", f"a_adjcur:{action}:{tg_id}:shimcoins")
     await btn(kb, "❤️‍🔥 Revive", f"a_adjcur:{action}:{tg_id}:revive")
-    await btn(kb, "⚡️ Max", f"a_adjcur:{action}:{tg_id}:max")
+    await btn(kb, "🔱 Max", f"a_adjcur:{action}:{tg_id}:max")
     await btn(kb, "🧩 Partials", f"a_adjcur:{action}:{tg_id}:partials")
     await btn(kb, "Отмена", f"a_findback:{tg_id}", "back")
     kb.adjust(2, 1, 3, 1)

@@ -135,7 +135,7 @@ async def on_inline(q: InlineQuery):
     token = uuid.uuid4().hex[:12]
     sx = await settings.ctx()
     cur_emoji_plain = {"mushrooms": "🍄", "coins": "🪙", "shimcoins": "💠",
-                       "revive": "❤️‍🔥", "max": "⚡️", "partials": "🧩"}.get(cur, "🎫")
+                       "revive": "❤️‍🔥", "max": "🔱", "partials": "🧩"}.get(cur, "🎫")
     verb = "Начислить" if sign > 0 else "Изъять"
     amt = _fmt_grant(amount, cur)
 

@@ -104,7 +104,7 @@ async def drop_admin_card(bot, wd: dict):
 
 
 # ==================== КОРЗИНА ВЫВОДА ====================
-_TOK_E = {"revive": "❤️‍🔥", "max": "⚡️", "partials": "🧩"}
+_TOK_E = {"revive": "❤️‍🔥", "max": "🔱", "partials": "🧩"}
 
 
 def _cur_e(sx, cur):
@@ -163,7 +163,7 @@ def _basket_card_text(sx, wid, uname, w, items) -> str:
 def _basket_card_kb(wid, items):
     from aiogram.utils.keyboard import InlineKeyboardBuilder
     k = InlineKeyboardBuilder()
-    tok_e = {"revive": "❤️‍🔥", "max": "⚡️", "partials": "🧩",
+    tok_e = {"revive": "❤️‍🔥", "max": "🔱", "partials": "🧩",
              "mushrooms": "🍄", "coins": "🪙", "shimcoins": "💠"}
     has_pending = False
     for it in items:
