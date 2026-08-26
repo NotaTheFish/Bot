@@ -566,30 +566,30 @@ async def wd_amount_input(msg: Message, state: FSMContext):
     from services.amount_parse import parse_amount
     amount = parse_amount(msg.text or "")
     if amount is None or amount <= 0:
-        return await ui.answer(msg, "Не понял сумму. Например: <code>100к</code>, <code>1м</code>.")
+        return await ui.answer_smart(msg, msg.from_user.id, "Не понял сумму. Например: <code>100к</code>, <code>1м</code>.")
     data = await state.get_data()
     cur = data.get("wd_currency")
     if not cur:
         await state.set_state(None)
-        return await ui.answer(msg, "Начни заново через меню вывода.")
+        return await ui.answer_smart(msg, msg.from_user.id, "Начни заново через меню вывода.")
     # валидация через сервис (минимум, кратность)
     err = wd_basket.validate_item(cur, amount)
     if err:
-        return await ui.answer(msg, f"⚠️ {err}")
+        return await ui.answer_smart(msg, msg.from_user.id, f"⚠️ {err}")
     # проверка баланса с учётом уже добавленного в корзину этой валюты
     cart = data.get("cart") or []
     b = await db.balances(msg.from_user.id)
     already = sum(a for cc, a in cart if cc == cur)
     if amount + already > b[cur]:
         e_ = _cur_e(await settings.ctx(), cur)
-        return await ui.answer(msg,
+        return await ui.answer_smart(msg, msg.from_user.id,
             f"На балансе {_fmt_cur(cur, b[cur])} {e_}, а в корзине уже {_fmt_cur(cur, already)}. "
             f"Не хватает.")
     cart.append([cur, amount])
     await state.update_data(cart=cart, wd_currency=None)
     await state.set_state(None)
     sx = await settings.ctx()
-    await ui.answer(msg, await _basket_text(msg.from_user.id, sx, cart),
+    await ui.answer_smart(msg, msg.from_user.id, await _basket_text(msg.from_user.id, sx, cart),
                     reply_markup=await _basket_kb(cart))
 
 
@@ -643,7 +643,7 @@ async def cb_wd_send(c: CallbackQuery, state: FSMContext):
     if err:
         return await c.answer(f"⚠️ {err}", show_alert=True)
     await state.update_data(cart=[])
-    # уведомление админам (карточка с кнопками — в v106; пока текстовая заявка)
+    # уведомление админам — карточка с кнопками по позициям
     from services import notify
     with contextlib.suppress(Exception):
         await notify.push_basket_card(c.bot, wid)
@@ -654,6 +654,20 @@ async def cb_wd_send(c: CallbackQuery, state: FSMContext):
         f"Можешь отменить заявку, пока позиции не обработаны.",
         reply_markup=await kb.back_menu())
     await c.answer("Отправлено!")
+    # ненавязчиво дублируем в личку: заявку из группы можно отменить приватно в ЛС
+    if c.message.chat.type in ("group", "supergroup"):
+        _, items = await wd_basket.get_basket(wid)
+        pos = "\n".join(
+            f"  • {(shk_fmt(it['amount']) if it['currency']=='shimcoins' else fmt(it['amount']))} "
+            f"{sx.get('e_' + it['currency'], '🎫')}" for it in items)
+        kk = InlineKeyboardBuilder()
+        await btn(kk, "❌ Отменить заявку", "wd_cancel")
+        kk.adjust(1)
+        with contextlib.suppress(Exception):
+            await ui.send(c.bot, c.from_user.id,
+                f"{sx['e_paid']} <b>Твоя заявка #{wid}</b>\n\n{pos}\n\n"
+                f"Средства заморожены. Здесь можешь отменить её приватно.",
+                reply_markup=kk.as_markup())
 
 
 @router.callback_query(F.data == "wd_cancel")
