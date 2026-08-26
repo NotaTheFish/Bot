@@ -386,8 +386,23 @@ async def cb_pending(c: CallbackQuery):
         name = f"@{w['username']}" if w["username"] else (w["first_name"] or str(w["tg_id"]))
         ago = (datetime.now(timezone.utc) - w["created_at"]).total_seconds() / 3600
         wait = f"{int(ago)}ч" if ago >= 1 else f"{int(ago * 60)}м"
-        lines.append(f"#{w['id']} — {name} <code>{w['tg_id']}</code>\n"
-                     f"   {fmt(w['amount'])} {sx['e_' + w['currency']]} · ждёт {wait}")
+        # корзина (currency/amount = NULL) — собираем позиции; иначе старый формат
+        if w["currency"] is None or w["amount"] is None:
+            items = await db.pool().fetch(
+                "SELECT currency, amount, status FROM rb_wd_items "
+                "WHERE wid=$1 AND status='pending' ORDER BY id", w["id"])
+            if items:
+                pos = " · ".join(
+                    f"{(shk_fmt(it['amount']) if it['currency']=='shimcoins' else fmt(it['amount']))} "
+                    f"{sx.get('e_' + it['currency'], '🎫')}" for it in items)
+            else:
+                pos = "—"
+            lines.append(f"#{w['id']} — {name} <code>{w['tg_id']}</code>\n"
+                         f"   {pos} · ждёт {wait}")
+        else:
+            amt = shk_fmt(w['amount']) if w['currency'] == 'shimcoins' else fmt(w['amount'])
+            lines.append(f"#{w['id']} — {name} <code>{w['tg_id']}</code>\n"
+                         f"   {amt} {sx['e_' + w['currency']]} · ждёт {wait}")
     await ui.edit(
         c.message,
         f"💸 <b>Открытые заявки на вывод</b> ({len(rows)})\n\n"
@@ -410,7 +425,11 @@ async def cb_resend_card(c: CallbackQuery):
         "SELECT * FROM rb_withdrawals WHERE id=$1 AND status='pending'", wid)
     if not wd:
         return await c.answer("Заявка уже обработана.", show_alert=True)
-    await notify.push_admin_card(c.bot, dict(wd))
+    # корзина (currency=NULL) -> карточка с позициями; старый формат -> обычная
+    if wd["currency"] is None or wd["amount"] is None:
+        await notify.push_basket_card(c.bot, wid)
+    else:
+        await notify.push_admin_card(c.bot, dict(wd))
     await c.answer("Карточка прислана в ЛС.")
 
 

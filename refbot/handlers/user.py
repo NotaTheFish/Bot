@@ -302,7 +302,7 @@ async def cb_profile(c: CallbackQuery):
     if tl:
         text += "\n\n" + "\n".join(tl)
 
-    await r_edit(c.message, text, await settings.emoji_map(), reply_markup=await kb.back_menu())
+    await ui.edit(c.message, text, reply_markup=await kb.back_menu())
     await c.answer()
 
 
