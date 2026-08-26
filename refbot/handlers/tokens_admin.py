@@ -32,10 +32,10 @@ class TokPrice(StatesGroup):
 
 
 _PAY_TIER = [
-    ("shk", "retail", "💠 розница (<1000)"),
-    ("shk", "whole", "💠 опт (≥1000)"),
-    ("mush", "retail", "🍄 розница (<1000)"),
-    ("mush", "whole", "🍄 опт (≥1000)"),
+    ("shk", "retail", "💠 розница"),
+    ("shk", "whole", "💠 опт"),
+    ("mush", "retail", "🍄 розница"),
+    ("mush", "whole", "🍄 опт"),
 ]
 
 
@@ -78,7 +78,8 @@ async def _show_token_prices(c, code: str):
     name = tokens.TOKENS[code]
     e = await settings.emoji(code)
     lines = [f"{e} <b>{name} — цены</b>\n"
-             f"<i>Шимкоины — за партию 50 шт · Грибы — за 1 шт</i>\n"]
+             f"<i>Шимкоины — за партию 50 шт · Грибы — за 1 шт</i>\n"
+             f"<i>Розница — до 1000 шт · Опт — от 1000 шт</i>\n"]
     k = InlineKeyboardBuilder()
     for pay, tier, label in _PAY_TIER:
         val = await tokens.get_price(code, pay, tier)
@@ -99,7 +100,7 @@ async def cb_tok_set(c: CallbackQuery, state: FSMContext):
     _, code, pay, tier = c.data.split(":")
     await state.set_state(TokPrice.value)
     await state.update_data(tok={"code": code, "pay": pay, "tier": tier})
-    tier_s = "опт (≥1000)" if tier == "whole" else "розница (<1000)"
+    tier_s = "опт (≥1000)" if tier == "whole" else "розница (&lt;1000)"
     if pay == "shk":
         prompt = (f"Цена за <b>партию 50 шт</b> {tokens.TOKENS[code]} "
                   f"в <b>шимкоинах</b> ({tier_s})?\n\n"
