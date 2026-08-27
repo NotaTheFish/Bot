@@ -54,10 +54,10 @@ async def _board_text(m: dict, state: dict, for_uid=None) -> str:
     return head + f"🏆 <b>{wname} победил(а)!</b>"
 
 
-def _kb(m: dict, state: dict, finished: bool):
+async def _kb(m: dict, state: dict, finished: bool):
     from aiogram.utils.keyboard import InlineKeyboardBuilder
     if not finished:
-        return ttt.board_kb(state, m["id"])
+        return await ttt.board_kb(state, m["id"])
     kb = InlineKeyboardBuilder()
     kb.button(text="🔁 Ещё раз", callback_data=f"ttt_again:{m['id']}")
     kb.button(text="Меню", callback_data="menu")
@@ -75,7 +75,7 @@ async def start_game(bot, mid: int):
     for uid, col in ((m["p1"], "p1_msg_id"), (m["p2"], "p2_msg_id")):
         text = await _board_text(m, state, for_uid=uid)
         with contextlib.suppress(Exception):
-            msg = await ui.send(bot, uid, text, reply_markup=_kb(m, state, False))
+            msg = await ui.send(bot, uid, text, reply_markup=await _kb(m, state, False))
             if msg:
                 await db.pool().execute(
                     f"UPDATE rb_matches SET {col}=$1 WHERE id=$2", msg.message_id, mid)
@@ -91,7 +91,7 @@ async def _sync(bot, m: dict, state: dict, finished: bool):
         text = await _board_text(m, state, for_uid=uid)
         with contextlib.suppress(Exception):
             await render.edit_by_id(bot, uid, msg_id, text, em,
-                                    reply_markup=_kb(m, state, finished))
+                                    reply_markup=await _kb(m, state, finished))
 
 
 @router.callback_query(F.data.startswith("ttt_mv:"))
@@ -140,7 +140,7 @@ async def start_game_chat(bot, mid: int, chat_id: int):
     m = await matches.get(mid)
     text = await _board_text(m, state, for_uid=None)
     with contextlib.suppress(Exception):
-        msg = await ui.send(bot, chat_id, text, reply_markup=_kb(m, state, False))
+        msg = await ui.send(bot, chat_id, text, reply_markup=await _kb(m, state, False))
         if msg:
             await db.pool().execute(
                 "UPDATE rb_matches SET board_chat_id=$1, board_msg_id=$2 WHERE id=$3",
@@ -156,7 +156,7 @@ async def _sync_chat(bot, m: dict, state: dict, finished: bool):
     text = await _board_text(m, state, for_uid=None)
     with contextlib.suppress(Exception):
         await render.edit_by_id(bot, m["board_chat_id"], m["board_msg_id"], text, em,
-                                reply_markup=_kb(m, state, finished))
+                                reply_markup=await _kb(m, state, finished))
 
 
 async def timeout_worker(bot):

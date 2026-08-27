@@ -83,20 +83,25 @@ def other(state: dict, uid: int) -> int:
 
 # ---------------- рендер поля ----------------
 CELL_EMPTY = "·"
-SYM = {"X": "❌", "O": "⭕️", "": CELL_EMPTY}
+SYM = {"X": "😵", "O": "😮", "": CELL_EMPTY}
 
 
-def board_kb(state: dict, match_id: int, win=None):
-    """Инлайн-клавиатура 3x3. Пустые клетки кликабельны (ttt_mv:<mid>:<cell>),
-    занятые — показывают символ (клик игнорируется хендлером)."""
+async def board_kb(state: dict, match_id: int, win=None):
+    """Инлайн-клавиатура 3x3 через ui.btn — премиум-эмодзи символов выносятся в
+    icon_custom_emoji_id (если админ настроил premium.ttt_x / premium.ttt_o)."""
     from aiogram.utils.keyboard import InlineKeyboardBuilder
+    from services.ui import btn
+    from services import settings
+    ex = await settings.emoji("ttt_x")   # символ X (дефолт 😵, или премиум-настройка)
+    eo = await settings.emoji("ttt_o")   # символ O
     kb = InlineKeyboardBuilder()
     board = state["board"]
     for i in range(9):
-        if board[i]:
-            label = SYM[board[i]]
+        if board[i] == "X":
+            await btn(kb, ex, f"ttt_mv:{match_id}:{i}")
+        elif board[i] == "O":
+            await btn(kb, eo, f"ttt_mv:{match_id}:{i}")
         else:
-            label = CELL_EMPTY
-        kb.button(text=label, callback_data=f"ttt_mv:{match_id}:{i}")
+            await btn(kb, CELL_EMPTY, f"ttt_mv:{match_id}:{i}")
     kb.adjust(3, 3, 3)
     return kb.as_markup()

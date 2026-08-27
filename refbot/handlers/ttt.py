@@ -36,6 +36,13 @@ async def _guard_casino(uid: int) -> bool:
     return await casino_svc.visible(uid)
 
 
+async def _name_of(uid: int) -> str:
+    u = await db.get_user(uid)
+    if u and u["username"]:
+        return f"@{u['username']}"
+    return (u["first_name"] if u else None) or str(uid)
+
+
 # ---------------- создание ----------------
 @router.callback_query(F.data == "ttt_new")
 async def cb_ttt_new(c: CallbackQuery, state: FSMContext):
@@ -439,6 +446,24 @@ async def cb_ttt_again(c: CallbackQuery):
     await c.answer("Вызов на реванш отправлен!")
     sx = await settings.ctx()
     challenger = f"@{c.from_user.username}" if c.from_user.username else c.from_user.first_name
+
+    # реванш идёт туда же, где была игра: в чате -> приглашение в чат (accept_chat),
+    # в ЛС -> приглашение в ЛС (accept)
+    in_chat = bool(old.get("board_chat_id")) and c.message.chat.type in ("group", "supergroup")
+    if in_chat:
+        inv = InlineKeyboardBuilder()
+        await btn(inv, "✅ Принять", f"ttt_accept_chat:{mid}")
+        await btn(inv, "❌ Отклонить", f"ttt_decline:{mid}")
+        inv.adjust(2)
+        oppname = await _name_of(opp)
+        with contextlib.suppress(Exception):
+            await c.message.edit_reply_markup(reply_markup=None)
+        await ui.send(c.bot, c.message.chat.id,
+            f"🔁 <b>Реванш!</b> {challenger} снова вызывает {oppname}.\n"
+            f"Ставка: <b>{_fmt(stake)}</b> {sx['e_' + cur]}.\n\n{oppname}, принимаешь?",
+            reply_markup=inv.as_markup())
+        return
+
     inv = InlineKeyboardBuilder()
     await btn(inv, "✅ Принять", f"ttt_accept:{mid}")
     await btn(inv, "❌ Отклонить", f"ttt_decline:{mid}")
