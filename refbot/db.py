@@ -603,6 +603,7 @@ EXPECTED_TABLES = [
     "rb_bank_exch",
     "rb_usernames",
     "rb_wd_items",
+    "rb_matches",
 ]
 
 

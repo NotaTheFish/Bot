@@ -322,6 +322,46 @@ ALTER TABLE rb_chats ADD COLUMN IF NOT EXISTS deactivated_at TIMESTAMPTZ;
 ALTER TABLE rb_chats ADD COLUMN IF NOT EXISTS deactivated_by BIGINT;
 
 
+-- ---------- PvP-матчи (крестики-нолики, морской бой, будущие игры) ----------
+-- Универсальная таблица для любых игр на двоих со ставкой.
+--   game     — 'ttt' (крестики-нолики), 'sea' (морской бой), ...
+--   status   — searching (ждём случайного) | invited (ждём ответа приглашённого)
+--              | active (идёт игра) | finished | cancelled | expired
+--   stake/currency — равная ставка каждого; банк = 2*stake (заморожен у обоих)
+--   p1 — создатель, p2 — оппонент (NULL пока ищем/не принял)
+--   turn — чей сейчас ход (tg_id); state — JSONB состояние доски
+--   chat_id/message_id — где показано поле (для общего поля в чате);
+--   p1_msg/p2_msg — сообщения в личках (для ЛС-игры, синхронизируем оба)
+--   move_deadline — дедлайн текущего хода (тайм-аут 5 мин); search_deadline — поиск 10 мин
+CREATE TABLE IF NOT EXISTS rb_matches (
+    id            BIGSERIAL PRIMARY KEY,
+    game          TEXT NOT NULL,
+    status        TEXT NOT NULL DEFAULT 'searching',
+    currency      rb_currency NOT NULL,
+    stake         BIGINT NOT NULL CHECK (stake > 0),
+    p1            BIGINT NOT NULL,
+    p2            BIGINT,
+    p1_symbol     TEXT,                    -- 'X'|'O' для крестиков
+    turn          BIGINT,                  -- чей ход (tg_id)
+    winner        BIGINT,                  -- NULL пока не решено; 0 = ничья
+    state         JSONB NOT NULL DEFAULT '{}'::jsonb,
+    origin_chat   BIGINT,                  -- где создан (чат или личка-создателя)
+    board_chat_id BIGINT,                  -- чат общего поля
+    board_msg_id  BIGINT,                  -- сообщение общего поля в чате
+    p1_msg_id     BIGINT,                  -- поле в личке p1 (ЛС-режим)
+    p2_msg_id     BIGINT,                  -- поле в личке p2 (ЛС-режим)
+    move_deadline TIMESTAMPTZ,             -- дедлайн текущего хода
+    search_deadline TIMESTAMPTZ,           -- дедлайн поиска оппонента
+    created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+    finished_at   TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS rb_matches_status_idx ON rb_matches (status);
+CREATE INDEX IF NOT EXISTS rb_matches_p1_idx ON rb_matches (p1);
+CREATE INDEX IF NOT EXISTS rb_matches_p2_idx ON rb_matches (p2);
+-- один активный матч на игрока: частичный уникальный индекс по участникам в игре/поиске
+-- (реализуем проверкой в коде, т.к. игрок может быть p1 или p2 — сложно одним индексом)
+
+
 -- ---------- 4b. Рулетка (одобренные чаты) ----------
 -- Рулетка !шайн работает ТОЛЬКО в чатах, где главный админ включил её через /шимм.
 -- Отдельно от rb_chats СПЕЦИАЛЬНО: иначе чат с одной лишь рулеткой полез бы
@@ -497,7 +537,7 @@ ALTER TABLE rb_giveaways ADD COLUMN IF NOT EXISTS finish_photo TEXT;
 
 -- ---------- 5. Проверка ----------
 SELECT
-  (SELECT count(*) FROM pg_tables WHERE tablename ~ '^rb_')                   AS tables_expect_28,
+  (SELECT count(*) FROM pg_tables WHERE tablename ~ '^rb_')                   AS tables_expect_29,
   (SELECT count(*) FROM pg_type   WHERE typname ~ '^rb_' AND typtype = 'e')   AS enums_expect_3,
   (SELECT count(*) FROM pg_indexes WHERE indexname IN
      ('rb_referrals_alive_idx','rb_withdrawals_one_pending','rb_spins_daily',
