@@ -82,15 +82,16 @@ async def start_game(bot, mid: int):
 
 
 async def _sync(bot, m: dict, state: dict, finished: bool):
+    from services import render, settings as st
+    em = await st.emoji_map()
     for uid, col in ((m["p1"], "p1_msg_id"), (m["p2"], "p2_msg_id")):
         msg_id = m.get(col)
         if not msg_id:
             continue
         text = await _board_text(m, state, for_uid=uid)
         with contextlib.suppress(Exception):
-            await bot.edit_message_text(text, chat_id=uid, message_id=msg_id,
-                                        reply_markup=_kb(m, state, finished),
-                                        parse_mode="HTML")
+            await render.edit_by_id(bot, uid, msg_id, text, em,
+                                    reply_markup=_kb(m, state, finished))
 
 
 @router.callback_query(F.data.startswith("ttt_mv:"))
@@ -150,12 +151,12 @@ async def _sync_chat(bot, m: dict, state: dict, finished: bool):
     """Обновить общее поле в чате."""
     if not m.get("board_msg_id"):
         return
+    from services import render, settings as st
+    em = await st.emoji_map()
     text = await _board_text(m, state, for_uid=None)
     with contextlib.suppress(Exception):
-        await bot.edit_message_text(text, chat_id=m["board_chat_id"],
-                                    message_id=m["board_msg_id"],
-                                    reply_markup=_kb(m, state, finished),
-                                    parse_mode="HTML")
+        await render.edit_by_id(bot, m["board_chat_id"], m["board_msg_id"], text, em,
+                                reply_markup=_kb(m, state, finished))
 
 
 async def timeout_worker(bot):
