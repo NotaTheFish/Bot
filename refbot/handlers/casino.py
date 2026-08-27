@@ -19,6 +19,8 @@ from aiogram.types import CallbackQuery, Message
 
 import db
 import keyboards as kb
+from keyboards import btn
+from aiogram.utils.keyboard import InlineKeyboardBuilder
 from config import SUPER_ADMINS, COIN_RATE, WHEEL_MIN_BET, WHEEL_MAX_BET
 from services import casino, settings, ui
 
@@ -50,8 +52,63 @@ async def cb_casino(c: CallbackQuery):
         return await c.answer("Казино пока закрыто.", show_alert=True)
     note = "" if await casino_enabled() else "\n\n<i>🔴 Сейчас видно только админам.</i>"
     await ui.edit(c.message,
-        "🎰 <b>Казино</b>\n\nВыбери игру:" + note,
+        "🎰 <b>Казино</b>\n\nВыбирай:" + note,
         reply_markup=await kb.casino_menu())
+    await c.answer()
+
+
+@router.callback_query(F.data == "casino_games")
+async def cb_casino_games(c: CallbackQuery):
+    if not await casino_visible(c.from_user.id):
+        return await c.answer("Казино пока закрыто.", show_alert=True)
+    note = "" if await casino_enabled() else "\n\n<i>🔴 Сейчас видно только админам.</i>"
+    await ui.edit(c.message,
+        "🎮 <b>Игры</b>\n\nВыбери игру:" + note,
+        reply_markup=await kb.casino_games())
+    await c.answer()
+
+
+@router.callback_query(F.data == "casino_stats")
+async def cb_casino_stats(c: CallbackQuery):
+    if not await casino_visible(c.from_user.id):
+        return await c.answer("Казино пока закрыто.", show_alert=True)
+    st = await db.casino_stats(c.from_user.id)
+    sx = await settings.ctx()
+    _game_name = {"wheel": "🎡 Рулетка", "mines": "🃏 Карточки",
+                  "small": "📦 Кейс S", "medium": "📦 Кейс M", "big": "📦 Кейс L"}
+    _cur_name = {"mushrooms": "🍄 Грибы", "coins": "🪙 Коины"}
+
+    lines = ["📊 <b>Статистика казино</b>\n"]
+    if not st["per"]:
+        lines.append("Пока пусто. Сыграй — и здесь появится статистика.")
+    else:
+        for cur in ("mushrooms", "coins"):
+            d = st["per"].get(cur)
+            if not d or d["games"] == 0:
+                continue
+            luck = round(d["wins"] / d["games"] * 100)
+            e = sx.get("e_" + cur, "")
+            fmt_n = lambda n: f"{n:,}".replace(",", " ")
+            lines.append(
+                f"\n<b>{_cur_name[cur]}</b>\n"
+                f"Игр сыграно: <b>{d['games']}</b>\n"
+                f"Удачных игр: <b>{luck}%</b>\n"
+                f"Всего выиграл: <b>{fmt_n(d['won_total'])}</b> {e}\n"
+                f"Всего проиграл: <b>{fmt_n(d['bet_total'])}</b> {e}")
+        # последние операции
+        if st["last"]:
+            lines.append("\n<b>Последние игры:</b>")
+            for r in st["last"]:
+                gname = _game_name.get(r["case_key"], r["case_key"])
+                e = sx.get("e_" + r["currency"], "")
+                profit = r["won"] - r["cost"]
+                sign = "🟢 +" if profit > 0 else ("🔴 " if profit < 0 else "⚪️ ")
+                lines.append(f"{gname}: ставка {r['cost']:,} {e} · {sign}{abs(profit):,} {e}"
+                             .replace(",", " "))
+    kb2 = InlineKeyboardBuilder()
+    await btn(kb2, "Назад", "casino", "back")
+    kb2.adjust(1)
+    await ui.edit(c.message, "\n".join(lines), reply_markup=kb2.as_markup())
     await c.answer()
 
 

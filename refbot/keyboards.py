@@ -540,12 +540,22 @@ async def to_menu() -> InlineKeyboardMarkup:
 
 # ==================== КАЗИНО ====================
 async def casino_menu() -> InlineKeyboardMarkup:
-    """Меню казино: кейсы, рулетка, карточки. Слоты — позже."""
+    """Верхнее меню казино: Игры / Статистика."""
+    kb = InlineKeyboardBuilder()
+    await btn(kb, "🎮 Игры", "casino_games")
+    await btn(kb, "📊 Статистика", "casino_stats")
+    await btn(kb, "Назад", "menu", "back")
+    kb.adjust(1)
+    return kb.as_markup()
+
+
+async def casino_games() -> InlineKeyboardMarkup:
+    """Список игр: кейсы, рулетка, карточки. Слоты — позже."""
     kb = InlineKeyboardBuilder()
     await btn(kb, "📦 Кейсы", "casino_cases")
     await btn(kb, "🎡 Рулетка", "wheel")
     await btn(kb, "🃏 Карточки", "mines")
-    await btn(kb, "Назад", "menu", "back")
+    await btn(kb, "Назад", "casino", "back")
     kb.adjust(1)
     return kb.as_markup()
 

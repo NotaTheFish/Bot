@@ -512,6 +512,28 @@ async def log_case_open(tg_id: int, case_key: str, currency: str,
         "VALUES ($1,$2,$3,$4,$5,$6)", tg_id, case_key, currency, cost, won, multiplier)
 
 
+async def casino_stats(tg_id: int) -> dict:
+    """
+    Статистика игрока по казино, раздельно по валютам.
+    Возвращает {currency: {games, wins, bet_total, won_total}} — где
+    wins = игры с выигрышем > ставки. Плюс last: список последних 20 игр.
+    """
+    rows = await pool().fetch(
+        "SELECT case_key, currency, cost, won, multiplier, created_at "
+        "FROM rb_case_opens WHERE tg_id=$1 ORDER BY created_at DESC", tg_id)
+    per: dict[str, dict] = {}
+    for r in rows:
+        cur = r["currency"]
+        d = per.setdefault(cur, {"games": 0, "wins": 0, "bet_total": 0, "won_total": 0})
+        d["games"] += 1
+        d["bet_total"] += r["cost"]
+        d["won_total"] += r["won"]
+        if r["won"] > r["cost"]:
+            d["wins"] += 1
+    last = [dict(r) for r in rows[:20]]
+    return {"per": per, "last": last}
+
+
 async def promo_create(code: str, reward_mush: int, max_acts: int | None,
                        expires_at, created_by: int, reward_kind: str = "rate") -> int:
     return await pool().fetchval(
