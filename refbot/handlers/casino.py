@@ -211,9 +211,9 @@ async def wheel_bet_input(msg: Message, state: FSMContext):
     from services.amount_parse import parse_amount
     bet = parse_amount(msg.text or "")
     if bet is None or bet <= 0:
-        return await ui.answer(msg, "Нужно число. Например <code>5000</code> или <code>5к</code>.")
+        return await ui.answer_smart(msg, msg.from_user.id, "Нужно число. Например <code>5000</code> или <code>5к</code>.")
     if not casino.wheel_bet_ok(bet):
-        return await ui.answer(msg,
+        return await ui.answer_smart(msg, msg.from_user.id,
             f"Ставка от {WHEEL_MIN_BET:,} до {WHEEL_MAX_BET:,} грибов.".replace(",", " "))
     await state.clear()
     # валюта игрока
@@ -245,7 +245,7 @@ async def _spin_wheel(target, uid: int, bet_cur: int, cur: str, edit: bool):
         sx = await settings.ctx()
         txt = f"Не хватает: ставка {bet_cur:,} {sx['e_' + cur]}, у тебя {b[cur]:,}.".replace(",", " ")
         return await (ui.edit(target, txt, reply_markup=await kb.wheel_back()) if edit
-                      else ui.answer(target, txt, reply_markup=await kb.wheel_back()))
+                      else ui.answer_smart(target, uid, txt, reply_markup=await kb.wheel_back()))
 
     mult = casino.roll_wheel()
     won = int(bet_cur * mult)
@@ -293,8 +293,8 @@ async def _animate_wheel(target, uid, bet_cur, cur, mult, won, new_bal, edit, st
     async def show(text, kb_markup=None):
         if edit:
             return await ui.edit(target, text, reply_markup=kb_markup)
-        # первый показ — отвечаем, дальше редактируем это же сообщение
-        return await ui.answer(target, text, reply_markup=kb_markup)
+        # первый показ — эфемерно, если игрок в группе с эфемерным меню; дальше edit
+        return await ui.answer_smart(target, uid, text, reply_markup=kb_markup)
 
     if style == "drum":
         # барабан как в ежедневной рулетке: окно эмодзи + растущая полоса
