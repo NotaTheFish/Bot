@@ -272,13 +272,11 @@ async def cmd_shine(msg: Message):
     else:
         return
     parts = rest.split()
-    if not parts:
-        return await ui.reply(msg,
-            "🎮 <b>Игры на двоих</b>\n\n"
-            "Крестики-нолики: <code>!шайн кн ставка валюта</code>\n"
-            "  • <b>ответом</b> на сообщение — вызов этого игрока\n"
-            "  • <b>без ответа</b> — открытый вызов (любой примет)\n\n"
-            "Пример: <code>!шайн кн 5000 грибы</code>")
+    # реагируем ТОЛЬКО на игровые подкоманды (!шайн кн ...). Голый !шайн и прочее —
+    # это рулетка, её обрабатывает roulette_cmd; молча выходим.
+    from config import SHINE_GAME_WORDS
+    if not parts or parts[0].lower() not in SHINE_GAME_WORDS:
+        return
     game = _GAME_WORDS.get(parts[0].lower())
     if game != "ttt":
         return await ui.reply(msg, "Пока доступны только крестики-нолики: <code>!шайн кн ставка валюта</code>")

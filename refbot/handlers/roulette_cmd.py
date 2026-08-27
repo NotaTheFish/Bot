@@ -220,7 +220,18 @@ async def spin_jackpot(msg: Message, bot: Bot):
 
 def _match(text: str) -> bool:
     t = (text or "").strip().lower()
-    return any(t == c or t.startswith(c + " ") for c in SPIN_COMMANDS)
+    # «!шайн кн ...» и другие игровые подкоманды — это PvP-игры, не рулетка
+    from config import SHINE_GAME_WORDS
+    for c in SPIN_COMMANDS:
+        if t.startswith(c + " "):
+            rest = t[len(c):].strip()
+            first = rest.split()[0] if rest.split() else ""
+            if first in SHINE_GAME_WORDS:
+                return False   # это игра, пропускаем в ttt
+            return True
+        if t == c:
+            return True
+    return False
 
 
 def _is_band_jackpot(amount: int, currency: str) -> bool:

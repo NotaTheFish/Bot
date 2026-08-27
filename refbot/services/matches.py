@@ -27,12 +27,19 @@ def _now():
     return datetime.now(timezone.utc)
 
 
-async def has_active(uid: int) -> bool:
-    """Игрок уже в поиске/приглашении/игре (как p1 или p2)."""
-    row = await db.pool().fetchval(
-        "SELECT 1 FROM rb_matches "
-        "WHERE status IN ('searching','invited','active') "
-        "AND (p1=$1 OR p2=$1) LIMIT 1", uid)
+async def has_active(uid: int, exclude_mid: int | None = None) -> bool:
+    """Игрок уже в поиске/приглашении/игре (как p1 или p2).
+    exclude_mid — не считать этот матч (например, приглашение, которое игрок сейчас принимает)."""
+    if exclude_mid is None:
+        row = await db.pool().fetchval(
+            "SELECT 1 FROM rb_matches "
+            "WHERE status IN ('searching','invited','active') "
+            "AND (p1=$1 OR p2=$1) LIMIT 1", uid)
+    else:
+        row = await db.pool().fetchval(
+            "SELECT 1 FROM rb_matches "
+            "WHERE status IN ('searching','invited','active') "
+            "AND (p1=$1 OR p2=$1) AND id<>$2 LIMIT 1", uid, exclude_mid)
     return bool(row)
 
 
@@ -73,7 +80,8 @@ async def create_match(game: str, p1: int, currency: str, stake: int,
             return None, "Этот игрок недоступен."
 
     status = "searching" if mode == "online" else "invited"
-    search_dl = _now() + timedelta(minutes=SEARCH_MINUTES) if mode == "online" else None
+    # и поиск, и приглашение имеют дедлайн — чтобы не висели вечно, блокируя игроков
+    search_dl = _now() + timedelta(minutes=SEARCH_MINUTES)
 
     try:
         async with db.pool().acquire() as conn:
@@ -129,7 +137,7 @@ async def accept_invite(mid: int, p2: int) -> tuple[dict | None, str]:
                 return None, "Игра уже недоступна."
             if m["p2"] != p2:
                 return None, "Это приглашение не тебе."
-            if await has_active(p2):
+            if await has_active(p2, exclude_mid=mid):
                 return None, "У тебя уже есть активная игра."
             if not await _freeze(conn, p2, m["currency"], m["stake"], mid, "p2"):
                 return None, "Недостаточно средств для ставки."
@@ -228,14 +236,16 @@ async def save_state(mid: int, state: dict, turn: int, move_deadline_min: int = 
 
 
 async def expire_searches() -> list[dict]:
-    """Просроченные поиски (10 мин без оппонента) — вернуть ставку создателю.
+    """Просроченные поиски И приглашения (дедлайн истёк) — вернуть ставку создателю.
     Возвращает список истёкших матчей (для уведомления)."""
     out = []
     async with db.pool().acquire() as conn:
         async with conn.transaction():
             rows = await conn.fetch(
-                "SELECT * FROM rb_matches WHERE status='searching' "
-                "AND search_deadline IS NOT NULL AND search_deadline < now() FOR UPDATE SKIP LOCKED")
+                "SELECT * FROM rb_matches WHERE status IN ('searching','invited') "
+                "AND ((search_deadline IS NOT NULL AND search_deadline < now()) "
+                "     OR (search_deadline IS NULL AND created_at < now() - interval '10 minutes')) "
+                "FOR UPDATE SKIP LOCKED")
             for m in rows:
                 await _refund(conn, m["p1"], m["currency"], m["stake"], m["id"], "p1")
                 await conn.execute(
@@ -252,9 +262,19 @@ async def expire_moves() -> list[dict]:
         async with conn.transaction():
             rows = await conn.fetch(
                 "SELECT * FROM rb_matches WHERE status='active' "
-                "AND move_deadline IS NOT NULL AND move_deadline < now() FOR UPDATE SKIP LOCKED")
+                "AND ((move_deadline IS NOT NULL AND move_deadline < now()) "
+                "     OR (move_deadline IS NULL AND created_at < now() - interval '10 minutes')) "
+                "FOR UPDATE SKIP LOCKED")
             for m in rows:
                 loser = m["turn"]                      # чей был ход — тот зевнул
+                if loser is None or m["p2"] is None:
+                    # зависший матч без хода/оппонента — просто возврат обоим (ничья)
+                    await _refund(conn, m["p1"], m["currency"], m["stake"], m["id"], "p1")
+                    if m["p2"] is not None:
+                        await _refund(conn, m["p2"], m["currency"], m["stake"], m["id"], "p2")
+                    await conn.execute(
+                        "UPDATE rb_matches SET status='expired', finished_at=now() WHERE id=$1", m["id"])
+                    continue
                 winner = m["p2"] if loser == m["p1"] else m["p1"]
                 from config import MATCH_FEE_PCT
                 fee = int(m["stake"] * MATCH_FEE_PCT / 100)
