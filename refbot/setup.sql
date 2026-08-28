@@ -361,6 +361,27 @@ CREATE INDEX IF NOT EXISTS rb_matches_p2_idx ON rb_matches (p2);
 -- один активный матч на игрока: частичный уникальный индекс по участникам в игре/поиске
 -- (реализуем проверкой в коде, т.к. игрок может быть p1 или p2 — сложно одним индексом)
 
+-- ---------- Участники мультиплеерных матчей (камень-ножницы-бумага и будущие) ----------
+-- Для игр на 3-5 человек rb_matches хранит контейнер (game='rps', p1=создатель),
+-- а участники и их ходы — здесь. Двухигровые игры (ttt) этой таблицей не пользуются.
+--   status: playing (в игре) | out (выбыл в раунде) | dq (дисквал — не выбрал ход)
+--           | winner (победитель) | left (отменил до старта)
+--   choice: текущий выбор в раунде ('rock'|'scissors'|'paper'|NULL если ещё не выбрал)
+--   staked: заморожена ли ставка этого игрока (для корректного возврата)
+CREATE TABLE IF NOT EXISTS rb_match_players (
+    id         BIGSERIAL PRIMARY KEY,
+    mid        BIGINT NOT NULL REFERENCES rb_matches(id) ON DELETE CASCADE,
+    tg_id      BIGINT NOT NULL,
+    status     TEXT NOT NULL DEFAULT 'playing',
+    choice     TEXT,
+    staked     BOOLEAN NOT NULL DEFAULT FALSE,
+    joined_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (mid, tg_id)
+);
+CREATE INDEX IF NOT EXISTS rb_match_players_mid_idx ON rb_match_players (mid);
+CREATE INDEX IF NOT EXISTS rb_match_players_tg_idx ON rb_match_players (tg_id);
+
+
 
 -- ---------- 4b. Рулетка (одобренные чаты) ----------
 -- Рулетка !шайн работает ТОЛЬКО в чатах, где главный админ включил её через /шимм.
@@ -537,7 +558,7 @@ ALTER TABLE rb_giveaways ADD COLUMN IF NOT EXISTS finish_photo TEXT;
 
 -- ---------- 5. Проверка ----------
 SELECT
-  (SELECT count(*) FROM pg_tables WHERE tablename ~ '^rb_')                   AS tables_expect_29,
+  (SELECT count(*) FROM pg_tables WHERE tablename ~ '^rb_')                   AS tables_expect_30,
   (SELECT count(*) FROM pg_type   WHERE typname ~ '^rb_' AND typtype = 'e')   AS enums_expect_3,
   (SELECT count(*) FROM pg_indexes WHERE indexname IN
      ('rb_referrals_alive_idx','rb_withdrawals_one_pending','rb_spins_daily',

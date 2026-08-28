@@ -284,9 +284,14 @@ async def cmd_shine(msg: Message):
     from config import SHINE_GAME_WORDS
     if not parts or parts[0].lower() not in SHINE_GAME_WORDS:
         return
+    # камень-ножницы-бумага — отдельный обработчик
+    if parts[0].lower() in ("кнб", "камень", "кмн", "цу-е-фа"):
+        from handlers.rps import handle_shine_rps
+        return await handle_shine_rps(msg, parts)
     game = _GAME_WORDS.get(parts[0].lower())
     if game != "ttt":
-        return await ui.reply(msg, "Пока доступны только крестики-нолики: <code>!шайн кн ставка валюта</code>")
+        return await ui.reply(msg, "Пока доступны крестики-нолики (<code>кн</code>) "
+                                   "и камень-ножницы-бумага (<code>кнб</code>).")
     # ставка и валюта
     bet = parse_amount(parts[1]) if len(parts) > 1 else None
     cur = None

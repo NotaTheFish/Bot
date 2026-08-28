@@ -289,3 +289,198 @@ async def expire_moves() -> list[dict]:
                 d["loser"] = loser
                 out.append(d)
     return out
+
+
+# ==================== МУЛЬТИПЛЕЕР (камень-ножницы-бумага и др.) ====================
+RPS_LOBBY_MINUTES = 15   # на набор игроков (нажать «Старт»)
+RPS_MOVE_MINUTES = 5     # на выбор знака в раунде
+
+
+async def create_lobby(game: str, creator: int, currency: str, stake: int,
+                       origin_chat: int) -> tuple[int | None, str]:
+    """Создать лобби мультиплеер-игры. Создатель сразу участник с замороженной
+    ставкой. status='lobby'."""
+    if stake <= 0:
+        return None, "Ставка должна быть больше нуля."
+    if await db.is_banned(creator):
+        return None, "Аккаунт заблокирован."
+    if await has_active(creator):
+        return None, "У тебя уже есть активная игра."
+    b = await db.balances(creator)
+    if b.get(currency, 0) < stake:
+        return None, "Недостаточно средств для ставки."
+    dl = _now() + timedelta(minutes=RPS_LOBBY_MINUTES)
+    try:
+        async with db.pool().acquire() as conn:
+            async with conn.transaction():
+                mid = await conn.fetchval(
+                    "INSERT INTO rb_matches (game, status, currency, stake, p1, "
+                    "origin_chat, search_deadline) VALUES ($1,'lobby',$2,$3,$4,$5,$6) RETURNING id",
+                    game, currency, stake, creator, origin_chat, dl)
+                if not await _freeze(conn, creator, currency, stake, mid, "creator"):
+                    raise _NoFunds()
+                await conn.execute(
+                    "INSERT INTO rb_match_players (mid, tg_id, status, staked) "
+                    "VALUES ($1,$2,'playing',TRUE)", mid, creator)
+    except _NoFunds:
+        return None, "Недостаточно средств для ставки."
+    await db.audit(creator, "rps_create", {"id": mid, "stake": stake, "cur": currency})
+    return mid, ""
+
+
+async def join_lobby(mid: int, uid: int) -> tuple[dict | None, str]:
+    """Присоединиться к лобби: проверка баланса, заморозка ставки, добавление игрока."""
+    if await db.is_banned(uid):
+        return None, "Аккаунт заблокирован."
+    async with db.pool().acquire() as conn:
+        async with conn.transaction():
+            m = await conn.fetchrow("SELECT * FROM rb_matches WHERE id=$1 FOR UPDATE", mid)
+            if not m or m["status"] != "lobby":
+                return None, "Лобби уже закрыто."
+            ex = await conn.fetchval(
+                "SELECT status FROM rb_match_players WHERE mid=$1 AND tg_id=$2", mid, uid)
+            if ex:
+                return None, "Ты уже в игре."
+            if await has_active(uid, exclude_mid=mid):
+                return None, "У тебя уже есть активная игра."
+            cnt = await conn.fetchval(
+                "SELECT count(*) FROM rb_match_players WHERE mid=$1 AND status='playing'", mid)
+            if cnt >= 5:
+                return None, "Уже набрано 5 игроков — мест нет."
+            if not await _freeze(conn, uid, m["currency"], m["stake"], mid, f"j{uid}"):
+                return None, "Недостаточно средств для ставки."
+            await conn.execute(
+                "INSERT INTO rb_match_players (mid, tg_id, status, staked) "
+                "VALUES ($1,$2,'playing',TRUE)", mid, uid)
+            m = await conn.fetchrow("SELECT * FROM rb_matches WHERE id=$1", mid)
+    await db.audit(uid, "rps_join", {"id": mid})
+    return dict(m), ""
+
+
+async def lobby_players(mid: int, status: str = "playing") -> list[dict]:
+    rows = await db.pool().fetch(
+        "SELECT * FROM rb_match_players WHERE mid=$1 AND status=$2 ORDER BY joined_at", mid, status)
+    return [dict(r) for r in rows]
+
+
+async def cancel_lobby(mid: int, by: int | None = None) -> tuple[dict | None, str]:
+    """Отменить лобби до старта — вернуть ставки всем участникам."""
+    async with db.pool().acquire() as conn:
+        async with conn.transaction():
+            m = await conn.fetchrow("SELECT * FROM rb_matches WHERE id=$1 FOR UPDATE", mid)
+            if not m or m["status"] != "lobby":
+                return None, "Лобби уже закрыто."
+            if by is not None and m["p1"] != by:
+                return None, "Только создатель может отменить."
+            players = await conn.fetch(
+                "SELECT tg_id, staked FROM rb_match_players WHERE mid=$1 AND staked", mid)
+            for p in players:
+                await _refund(conn, p["tg_id"], m["currency"], m["stake"], mid, f"lob{p['tg_id']}")
+            await conn.execute(
+                "UPDATE rb_matches SET status='cancelled', finished_at=now() WHERE id=$1", mid)
+    return dict(m), ""
+
+
+# ---------------- КНБ: раунды ----------------
+async def set_choice(mid: int, uid: int, choice: str) -> tuple[bool, str]:
+    """Игрок делает тайный выбор в текущем раунде. Только для активных игроков."""
+    async with db.pool().acquire() as conn:
+        async with conn.transaction():
+            p = await conn.fetchrow(
+                "SELECT * FROM rb_match_players WHERE mid=$1 AND tg_id=$2 FOR UPDATE", mid, uid)
+            if not p or p["status"] != "playing":
+                return False, "Ты не в игре."
+            if p["choice"]:
+                return False, "Ты уже выбрал."
+            await conn.execute(
+                "UPDATE rb_match_players SET choice=$1 WHERE mid=$2 AND tg_id=$3",
+                choice, mid, uid)
+    return True, ""
+
+
+async def round_progress(mid: int) -> tuple[int, int]:
+    """(сколько выбрали, сколько всего активных) в текущем раунде."""
+    total = await db.pool().fetchval(
+        "SELECT count(*) FROM rb_match_players WHERE mid=$1 AND status='playing'", mid)
+    chosen = await db.pool().fetchval(
+        "SELECT count(*) FROM rb_match_players WHERE mid=$1 AND status='playing' AND choice IS NOT NULL",
+        mid)
+    return chosen or 0, total or 0
+
+
+async def active_choices(mid: int) -> dict[int, str]:
+    """{tg_id: choice} активных игроков, которые выбрали."""
+    rows = await db.pool().fetch(
+        "SELECT tg_id, choice FROM rb_match_players "
+        "WHERE mid=$1 AND status='playing' AND choice IS NOT NULL", mid)
+    return {r["tg_id"]: r["choice"] for r in rows}
+
+
+async def set_round_deadline(mid: int, minutes: int = 5):
+    dl = _now() + timedelta(minutes=minutes)
+    await db.pool().execute("UPDATE rb_matches SET move_deadline=$1 WHERE id=$2", dl, mid)
+
+
+async def apply_elimination(mid: int, eliminated: list[int]):
+    """Пометить выбывших, очистить выборы для нового раунда."""
+    async with db.pool().acquire() as conn:
+        async with conn.transaction():
+            if eliminated:
+                await conn.execute(
+                    "UPDATE rb_match_players SET status='out' WHERE mid=$1 AND tg_id=ANY($2::bigint[])",
+                    mid, eliminated)
+            # очистить выборы у оставшихся — для следующего раунда
+            await conn.execute(
+                "UPDATE rb_match_players SET choice=NULL WHERE mid=$1 AND status='playing'", mid)
+
+
+async def disqualify_no_choice(mid: int) -> list[int]:
+    """Дисквалифицировать активных, кто не выбрал (тайм-аут). Возврат их ставок.
+    Возвращает список дисквалифицированных tg_id."""
+    out = []
+    async with db.pool().acquire() as conn:
+        async with conn.transaction():
+            m = await conn.fetchrow("SELECT * FROM rb_matches WHERE id=$1 FOR UPDATE", mid)
+            if not m:
+                return []
+            rows = await conn.fetch(
+                "SELECT tg_id, staked FROM rb_match_players "
+                "WHERE mid=$1 AND status='playing' AND choice IS NULL", mid)
+            for r in rows:
+                if r["staked"]:
+                    await _refund(conn, r["tg_id"], m["currency"], m["stake"], mid, f"dq{r['tg_id']}")
+                await conn.execute(
+                    "UPDATE rb_match_players SET status='dq' WHERE mid=$1 AND tg_id=$2",
+                    mid, r["tg_id"])
+                out.append(r["tg_id"])
+    return out
+
+
+async def finish_multiplayer(mid: int, winner: int) -> tuple[dict | None, str]:
+    """Завершить мультиплеер-матч: победитель забирает банк (сумма замороженных
+    ставок оставшихся) минус 3%. Идемпотентно."""
+    async with db.pool().acquire() as conn:
+        async with conn.transaction():
+            m = await conn.fetchrow("SELECT * FROM rb_matches WHERE id=$1 FOR UPDATE", mid)
+            if not m:
+                return None, "Матч не найден."
+            if m["status"] != "active":
+                return dict(m), ""
+            # банк = сумма ставок всех, кто реально заморозил (не dq, не отменённые до старта)
+            staked_cnt = await conn.fetchval(
+                "SELECT count(*) FROM rb_match_players WHERE mid=$1 AND staked", mid)
+            bank = m["stake"] * staked_cnt
+            from config import MATCH_FEE_PCT
+            # комиссия 3% с проигравшей части банка (всё, кроме ставки победителя)
+            losers_pot = m["stake"] * (staked_cnt - 1)
+            fee = int(losers_pot * MATCH_FEE_PCT / 100)
+            payout = bank - fee
+            await db.apply(conn, winner, m["currency"], payout, "rps_win", f"rpswin:{mid}", mid)
+            await conn.execute(
+                "UPDATE rb_match_players SET status='winner' WHERE mid=$1 AND tg_id=$2", mid, winner)
+            await conn.execute(
+                "UPDATE rb_matches SET status='finished', winner=$1, finished_at=now() WHERE id=$2",
+                winner, mid)
+            m = await conn.fetchrow("SELECT * FROM rb_matches WHERE id=$1", mid)
+    await db.audit(winner, "rps_finish", {"id": mid, "payout": payout})
+    return dict(m), ""

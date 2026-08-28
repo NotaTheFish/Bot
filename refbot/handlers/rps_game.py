@@ -1,0 +1,216 @@
+"""
+Камень-ножницы-бумага: раунды, тайный выбор, вскрытие, выбывание.
+Одно общее поле в чате: показывает счётчик «выбрали M из N» и кнопки знаков.
+Сам выбор тайный (никто не видит, что выбрал другой, до вскрытия).
+"""
+import contextlib
+
+from aiogram import F, Router
+from aiogram.types import CallbackQuery
+from aiogram.utils.keyboard import InlineKeyboardBuilder
+
+import db
+from services import matches, rps, settings, ui, render
+
+router = Router()
+
+
+def _fmt(n: int) -> str:
+    return f"{n:,}".replace(",", " ")
+
+
+async def _name(uid: int) -> str:
+    u = await db.get_user(uid)
+    if u and u["username"]:
+        return f"@{u['username']}"
+    return (u["first_name"] if u else None) or str(uid)
+
+
+async def _round_text(mid: int, note: str = "") -> str:
+    m = await matches.get(mid)
+    sx = await settings.ctx()
+    e = sx["e_" + m["currency"]]
+    chosen, total = await matches.round_progress(mid)
+    players = await matches.lobby_players(mid, "playing")
+    names = ", ".join([await _name(p["tg_id"]) for p in players])
+    staked = await db.pool().fetchval(
+        "SELECT count(*) FROM rb_match_players WHERE mid=$1 AND staked", mid)
+    head = (f"✊✋✌️ <b>Камень-ножницы-бумага</b>\n"
+            f"Банк: <b>{_fmt(m['stake']*(staked or 0))}</b> {e}\n"
+            f"В игре: <b>{total}</b> — {names}\n")
+    if note:
+        head += f"\n{note}\n"
+    head += f"\n✅ Выбрали ход: <b>{chosen} из {total}</b>"
+    return head
+
+
+async def _round_kb(mid: int):
+    kb = InlineKeyboardBuilder()
+    kb.button(text="🪨 Камень", callback_data=f"rps_ch:{mid}:rock")
+    kb.button(text="✂️ Ножницы", callback_data=f"rps_ch:{mid}:scissors")
+    kb.button(text="📄 Бумага", callback_data=f"rps_ch:{mid}:paper")
+    kb.adjust(3)
+    return kb.as_markup()
+
+
+async def _sync(bot, mid: int, note: str = "", kb=True):
+    m = await matches.get(mid)
+    if not m or not m.get("board_msg_id"):
+        return
+    em = await settings.emoji_map()
+    markup = await _round_kb(mid) if kb else None
+    with contextlib.suppress(Exception):
+        await render.edit_by_id(bot, m["board_chat_id"], m["board_msg_id"],
+                                await _round_text(mid, note), em, reply_markup=markup)
+
+
+async def start_round(bot, mid: int, first: bool = False):
+    """Запустить раунд выбора: активировать матч, поставить дедлайн, показать кнопки."""
+    m = await matches.get(mid)
+    if not m:
+        return
+    if first:
+        await db.pool().execute("UPDATE rb_matches SET status='active' WHERE id=$1", mid)
+    await matches.set_round_deadline(mid, matches.RPS_MOVE_MINUTES)
+    await _sync(bot, mid, note="Выбирайте ход! У вас 5 минут.")
+
+
+@router.callback_query(F.data.startswith("rps_ch:"))
+async def cb_choice(c: CallbackQuery):
+    _, mid_s, choice = c.data.split(":")
+    mid = int(mid_s)
+    ok, err = await matches.set_choice(mid, c.from_user.id, choice)
+    if err:
+        return await c.answer(err, show_alert=True)
+    await c.answer(f"Ты выбрал: {rps.NAMES[choice]}")
+    # обновим счётчик (тайно — сам выбор не палим)
+    await _sync(c.bot, mid, note="Выбирайте ход! У вас 5 минут.")
+    # все выбрали? — вскрытие
+    chosen, total = await matches.round_progress(mid)
+    if chosen >= total and total > 0:
+        await _reveal(c.bot, mid)
+
+
+async def _reveal(bot, mid: int):
+    """Вскрытие раунда: определить выбывших, продолжить или финал."""
+    choices = await matches.active_choices(mid)
+    if not choices:
+        return
+    outcome, survivors, eliminated = rps.resolve_round(choices)
+    summary = rps.round_summary(choices, _name)
+
+    if outcome == "draw":
+        # ничья — новый раунд теми же игроками
+        await matches.apply_elimination(mid, [])   # очистить выборы
+        await matches.set_round_deadline(mid, matches.RPS_MOVE_MINUTES)
+        await _sync(bot, mid, note=f"{summary}\nИграем заново!")
+        return
+
+    # есть выбывшие
+    await matches.apply_elimination(mid, eliminated)
+    # уведомим выбывших
+    for uid in eliminated:
+        with contextlib.suppress(Exception):
+            await ui.send(bot, uid, "❌ Ты выбыл из игры камень-ножницы-бумага.")
+
+    remaining = await matches.lobby_players(mid, "playing")
+    if len(remaining) == 1:
+        # победитель
+        winner = remaining[0]["tg_id"]
+        await _finish(bot, mid, winner, summary)
+        return
+    # ещё несколько — новый раунд
+    await matches.set_round_deadline(mid, matches.RPS_MOVE_MINUTES)
+    elim_names = ", ".join([await _name(u) for u in eliminated])
+    await _sync(bot, mid, note=f"{summary}\nВыбыли: {elim_names}. Следующий раунд!")
+
+
+async def _finish(bot, mid: int, winner: int, summary: str):
+    m, err = await matches.finish_multiplayer(mid, winner)
+    if err:
+        return
+    sx = await settings.ctx()
+    e = sx["e_" + m["currency"]]
+    staked = await db.pool().fetchval(
+        "SELECT count(*) FROM rb_match_players WHERE mid=$1 AND staked", mid)
+    from config import MATCH_FEE_PCT
+    bank = m["stake"] * (staked or 0)
+    losers_pot = m["stake"] * ((staked or 1) - 1)
+    payout = bank - int(losers_pot * MATCH_FEE_PCT / 100)
+    wname = await _name(winner)
+    text = (f"✊✋✌️ <b>Камень-ножницы-бумага</b>\n\n"
+            f"{summary}\n\n"
+            f"🏆 <b>{wname} победил(а)!</b>\n"
+            f"Выигрыш: <b>{_fmt(payout)}</b> {e}")
+    m2 = await matches.get(mid)
+    em = await settings.emoji_map()
+    with contextlib.suppress(Exception):
+        await render.edit_by_id(bot, m2["board_chat_id"], m2["board_msg_id"], text, em,
+                                reply_markup=None)
+    with contextlib.suppress(Exception):
+        await ui.send(bot, winner, f"🏆 Ты выиграл камень-ножницы-бумага! +{_fmt(payout)} {e}")
+
+
+async def timeout_worker(bot):
+    """Тайм-ауты КНБ: лобби (15 мин без старта) и раунд (5 мин на выбор)."""
+    import asyncio
+    log = __import__("logging").getLogger("refbot")
+    log.info("rps timeout worker запущен")
+    while True:
+        try:
+            # 1) протухшие лобби — отменить, вернуть ставки
+            rows = await db.pool().fetch(
+                "SELECT id FROM rb_matches WHERE game='rps' AND status='lobby' "
+                "AND search_deadline IS NOT NULL AND search_deadline < now()")
+            for r in rows:
+                m, err = await matches.cancel_lobby(r["id"])
+                if not err and m:
+                    with contextlib.suppress(Exception):
+                        await bot.edit_message_text(
+                            "⏳ Набор игроков истёк (15 мин). Игра отменена, ставки возвращены.",
+                            chat_id=m["board_chat_id"], message_id=m["board_msg_id"])
+            # 2) протухший раунд — дисквалифицировать не выбравших, довскрыть
+            rows = await db.pool().fetch(
+                "SELECT id FROM rb_matches WHERE game='rps' AND status='active' "
+                "AND move_deadline IS NOT NULL AND move_deadline < now()")
+            for r in rows:
+                mid = r["id"]
+                dq = await matches.disqualify_no_choice(mid)
+                for uid in dq:
+                    with contextlib.suppress(Exception):
+                        await ui.send(bot, uid,
+                            "⏳ Ты не выбрал ход за 5 минут — дисквалификация. Ставка возвращена.")
+                # после дисквала — вскрыть тем, кто выбрал (или объявить победителя)
+                await _resolve_after_timeout(bot, mid)
+        except Exception as e:
+            log.warning("rps timeout worker: %s", e)
+        await __import__("asyncio").sleep(20)
+
+
+async def _resolve_after_timeout(bot, mid: int):
+    """После дисквалификации по тайм-ауту: если остался один — победа; если есть
+    выборы — вскрыть; если никого — закрыть."""
+    remaining = await matches.lobby_players(mid, "playing")
+    if len(remaining) == 0:
+        # все дисквалифицированы — просто закрыть матч (ставки уже возвращены)
+        await db.pool().execute(
+            "UPDATE rb_matches SET status='cancelled', finished_at=now() WHERE id=$1", mid)
+        m = await matches.get(mid)
+        with contextlib.suppress(Exception):
+            await bot.edit_message_text("Игра завершена — никто не сделал ход.",
+                                        chat_id=m["board_chat_id"], message_id=m["board_msg_id"])
+        return
+    if len(remaining) == 1:
+        winner = remaining[0]["tg_id"]
+        await _finish(bot, mid, winner, "Соперники не сделали ход.")
+        return
+    # остались несколько выбравших — вскрыть раунд
+    choices = await matches.active_choices(mid)
+    chosen, total = await matches.round_progress(mid)
+    # вскрываем только если все оставшиеся выбрали
+    if chosen >= total and total > 0:
+        await _reveal(bot, mid)
+    else:
+        # часть ещё выбирает — продлить дедлайн
+        await matches.set_round_deadline(mid, matches.RPS_MOVE_MINUTES)
+        await _sync(bot, mid, note="Часть игроков выбыла по тайм-ауту. Продолжаем!")

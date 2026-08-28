@@ -604,6 +604,7 @@ EXPECTED_TABLES = [
     "rb_usernames",
     "rb_wd_items",
     "rb_matches",
+    "rb_match_players",
 ]
 
 

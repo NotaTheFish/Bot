@@ -40,7 +40,7 @@ async def _board_text(m: dict, state: dict, for_uid=None) -> str:
     n1, n2 = await _name(p1), await _name(p2)
     s1 = ttt.SYM[ttt.symbol_of(state, p1)]
     s2 = ttt.SYM[ttt.symbol_of(state, p2)]
-    head = (f"❌⭕️ <b>Крестики-нолики</b>\n"
+    head = (f"<b>Крестики-нолики</b>\n"
             f"{s1} {n1}  vs  {s2} {n2}\n"
             f"Ставка: <b>{stake}</b> {e} · банк <b>{_fmt(m['stake']*2)}</b> {e}\n\n")
     if win is None:
