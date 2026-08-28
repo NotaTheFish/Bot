@@ -14,24 +14,20 @@ log = logging.getLogger("refbot")
 
 
 def _build_rich(header_html: str, rows: list[tuple[str, list[tuple[str, str]]]]):
-    """Собрать InputRichMessage: header + для каждой строки текст-параграф и блок кнопок."""
+    """Собрать InputRichMessage: заголовок + для каждой строки параграф-текст и блок
+    кнопок сразу под ним (текст игры оказывается прямо над её кнопкой «Вступить»)."""
     from aiogram.types import (InputRichMessage, InputRichBlockButtons,
-                               RichMessageButton)
-    # текст целиком в html; кнопки — блоками (по строке на игру)
-    # для простоты: весь текст в html, а кнопки одним блоком снизу не годится —
-    # нам нужна кнопка НАПРОТИВ каждой игры. Поэтому чередуем: параграф-текст + блок-кнопка.
+                               InputRichBlockParagraph, RichMessageButton)
+    import re
     blocks = []
     for text_html, btns in rows:
-        # блок кнопок этой строки
-        rbtns = [RichMessageButton(text=lbl, callback_data=cb) for lbl, cb in btns]
-        blocks.append(InputRichBlockButtons(buttons=rbtns))
-    # заголовок и тексты строк — общим html; кнопки-блоки идут следом.
-    # Telegram размещает блоки-кнопки в порядке; для «напротив каждой» надо перемежать
-    # текстовыми блоками. Используем html как единый текст + кнопки под ним.
-    full_html = header_html
-    if rows:
-        full_html += "\n\n" + "\n".join(t for t, _ in rows)
-    return InputRichMessage(html=full_html, blocks=blocks)
+        # RichText — свой формат, HTML-теги не парсит: убираем их, оставляем чистый текст
+        clean = re.sub(r"<[^>]+>", "", text_html)
+        blocks.append(InputRichBlockParagraph(text=clean))
+        if btns:
+            rbtns = [RichMessageButton(text=lbl, callback_data=cb) for lbl, cb in btns]
+            blocks.append(InputRichBlockButtons(buttons=rbtns))
+    return InputRichMessage(html=header_html, blocks=blocks)
 
 
 async def send_rich(bot, chat_id: int, header_html: str,

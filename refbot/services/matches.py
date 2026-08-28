@@ -364,7 +364,8 @@ async def lobby_players(mid: int, status: str = "playing") -> list[dict]:
 
 
 async def cancel_lobby(mid: int, by: int | None = None) -> tuple[dict | None, str]:
-    """Отменить лобби до старта — вернуть ставки всем участникам."""
+    """Отменить лобби до старта — вернуть ставки всем участникам.
+    В возвращённом матче поле 'refunded' — список tg_id, кому вернули ставку."""
     async with db.pool().acquire() as conn:
         async with conn.transaction():
             m = await conn.fetchrow("SELECT * FROM rb_matches WHERE id=$1 FOR UPDATE", mid)
@@ -374,11 +375,15 @@ async def cancel_lobby(mid: int, by: int | None = None) -> tuple[dict | None, st
                 return None, "Только создатель может отменить."
             players = await conn.fetch(
                 "SELECT tg_id, staked FROM rb_match_players WHERE mid=$1 AND staked", mid)
+            refunded = []
             for p in players:
                 await _refund(conn, p["tg_id"], m["currency"], m["stake"], mid, f"lob{p['tg_id']}")
+                refunded.append(p["tg_id"])
             await conn.execute(
                 "UPDATE rb_matches SET status='cancelled', finished_at=now() WHERE id=$1", mid)
-    return dict(m), ""
+    d = dict(m)
+    d["refunded"] = refunded
+    return d, ""
 
 
 # ---------------- КНБ: раунды ----------------

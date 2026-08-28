@@ -133,6 +133,16 @@ async def cb_rps_cancel(c: CallbackQuery):
     with contextlib.suppress(Exception):
         await c.message.edit_text("❌ Игра отменена создателем. Ставки возвращены.",
                                   reply_markup=None)
+    # уведомить остальных участников (кроме создателя, он и так видит)
+    sx = await settings.ctx()
+    e = sx["e_" + m["currency"]]
+    for uid in m.get("refunded", []):
+        if uid == c.from_user.id:
+            continue
+        with contextlib.suppress(Exception):
+            await ui.send(c.bot, uid,
+                f"❌ Игра камень-ножницы-бумага отменена создателем.\n"
+                f"Ставка <b>{_fmt(m['stake'])}</b> {e} возвращена.")
 
 
 # ---------------- старт (переход к раундам — Этап 3) ----------------

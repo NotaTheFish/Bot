@@ -226,6 +226,14 @@ async def timeout_worker(bot):
                         await bot.edit_message_text(
                             "⏳ Набор игроков истёк (15 мин). Игра отменена, ставки возвращены.",
                             chat_id=m["board_chat_id"], message_id=m["board_msg_id"])
+                    # уведомить каждого участника в ЛС
+                    sx = await settings.ctx()
+                    e = sx["e_" + m["currency"]]
+                    for uid in m.get("refunded", []):
+                        with contextlib.suppress(Exception):
+                            await ui.send(bot, uid,
+                                f"⏳ Игра камень-ножницы-бумага не набрала игроков за 15 минут "
+                                f"и отменена.\nСтавка <b>{_fmt(m['stake'])}</b> {e} возвращена.")
             # 2) протухший раунд — дисквалифицировать не выбравших, довскрыть
             rows = await db.pool().fetch(
                 "SELECT id FROM rb_matches WHERE game='rps' AND status='active' "
