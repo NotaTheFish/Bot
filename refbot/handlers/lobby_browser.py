@@ -1,0 +1,120 @@
+"""
+Лобби-браузер: список открытых игр с кнопками «Вступить» внутри текста (Rich Messages).
+Общий для КН (ttt) и КНБ (rps). Пагинация, «Создать свою», авто-fallback на инлайн.
+
+Открывается из меню казино (в ЛС) кнопкой «Найти игру».
+"""
+import contextlib
+
+from aiogram import F, Router
+from aiogram.types import CallbackQuery
+from aiogram.utils.keyboard import InlineKeyboardBuilder
+
+import db
+from services import matches, settings, ui, richmsg
+
+router = Router()
+
+PAGE = 5   # игр на страницу
+
+_GAME_TITLE = {"ttt": "Крестики-нолики", "rps": "Камень-ножницы-бумага"}
+_CUR_E = {"mushrooms": "🍄", "coins": "🪙"}
+
+
+def _fmt(n: int) -> str:
+    return f"{n:,}".replace(",", " ")
+
+
+async def _name(uid: int) -> str:
+    u = await db.get_user(uid)
+    if u and u["username"]:
+        return f"@{u['username']}"
+    return (u["first_name"] if u else None) or str(uid)
+
+
+def _join_cb(game: str, mid: int) -> str:
+    """callback для вступления: КН -> открытый вызов, КНБ -> лобби."""
+    return f"ttt_join_chat:{mid}" if game == "ttt" else f"rps_join:{mid}"
+
+
+async def show_browser(bot, chat_id: int, uid: int, game: str, page: int = 0,
+                       edit_msg_id: int | None = None, is_rich: bool = True):
+    """Показать/обновить браузер открытых игр. game: 'ttt'|'rps'."""
+    games, total = await matches.open_games(game, exclude_uid=uid,
+                                            limit=PAGE, offset=page * PAGE)
+    title = _GAME_TITLE.get(game, game)
+    header = f"🔍 <b>Открытые игры: {title}</b>\n"
+
+    # строки с кнопками в тексте
+    rows = []
+    for g in games:
+        cname = await _name(g["p1"])
+        e = _CUR_E.get(g["currency"], "")
+        if game == "rps":
+            info = f"🎮 <b>{_fmt(g['stake'])}</b> {e} · от {cname} · игроков: {g['players_count']}"
+        else:
+            info = f"🎮 <b>{_fmt(g['stake'])}</b> {e} · от {cname}"
+        if g.get("is_mine"):
+            info += " (твоя)"
+            rows.append((info, []))   # свою игру без кнопки «вступить»
+        else:
+            rows.append((info, [("⚔️ Вступить", _join_cb(game, g["id"]))]))
+
+    if not games:
+        header += "\nПока нет открытых игр. Создай свою!"
+
+    # управляющие кнопки (пагинация + создать) — обычные инлайн под сообщением
+    ctrl = InlineKeyboardBuilder()
+    pages = (total + PAGE - 1) // PAGE
+    nav = []
+    if page > 0:
+        ctrl.button(text="◀️", callback_data=f"lb_page:{game}:{page-1}")
+        nav.append(1)
+    if page + 1 < pages:
+        ctrl.button(text="▶️", callback_data=f"lb_page:{game}:{page+1}")
+        nav.append(1)
+    # «Создать свою» ведёт на штатный вход создания (обрабатывается с реальным FSM)
+    create_cb = "ttt_new" if game == "ttt" else "rps_new_dm"
+    ctrl.button(text="➕ Создать свою", callback_data=create_cb)
+    ctrl.button(text="🔄 Обновить", callback_data=f"lb_page:{game}:{page}")
+    ctrl.button(text="Назад", callback_data="casino_games")
+    if total > PAGE:
+        header += f"\n<i>Стр. {page+1} из {pages}</i>"
+
+    # раскладка управляющих кнопок
+    layout = []
+    if nav:
+        layout.append(len(nav))
+    layout += [1, 1, 1]
+    ctrl.adjust(*layout)
+    fallback = ctrl.as_markup()
+
+    # rich-сообщение: кнопки «вступить» в тексте + управляющие снизу как fallback-kb.
+    # (Управляющие кнопки идут обычной клавиатурой; «вступить» — в тексте через rich.)
+    if edit_msg_id:
+        await richmsg.edit_rich(bot, chat_id, edit_msg_id, header, rows,
+                                fallback_kb=fallback, is_rich=is_rich,
+                                reply_markup=fallback if is_rich else None)
+    else:
+        msg, rich_ok = await richmsg.send_rich(bot, chat_id, header, rows,
+                                               fallback_kb=fallback,
+                                               reply_markup=fallback)
+        return msg, rich_ok
+
+
+@router.callback_query(F.data.startswith("lb_open:"))
+async def cb_open(c: CallbackQuery):
+    game = c.data.split(":")[1]
+    # заменяем меню на браузер (новым сообщением, т.к. rich не редактирует обычное)
+    with contextlib.suppress(Exception):
+        await c.message.delete()
+    await show_browser(c.bot, c.message.chat.id, c.from_user.id, game, 0)
+    await c.answer()
+
+
+@router.callback_query(F.data.startswith("lb_page:"))
+async def cb_page(c: CallbackQuery):
+    _, game, page = c.data.split(":")
+    await show_browser(c.bot, c.message.chat.id, c.from_user.id, game, int(page),
+                       edit_msg_id=c.message.message_id)
+    await c.answer()

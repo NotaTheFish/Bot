@@ -36,14 +36,16 @@ def _build_rich(header_html: str, rows: list[tuple[str, list[tuple[str, str]]]])
 
 async def send_rich(bot, chat_id: int, header_html: str,
                     rows: list[tuple[str, list[tuple[str, str]]]],
-                    fallback_kb=None, **kw):
+                    fallback_kb=None, reply_markup=None, **kw):
     """
     Отправить rich-сообщение с кнопками в тексте. При ошибке — обычное сообщение
     с fallback_kb (InlineKeyboardMarkup). Возвращает (message, is_rich).
+    reply_markup — доп. обычная клавиатура снизу (пагинация и т.п.) для rich-режима.
     """
     try:
         rm = _build_rich(header_html, rows)
-        msg = await bot.send_rich_message(chat_id=chat_id, rich_message=rm, **kw)
+        msg = await bot.send_rich_message(chat_id=chat_id, rich_message=rm,
+                                          reply_markup=reply_markup, **kw)
         return msg, True
     except Exception as e:
         log.warning("rich message не удался (%s), откат на инлайн-кнопки", type(e).__name__)
@@ -57,7 +59,7 @@ async def send_rich(bot, chat_id: int, header_html: str,
 
 async def edit_rich(bot, chat_id: int, message_id: int, header_html: str,
                     rows: list[tuple[str, list[tuple[str, str]]]],
-                    fallback_kb=None, is_rich: bool = True, **kw):
+                    fallback_kb=None, is_rich: bool = True, reply_markup=None, **kw):
     """
     Отредактировать rich-сообщение. Если было rich — пробуем edit_message_text с
     rich_message; иначе (или при ошибке) — обычное редактирование с fallback_kb.
@@ -66,7 +68,8 @@ async def edit_rich(bot, chat_id: int, message_id: int, header_html: str,
         try:
             rm = _build_rich(header_html, rows)
             return await bot.edit_message_text(
-                chat_id=chat_id, message_id=message_id, rich_message=rm, **kw)
+                chat_id=chat_id, message_id=message_id, rich_message=rm,
+                reply_markup=reply_markup, **kw)
         except Exception as e:
             log.warning("rich edit не удался (%s), откат", type(e).__name__)
     from services import render, settings

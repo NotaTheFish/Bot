@@ -484,3 +484,47 @@ async def finish_multiplayer(mid: int, winner: int) -> tuple[dict | None, str]:
             m = await conn.fetchrow("SELECT * FROM rb_matches WHERE id=$1", mid)
     await db.audit(winner, "rps_finish", {"id": mid, "payout": payout})
     return dict(m), ""
+
+
+# ==================== ЛОББИ-БРАУЗЕР: список открытых игр ====================
+async def open_games(game: str, exclude_uid: int | None = None,
+                     limit: int = 5, offset: int = 0) -> tuple[list[dict], int]:
+    """
+    Открытые игры данного типа, к которым можно присоединиться.
+      game='ttt' -> status='searching' (открытый онлайн-вызов, ждёт соперника)
+      game='rps' -> status='lobby'     (набор игроков)
+    Возвращает (список игр с доп.полями creator/players_count, всего игр).
+    exclude_uid — не показывать игры, где этот игрок уже участвует (свои/занятые).
+    """
+    status = "searching" if game == "ttt" else "lobby"
+    # всего открытых (для пагинации)
+    total = await db.pool().fetchval(
+        "SELECT count(*) FROM rb_matches WHERE game=$1 AND status=$2", game, status) or 0
+
+    rows = await db.pool().fetch(
+        "SELECT * FROM rb_matches WHERE game=$1 AND status=$2 "
+        "ORDER BY created_at DESC LIMIT $3 OFFSET $4", game, status, limit, offset)
+    out = []
+    for m in rows:
+        d = dict(m)
+        # число игроков в лобби (для rps); для ttt всегда 1 (ждёт второго)
+        if game == "rps":
+            cnt = await db.pool().fetchval(
+                "SELECT count(*) FROM rb_match_players WHERE mid=$1 AND status='playing'", m["id"])
+            d["players_count"] = cnt or 0
+        else:
+            d["players_count"] = 1
+        # исключаем игры, где exclude_uid уже участник (свои)
+        if exclude_uid is not None:
+            if m["p1"] == exclude_uid:
+                d["is_mine"] = True
+            elif game == "rps":
+                inp = await db.pool().fetchval(
+                    "SELECT 1 FROM rb_match_players WHERE mid=$1 AND tg_id=$2", m["id"], exclude_uid)
+                d["is_mine"] = bool(inp)
+            else:
+                d["is_mine"] = False
+        else:
+            d["is_mine"] = False
+        out.append(d)
+    return out, total

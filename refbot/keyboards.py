@@ -550,12 +550,15 @@ async def casino_menu() -> InlineKeyboardMarkup:
 
 
 async def casino_games() -> InlineKeyboardMarkup:
-    """Список игр: кейсы, рулетка, карточки, крестики-нолики. Слоты — позже."""
+    """Список игр: кейсы, рулетка, карточки, крестики-нолики, камень-ножницы-бумага."""
     kb = InlineKeyboardBuilder()
     await btn(kb, "📦 Кейсы", "casino_cases")
     await btn(kb, "🎡 Рулетка", "wheel")
     await btn(kb, "🃏 Карточки", "mines")
     await btn(kb, "❌ Крестики-нолики", "ttt_new")
+    await btn(kb, "🔍 Найти игру (КН)", "lb_open:ttt")
+    await btn(kb, "✊ Камень-ножницы-бумага", "rps_new_dm")
+    await btn(kb, "🔍 Найти игру (КНБ)", "lb_open:rps")
     await btn(kb, "Назад", "casino", "back")
     kb.adjust(1)
     return kb.as_markup()

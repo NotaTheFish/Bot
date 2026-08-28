@@ -177,3 +177,10 @@ async def cmd_rich_test(msg: Message):
 @router.callback_query(F.data.startswith("rps_test:"))
 async def cb_rps_test(c: CallbackQuery):
     await c.answer(f"Кнопка работает! Ты нажал игру #{c.data.split(':')[1]}", show_alert=True)
+
+
+@router.callback_query(F.data == "rps_new_dm")
+async def cb_rps_new_dm(c: CallbackQuery):
+    # заглушка: создание КНБ в личке (direct по никам + онлайн-пул) — следующий этап
+    await c.answer("Создание КНБ в личке — скоро! Пока играй в чате: !шайн кнб <ставка> <валюта>",
+                   show_alert=True)
