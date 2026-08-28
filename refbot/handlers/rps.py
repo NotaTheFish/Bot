@@ -144,3 +144,36 @@ async def cb_rps_start(c: CallbackQuery):
     from handlers.rps_game import start_round
     with contextlib.suppress(Exception):
         await start_round(c.bot, mid, first=True)
+
+
+# ---------------- ТЕСТ Rich Messages ----------------
+@router.message(F.text.lower() == "!шайнтест")
+async def cmd_rich_test(msg: Message):
+    import logging
+    log = logging.getLogger("refbot")
+    log.info("!шайнтест от %s в чате %s", msg.from_user.id, msg.chat.id)
+    from services import richmsg
+    from aiogram.utils.keyboard import InlineKeyboardBuilder
+    # fallback-клавиатура на случай отката
+    fb = InlineKeyboardBuilder()
+    fb.button(text="⚔️ Вступить #1", callback_data="rps_test:1")
+    fb.button(text="⚔️ Вступить #2", callback_data="rps_test:2")
+    fb.adjust(1)
+    rows = [
+        ("🎮 <b>Тестовая игра #1</b> — ставка 1000 🍄", [("⚔️ Вступить", "rps_test:1")]),
+        ("🎮 <b>Тестовая игра #2</b> — ставка 5000 🪙", [("⚔️ Вступить", "rps_test:2")]),
+    ]
+    try:
+        m, is_rich = await richmsg.send_rich(
+            msg.bot, msg.chat.id, "✊✋✌️ <b>Открытые игры (тест)</b>", rows,
+            fallback_kb=fb.as_markup())
+        log.info("!шайнтест: отправлено, is_rich=%s", is_rich)
+        await msg.reply(f"Отправил. Rich-режим: {'ДА ✅' if is_rich else 'НЕТ (откат на инлайн) ⚠️'}")
+    except Exception as e:
+        log.exception("!шайнтест упал")
+        await msg.reply(f"Ошибка: {type(e).__name__}: {e}")
+
+
+@router.callback_query(F.data.startswith("rps_test:"))
+async def cb_rps_test(c: CallbackQuery):
+    await c.answer(f"Кнопка работает! Ты нажал игру #{c.data.split(':')[1]}", show_alert=True)
