@@ -101,6 +101,8 @@ async def main():
     from handlers import rps as rps_h, rps_game
     dp.include_router(rps_h.router)
     dp.include_router(rps_game.router)
+    from handlers import rps_direct
+    dp.include_router(rps_direct.router)
     from handlers import lobby_browser
     dp.include_router(lobby_browser.router)
     dp.include_router(inline_grant.router)

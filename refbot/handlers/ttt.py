@@ -56,6 +56,7 @@ async def cb_ttt_new(c: CallbackQuery, state: FSMContext):
     b = await db.balances(c.from_user.id)
     sx = await settings.ctx()
     k = InlineKeyboardBuilder()
+    await btn(k, "🔍 Найти игру", "lb_open:ttt")
     await btn(k, f"🍄 Грибы ({_fmt(b['mushrooms'])})", "tttcur:mushrooms")
     await btn(k, f"🪙 Коины ({_fmt(b['coins'])})", "tttcur:coins")
     await btn(k, "Назад", "casino_games", "back")
@@ -64,7 +65,7 @@ async def cb_ttt_new(c: CallbackQuery, state: FSMContext):
         "❌⭕️ <b>Крестики-нолики</b>\n\n"
         "Игра на двоих со ставкой. Победитель забирает банк "
         "(с проигравшей ставки казино берёт 3%). Ничья — ставки возвращаются.\n\n"
-        "Чем играем?",
+        "Создай игру (выбери валюту) или найди открытую.",
         reply_markup=k.as_markup())
     await c.answer()
 

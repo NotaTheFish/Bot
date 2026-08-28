@@ -35,7 +35,7 @@ async def _round_text(mid: int, note: str = "") -> str:
     names = ", ".join([await _name(p["tg_id"]) for p in players])
     staked = await db.pool().fetchval(
         "SELECT count(*) FROM rb_match_players WHERE mid=$1 AND staked", mid)
-    head = (f"✊✋✌️ <b>Камень-ножницы-бумага</b>\n"
+    head = (f"🤓😎🥸 <b>Камень-ножницы-бумага</b>\n"
             f"Банк: <b>{_fmt(m['stake']*(staked or 0))}</b> {e}\n"
             f"В игре: <b>{total}</b> — {names}\n")
     if note:
@@ -87,12 +87,23 @@ async def cb_choice(c: CallbackQuery):
     if err:
         return await c.answer(err, show_alert=True)
     await c.answer(f"Ты выбрал: {rps.NAMES[choice]}")
-    # обновим счётчик (тайно — сам выбор не палим)
-    await _sync(c.bot, mid, note="Выбирайте ход! У вас 5 минут.")
-    # все выбрали? — вскрытие
+    # обновим счётчик (тайно). DM-режим или чат?
+    is_dm = mid in _dm_msgs
+    if is_dm:
+        await _sync_dm(c.bot, mid, note="Выбирайте ход! У вас 5 минут.")
+    else:
+        await _sync(c.bot, mid, note="Выбирайте ход! У вас 5 минут.")
     chosen, total = await matches.round_progress(mid)
     if chosen >= total and total > 0:
         await _reveal(c.bot, mid)
+
+
+async def _sync_any(bot, mid: int, note: str = "", kb=True):
+    """Универсальная синхронизация: DM-режим (поля в личках) или чат (одно поле)."""
+    if mid in _dm_msgs:
+        await _sync_dm(bot, mid, note, kb)
+    else:
+        await _sync(bot, mid, note, kb)
 
 
 async def _reveal(bot, mid: int):
@@ -107,7 +118,7 @@ async def _reveal(bot, mid: int):
         # ничья — новый раунд теми же игроками
         await matches.apply_elimination(mid, [])   # очистить выборы
         await matches.set_round_deadline(mid, matches.RPS_MOVE_MINUTES)
-        await _sync(bot, mid, note=f"{summary}\nИграем заново!")
+        await _sync_any(bot, mid, note=f"{summary}\nИграем заново!")
         return
 
     # есть выбывшие
@@ -126,7 +137,7 @@ async def _reveal(bot, mid: int):
     # ещё несколько — новый раунд
     await matches.set_round_deadline(mid, matches.RPS_MOVE_MINUTES)
     elim_names = ", ".join([await _name(u) for u in eliminated])
-    await _sync(bot, mid, note=f"{summary}\nВыбыли: {elim_names}. Следующий раунд!")
+    await _sync_any(bot, mid, note=f"{summary}\nВыбыли: {elim_names}. Следующий раунд!")
 
 
 async def _finish(bot, mid: int, winner: int, summary: str):
@@ -142,15 +153,32 @@ async def _finish(bot, mid: int, winner: int, summary: str):
     losers_pot = m["stake"] * ((staked or 1) - 1)
     payout = bank - int(losers_pot * MATCH_FEE_PCT / 100)
     wname = await _name(winner)
-    text = (f"✊✋✌️ <b>Камень-ножницы-бумага</b>\n\n"
+    text = (f"🤓😎🥸 <b>Камень-ножницы-бумага</b>\n\n"
             f"{summary}\n\n"
             f"🏆 <b>{wname} победил(а)!</b>\n"
             f"Выигрыш: <b>{_fmt(payout)}</b> {e}")
-    m2 = await matches.get(mid)
     em = await settings.emoji_map()
-    with contextlib.suppress(Exception):
-        await render.edit_by_id(bot, m2["board_chat_id"], m2["board_msg_id"], text, em,
-                                reply_markup=None)
+    if mid in _dm_msgs:
+        # DM-режим: обновить поле у каждого игрока + разослать всем итог
+        slots = _dm_msgs.get(mid, {})
+        # соберём всех, кто участвовал (playing/out/winner)
+        allp = await db.pool().fetch(
+            "SELECT tg_id FROM rb_match_players WHERE mid=$1 AND status<>'dq' AND status<>'left'", mid)
+        for r in allp:
+            uid = r["tg_id"]
+            mreid = slots.get(uid)
+            if mreid:
+                with contextlib.suppress(Exception):
+                    await render.edit_by_id(bot, uid, mreid, text, em, reply_markup=None)
+            else:
+                with contextlib.suppress(Exception):
+                    await ui.send(bot, uid, text)
+        _dm_msgs.pop(mid, None)
+    else:
+        m2 = await matches.get(mid)
+        with contextlib.suppress(Exception):
+            await render.edit_by_id(bot, m2["board_chat_id"], m2["board_msg_id"], text, em,
+                                    reply_markup=None)
     with contextlib.suppress(Exception):
         await ui.send(bot, winner, f"🏆 Ты выиграл камень-ножницы-бумага! +{_fmt(payout)} {e}")
 
@@ -217,4 +245,60 @@ async def _resolve_after_timeout(bot, mid: int):
     else:
         # часть ещё выбирает — продлить дедлайн
         await matches.set_round_deadline(mid, matches.RPS_MOVE_MINUTES)
-        await _sync(bot, mid, note="Часть игроков выбыла по тайм-ауту. Продолжаем!")
+        await _sync_any(bot, mid, note="Часть игроков выбыла по тайм-ауту. Продолжаем!")
+
+
+# ==================== КНБ в личках (direct / онлайн-пул) ====================
+# Поле раундов у каждого игрока в его ЛС, синхронизируется. Выбор тайный.
+# Храним message_id поля каждого игрока в rb_match_players? Нет — шлём заново
+# каждый раунд и держим id в памяти.
+_dm_msgs: dict[int, dict[int, int]] = {}   # mid -> {tg_id: message_id}
+
+
+async def _dm_text(mid: int, note: str = "") -> str:
+    m = await matches.get(mid)
+    sx = await settings.ctx()
+    e = sx["e_" + m["currency"]]
+    chosen, total = await matches.round_progress(mid)
+    players = await matches.lobby_players(mid, "playing")
+    names = ", ".join([await _name(p["tg_id"]) for p in players])
+    staked = await db.pool().fetchval(
+        "SELECT count(*) FROM rb_match_players WHERE mid=$1 AND staked", mid)
+    head = (f"🤓😎🥸 <b>Камень-ножницы-бумага</b>\n"
+            f"Банк: <b>{_fmt(m['stake']*(staked or 0))}</b> {e}\n"
+            f"В игре: <b>{total}</b> — {names}\n")
+    if note:
+        head += f"\n{note}\n"
+    head += f"\n✅ Выбрали ход: <b>{chosen} из {total}</b>"
+    return head
+
+
+async def start_round_dm(bot, mid: int, first: bool = False):
+    """Запустить раунд в личках всех игроков."""
+    m = await matches.get(mid)
+    if not m:
+        return
+    if first:
+        await db.pool().execute("UPDATE rb_matches SET status='active' WHERE id=$1", mid)
+    await matches.set_round_deadline(mid, matches.RPS_MOVE_MINUTES)
+    await _sync_dm(bot, mid, note="Выбирайте ход! У вас 5 минут.")
+
+
+async def _sync_dm(bot, mid: int, note: str = "", kb=True):
+    """Обновить поле у каждого игрока в ЛС (или прислать, если ещё нет)."""
+    players = await matches.lobby_players(mid, "playing")
+    text = await _dm_text(mid, note)
+    em = await settings.emoji_map()
+    markup = await _round_kb(mid) if kb else None
+    slots = _dm_msgs.setdefault(mid, {})
+    for p in players:
+        uid = p["tg_id"]
+        mreid = slots.get(uid)
+        if mreid:
+            with contextlib.suppress(Exception):
+                await render.edit_by_id(bot, uid, mreid, text, em, reply_markup=markup)
+        else:
+            with contextlib.suppress(Exception):
+                msg = await ui.send(bot, uid, text, reply_markup=markup)
+                if msg:
+                    slots[uid] = msg.message_id
