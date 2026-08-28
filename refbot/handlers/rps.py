@@ -52,10 +52,11 @@ async def _lobby_text(mid: int) -> str:
 
 
 async def _lobby_kb(mid: int):
+    from services.ui import btn
     kb = InlineKeyboardBuilder()
-    kb.button(text="✅ Участвовать", callback_data=f"rps_join:{mid}")
-    kb.button(text="▶️ Старт", callback_data=f"rps_start:{mid}")
-    kb.button(text="❌ Отменить", callback_data=f"rps_cancel:{mid}")
+    await btn(kb, "✅ Участвовать", f"rps_join:{mid}")
+    await btn(kb, "▶️ Старт", f"rps_start:{mid}")
+    await btn(kb, "❌ Отменить", f"rps_cancel:{mid}")
     kb.adjust(1, 2)
     return kb.as_markup()
 

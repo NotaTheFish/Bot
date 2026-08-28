@@ -45,10 +45,14 @@ async def _round_text(mid: int, note: str = "") -> str:
 
 
 async def _round_kb(mid: int):
+    from services.ui import btn
+    er = await settings.emoji("rps_rock")
+    es = await settings.emoji("rps_scissors")
+    ep = await settings.emoji("rps_paper")
     kb = InlineKeyboardBuilder()
-    kb.button(text="🪨 Камень", callback_data=f"rps_ch:{mid}:rock")
-    kb.button(text="✂️ Ножницы", callback_data=f"rps_ch:{mid}:scissors")
-    kb.button(text="📄 Бумага", callback_data=f"rps_ch:{mid}:paper")
+    await btn(kb, f"{er} Камень", f"rps_ch:{mid}:rock")
+    await btn(kb, f"{es} Ножницы", f"rps_ch:{mid}:scissors")
+    await btn(kb, f"{ep} Бумага", f"rps_ch:{mid}:paper")
     kb.adjust(3)
     return kb.as_markup()
 
