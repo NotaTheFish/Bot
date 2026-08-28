@@ -63,21 +63,22 @@ async def show_browser(bot, chat_id: int, uid: int, game: str, page: int = 0,
     if not games:
         header += "\nПока нет открытых игр. Создай свою!"
 
-    # управляющие кнопки (пагинация + создать) — обычные инлайн под сообщением
+    # управляющие кнопки (пагинация + создать) — через btn (премиум в иконку)
+    from services.ui import btn
     ctrl = InlineKeyboardBuilder()
     pages = (total + PAGE - 1) // PAGE
     nav = []
     if page > 0:
-        ctrl.button(text="◀️", callback_data=f"lb_page:{game}:{page-1}")
+        await btn(ctrl, "◀️", f"lb_page:{game}:{page-1}")
         nav.append(1)
     if page + 1 < pages:
-        ctrl.button(text="▶️", callback_data=f"lb_page:{game}:{page+1}")
+        await btn(ctrl, "▶️", f"lb_page:{game}:{page+1}")
         nav.append(1)
     # «Создать свою» ведёт на штатный вход создания (обрабатывается с реальным FSM)
     create_cb = "ttt_new" if game == "ttt" else "rps_new_dm"
-    ctrl.button(text="➕ Создать свою", callback_data=create_cb)
-    ctrl.button(text="🔄 Обновить", callback_data=f"lb_page:{game}:{page}")
-    ctrl.button(text="Назад", callback_data="casino_games")
+    await btn(ctrl, "➕ Создать свою", create_cb)
+    await btn(ctrl, "🔄 Обновить", f"lb_page:{game}:{page}")
+    await btn(ctrl, "Назад", "casino_games", "back")
     if total > PAGE:
         header += f"\n<i>Стр. {page+1} из {pages}</i>"
 
