@@ -147,11 +147,11 @@ async def cb_rps_start(c: CallbackQuery):
 
 
 # ---------------- ТЕСТ Rich Messages ----------------
-@router.message(F.text.lower() == "!шайнтест")
+@router.message(F.text.lower() == "!ричтест")
 async def cmd_rich_test(msg: Message):
     import logging
     log = logging.getLogger("refbot")
-    log.info("!шайнтест от %s в чате %s", msg.from_user.id, msg.chat.id)
+    log.info("!ричтест от %s в чате %s", msg.from_user.id, msg.chat.id)
     from services import richmsg
     from aiogram.utils.keyboard import InlineKeyboardBuilder
     # fallback-клавиатура на случай отката
@@ -167,10 +167,10 @@ async def cmd_rich_test(msg: Message):
         m, is_rich = await richmsg.send_rich(
             msg.bot, msg.chat.id, "✊✋✌️ <b>Открытые игры (тест)</b>", rows,
             fallback_kb=fb.as_markup())
-        log.info("!шайнтест: отправлено, is_rich=%s", is_rich)
+        log.info("!ричтест: отправлено, is_rich=%s", is_rich)
         await msg.reply(f"Отправил. Rich-режим: {'ДА ✅' if is_rich else 'НЕТ (откат на инлайн) ⚠️'}")
     except Exception as e:
-        log.exception("!шайнтест упал")
+        log.exception("!ричтест упал")
         await msg.reply(f"Ошибка: {type(e).__name__}: {e}")
 
 
