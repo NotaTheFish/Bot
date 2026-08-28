@@ -328,3 +328,34 @@ async def msg_rps_invite(msg: Message, state: FSMContext):
         return await ui.reply(msg, f"⚠️ {err}")
     from handlers.rps_direct import send_invites
     await send_invites(msg.bot, mid, msg.from_user.id, invited, unknown)
+
+
+# ---------------- «Играть ещё» — новое лобби той же ставкой ----------------
+@router.callback_query(F.data.startswith("rps_again:"))
+async def cb_rps_again(c: CallbackQuery):
+    _, cur, stake_s = c.data.split(":")
+    stake = int(stake_s)
+    uid = c.from_user.id
+    if not await _guard_casino(uid):
+        return await c.answer("Казино закрыто.", show_alert=True)
+    if await matches.has_active(uid):
+        return await c.answer("У тебя уже есть активная игра. Заверши или отмени её.",
+                              show_alert=True)
+    b = await db.balances(uid)
+    if b.get(cur, 0) < stake:
+        sx = await settings.ctx()
+        return await c.answer(f"Не хватает: {_fmt(b.get(cur,0))} {sx['e_'+cur]}.", show_alert=True)
+    # создаём новое лобби в том же месте (чат, где была игра, или личка)
+    mid, err = await matches.create_lobby(GAME, uid, cur, stake, c.message.chat.id)
+    if err:
+        return await c.answer(f"⚠️ {err}", show_alert=True)
+    await c.answer("Новая игра создана!")
+    sent = await ui.send(c.bot, c.message.chat.id, await _lobby_text(mid),
+                         reply_markup=await _lobby_kb(mid))
+    if sent:
+        await db.pool().execute(
+            "UPDATE rb_matches SET board_chat_id=$1, board_msg_id=$2 WHERE id=$3",
+            c.message.chat.id, sent.message_id, mid)
+    # убрать кнопку «играть ещё» со старого финала
+    with contextlib.suppress(Exception):
+        await c.message.edit_reply_markup(reply_markup=None)

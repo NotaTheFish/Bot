@@ -32,6 +32,14 @@ async def _round_text(mid: int, note: str = "") -> str:
     e = sx["e_" + m["currency"]]
     chosen, total = await matches.round_progress(mid)
     players = await matches.lobby_players(mid, "playing")
+    if total == 0:
+        # диагностика: почему ноль игроков
+        import logging
+        allst = await db.pool().fetch(
+            "SELECT tg_id, status, staked FROM rb_match_players WHERE mid=$1", mid)
+        logging.getLogger("refbot").warning(
+            "rps _round_text mid=%s: playing=0! все игроки: %s",
+            mid, [(r["tg_id"], r["status"], r["staked"]) for r in allst])
     names = ", ".join([await _name(p["tg_id"]) for p in players])
     staked = await db.pool().fetchval(
         "SELECT count(*) FROM rb_match_players WHERE mid=$1 AND staked", mid)
@@ -72,6 +80,14 @@ async def start_round(bot, mid: int, first: bool = False):
     """Запустить раунд выбора: активировать матч, поставить дедлайн, показать кнопки."""
     m = await matches.get(mid)
     if not m:
+        return
+    players = await matches.lobby_players(mid, "playing")
+    if len(players) < 2:
+        # защита: не запускаем раунд без игроков (иначе «В игре: 0»)
+        import logging
+        logging.getLogger("refbot").warning(
+            "rps start_round mid=%s: игроков %d < 2, отмена", mid, len(players))
+        m, _ = await matches.cancel_lobby(mid)
         return
     if first:
         await db.pool().execute("UPDATE rb_matches SET status='active' WHERE id=$1", mid)
@@ -158,27 +174,36 @@ async def _finish(bot, mid: int, winner: int, summary: str):
             f"🏆 <b>{wname} победил(а)!</b>\n"
             f"Выигрыш: <b>{_fmt(payout)}</b> {e}")
     em = await settings.emoji_map()
+
+    # кнопка «Играть ещё» — новое лобби с той же ставкой/валютой
+    async def _again_kb(chat_id):
+        from services.ui import btn
+        kb = InlineKeyboardBuilder()
+        await btn(kb, "🔁 Играть ещё", f"rps_again:{m['currency']}:{m['stake']}")
+        return kb.as_markup()
+
     if mid in _dm_msgs:
         # DM-режим: обновить поле у каждого игрока + разослать всем итог
         slots = _dm_msgs.get(mid, {})
-        # соберём всех, кто участвовал (playing/out/winner)
         allp = await db.pool().fetch(
             "SELECT tg_id FROM rb_match_players WHERE mid=$1 AND status<>'dq' AND status<>'left'", mid)
         for r in allp:
             uid = r["tg_id"]
             mreid = slots.get(uid)
+            kb = await _again_kb(uid)
             if mreid:
                 with contextlib.suppress(Exception):
-                    await render.edit_by_id(bot, uid, mreid, text, em, reply_markup=None)
+                    await render.edit_by_id(bot, uid, mreid, text, em, reply_markup=kb)
             else:
                 with contextlib.suppress(Exception):
-                    await ui.send(bot, uid, text)
+                    await ui.send(bot, uid, text, reply_markup=kb)
         _dm_msgs.pop(mid, None)
     else:
         m2 = await matches.get(mid)
+        kb = await _again_kb(m2["board_chat_id"])
         with contextlib.suppress(Exception):
             await render.edit_by_id(bot, m2["board_chat_id"], m2["board_msg_id"], text, em,
-                                    reply_markup=None)
+                                    reply_markup=kb)
     with contextlib.suppress(Exception):
         await ui.send(bot, winner, f"🏆 Ты выиграл камень-ножницы-бумага! +{_fmt(payout)} {e}")
 
