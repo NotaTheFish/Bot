@@ -71,8 +71,10 @@ class CounterMiddleware(BaseMiddleware):
                     and await contest.is_contest_chat(event.chat.id)):
                 await contest.count_message(event.chat.id, u.id)
                 await db.upsert_user(u.id, u.username, u.first_name)
-        except Exception:
-            log.exception("счётчик конкурса упал — пропускаю сообщение дальше")
+        except Exception as e:
+            # НЕ log.exception — иначе на каждое сообщение в лог валится полный
+            # объект event со всеми entities. Короткая строка без дампа.
+            log.warning("счётчик конкурса упал (%s), пропускаю сообщение", type(e).__name__)
         return await handler(event, data)
 
 

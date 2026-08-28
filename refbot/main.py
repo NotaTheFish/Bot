@@ -72,7 +72,12 @@ async def main():
         elif isinstance(exc, TelegramBadRequest):
             log.warning("Telegram отклонил запрос: %s", exc)
         else:
-            log.exception("необработанная ошибка в апдейте", exc_info=exc)
+            # НЕ exc_info=exc с полным апдейтом — иначе в лог валится всё сообщение
+            # с entities на каждую ошибку. Короткая строка: тип, текст и место падения.
+            import traceback
+            tb = traceback.extract_tb(exc.__traceback__)
+            where = f"{tb[-1].filename.split('/')[-1]}:{tb[-1].lineno}" if tb else "?"
+            log.error("ошибка в апдейте: %s: %s (в %s)", type(exc).__name__, exc, where)
         return True  # апдейт «обработан» — бот не падает
 
     dp.message.outer_middleware(contest.CounterMiddleware())
