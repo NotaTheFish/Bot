@@ -121,6 +121,10 @@ async def cb_rps_join(c: CallbackQuery):
         return await c.answer(f"⚠️ {err}", show_alert=True)
     await c.answer("Ты в игре! Ставка заморожена.")
     await _refresh_lobby(c.bot, mid)
+    # обновить список открытых игр у всех, кто смотрит браузер
+    from handlers.lobby_browser import refresh_all
+    with contextlib.suppress(Exception):
+        await refresh_all(c.bot, GAME)
 
 
 @router.callback_query(F.data.startswith("rps_cancel:"))
@@ -143,6 +147,9 @@ async def cb_rps_cancel(c: CallbackQuery):
             await ui.send(c.bot, uid,
                 f"❌ Игра камень-ножницы-бумага отменена создателем.\n"
                 f"Ставка <b>{_fmt(m['stake'])}</b> {e} возвращена.")
+    from handlers.lobby_browser import refresh_all
+    with contextlib.suppress(Exception):
+        await refresh_all(c.bot, GAME)
 
 
 # ---------------- старт (переход к раундам — Этап 3) ----------------
@@ -161,6 +168,9 @@ async def cb_rps_start(c: CallbackQuery):
     from handlers.rps_game import start_round
     with contextlib.suppress(Exception):
         await start_round(c.bot, mid, first=True)
+    from handlers.lobby_browser import refresh_all
+    with contextlib.suppress(Exception):
+        await refresh_all(c.bot, GAME)
 
 
 # ---------------- ТЕСТ Rich Messages ----------------
@@ -291,6 +301,10 @@ async def cb_rps_online(c: CallbackQuery, state: FSMContext):
         await c.message.edit_text("✅ Открытая игра создана! Жди игроков или позови друзей.",
                                   reply_markup=None)
     await c.answer("Игра создана!")
+    from handlers.lobby_browser import refresh_all
+    import contextlib as _cl
+    with _cl.suppress(Exception):
+        await refresh_all(c.bot, GAME)
 
 
 # ---------------- режим: direct (позвать по никам) ----------------

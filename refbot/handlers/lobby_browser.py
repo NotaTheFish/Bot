@@ -20,6 +20,24 @@ PAGE = 5   # игр на страницу
 _GAME_TITLE = {"ttt": "Крестики-нолики", "rps": "Камень-ножницы-бумага"}
 _CUR_E = {"mushrooms": "🍄", "coins": "🪙"}
 
+# реестр открытых браузеров: game -> {(chat_id, msg_id): (uid, page, is_rich)}
+# чтобы обновлять список у всех, кто его смотрит, при изменениях (вступление/отмена)
+_open_browsers: dict[str, dict] = {"ttt": {}, "rps": {}}
+
+
+async def refresh_all(bot, game: str):
+    """Обновить список открытых игр во всех открытых браузерах этого типа."""
+    reg = _open_browsers.get(game, {})
+    stale = []
+    for (chat_id, msg_id), (uid, page, is_rich) in list(reg.items()):
+        try:
+            await show_browser(bot, chat_id, uid, game, page,
+                               edit_msg_id=msg_id, is_rich=is_rich, _register=False)
+        except Exception:
+            stale.append((chat_id, msg_id))
+    for k in stale:
+        reg.pop(k, None)
+
 
 def _fmt(n: int) -> str:
     return f"{n:,}".replace(",", " ")
@@ -38,7 +56,8 @@ def _join_cb(game: str, mid: int) -> str:
 
 
 async def show_browser(bot, chat_id: int, uid: int, game: str, page: int = 0,
-                       edit_msg_id: int | None = None, is_rich: bool = True):
+                       edit_msg_id: int | None = None, is_rich: bool = True,
+                       _register: bool = True):
     """Показать/обновить браузер открытых игр. game: 'ttt'|'rps'."""
     games, total = await matches.open_games(game, exclude_uid=uid,
                                             limit=PAGE, offset=page * PAGE)
@@ -96,10 +115,14 @@ async def show_browser(bot, chat_id: int, uid: int, game: str, page: int = 0,
         await richmsg.edit_rich(bot, chat_id, edit_msg_id, header, rows,
                                 fallback_kb=fallback, is_rich=is_rich,
                                 reply_markup=fallback if is_rich else None)
+        if _register:
+            _open_browsers.setdefault(game, {})[(chat_id, edit_msg_id)] = (uid, page, is_rich)
     else:
         msg, rich_ok = await richmsg.send_rich(bot, chat_id, header, rows,
                                                fallback_kb=fallback,
                                                reply_markup=fallback)
+        if msg and _register:
+            _open_browsers.setdefault(game, {})[(chat_id, msg.message_id)] = (uid, page, rich_ok)
         return msg, rich_ok
 
 

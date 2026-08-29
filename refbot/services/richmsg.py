@@ -13,6 +13,20 @@ import logging
 log = logging.getLogger("refbot")
 
 
+async def _premiumize(html_text: str) -> str:
+    """Обернуть премиум-символы в <tg-emoji> теги, чтобы rich-сообщение показало
+    их премиум-версии (Telegram HTML поддерживает <tg-emoji emoji-id=...>)."""
+    from services import settings
+    em = await settings.emoji_map()
+    if not em:
+        return html_text
+    for sym, cid in em.items():
+        if sym and sym in html_text:
+            html_text = html_text.replace(
+                sym, f'<tg-emoji emoji-id="{cid}">{sym}</tg-emoji>')
+    return html_text
+
+
 def _build_rich(header_html: str, rows: list[tuple[str, list[tuple[str, str]]]]):
     """Собрать InputRichMessage: заголовок + для каждой строки параграф-текст и блок
     кнопок сразу под ним (текст игры оказывается прямо над её кнопкой «Вступить»)."""
@@ -39,7 +53,8 @@ async def send_rich(bot, chat_id: int, header_html: str,
     reply_markup — доп. обычная клавиатура снизу (пагинация и т.п.) для rich-режима.
     """
     try:
-        rm = _build_rich(header_html, rows)
+        header_p = await _premiumize(header_html)
+        rm = _build_rich(header_p, rows)
         msg = await bot.send_rich_message(chat_id=chat_id, rich_message=rm,
                                           reply_markup=reply_markup, **kw)
         return msg, True
@@ -62,7 +77,8 @@ async def edit_rich(bot, chat_id: int, message_id: int, header_html: str,
     """
     if is_rich:
         try:
-            rm = _build_rich(header_html, rows)
+            header_p = await _premiumize(header_html)
+            rm = _build_rich(header_p, rows)
             return await bot.edit_message_text(
                 chat_id=chat_id, message_id=message_id, rich_message=rm,
                 reply_markup=reply_markup, **kw)

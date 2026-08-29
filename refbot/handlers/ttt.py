@@ -141,6 +141,9 @@ async def cb_ttt_mode(c: CallbackQuery, state: FSMContext):
             f"Как только кто-то присоединится — начнём.",
             reply_markup=k.as_markup())
         await c.answer("Ищем соперника")
+        from handlers.lobby_browser import refresh_all
+        with contextlib.suppress(Exception):
+            await refresh_all(c.bot, "ttt")
         return
 
     # direct — просим ник/id
@@ -379,6 +382,9 @@ async def cb_ttt_join_chat(c: CallbackQuery):
     from handlers.ttt_game import start_game_chat
     with contextlib.suppress(Exception):
         await start_game_chat(c.bot, mid, c.message.chat.id)
+    from handlers.lobby_browser import refresh_all
+    with contextlib.suppress(Exception):
+        await refresh_all(c.bot, "ttt")
 
 
 @router.callback_query(F.data.startswith("ttt_accept_chat:"))
