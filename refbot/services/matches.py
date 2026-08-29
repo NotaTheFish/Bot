@@ -705,3 +705,11 @@ async def navy_expire_moves() -> list[dict]:
                 d = dict(m); d["timeout_winner"] = winner; d["timeout_loser"] = loser
                 out.append(d)
     return out
+
+
+async def navy_find_open(currency: str, stake: int, exclude_uid: int) -> int | None:
+    """Найти открытый морской бой с той же ставкой/валютой (не свой). Вернуть mid или None."""
+    return await db.pool().fetchval(
+        "SELECT id FROM rb_matches WHERE game='navy' AND status='searching' "
+        "AND currency=$1 AND stake=$2 AND p1<>$3 ORDER BY created_at LIMIT 1",
+        currency, stake, exclude_uid)

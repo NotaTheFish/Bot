@@ -71,6 +71,25 @@ async def handle_shine_navy(msg: Message, parts: list[str]):
         opponent = opp.id
 
     mode = "direct" if opponent else "online"
+    # ОНЛАЙН: сначала ищем уже открытую игру с той же ставкой/валютой — свяжем сразу
+    if not opponent:
+        existing = await matches.navy_find_open(cur, bet, uid)
+        if existing:
+            m2, err2 = await matches.navy_join(existing, uid)
+            if not err2:
+                sx = await settings.ctx()
+                e = sx["e_" + cur]
+                await ui.send(msg.bot, msg.chat.id,
+                    f"⚓ <b>Соперник найден!</b> Бой начинается — расставляйте корабли (15 мин).")
+                from handlers.navy_place import start_placement
+                with contextlib.suppress(Exception):
+                    await start_placement(msg.bot, existing)
+                from handlers.lobby_browser import refresh_all
+                with contextlib.suppress(Exception):
+                    await refresh_all(msg.bot, GAME)
+                return
+            # если присоединиться не вышло (баланс/гонка) — падаем в обычное создание
+
     mid, err = await matches.create_navy(uid, cur, bet, mode, opponent, msg.chat.id)
     if err:
         return await ui.reply(msg, f"⚠️ {err}")
@@ -91,14 +110,17 @@ async def handle_shine_navy(msg: Message, parts: list[str]):
             f"Ставка: <b>{_fmt(bet)}</b> {e}\n\n{oppname}, принимаешь бой?",
             reply_markup=k.as_markup())
     else:
-        # онлайн — открытый вызов, появится в браузере
+        # онлайн — открытый вызов: кнопки «Вступить» + «Отменить», плюс в браузере
         k = InlineKeyboardBuilder()
         from services.ui import btn
+        await btn(k, "⚓ Вступить в бой", f"navy_join:{mid}")
         await btn(k, "❌ Отменить поиск", f"navy_cancel:{mid}")
+        k.adjust(1, 1)
         sent = await ui.send(msg.bot, msg.chat.id,
             f"⚓ <b>Морской бой — ищу соперника…</b>\n\n"
             f"{challenger}, ставка <b>{_fmt(bet)}</b> {e}.\n"
-            f"Средства заморожены. Поиск до 10 минут.",
+            f"Средства заморожены. Поиск до 10 минут.\n\n"
+            f"Любой может нажать «Вступить в бой».",
             reply_markup=k.as_markup())
         from handlers.lobby_browser import refresh_all
         with contextlib.suppress(Exception):
@@ -156,12 +178,16 @@ async def cb_cancel(c: CallbackQuery):
 
 @router.callback_query(F.data.startswith("navy_join:"))
 async def cb_navy_join(c: CallbackQuery):
-    """Вступить в открытый морской бой из браузера «Найти игру»."""
+    """Вступить в открытый морской бой (из сообщения поиска или из браузера)."""
     mid = int(c.data.split(":")[1])
     m, err = await matches.navy_join(mid, c.from_user.id)
     if err:
         return await c.answer(f"⚠️ {err}", show_alert=True)
     await c.answer("Бой начинается! Расставляй корабли.")
+    # убрать кнопки у сообщения поиска / браузера
+    with contextlib.suppress(Exception):
+        await c.message.edit_text("⚓ Соперник найден! Расставляйте корабли (15 мин).",
+                                  reply_markup=None)
     from handlers.navy_place import start_placement
     with contextlib.suppress(Exception):
         await start_placement(c.bot, mid)
