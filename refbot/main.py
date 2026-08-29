@@ -105,6 +105,11 @@ async def main():
     dp.include_router(rps_direct.router)
     from handlers import lobby_browser
     dp.include_router(lobby_browser.router)
+    from handlers import navy as navy_h, navy_place, navy_game, navy_finish
+    dp.include_router(navy_h.router)
+    dp.include_router(navy_place.router)
+    dp.include_router(navy_game.router)
+    dp.include_router(navy_finish.router)
     dp.include_router(inline_grant.router)
     dp.include_router(offers.router)
     dp.include_router(skin.router)
@@ -136,6 +141,8 @@ async def main():
     asyncio.create_task(ttt_game.timeout_worker(bot))
     from handlers import rps_game
     asyncio.create_task(rps_game.timeout_worker(bot))
+    from handlers import navy_game
+    asyncio.create_task(navy_game.timeout_worker(bot))
     await bot.delete_webhook(drop_pending_updates=True)
     # регистрируем /secret как ЭФЕМЕРНУЮ команду (невидимый ввод в группах).
     # Фича свежая — если Telegram/версия не примут is_ephemeral, команда всё равно

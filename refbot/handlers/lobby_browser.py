@@ -17,7 +17,7 @@ router = Router()
 
 PAGE = 5   # игр на страницу
 
-_GAME_TITLE = {"ttt": "Крестики-нолики", "rps": "Камень-ножницы-бумага"}
+_GAME_TITLE = {"ttt": "Крестики-нолики", "rps": "Камень-ножницы-бумага", "navy": "Морской бой"}
 _CUR_E = {"mushrooms": "🍄", "coins": "🪙"}
 
 # реестр открытых браузеров: game -> {(chat_id, msg_id): (uid, page, is_rich)}
@@ -51,8 +51,12 @@ async def _name(uid: int) -> str:
 
 
 def _join_cb(game: str, mid: int) -> str:
-    """callback для вступления: КН -> открытый вызов, КНБ -> лобби."""
-    return f"ttt_join_chat:{mid}" if game == "ttt" else f"rps_join:{mid}"
+    """callback для вступления по типу игры."""
+    if game == "ttt":
+        return f"ttt_join_chat:{mid}"
+    if game == "navy":
+        return f"navy_join:{mid}"
+    return f"rps_join:{mid}"
 
 
 async def show_browser(bot, chat_id: int, uid: int, game: str, page: int = 0,
@@ -96,7 +100,6 @@ async def show_browser(bot, chat_id: int, uid: int, game: str, page: int = 0,
     # «Создать свою» ведёт на штатный вход создания (обрабатывается с реальным FSM)
     create_cb = "ttt_new" if game == "ttt" else "rps_new_dm"
     await btn(ctrl, "➕ Создать свою", create_cb)
-    await btn(ctrl, "🔄 Обновить", f"lb_page:{game}:{page}")
     await btn(ctrl, "Назад", "casino_games", "back")
     if total > PAGE:
         header += f"\n<i>Стр. {page+1} из {pages}</i>"
@@ -105,7 +108,7 @@ async def show_browser(bot, chat_id: int, uid: int, game: str, page: int = 0,
     layout = []
     if nav:
         layout.append(len(nav))
-    layout += [1, 1, 1]
+    layout += [1, 1]
     ctrl.adjust(*layout)
     fallback = ctrl.as_markup()
 

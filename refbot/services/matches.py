@@ -501,7 +501,7 @@ async def open_games(game: str, exclude_uid: int | None = None,
     Возвращает (список игр с доп.полями creator/players_count, всего игр).
     exclude_uid — не показывать игры, где этот игрок уже участвует (свои/занятые).
     """
-    status = "searching" if game == "ttt" else "lobby"
+    status = "lobby" if game == "rps" else "searching"
     # всего открытых (для пагинации)
     total = await db.pool().fetchval(
         "SELECT count(*) FROM rb_matches WHERE game=$1 AND status=$2", game, status) or 0
@@ -533,3 +533,175 @@ async def open_games(game: str, exclude_uid: int | None = None,
             d["is_mine"] = False
         out.append(d)
     return out, total
+
+
+# ==================== МОРСКОЙ БОЙ ====================
+NAVY_PLACE_MINUTES = 15   # на расстановку кораблей
+NAVY_MOVE_MINUTES = 5     # на ход
+
+
+async def create_navy(p1: int, currency: str, stake: int, mode: str,
+                      opponent: int | None, origin_chat: int) -> tuple[int | None, str]:
+    """Создать матч морского боя (2 игрока). mode: 'online'|'direct'.
+    Замораживает ставку создателя. Фаза 'placement'."""
+    if stake <= 0:
+        return None, "Ставка должна быть больше нуля."
+    if await db.is_banned(p1):
+        return None, "Аккаунт заблокирован."
+    if await has_active(p1):
+        return None, "У тебя уже есть активная игра."
+    b = await db.balances(p1)
+    if b.get(currency, 0) < stake:
+        return None, "Недостаточно средств для ставки."
+    status = "searching" if mode == "online" else "invited"
+    dl = _now() + timedelta(minutes=SEARCH_MINUTES)
+    import json
+    init_state = {"phase": "lobby", "fields": {}, "ready": []}
+    try:
+        async with db.pool().acquire() as conn:
+            async with conn.transaction():
+                mid = await conn.fetchval(
+                    "INSERT INTO rb_matches (game, status, currency, stake, p1, p2, "
+                    "origin_chat, search_deadline, state) "
+                    "VALUES ('navy',$1,$2,$3,$4,$5,$6,$7,$8) RETURNING id",
+                    status, currency, stake, p1, opponent, origin_chat, dl,
+                    json.dumps(init_state))
+                if not await _freeze(conn, p1, currency, stake, mid, "p1"):
+                    raise _NoFunds()
+    except _NoFunds:
+        return None, "Недостаточно средств для ставки."
+    await db.audit(p1, "navy_create", {"id": mid, "stake": stake, "cur": currency})
+    return mid, ""
+
+
+async def navy_state(mid: int) -> dict | None:
+    """Получить state морского боя (распарсенный)."""
+    import json
+    m = await get(mid)
+    if not m:
+        return None
+    st = m["state"]
+    return st if isinstance(st, dict) else json.loads(st)
+
+
+async def navy_save_field(mid: int, uid: int, field: dict):
+    """Сохранить поле игрока (ships + shots_at_me) в state."""
+    import json
+    async with db.pool().acquire() as conn:
+        async with conn.transaction():
+            m = await conn.fetchrow("SELECT state FROM rb_matches WHERE id=$1 FOR UPDATE", mid)
+            st = m["state"] if isinstance(m["state"], dict) else json.loads(m["state"])
+            st.setdefault("fields", {})[str(uid)] = field
+            await conn.execute("UPDATE rb_matches SET state=$1 WHERE id=$2",
+                               json.dumps(st), mid)
+
+
+async def navy_set_ready(mid: int, uid: int) -> tuple[bool, str]:
+    """Отметить игрока готовым (расставил корабли). Когда оба готовы — фаза battle."""
+    import json
+    async with db.pool().acquire() as conn:
+        async with conn.transaction():
+            m = await conn.fetchrow("SELECT * FROM rb_matches WHERE id=$1 FOR UPDATE", mid)
+            st = m["state"] if isinstance(m["state"], dict) else json.loads(m["state"])
+            ready = set(st.get("ready", []))
+            ready.add(uid)
+            st["ready"] = list(ready)
+            both = m["p1"] in ready and m["p2"] in ready
+            if both:
+                st["phase"] = "battle"
+                # первый ход — случайный
+                import random
+                turn = random.choice([m["p1"], m["p2"]])
+                dl = _now() + timedelta(minutes=NAVY_MOVE_MINUTES)
+                await conn.execute(
+                    "UPDATE rb_matches SET state=$1, status='active', turn=$2, move_deadline=$3 "
+                    "WHERE id=$4", json.dumps(st), turn, dl, mid)
+            else:
+                await conn.execute("UPDATE rb_matches SET state=$1 WHERE id=$2",
+                                   json.dumps(st), mid)
+    return True, ""
+
+
+async def navy_save_turn(mid: int, state: dict, turn: int):
+    """Сохранить состояние после хода + сменить/оставить ход, обновить дедлайн."""
+    import json
+    dl = _now() + timedelta(minutes=NAVY_MOVE_MINUTES)
+    await db.pool().execute(
+        "UPDATE rb_matches SET state=$1, turn=$2, move_deadline=$3 WHERE id=$4",
+        json.dumps(state), turn, dl, mid)
+
+
+async def navy_join(mid: int, p2: int) -> tuple[dict | None, str]:
+    """Присоединиться к конкретному открытому морскому бою (по mid из браузера).
+    Замораживает ставку p2, переводит в расстановку (не сразу в active)."""
+    if await db.is_banned(p2):
+        return None, "Аккаунт заблокирован."
+    if await has_active(p2, exclude_mid=mid):
+        return None, "У тебя уже есть активная игра."
+    async with db.pool().acquire() as conn:
+        async with conn.transaction():
+            m = await conn.fetchrow(
+                "SELECT * FROM rb_matches WHERE id=$1 AND game='navy' AND status='searching' "
+                "FOR UPDATE", mid)
+            if not m:
+                return None, "Эта игра уже недоступна."
+            if m["p1"] == p2:
+                return None, "Нельзя вступить в свою игру."
+            if not await _freeze(conn, p2, m["currency"], m["stake"], mid, "p2"):
+                return None, "Недостаточно средств для ставки."
+            await conn.execute(
+                "UPDATE rb_matches SET p2=$1, status='placement', search_deadline=$2 WHERE id=$3",
+                p2, _now() + timedelta(minutes=NAVY_PLACE_MINUTES), mid)
+            m = await conn.fetchrow("SELECT * FROM rb_matches WHERE id=$1", mid)
+    await db.audit(p2, "navy_join", {"id": mid})
+    return dict(m), ""
+
+
+async def navy_expire_placement() -> list[dict]:
+    """Морские бои, где расстановка (placement) просрочена — вернуть ставки обоим."""
+    out = []
+    async with db.pool().acquire() as conn:
+        async with conn.transaction():
+            rows = await conn.fetch(
+                "SELECT * FROM rb_matches WHERE game='navy' AND status='placement' "
+                "AND search_deadline IS NOT NULL AND search_deadline < now() FOR UPDATE SKIP LOCKED")
+            for m in rows:
+                await _refund(conn, m["p1"], m["currency"], m["stake"], m["id"], "p1")
+                if m["p2"]:
+                    await _refund(conn, m["p2"], m["currency"], m["stake"], m["id"], "p2")
+                await conn.execute(
+                    "UPDATE rb_matches SET status='expired', finished_at=now() WHERE id=$1", m["id"])
+                out.append(dict(m))
+    return out
+
+
+async def navy_expire_moves() -> list[dict]:
+    """Морские бои, где ход просрочен (5 мин) — проигрывает тот, чей ход.
+    Победитель забирает банк минус 3%."""
+    out = []
+    async with db.pool().acquire() as conn:
+        async with conn.transaction():
+            rows = await conn.fetch(
+                "SELECT * FROM rb_matches WHERE game='navy' AND status='active' "
+                "AND move_deadline IS NOT NULL AND move_deadline < now() FOR UPDATE SKIP LOCKED")
+            for m in rows:
+                loser = m["turn"]
+                if loser is None or m["p2"] is None:
+                    await _refund(conn, m["p1"], m["currency"], m["stake"], m["id"], "p1")
+                    if m["p2"]:
+                        await _refund(conn, m["p2"], m["currency"], m["stake"], m["id"], "p2")
+                    await conn.execute(
+                        "UPDATE rb_matches SET status='expired', finished_at=now() WHERE id=$1", m["id"])
+                    continue
+                winner = m["p2"] if loser == m["p1"] else m["p1"]
+                from config import MATCH_FEE_PCT
+                fee = int(m["stake"] * MATCH_FEE_PCT / 100)
+                payout = m["stake"] * 2 - fee
+                await db.apply(conn, winner, m["currency"], payout, "match_win",
+                               f"mwin:{m['id']}", m["id"])
+                await conn.execute(
+                    "UPDATE rb_matches SET status='finished', winner=$1, finished_at=now() "
+                    "WHERE id=$2", winner, m["id"])
+                d = dict(m); d["timeout_winner"] = winner; d["timeout_loser"] = loser
+                out.append(d)
+    return out

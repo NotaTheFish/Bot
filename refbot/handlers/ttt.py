@@ -292,6 +292,9 @@ async def cmd_shine(msg: Message):
     if parts[0].lower() in ("кнб", "камень", "кмн", "цу-е-фа"):
         from handlers.rps import handle_shine_rps
         return await handle_shine_rps(msg, parts)
+    if parts[0].lower() in ("мб", "морской", "морской-бой"):
+        from handlers.navy import handle_shine_navy
+        return await handle_shine_navy(msg, parts)
     game = _GAME_WORDS.get(parts[0].lower())
     if game != "ttt":
         return await ui.reply(msg, "Пока доступны крестики-нолики (<code>кн</code>) "
