@@ -363,18 +363,38 @@ async def confirm(action: str) -> InlineKeyboardMarkup:
     return kb.as_markup()
 
 
-async def free_list(pairs: dict) -> InlineKeyboardMarkup:
+async def free_list(pairs: dict, page: int = 0) -> InlineKeyboardMarkup:
+    PER = 40   # замен на страницу (с запасом от лимита 100 кнопок)
+    keys = list(pairs)
+    total = len(keys)
+    pages = max(1, (total + PER - 1) // PER)
+    page = max(0, min(page, pages - 1))
+    chunk = keys[page * PER:(page + 1) * PER]
+
     kb = InlineKeyboardBuilder()
-    for ch in pairs:
+    for ch in chunk:
         await btn(kb, f"{ch}  ✕", f"sk_free_del:{ch}")
+
+    # навигация (если больше одной страницы)
+    nav = 0
+    if pages > 1:
+        if page > 0:
+            await btn(kb, "◀️", f"sk_free_pg:{page - 1}")
+            nav += 1
+        if page < pages - 1:
+            await btn(kb, "▶️", f"sk_free_pg:{page + 1}")
+            nav += 1
+
     await btn(kb, "➕ Добавить замену", "sk_free_add")
     await btn(kb, "Кастомизация", "a_skin", "back")
-    # замены — по 4 в ряд (компактно, а не башней); две кнопки-действия — по одной.
-    n = len(pairs)
+
+    n = len(chunk)
     rows = [4] * (n // 4)
     if n % 4:
         rows.append(n % 4)
-    rows += [1, 1]  # «Добавить замену» и «Кастомизация» — каждая своим рядом
+    if nav:
+        rows.append(nav)
+    rows += [1, 1]
     kb.adjust(*rows)
     return kb.as_markup()
 

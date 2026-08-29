@@ -431,7 +431,7 @@ async def cb_free(c: CallbackQuery, state: FSMContext):
     await _render_free(c)
 
 
-async def _render_free(c: CallbackQuery):
+async def _render_free(c: CallbackQuery, page: int = 0):
     pairs = await settings.free_map()
     covered = set(pairs) | {await settings.emoji(s) for s in settings.EMOJI_SLOTS
                             if (await settings.load()).get(f"premium.{s}")}
@@ -447,8 +447,16 @@ async def _render_free(c: CallbackQuery):
         f"<b>Задано ({len(pairs)}):</b>\n{body}\n\n"
         f"<b>Ещё без премиума</b> (из тех, что бот реально шлёт):\n{miss}\n\n"
         f"<i>Скинь пару «обычное + премиум», чтобы добавить.</i>",
-        reply_markup=await kb.free_list(pairs))
+        reply_markup=await kb.free_list(pairs, page))
     await c.answer()
+
+
+@router.callback_query(F.data.startswith("sk_free_pg:"))
+async def cb_free_page(c: CallbackQuery):
+    if await deny(c):
+        return
+    page = int(c.data.split(":")[1])
+    await _render_free(c, page)
 
 
 @router.callback_query(F.data == "sk_free_add")
