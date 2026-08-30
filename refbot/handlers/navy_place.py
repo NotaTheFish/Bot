@@ -57,16 +57,21 @@ async def _send_placement(bot, chat_id: int, mid: int, uid: int):
     text = await _placement_text(mid, uid, field)
     kb = await _placement_kb(mid, uid, field)
     emsg = _eph.get(key)
-    if emsg:
-        eph_id = getattr(emsg, "ephemeral_message_id", None)
-        if eph_id:
-            with contextlib.suppress(Exception):
-                await ui.edit_ephemeral(bot, chat_id, uid, eph_id, text, reply_markup=kb)
-                return
-    with contextlib.suppress(Exception):
+    eph_id = getattr(emsg, "ephemeral_message_id", None) if emsg else None
+    if eph_id:
+        try:
+            await ui.edit_ephemeral(bot, chat_id, uid, eph_id, text, reply_markup=kb)
+            return   # успех — старое сообщение обновлено
+        except Exception:
+            # эфемерку нельзя отредактировать (устарела/заморожена) — шлём новую
+            _eph.pop(key, None)
+    try:
         m = await ui.send_ephemeral(bot, chat_id, uid, text, reply_markup=kb)
         if m:
             _eph[key] = m
+    except Exception as e:
+        import logging
+        logging.getLogger("refbot").warning("navy placement send failed: %s", type(e).__name__)
 
 
 async def _placement_text(mid: int, uid: int, field: dict) -> str:
@@ -102,7 +107,8 @@ async def _placement_kb(mid: int, uid: int, field: dict):
 
     if navy.fleet_complete(field):
         await btn(kb, "✅ Подтвердить расстановку", f"navy_confirm:{mid}")
-        kb.adjust(1)
+        await btn(kb, "🏳️ Сдаться", f"navy_giveup:{mid}")
+        kb.adjust(1, 1)
         return kb.as_markup()
 
     if not target:
@@ -110,25 +116,25 @@ async def _placement_kb(mid: int, uid: int, field: dict):
         remain = navy.remaining_ships_to_place(field)
         for L in sorted(remain.keys(), reverse=True):
             await btn(kb, f"🚢 {L}-палубный ({remain[L]})", f"navy_ship:{mid}:{L}")
+        await btn(kb, "🏳️ Сдаться", f"navy_giveup:{mid}")
         kb.adjust(1)
         return kb.as_markup()
 
     # идёт построение корабля
     if st.get("col") is None:
-        # выбираем столбец (буква)
-        for i, letter in enumerate(navy.COLS):
-            await btn(kb, letter, f"navy_col:{mid}:{i}")
-        # раскладка по 5 в ряд
-        row = []
-        # отмена/сброс
+        # выбираем столбец (эмодзи-подпись, совпадает с полем)
+        for i in range(navy.SIZE):
+            await btn(kb, navy.COL_EMO[i], f"navy_col:{mid}:{i}")
         await btn(kb, "↩️ Отмена шага", f"navy_undo:{mid}")
-        kb.adjust(5, 5, 1)
+        await btn(kb, "🏳️ Сдаться", f"navy_giveup:{mid}")
+        kb.adjust(5, 5, 1, 1)
     else:
-        # выбираем строку (цифра)
+        # выбираем строку (эмодзи-цифра)
         for r in range(navy.SIZE):
-            await btn(kb, str(r + 1), f"navy_row:{mid}:{r}")
+            await btn(kb, navy.ROW_EMO[r], f"navy_row:{mid}:{r}")
         await btn(kb, "↩️ Отмена шага", f"navy_undo:{mid}")
-        kb.adjust(5, 5, 1)
+        await btn(kb, "🏳️ Сдаться", f"navy_giveup:{mid}")
+        kb.adjust(5, 5, 1, 1)
     return kb.as_markup()
 
 
@@ -159,7 +165,11 @@ async def cb_pick_col(c: CallbackQuery):
     uid = c.from_user.id
     st = _place.get((mid, uid))
     if not st or not st.get("target_len"):
-        return await c.answer("Сначала выбери корабль.", show_alert=True)
+        # сессия построения потеряна (рестарт бота) — восстановим экран
+        await c.answer("Обновляю поле…")
+        _place.pop((mid, uid), None)
+        _eph.pop((mid, uid), None)
+        return await _send_placement(c.bot, c.message.chat.id, mid, uid)
     st["col"] = col
     await c.answer(f"Столбец {navy.col_letter(col)}")
     await _send_placement(c.bot, c.message.chat.id, mid, uid)
@@ -173,7 +183,11 @@ async def cb_pick_row(c: CallbackQuery):
     uid = c.from_user.id
     st = _place.get((mid, uid))
     if not st or st.get("col") is None:
-        return await c.answer("Сначала выбери столбец.", show_alert=True)
+        # сессия потеряна — восстановим экран расстановки
+        await c.answer("Обновляю поле…")
+        _place.pop((mid, uid), None)
+        _eph.pop((mid, uid), None)
+        return await _send_placement(c.bot, c.message.chat.id, mid, uid)
     field = await _field_of(mid, uid)
     cell = (row, st["col"])
     ok, err = navy.try_add_cell(field, st["building"], cell, st["target_len"])

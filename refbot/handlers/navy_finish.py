@@ -12,7 +12,9 @@ router = Router()
 
 
 async def finish_navy(bot, mid: int, winner: int):
-    """Завершить морской бой: выплата победителю (как в matches.finish — 3%)."""
+    """Завершить морской бой: выплата победителю (matches.finish — 3%).
+    Общее поле в чате уже заменено на итог вызывающей стороной — здесь только
+    выплата и личные уведомления."""
     m, err = await matches.finish(mid, winner)
     if err:
         return
@@ -20,12 +22,9 @@ async def finish_navy(bot, mid: int, winner: int):
     e = sx["e_" + m["currency"]]
     from config import MATCH_FEE_PCT
     payout = m["stake"] * 2 - int(m["stake"] * MATCH_FEE_PCT / 100)
-    wname = None
-    u = await __import__("db").get_user(winner)
-    wname = (f"@{u['username']}" if u and u["username"] else (u["first_name"] if u else str(winner)))
-    with contextlib.suppress(Exception):
-        await ui.send(bot, m["origin_chat"],
-            f"⚓ <b>Морской бой окончен!</b>\n\n🏆 {wname} потопил весь флот противника!\n"
-            f"Выигрыш: <b>{payout:,}</b> {e}".replace(",", " "))
     with contextlib.suppress(Exception):
         await ui.send(bot, winner, f"🏆 Ты выиграл морской бой! +{payout:,} {e}".replace(",", " "))
+    loser = m["p2"] if winner == m["p1"] else m["p1"]
+    if loser:
+        with contextlib.suppress(Exception):
+            await ui.send(bot, loser, "⚓ Твой флот потоплен. В следующий раз повезёт!")

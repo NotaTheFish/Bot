@@ -713,3 +713,34 @@ async def navy_find_open(currency: str, stake: int, exclude_uid: int) -> int | N
         "SELECT id FROM rb_matches WHERE game='navy' AND status='searching' "
         "AND currency=$1 AND stake=$2 AND p1<>$3 ORDER BY created_at LIMIT 1",
         currency, stake, exclude_uid)
+
+
+async def navy_surrender(mid: int, loser: int) -> tuple[dict | None, str]:
+    """Игрок сдаётся (на расстановке или в бою). Соперник забирает банк минус 3%.
+    Работает, если оба игрока в игре (есть p2). Идемпотентно."""
+    async with db.pool().acquire() as conn:
+        async with conn.transaction():
+            m = await conn.fetchrow("SELECT * FROM rb_matches WHERE id=$1 FOR UPDATE", mid)
+            if not m:
+                return None, "Игра не найдена."
+            if m["status"] not in ("placement", "active"):
+                return None, "Игру уже нельзя сдать."
+            if loser not in (m["p1"], m["p2"]):
+                return None, "Ты не в этой игре."
+            if not m["p2"]:
+                # соперника ещё нет — просто отмена с возвратом создателю
+                await _refund(conn, m["p1"], m["currency"], m["stake"], mid, "p1")
+                await conn.execute(
+                    "UPDATE rb_matches SET status='cancelled', finished_at=now() WHERE id=$1", mid)
+                return dict(m), ""
+            winner = m["p2"] if loser == m["p1"] else m["p1"]
+            from config import MATCH_FEE_PCT
+            fee = int(m["stake"] * MATCH_FEE_PCT / 100)
+            payout = m["stake"] * 2 - fee
+            await db.apply(conn, winner, m["currency"], payout, "match_win", f"mwin:{mid}", mid)
+            await conn.execute(
+                "UPDATE rb_matches SET status='finished', winner=$1, finished_at=now() WHERE id=$2",
+                winner, mid)
+            m = await conn.fetchrow("SELECT * FROM rb_matches WHERE id=$1", mid)
+    d = dict(m); d["surrender_winner"] = winner; d["surrender_loser"] = loser
+    return d, ""

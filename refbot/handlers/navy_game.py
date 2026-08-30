@@ -61,6 +61,11 @@ async def start_battle(bot, mid: int):
     sent = await ui.send(bot, m["origin_chat"], text, reply_markup=kb)
     if sent:
         _board[mid] = (m["origin_chat"], sent.message_id)
+        # сохраним в БД, чтобы пережить рестарт бота
+        with contextlib.suppress(Exception):
+            await db.pool().execute(
+                "UPDATE rb_matches SET board_chat_id=$1, board_msg_id=$2 WHERE id=$3",
+                m["origin_chat"], sent.message_id, mid)
     # эфемерки «мой флот» обоим
     for uid in (m["p1"], m["p2"]):
         await _send_myfleet(bot, m["origin_chat"], mid, uid)
@@ -96,22 +101,36 @@ async def _shot_kb(mid: int, turn: int):
     kb = InlineKeyboardBuilder()
     aim = _aim.get((mid, turn))
     if aim is None:
-        for i, letter in enumerate(navy.COLS):
-            await btn(kb, letter, f"navy_fire_col:{mid}:{i}")
-        kb.adjust(5, 5)
+        for i in range(navy.SIZE):
+            await btn(kb, navy.COL_EMO[i], f"navy_fire_col:{mid}:{i}")
+        await btn(kb, "🏳️ Сдаться", f"navy_giveup:{mid}")
+        kb.adjust(5, 5, 1)
     else:
         for r in range(navy.SIZE):
-            await btn(kb, str(r + 1), f"navy_fire_row:{mid}:{r}")
+            await btn(kb, navy.ROW_EMO[r], f"navy_fire_row:{mid}:{r}")
         await btn(kb, "↩️ Сменить столбец", f"navy_fire_reset:{mid}")
-        kb.adjust(5, 5, 1)
+        await btn(kb, "🏳️ Сдаться", f"navy_giveup:{mid}")
+        kb.adjust(5, 5, 1, 1)
     return kb.as_markup()
+
+
+async def _get_board(mid: int):
+    """id общего поля: из памяти или из БД (переживает рестарт)."""
+    if mid in _board:
+        return _board[mid]
+    m = await matches.get(mid)
+    if m and m.get("board_chat_id") and m.get("board_msg_id"):
+        _board[mid] = (m["board_chat_id"], m["board_msg_id"])
+        return _board[mid]
+    return None
 
 
 async def _sync_board(bot, mid: int):
     """Обновить общее поле в чате."""
-    if mid not in _board:
+    loc = await _get_board(mid)
+    if not loc:
         return
-    chat_id, msg_id = _board[mid]
+    chat_id, msg_id = loc
     text, kb = await _board_view(mid)
     em = await settings.emoji_map()
     with contextlib.suppress(Exception):
@@ -196,9 +215,27 @@ async def cb_fire_row(c: CallbackQuery):
 
     if navy.all_sunk(opp_field):
         # победа!
-        st_json = st
-        await matches.navy_save_turn(mid, st_json, uid)
+        await matches.navy_save_turn(mid, st, uid)
         await c.answer("💥 Потоплен весь флот! Победа!")
+        # заменить общее поле в чате на итог (убрать кнопки), показать финальные поля
+        wname = await _name(uid)
+        lname = await _name(opp)
+        final_grid = navy.render_shots_field(opp_field, await _emo())
+        with contextlib.suppress(Exception):
+            loc = await _get_board(mid)
+            if loc:
+                chat_id, msg_id = loc
+                await render.edit_by_id(
+                    c.bot, chat_id, msg_id,
+                    f"⚓ <b>Морской бой окончен!</b>\n\n🏆 {wname} потопил весь флот {lname}!\n\n"
+                    f"Поле {lname}:\n{final_grid}",
+                    await settings.emoji_map(), reply_markup=None)
+        # финальная эфемерка «мой флот» обоим (уже без ходов)
+        await _send_myfleet(c.bot, m["origin_chat"], mid, opp)
+        # почистить память
+        _board.pop(mid, None)
+        _aim.pop((mid, uid), None); _aim.pop((mid, opp), None)
+        _myfleet.pop((mid, uid), None); _myfleet.pop((mid, opp), None)
         from handlers.navy_finish import finish_navy
         with contextlib.suppress(Exception):
             await finish_navy(c.bot, mid, uid)
@@ -262,3 +299,49 @@ async def timeout_worker(bot):
         except Exception as ex:
             log.warning("navy timeout worker: %s", ex)
         await __import__("asyncio").sleep(20)
+
+
+@router.callback_query(F.data.startswith("navy_giveup:"))
+async def cb_surrender(c: CallbackQuery):
+    """Сдаться — на расстановке или в бою. Соперник забирает банк минус 3%."""
+    mid = int(c.data.split(":")[1])
+    m = await matches.get(mid)
+    if not m or m["status"] not in ("placement", "active"):
+        return await c.answer("Игру уже нельзя сдать.", show_alert=True)
+    if c.from_user.id not in (m["p1"], m["p2"]):
+        return await c.answer("Ты не в этой игре.", show_alert=True)
+    res, err = await matches.navy_surrender(mid, c.from_user.id)
+    if err:
+        return await c.answer(f"⚠️ {err}", show_alert=True)
+    await c.answer("Ты сдался.")
+    winner = res.get("surrender_winner")
+    loser = res.get("surrender_loser")
+    # почистить эфемерки/прицелы
+    for uid in (m["p1"], m["p2"]):
+        _myfleet.pop((mid, uid), None)
+        _aim.pop((mid, uid), None)
+    sx = await settings.ctx()
+    e = sx["e_" + m["currency"]]
+    if winner:
+        from config import MATCH_FEE_PCT
+        payout = m["stake"] * 2 - int(m["stake"] * MATCH_FEE_PCT / 100)
+        wname = await _name(winner)
+        lname = await _name(loser)
+        # обновить общее поле в чате (если бой уже шёл)
+        with contextlib.suppress(Exception):
+            if b := _board.get(mid):
+                await bot_edit(c.bot, b, f"⚓ Морской бой окончен. {lname} сдался — победил {wname}!")
+        _board.pop(mid, None)
+        with contextlib.suppress(Exception):
+            await ui.send(c.bot, winner, f"🏆 Соперник сдался! Победа. +{payout:,} {e}".replace(",", " "))
+        with contextlib.suppress(Exception):
+            await ui.send(c.bot, loser, "🏳️ Ты сдался. Ставка потеряна.")
+        # уведомить в чат, если сдался на расстановке (поля ещё нет)
+        if mid not in _board:
+            with contextlib.suppress(Exception):
+                await ui.send(c.bot, m["origin_chat"],
+                    f"🏳️ {lname} сдался. Победил {wname} (+{payout:,} {e}).".replace(",", " "))
+
+
+async def bot_edit(bot, board_loc, text):
+    await bot.edit_message_text(text, chat_id=board_loc[0], message_id=board_loc[1])

@@ -17,6 +17,8 @@ from services.amount_parse import parse_amount
 router = Router()
 
 GAME = "navy"
+# сообщения поиска: mid -> (chat_id, message_id) — чтобы погасить кнопки при связывании
+_search_msgs: dict[int, tuple] = {}
 _CUR_WORDS = {
     "грибы": "mushrooms", "гриб": "mushrooms", "грибов": "mushrooms",
     "коины": "coins", "коинов": "coins", "коин": "coins",
@@ -37,6 +39,16 @@ async def _name(uid: int) -> str:
 async def _guard_casino(uid: int) -> bool:
     from services import casino as casino_svc
     return await casino_svc.visible(uid)
+
+
+async def _kill_search_msg(bot, mid: int):
+    """Погасить сообщение поиска (убрать кнопки «Вступить»/«Отменить»), когда
+    соперник уже присоединился — чтобы нельзя было отменить активную игру."""
+    loc = _search_msgs.pop(mid, None)
+    if loc:
+        with contextlib.suppress(Exception):
+            await bot.edit_message_text("⚓ Соперник найден! Бой начался.",
+                                        chat_id=loc[0], message_id=loc[1])
 
 
 async def handle_shine_navy(msg: Message, parts: list[str]):
@@ -77,6 +89,7 @@ async def handle_shine_navy(msg: Message, parts: list[str]):
         if existing:
             m2, err2 = await matches.navy_join(existing, uid)
             if not err2:
+                await _kill_search_msg(msg.bot, existing)
                 sx = await settings.ctx()
                 e = sx["e_" + cur]
                 await ui.send(msg.bot, msg.chat.id,
@@ -122,6 +135,8 @@ async def handle_shine_navy(msg: Message, parts: list[str]):
             f"Средства заморожены. Поиск до 10 минут.\n\n"
             f"Любой может нажать «Вступить в бой».",
             reply_markup=k.as_markup())
+        if sent:
+            _search_msgs[mid] = (msg.chat.id, sent.message_id)
         from handlers.lobby_browser import refresh_all
         with contextlib.suppress(Exception):
             await refresh_all(msg.bot, GAME)
@@ -163,10 +178,13 @@ async def cb_decline(c: CallbackQuery):
 @router.callback_query(F.data.startswith("navy_cancel:"))
 async def cb_cancel(c: CallbackQuery):
     mid = int(c.data.split(":")[1])
-    m = await matches.get(mid)
-    if not m or m["p1"] != c.from_user.id:
-        return await c.answer("Только создатель может отменить.", show_alert=True)
-    await matches.cancel(mid, c.from_user.id)
+    m, err = await matches.cancel(mid, c.from_user.id)
+    if err:
+        # игра уже началась (соперник присоединился) — отменять нельзя
+        await c.answer(f"⚠️ {err}", show_alert=True)
+        with contextlib.suppress(Exception):
+            await c.message.edit_reply_markup(reply_markup=None)
+        return
     await c.answer("Поиск отменён, ставка возвращена.")
     with contextlib.suppress(Exception):
         await c.message.edit_text("❌ Поиск морского боя отменён. Ставка возвращена.",
@@ -184,6 +202,7 @@ async def cb_navy_join(c: CallbackQuery):
     if err:
         return await c.answer(f"⚠️ {err}", show_alert=True)
     await c.answer("Бой начинается! Расставляй корабли.")
+    await _kill_search_msg(c.bot, mid)
     # убрать кнопки у сообщения поиска / браузера
     with contextlib.suppress(Exception):
         await c.message.edit_text("⚓ Соперник найден! Расставляйте корабли (15 мин).",

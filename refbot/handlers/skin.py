@@ -437,7 +437,7 @@ async def _render_free(c: CallbackQuery, page: int = 0):
                             if (await settings.load()).get(f"premium.{s}")}
     # какие из реально используемых символов ещё БЕЗ премиума
     missing = [e for e in settings.USED_EMOJI if e not in covered]
-    body = "\n".join(f"  {ch} → есть" for ch in pairs) or "  пусто"
+    body = "  ".join(pairs) if pairs else "пусто"
     miss = " ".join(missing) if missing else "— всё покрыто ✅"
     await ui.edit(
         c.message,

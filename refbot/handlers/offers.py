@@ -108,7 +108,7 @@ async def cb_offer_currency(c: CallbackQuery, state: FSMContext):
 async def offer_price_mush(msg: Message, state: FSMContext):
     if not await _is_admin(msg.from_user.id):
         return await state.clear()
-    price = parse_amount(msg.text or "")
+    price = shk_parse(msg.text or "")
     if price is None or price <= 0:
         return await ui.answer(msg, "Нужно положительное число Шимкоинов.")
     data = await state.get_data()
@@ -129,7 +129,7 @@ async def offer_price_mush(msg: Message, state: FSMContext):
 async def offer_price_coin(msg: Message, state: FSMContext):
     if not await _is_admin(msg.from_user.id):
         return await state.clear()
-    price = parse_amount(msg.text or "")
+    price = shk_parse(msg.text or "")
     if price is None or price <= 0:
         return await ui.answer(msg, "Нужно положительное число Шимкоинов.")
     data = await state.get_data()
@@ -222,10 +222,10 @@ async def offer_expiry(msg: Message, state: FSMContext):
     lines = [f"✅ <b>Акция создана</b> для <code>{offer['tg_id']}</code>\n"]
     if pm:
         lm = "без лимита" if offer.get("limit_mush") is None else fmt(offer["limit_mush"])
-        lines.append(f"🍄 {pm} Шимк. за 1млн грибов · лимит {lm}")
+        lines.append(f"🍄 {shk_fmt(pm)} Шимк. за 1млн грибов · лимит {lm}")
     if pc:
         lc = "без лимита" if offer.get("limit_coin") is None else fmt(offer["limit_coin"])
-        lines.append(f"🪙 {pc} Шимк. за 100млн коинов · лимит {lc}")
+        lines.append(f"🪙 {shk_fmt(pc)} Шимк. за 100млн коинов · лимит {lc}")
     lines.append(f"⏳ Срок: {when}")
     await ui.answer(msg, "\n".join(lines), reply_markup=await kb.offers_back())
 
@@ -260,10 +260,10 @@ async def cb_offer_view(c: CallbackQuery):
              f"Игрок: <code>{o['tg_id']}</code>"]
     if o["price_mush"]:
         lm = "∞" if o["limit_mush"] is None else fmt(o["limit_mush"])
-        lines.append(f"🍄 {o['price_mush']} Шимк./1млн · продано {fmt(o['sold_mush'])}/{lm}")
+        lines.append(f"🍄 {shk_fmt(o['price_mush'])} Шимк./1млн · продано {fmt(o['sold_mush'])}/{lm}")
     if o["price_coin"]:
         lc = "∞" if o["limit_coin"] is None else fmt(o["limit_coin"])
-        lines.append(f"🪙 {o['price_coin']} Шимк./100млн · продано {fmt(o['sold_coin'])}/{lc}")
+        lines.append(f"🪙 {shk_fmt(o['price_coin'])} Шимк./100млн · продано {fmt(o['sold_coin'])}/{lc}")
     lines.append(f"⏳ Срок: {when}")
     await ui.edit(c.message, "\n".join(lines), reply_markup=await kb.offer_card(oid))
     await c.answer()
@@ -308,9 +308,9 @@ async def cb_my_offers(c: CallbackQuery):
         badge = nums[i] if i < len(nums) else f"{i+1}."
         parts = []
         if o["price_mush"]:
-            parts.append(f"{sx['e_mushrooms']} {o['price_mush']}💠/млн")
+            parts.append(f"{sx['e_mushrooms']} {shk_fmt(o['price_mush'])}💠/млн")
         if o["price_coin"]:
-            parts.append(f"{sx['e_coins']} {o['price_coin']}💠/100млн")
+            parts.append(f"{sx['e_coins']} {shk_fmt(o['price_coin'])}💠/100млн")
         lines.append(f"{badge} {' · '.join(parts)}")
     lines.append("\nВыбери предложение кнопкой ниже:")
     await ui.edit(c.message, "\n".join(lines),
@@ -375,7 +375,7 @@ def _compute_deal(price: int, unit: int, cur: str, text: str):
     t = (text or "").strip().lower().replace(" ", "")
     if not t:
         return None, "Пусто. Введи число."
-    price_cents = price * 100  # цена за unit в центах
+    price_cents = price  # цена за unit уже в ЦЕНТАХ (shk_parse), не умножаем
     # режим Шимкоинов: заканчивается на $ или шимк
     if t.endswith("$") or t.endswith("шимк") or t.endswith("ш"):
         num = t.rstrip("$шимк")
