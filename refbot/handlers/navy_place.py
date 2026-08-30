@@ -139,10 +139,34 @@ async def _placement_kb(mid: int, uid: int, field: dict):
 
 
 # ---------------- выбор корабля ----------------
+async def _placement_alive(c, mid: int) -> bool:
+    """Проверить, что расстановка ещё идёт. Если игра истекла/отменена/началась —
+    погасить эфемерку и сказать игроку."""
+    m = await matches.get(mid)
+    if not m or m["status"] != "placement":
+        # игра уже не в фазе расстановки — гасим эфемерку
+        key = (mid, c.from_user.id)
+        emsg = _eph.pop(key, None)
+        _place.pop(key, None)
+        eph_id = getattr(emsg, "ephemeral_message_id", None) if emsg else None
+        msg = ("⏳ Время расстановки истекло — игра отменена, ставка возвращена."
+               if (not m or m["status"] in ("expired", "cancelled"))
+               else "Расстановка уже завершена.")
+        if eph_id:
+            with contextlib.suppress(Exception):
+                await ui.edit_ephemeral(c.bot, c.message.chat.id, c.from_user.id,
+                                        eph_id, msg, reply_markup=None)
+        await c.answer(msg, show_alert=True)
+        return False
+    return True
+
+
 @router.callback_query(F.data.startswith("navy_ship:"))
 async def cb_pick_ship(c: CallbackQuery):
     _, mid_s, L_s = c.data.split(":")
     mid, L = int(mid_s), int(L_s)
+    if not await _placement_alive(c, mid):
+        return
     uid = c.from_user.id
     field = await _field_of(mid, uid)
     if not navy.can_start_ship_of_length(field, L):
@@ -162,6 +186,8 @@ async def cb_pick_ship(c: CallbackQuery):
 async def cb_pick_col(c: CallbackQuery):
     _, mid_s, col_s = c.data.split(":")
     mid, col = int(mid_s), int(col_s)
+    if not await _placement_alive(c, mid):
+        return
     uid = c.from_user.id
     st = _place.get((mid, uid))
     if not st or not st.get("target_len"):
@@ -180,6 +206,8 @@ async def cb_pick_col(c: CallbackQuery):
 async def cb_pick_row(c: CallbackQuery):
     _, mid_s, row_s = c.data.split(":")
     mid, row = int(mid_s), int(row_s)
+    if not await _placement_alive(c, mid):
+        return
     uid = c.from_user.id
     st = _place.get((mid, uid))
     if not st or st.get("col") is None:
@@ -213,6 +241,8 @@ async def cb_pick_row(c: CallbackQuery):
 @router.callback_query(F.data.startswith("navy_undo:"))
 async def cb_undo(c: CallbackQuery):
     mid = int(c.data.split(":")[1])
+    if not await _placement_alive(c, mid):
+        return
     uid = c.from_user.id
     st = _place.get((mid, uid))
     if not st:
@@ -238,6 +268,8 @@ async def cb_undo(c: CallbackQuery):
 @router.callback_query(F.data.startswith("navy_confirm:"))
 async def cb_confirm(c: CallbackQuery):
     mid = int(c.data.split(":")[1])
+    if not await _placement_alive(c, mid):
+        return
     uid = c.from_user.id
     field = await _field_of(mid, uid)
     if not navy.fleet_complete(field):
@@ -258,3 +290,19 @@ async def cb_confirm(c: CallbackQuery):
         from handlers.navy_game import start_battle
         with contextlib.suppress(Exception):
             await start_battle(c.bot, mid)
+
+
+async def kill_placement(bot, mid: int, note: str):
+    """Погасить эфемерки расстановки обоих игроков (вызывается из воркера тайм-аута)."""
+    m = await matches.get(mid)
+    chat_id = m["origin_chat"] if m else None
+    for uid in ((m["p1"], m["p2"]) if m else ()):
+        if not uid:
+            continue
+        key = (mid, uid)
+        emsg = _eph.pop(key, None)
+        _place.pop(key, None)
+        eph_id = getattr(emsg, "ephemeral_message_id", None) if emsg else None
+        if eph_id and chat_id:
+            with contextlib.suppress(Exception):
+                await ui.edit_ephemeral(bot, chat_id, uid, eph_id, note, reply_markup=None)

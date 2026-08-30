@@ -273,6 +273,11 @@ async def timeout_worker(bot):
                             await ui.send(bot, uid,
                                 f"⏳ Морской бой отменён — не успели расставить корабли за 15 минут.\n"
                                 f"Ставка <b>{m['stake']:,}</b> {e} возвращена.".replace(",", " "))
+                # погасить эфемерки расстановки
+                from handlers.navy_place import kill_placement
+                with contextlib.suppress(Exception):
+                    await kill_placement(bot, m["id"],
+                        "⏳ Время расстановки истекло — игра отменена, ставка возвращена.")
                 with contextlib.suppress(Exception):
                     if mid_board := _board.get(m["id"]):
                         await bot.edit_message_text("⏳ Бой отменён (тайм-аут расстановки).",
