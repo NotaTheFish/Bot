@@ -63,8 +63,29 @@ async def cb_casino_games(c: CallbackQuery):
         return await c.answer("Казино пока закрыто.", show_alert=True)
     note = "" if await casino_enabled() else "\n\n<i>🔴 Сейчас видно только админам.</i>"
     await ui.edit(c.message,
-        "🎮 <b>Игры</b>\n\nВыбери игру:" + note,
+        "🎮 <b>Игры</b>\n\nВыбери категорию:" + note,
         reply_markup=await kb.casino_games())
+    await c.answer()
+
+
+@router.callback_query(F.data == "games_solo")
+async def cb_games_solo(c: CallbackQuery):
+    if not await casino_visible(c.from_user.id):
+        return await c.answer("Казино пока закрыто.", show_alert=True)
+    await ui.edit(c.message,
+        "🎲 <b>Одиночные игры</b>\n\nИграй против казино:",
+        reply_markup=await kb.games_solo())
+    await c.answer()
+
+
+@router.callback_query(F.data == "games_pvp")
+async def cb_games_pvp(c: CallbackQuery):
+    if not await casino_visible(c.from_user.id):
+        return await c.answer("Казино пока закрыто.", show_alert=True)
+    await ui.edit(c.message,
+        "⚔️ <b>PvP-игры</b>\n\nИгры на двоих со ставкой. Вызывай соперника "
+        "или ищи онлайн:",
+        reply_markup=await kb.games_pvp())
     await c.answer()
 
 

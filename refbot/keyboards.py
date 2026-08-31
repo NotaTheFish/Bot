@@ -570,14 +570,33 @@ async def casino_menu() -> InlineKeyboardMarkup:
 
 
 async def casino_games() -> InlineKeyboardMarkup:
-    """Список игр: кейсы, рулетка, карточки, крестики-нолики, камень-ножницы-бумага."""
+    """Меню игр: две категории — одиночные и PvP."""
+    kb = InlineKeyboardBuilder()
+    await btn(kb, "🎲 Одиночные", "games_solo")
+    await btn(kb, "⚔️ PvP (на двоих)", "games_pvp")
+    await btn(kb, "Назад", "casino", "back")
+    kb.adjust(1)
+    return kb.as_markup()
+
+
+async def games_solo() -> InlineKeyboardMarkup:
+    """Одиночные игры против казино."""
     kb = InlineKeyboardBuilder()
     await btn(kb, "📦 Кейсы", "casino_cases")
     await btn(kb, "🎡 Рулетка", "wheel")
     await btn(kb, "🃏 Карточки", "mines")
+    await btn(kb, "Назад", "casino_games", "back")
+    kb.adjust(1)
+    return kb.as_markup()
+
+
+async def games_pvp() -> InlineKeyboardMarkup:
+    """PvP-игры между игроками."""
+    kb = InlineKeyboardBuilder()
     await btn(kb, "❌ Крестики-нолики", "ttt_new")
     await btn(kb, "🤓 Камень-ножницы-бумага", "rps_new_dm")
-    await btn(kb, "Назад", "casino", "back")
+    await btn(kb, "⚓ Морской бой", "navy_new_dm")
+    await btn(kb, "Назад", "casino_games", "back")
     kb.adjust(1)
     return kb.as_markup()
 

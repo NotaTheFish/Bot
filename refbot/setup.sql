@@ -381,6 +381,19 @@ CREATE TABLE IF NOT EXISTS rb_match_players (
 CREATE INDEX IF NOT EXISTS rb_match_players_mid_idx ON rb_match_players (mid);
 CREATE INDEX IF NOT EXISTS rb_match_players_tg_idx ON rb_match_players (tg_id);
 
+-- ---------- Вопросы викторины ----------
+-- options — JSONB-массив из 4 строк, correct — индекс правильного (0-3).
+CREATE TABLE IF NOT EXISTS rb_quiz (
+    id       BIGSERIAL PRIMARY KEY,
+    question TEXT NOT NULL,
+    options  JSONB NOT NULL,
+    correct  SMALLINT NOT NULL,
+    active   BOOLEAN NOT NULL DEFAULT TRUE,
+    added_by BIGINT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS rb_quiz_active_idx ON rb_quiz (active);
+
 
 
 -- ---------- 4b. Рулетка (одобренные чаты) ----------
@@ -558,7 +571,7 @@ ALTER TABLE rb_giveaways ADD COLUMN IF NOT EXISTS finish_photo TEXT;
 
 -- ---------- 5. Проверка ----------
 SELECT
-  (SELECT count(*) FROM pg_tables WHERE tablename ~ '^rb_')                   AS tables_expect_30,
+  (SELECT count(*) FROM pg_tables WHERE tablename ~ '^rb_')                   AS tables_expect_31,
   (SELECT count(*) FROM pg_type   WHERE typname ~ '^rb_' AND typtype = 'e')   AS enums_expect_3,
   (SELECT count(*) FROM pg_indexes WHERE indexname IN
      ('rb_referrals_alive_idx','rb_withdrawals_one_pending','rb_spins_daily',

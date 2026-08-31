@@ -69,6 +69,12 @@ async def _sync(bot, mid: int, note: str = "", kb=True):
     m = await matches.get(mid)
     if not m or not m.get("board_msg_id"):
         return
+    if m["status"] != "active":
+        return   # игра завершена — не перерисовываем поле раунда
+    # не рисуем поле без игроков (гонка после финиша)
+    players = await matches.lobby_players(mid, "playing")
+    if len(players) < 1:
+        return
     em = await settings.emoji_map()
     markup = await _round_kb(mid) if kb else None
     with contextlib.suppress(Exception):
@@ -99,6 +105,10 @@ async def start_round(bot, mid: int, first: bool = False):
 async def cb_choice(c: CallbackQuery):
     _, mid_s, choice = c.data.split(":")
     mid = int(mid_s)
+    # игра ещё идёт?
+    m = await matches.get(mid)
+    if not m or m["status"] != "active":
+        return await c.answer("Игра уже завершена.", show_alert=True)
     ok, err = await matches.set_choice(mid, c.from_user.id, choice)
     if err:
         return await c.answer(err, show_alert=True)
@@ -319,7 +329,12 @@ async def start_round_dm(bot, mid: int, first: bool = False):
 
 async def _sync_dm(bot, mid: int, note: str = "", kb=True):
     """Обновить поле у каждого игрока в ЛС (или прислать, если ещё нет)."""
+    m = await matches.get(mid)
+    if not m or m["status"] != "active":
+        return   # игра завершена — не перерисовываем
     players = await matches.lobby_players(mid, "playing")
+    if len(players) < 1:
+        return
     text = await _dm_text(mid, note)
     em = await settings.emoji_map()
     markup = await _round_kb(mid) if kb else None
