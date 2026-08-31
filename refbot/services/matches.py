@@ -345,8 +345,9 @@ async def join_lobby(mid: int, uid: int) -> tuple[dict | None, str]:
                 return None, "У тебя уже есть активная игра."
             cnt = await conn.fetchval(
                 "SELECT count(*) FROM rb_match_players WHERE mid=$1 AND status='playing'", mid)
-            if cnt >= 5:
-                return None, "Уже набрано 5 игроков — мест нет."
+            limit = 10 if m["game"] == "quiz" else 5
+            if cnt >= limit:
+                return None, f"Уже набрано {limit} игроков — мест нет."
             if not await _freeze(conn, uid, m["currency"], m["stake"], mid, f"j{uid}"):
                 return None, "Недостаточно средств для ставки."
             await conn.execute(
@@ -744,3 +745,145 @@ async def navy_surrender(mid: int, loser: int) -> tuple[dict | None, str]:
             m = await conn.fetchrow("SELECT * FROM rb_matches WHERE id=$1", mid)
     d = dict(m); d["surrender_winner"] = winner; d["surrender_loser"] = loser
     return d, ""
+
+
+# ==================== ВИКТОРИНА ====================
+QUIZ_QUESTION_SECONDS = 30
+QUIZ_PER_GAME = 25
+
+
+async def quiz_start(mid: int) -> bool:
+    """Выбрать случайные вопросы и записать в state. status='active', q_index=0."""
+    import json
+    rows = await db.pool().fetch(
+        "SELECT id, question, options, correct, points FROM rb_quiz WHERE active "
+        "ORDER BY random() LIMIT $1", QUIZ_PER_GAME)
+    if len(rows) < QUIZ_PER_GAME:
+        return False
+    questions = []
+    for r in rows:
+        opts = r["options"] if isinstance(r["options"], list) else json.loads(r["options"])
+        questions.append({"q": r["question"], "opts": opts, "correct": r["correct"],
+                          "points": r["points"] or 1})
+    state = {"questions": questions, "q_index": 0, "answers": {}, "scores": {}}
+    await db.pool().execute(
+        "UPDATE rb_matches SET status='active', state=$1 WHERE id=$2",
+        json.dumps(state), mid)
+    return True
+
+
+async def quiz_state(mid: int) -> dict | None:
+    import json
+    m = await get(mid)
+    if not m:
+        return None
+    st = m["state"]
+    return st if isinstance(st, dict) else json.loads(st)
+
+
+async def quiz_answer(mid: int, uid: int, q_index: int, choice: int) -> tuple[bool, str]:
+    """Записать ответ игрока на текущий вопрос. Один раз на вопрос."""
+    import json
+    async with db.pool().acquire() as conn:
+        async with conn.transaction():
+            m = await conn.fetchrow("SELECT * FROM rb_matches WHERE id=$1 FOR UPDATE", mid)
+            if not m or m["status"] != "active":
+                return False, "Викторина не активна."
+            st = m["state"] if isinstance(m["state"], dict) else json.loads(m["state"])
+            if st.get("q_index") != q_index:
+                return False, "Вопрос уже сменился."
+            # проверить, что игрок в игре
+            inp = await conn.fetchval(
+                "SELECT 1 FROM rb_match_players WHERE mid=$1 AND tg_id=$2 AND status='playing'",
+                mid, uid)
+            if not inp:
+                return False, "Ты не участвуешь."
+            answers = st.setdefault("answers", {})
+            qans = answers.setdefault(str(q_index), {})
+            if str(uid) in qans:
+                return False, "Ты уже ответил."
+            qans[str(uid)] = choice
+            await conn.execute("UPDATE rb_matches SET state=$1 WHERE id=$2",
+                               json.dumps(st), mid)
+    return True, ""
+
+
+async def quiz_advance(mid: int) -> dict:
+    """Закрыть текущий вопрос: начислить очки ответившим верно, перейти к следующему.
+    Возвращает {correct_idx, per_player:{uid:bool}, scores:{uid:int}, done:bool, q_index}."""
+    import json
+    async with db.pool().acquire() as conn:
+        async with conn.transaction():
+            m = await conn.fetchrow("SELECT * FROM rb_matches WHERE id=$1 FOR UPDATE", mid)
+            st = m["state"] if isinstance(m["state"], dict) else json.loads(m["state"])
+            qi = st["q_index"]
+            q = st["questions"][qi]
+            correct = q["correct"]
+            pts = q.get("points", 1)
+            answers = st.get("answers", {}).get(str(qi), {})
+            scores = st.setdefault("scores", {})
+            per_player = {}
+            # все играющие
+            players = await conn.fetch(
+                "SELECT tg_id FROM rb_match_players WHERE mid=$1 AND status='playing'", mid)
+            for p in players:
+                uid = str(p["tg_id"])
+                ok = answers.get(uid) == correct
+                per_player[uid] = ok
+                if ok:
+                    scores[uid] = scores.get(uid, 0) + pts
+            st["scores"] = scores
+            done = qi + 1 >= len(st["questions"])
+            if not done:
+                st["q_index"] = qi + 1
+            await conn.execute("UPDATE rb_matches SET state=$1 WHERE id=$2",
+                               json.dumps(st), mid)
+    return {"correct_idx": correct, "per_player": per_player, "scores": scores,
+            "done": done, "q_index": qi, "points": pts}
+
+
+async def quiz_finish(mid: int) -> tuple[dict | None, str]:
+    """Завершить викторину: победитель(и) по очкам. Ничья с проигравшим — делёж
+    банка минус 3%. Все победители поровну. Идемпотентно."""
+    import json
+    async with db.pool().acquire() as conn:
+        async with conn.transaction():
+            m = await conn.fetchrow("SELECT * FROM rb_matches WHERE id=$1 FOR UPDATE", mid)
+            if not m:
+                return None, "Матч не найден."
+            if m["status"] != "active":
+                return dict(m), ""
+            st = m["state"] if isinstance(m["state"], dict) else json.loads(m["state"])
+            scores = st.get("scores", {})
+            staked = await conn.fetchval(
+                "SELECT count(*) FROM rb_match_players WHERE mid=$1 AND staked", mid)
+            players = await conn.fetch(
+                "SELECT tg_id FROM rb_match_players WHERE mid=$1 AND staked", mid)
+            # максимальный счёт
+            all_scores = {str(p["tg_id"]): scores.get(str(p["tg_id"]), 0) for p in players}
+            top = max(all_scores.values()) if all_scores else 0
+            winners = [int(u) for u, s in all_scores.items() if s == top]
+            bank = m["stake"] * staked
+            from config import MATCH_FEE_PCT
+            if len(winners) == len(players):
+                # все с одинаковым счётом — полная ничья, возврат без комиссии
+                for p in players:
+                    await _refund(conn, p["tg_id"], m["currency"], m["stake"], mid, f"q{p['tg_id']}")
+                await conn.execute(
+                    "UPDATE rb_matches SET status='finished', finished_at=now() WHERE id=$1", mid)
+                st["winners"] = []
+                await conn.execute("UPDATE rb_matches SET state=$1 WHERE id=$2", json.dumps(st), mid)
+                return {**dict(m), "winners": [], "draw_all": True, "scores": all_scores}, ""
+            # есть проигравшие — банк минус 3%, делёж между победителями
+            fee = int(bank * MATCH_FEE_PCT / 100)
+            payout_total = bank - fee
+            share = payout_total // len(winners)
+            for w in winners:
+                await db.apply(conn, w, m["currency"], share, "quiz_win", f"qwin:{mid}:{w}", mid)
+            await conn.execute(
+                "UPDATE rb_matches SET status='finished', winner=$1, finished_at=now() WHERE id=$2",
+                winners[0], mid)
+            st["winners"] = winners
+            await conn.execute("UPDATE rb_matches SET state=$1 WHERE id=$2", json.dumps(st), mid)
+    return {**dict(m), "winners": winners, "share": share, "scores": all_scores,
+            "draw_all": False}, ""

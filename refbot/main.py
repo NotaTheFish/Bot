@@ -110,6 +110,13 @@ async def main():
     dp.include_router(navy_place.router)
     dp.include_router(navy_game.router)
     dp.include_router(navy_finish.router)
+    from handlers import quiz as quiz_h, quiz_game
+    dp.include_router(quiz_h.router)
+    dp.include_router(quiz_game.router)
+    from handlers import quiz_finish
+    dp.include_router(quiz_finish.router)
+    from handlers import quiz_admin
+    dp.include_router(quiz_admin.router)
     dp.include_router(inline_grant.router)
     dp.include_router(offers.router)
     dp.include_router(skin.router)

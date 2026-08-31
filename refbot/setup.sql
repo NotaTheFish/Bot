@@ -390,8 +390,11 @@ CREATE TABLE IF NOT EXISTS rb_quiz (
     correct  SMALLINT NOT NULL,
     active   BOOLEAN NOT NULL DEFAULT TRUE,
     added_by BIGINT,
+    points   SMALLINT NOT NULL DEFAULT 1,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+-- вопросы, добавленные админами, дают больше баллов (points=2)
+ALTER TABLE rb_quiz ADD COLUMN IF NOT EXISTS points SMALLINT NOT NULL DEFAULT 1;
 CREATE INDEX IF NOT EXISTS rb_quiz_active_idx ON rb_quiz (active);
 
 
