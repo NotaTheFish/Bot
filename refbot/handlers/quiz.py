@@ -48,9 +48,8 @@ async def _lobby_text(mid: int) -> str:
     return (f"🧠 <b>Викторина</b>\n\n"
             f"Ставка: <b>{_fmt(m['stake'])}</b> {e} · банк <b>{_fmt(m['stake']*len(players))}</b> {e}\n"
             f"Участников: <b>{len(players)}</b> (до 10)\n{names}\n\n"
-            f"{QUESTIONS_PER_GAME} вопросов, 30 сек на каждый. Больше правильных — победа "
-            f"(ничья — делёж).\n\n"
-            f"Жми «Участвовать» — ставка замораживается сразу. Создатель жмёт «Старт».")
+            f"{QUESTIONS_PER_GAME} вопросов, 30 сек на каждый. У кого больше правильных тот победил\n"
+            f"Жми «Участвовать», пора пораскинуть мозгами")
 
 
 async def _lobby_kb(mid: int):
@@ -154,8 +153,12 @@ async def cb_quiz_start(c: CallbackQuery):
         return await c.answer("Нужно минимум 2 игрока.", show_alert=True)
     await c.answer("Викторина начинается!")
     from handlers.quiz_game import start_quiz
-    with contextlib.suppress(Exception):
+    import logging
+    try:
         await start_quiz(c.bot, mid)
+    except Exception as e:
+        logging.getLogger("refbot").exception("quiz start упал mid=%s", mid)
+        await ui.send(c.bot, c.message.chat.id, f"⚠️ Не удалось запустить: {type(e).__name__}")
 
 
 @router.callback_query(F.data.startswith("quiz_again:"))

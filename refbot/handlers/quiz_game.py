@@ -80,6 +80,9 @@ async def _question_text(mid: int, st: dict) -> str:
 
 async def _run(bot, mid: int):
     """Основной цикл: 25 вопросов."""
+    import logging
+    log = logging.getLogger("refbot")
+    log.info("quiz _run старт mid=%s", mid)
     try:
         while True:
             st = await matches.quiz_state(mid)
@@ -113,7 +116,7 @@ async def _run(bot, mid: int):
         return
     except Exception as e:
         import logging
-        logging.getLogger("refbot").warning("quiz _run mid=%s: %s", mid, e)
+        logging.getLogger("refbot").exception("quiz _run упал mid=%s", mid)
 
 
 async def _show_question(bot, mid: int, st: dict):
