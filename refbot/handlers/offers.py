@@ -354,7 +354,7 @@ async def _ask_buy_amount(c, state: FSMContext, oid: int, cur: str):
     await state.update_data(buy={"oid": oid, "cur": cur})
     await ui.edit(c.message,
         f"🏷 Покупка: <b>{ename}</b>\n"
-        f"Курс: <b>{price}</b> Шимк. за {unit_txt}\n"
+        f"Курс: <b>{shk_fmt(price)}</b> Шимк. за {unit_txt}\n"
         f"У тебя: <b>{shk_fmt(bal['shimcoins'])}</b> 💠\n\n"
         f"Сколько хочешь? Варианты ввода:\n"
         f"• <code>5м</code> — купить 5 млн {('грибов' if cur=='mushrooms' else 'коинов')}\n"
@@ -437,7 +437,7 @@ async def offer_buy_input(msg: Message, state: FSMContext):
         f"🧾 <b>Проверь покупку</b>\n\n"
         f"Получишь: <b>{fmt(amount)}</b> {ename}\n"
         f"Заплатишь: <b>{shk_fmt(cost)}</b> 💠 Шимкоинов\n"
-        f"Курс: {price} Шимк. за {'1млн' if cur=='mushrooms' else '100млн'}\n\n"
+        f"Курс: {shk_fmt(price)} Шимк. за {'1млн' if cur=='mushrooms' else '100млн'}\n\n"
         f"Уверен?",
         reply_markup=await kb.offer_buy_confirm())
 
