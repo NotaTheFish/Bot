@@ -48,7 +48,7 @@ async def _lobby_text(mid: int) -> str:
     return (f"🧠 <b>Викторина</b>\n\n"
             f"Ставка: <b>{_fmt(m['stake'])}</b> {e} · банк <b>{_fmt(m['stake']*len(players))}</b> {e}\n"
             f"Участников: <b>{len(players)}</b> (до 10)\n{names}\n\n"
-            f"{QUESTIONS_PER_GAME} вопросов, 30 сек на каждый. У кого больше правильных тот победил\n"
+            f"{QUESTIONS_PER_GAME} вопросов, 15 сек на каждый. У кого больше правильных тот победил\n"
             f"Жми «Участвовать», пора пораскинуть мозгами")
 
 
@@ -186,3 +186,37 @@ async def cb_quiz_again(c: CallbackQuery):
             c.message.chat.id, sent.message_id, mid)
     with contextlib.suppress(Exception):
         await c.message.edit_reply_markup(reply_markup=None)
+
+
+@router.message(F.text.lower().startswith(("!стоп викторина", "/стоп викторина", "!стопвикторина")))
+async def cmd_stop_quiz(msg: Message):
+    # только админ
+    from config import SUPER_ADMINS
+    is_admin = msg.from_user.id in SUPER_ADMINS or bool(await db.admin_chats(msg.from_user.id))
+    if not is_admin:
+        return await ui.reply(msg, "Только админ может остановить викторину.")
+    mid = await matches.active_quiz_in_chat(msg.chat.id)
+    if not mid:
+        return await ui.reply(msg, "В этом чате нет активной викторины.")
+    # остановить фоновый цикл
+    from handlers.quiz_game import _tasks, _unpin_board
+    t = _tasks.pop(mid, None)
+    if t:
+        t.cancel()
+    m, err = await matches.quiz_stop(mid)
+    if err:
+        return await ui.reply(msg, f"⚠️ {err}")
+    await _unpin_board(msg.bot, mid)
+    sx = await settings.ctx()
+    e = sx["e_" + m["currency"]]
+    with contextlib.suppress(Exception):
+        if m.get("board_msg_id"):
+            await msg.bot.edit_message_text(
+                "🛑 Викторина остановлена админом. Ставки возвращены.",
+                chat_id=m["board_chat_id"], message_id=m["board_msg_id"])
+    # уведомить игроков
+    for uid in m.get("refunded", []):
+        with contextlib.suppress(Exception):
+            await ui.send(msg.bot, uid,
+                f"🛑 Викторина остановлена админом.\nСтавка <b>{_fmt(m['stake'])}</b> {e} возвращена.")
+    await ui.reply(msg, "Викторина остановлена, ставки возвращены.")

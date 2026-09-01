@@ -1,6 +1,6 @@
 """
 Викторина: игровой цикл. Общее сообщение в чате: «Вопрос N/25» + A/B/C/D.
-Игроки жмут вариант (тайно). 30 сек или все ответили -> показ правильного +
+Игроки жмут вариант (тайно). 15 сек или все ответили -> показ правильного +
 кто как ответил -> 3 сек -> следующий. После 25-го -> финал.
 """
 import asyncio
@@ -50,9 +50,23 @@ async def start_quiz(bot, mid: int):
             with contextlib.suppress(Exception):
                 await ui.send(bot, p["tg_id"], "Не хватило вопросов для викторины 😔")
         return
+    # закрепить сообщение викторины на время игры
+    loc = await _board(mid)
+    if loc:
+        with contextlib.suppress(Exception):
+            await bot.pin_chat_message(chat_id=loc[0], message_id=loc[1],
+                                       disable_notification=True)
     # запустить фоновый цикл
     t = asyncio.create_task(_run(bot, mid))
     _tasks[mid] = t
+
+
+async def _unpin_board(bot, mid: int):
+    """Открепить сообщение викторины (в конце или при остановке)."""
+    loc = await _board(mid)
+    if loc:
+        with contextlib.suppress(Exception):
+            await bot.unpin_chat_message(chat_id=loc[0], message_id=loc[1])
 
 
 async def _question_kb(mid: int, q_index: int):
@@ -75,7 +89,7 @@ async def _question_text(mid: int, st: dict) -> str:
     for i, opt in enumerate(q["opts"]):
         lines.append(f"{LETTER_EMO[i]} {opt}")
     lines.append("")
-    lines.append(f"⏱ 30 сек · ответили: {answered}/{total}")
+    lines.append(f"⏱ 15 сек · ответили: {answered}/{total}")
     return "\n".join(lines)
 
 
@@ -83,7 +97,6 @@ async def _run(bot, mid: int):
     """Основной цикл: 25 вопросов."""
     import logging
     log = logging.getLogger("refbot")
-    log.info("quiz _run старт mid=%s", mid)
     try:
         while True:
             st = await matches.quiz_state(mid)
@@ -94,7 +107,7 @@ async def _run(bot, mid: int):
             # показать вопрос
             await _show_question(bot, mid, st)
             # ждать 30 сек или пока все ответят
-            for _ in range(30):
+            for _ in range(15):
                 await asyncio.sleep(1)
                 cur = await matches.quiz_state(mid)
                 if not cur:
@@ -163,6 +176,7 @@ async def _show_answer(bot, mid: int, st: dict, res: dict):
 
 
 async def _finish(bot, mid: int):
+    await _unpin_board(bot, mid)
     from handlers.quiz_finish import finish_quiz
     with contextlib.suppress(Exception):
         await finish_quiz(bot, mid)

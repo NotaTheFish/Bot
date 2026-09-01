@@ -748,7 +748,7 @@ async def navy_surrender(mid: int, loser: int) -> tuple[dict | None, str]:
 
 
 # ==================== ВИКТОРИНА ====================
-QUIZ_QUESTION_SECONDS = 30
+QUIZ_QUESTION_SECONDS = 15
 QUIZ_PER_GAME = 25
 
 
@@ -887,3 +887,31 @@ async def quiz_finish(mid: int) -> tuple[dict | None, str]:
             await conn.execute("UPDATE rb_matches SET state=$1 WHERE id=$2", json.dumps(st), mid)
     return {**dict(m), "winners": winners, "share": share, "scores": all_scores,
             "draw_all": False}, ""
+
+
+async def quiz_stop(mid: int) -> tuple[dict | None, str]:
+    """Принудительно остановить викторину (админом). Вернуть ставки всем. Идемпотентно."""
+    async with db.pool().acquire() as conn:
+        async with conn.transaction():
+            m = await conn.fetchrow("SELECT * FROM rb_matches WHERE id=$1 FOR UPDATE", mid)
+            if not m:
+                return None, "Матч не найден."
+            if m["status"] not in ("active", "lobby"):
+                return None, "Викторина уже завершена."
+            players = await conn.fetch(
+                "SELECT tg_id FROM rb_match_players WHERE mid=$1 AND staked", mid)
+            refunded = []
+            for p in players:
+                await _refund(conn, p["tg_id"], m["currency"], m["stake"], mid, f"stop{p['tg_id']}")
+                refunded.append(p["tg_id"])
+            await conn.execute(
+                "UPDATE rb_matches SET status='cancelled', finished_at=now() WHERE id=$1", mid)
+    d = dict(m); d["refunded"] = refunded
+    return d, ""
+
+
+async def active_quiz_in_chat(chat_id: int) -> int | None:
+    """Найти идущую викторину в этом чате (для !стоп викторина)."""
+    return await db.pool().fetchval(
+        "SELECT id FROM rb_matches WHERE game='quiz' AND status IN ('active','lobby') "
+        "AND origin_chat=$1 ORDER BY created_at DESC LIMIT 1", chat_id)
