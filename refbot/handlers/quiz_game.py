@@ -15,8 +15,9 @@ from services import matches, settings, ui, render
 
 router = Router()
 
-# эмодзи-буквы вариантов (как в морском бою — заменяемы премиумом)
-LETTER_EMO = ["🅰️", "🅱️", "🇨", "🇩"]
+# эмодзи-буквы вариантов — как в морском бою (первые 4 из COL_EMO), заменяемы премиумом
+from services.navy import COL_EMO as _COL
+LETTER_EMO = _COL[:4]   # 🔲 🟥 🟧 🟨
 LETTERS = ["A", "B", "C", "D"]
 
 # фоновые задачи по mid (чтобы не плодить)
