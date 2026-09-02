@@ -98,3 +98,22 @@ async def display_name(uid: int, with_emoji: bool = True, link: bool = True) -> 
     if p.get("username"):
         return f"{emo}@{p['username']}"
     return f"{emo}{p.get('first_name') or uid}"
+
+
+async def user_emojis(uid: int) -> list[str]:
+    """Персональные эмодзи игрока (полученные за достижения/магазин)."""
+    rows = await db.pool().fetch(
+        "SELECT emoji FROM rb_user_emojis WHERE tg_id=$1 ORDER BY got_at DESC", uid)
+    return [r["emoji"] for r in rows]
+
+
+async def set_active_emoji(uid: int, emoji: str | None) -> bool:
+    """Выбрать активный эмодзи (или снять). Проверяет владение."""
+    if emoji:
+        owns = await db.pool().fetchval(
+            "SELECT 1 FROM rb_user_emojis WHERE tg_id=$1 AND emoji=$2", uid, emoji)
+        if not owns:
+            return False
+    await db.pool().execute(
+        "UPDATE rb_users SET active_emoji=$1 WHERE tg_id=$2", emoji, uid)
+    return True

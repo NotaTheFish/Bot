@@ -138,8 +138,46 @@ async def cb_title_set(c: CallbackQuery):
 
 
 @router.callback_query(F.data == "prof_emoji")
-async def cb_emoji_stub(c: CallbackQuery):
-    await c.answer("Персональный эмодзи — скоро (после блока достижений).", show_alert=True)
+async def cb_emoji(c: CallbackQuery):
+    emojis = await prof.user_emojis(c.from_user.id)
+    kb = InlineKeyboardBuilder()
+    if not emojis:
+        await btn(kb, "Назад", "prof_setup", "back")
+        kb.adjust(1)
+        await ui.edit(c.message,
+            "😎 <b>Персональный эмодзи</b>\n\nУ тебя пока нет эмодзи. Их дают за достижения "
+            "или можно купить в магазине.", reply_markup=kb.as_markup())
+        return await c.answer()
+    p = await prof.get_profile(c.from_user.id)
+    active = p.get("active_emoji") if p else None
+    lines = ["😎 <b>Персональный эмодзи</b>\n\nПоказывается рядом с твоим ником. Выбери:"]
+    # кнопки эмодзи — через btn (премиум подставится, если настроен)
+    for e in emojis:
+        mark = " ✅" if e == active else ""
+        await btn(kb, f"{e}{mark}", f"prof_emoji_set:{e}")
+    await btn(kb, "🚫 Не показывать", "prof_emoji_set:none")
+    await btn(kb, "Назад", "prof_setup", "back")
+    # эмодзи по 4 в ряд, потом 2 управляющие по одной
+    n = len(emojis)
+    rows = [4] * (n // 4)
+    if n % 4:
+        rows.append(n % 4)
+    rows += [1, 1]
+    kb.adjust(*rows)
+    await ui.edit(c.message, "\n".join(lines), reply_markup=kb.as_markup())
+    await c.answer()
+
+
+@router.callback_query(F.data.startswith("prof_emoji_set:"))
+async def cb_emoji_set(c: CallbackQuery):
+    val = c.data.split(":", 1)[1]
+    emoji = None if val == "none" else val
+    ok = await prof.set_active_emoji(c.from_user.id, emoji)
+    if not ok:
+        return await c.answer("Не удалось (эмодзи не твой).", show_alert=True)
+    await c.answer("Эмодзи обновлён!" if emoji else "Эмодзи скрыт.")
+    c.data = "prof_emoji"
+    await cb_emoji(c)
 
 
 @router.message(F.text.lower().startswith("!ценаника"))
