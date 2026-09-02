@@ -27,19 +27,29 @@ async def visible(uid: int) -> bool:
     return uid in SUPER_ADMINS or bool(await db.admin_chats(uid))
 
 
-def roll_prize(case_key: str) -> tuple[float, float]:
+def roll_prize(case_key: str, boost: bool = False) -> tuple[float, float]:
     """
     Выбрать приз кейса. Возвращает (множитель, вероятность_этого_приза).
     Множитель — доля от цены (0.25..10.0).
+    boost=True (удача игрока) — сдвигает шансы к крупным призам: делаем два броска
+    и берём лучший по множителю (даёт ~×2 к шансу хорошего исхода, не ломая веса).
     """
     _, _, prizes = CASES[case_key]
-    r = secrets.randbelow(10**9) / 10**9
-    acc = 0.0
-    for mult, p in prizes:
-        acc += p
-        if r <= acc:
-            return mult, p
-    return prizes[-1][0], prizes[-1][1]  # фолбэк — последний (недостижимо)
+
+    def _one():
+        r = secrets.randbelow(10**9) / 10**9
+        acc = 0.0
+        for mult, p in prizes:
+            acc += p
+            if r <= acc:
+                return mult, p
+        return prizes[-1][0], prizes[-1][1]
+
+    if not boost:
+        return _one()
+    # с удачей — два броска, берём с большим множителем
+    a, b = _one(), _one()
+    return a if a[0] >= b[0] else b
 
 
 def case_price(case_key: str, currency: str) -> int:
@@ -64,16 +74,23 @@ def all_cases() -> list[tuple[str, str, int]]:
 
 
 # ---------- рулетка (колесо) ----------
-def roll_wheel() -> float:
-    """Крутануть колесо. Возвращает множитель (0.0..50.0)."""
+def roll_wheel(boost: bool = False) -> float:
+    """Крутануть колесо. Возвращает множитель (0.0..50.0).
+    boost=True (удача) — два броска, берём больший множитель (×2 к шансу крупного)."""
     from config import WHEEL_SECTORS
-    r = secrets.randbelow(10**9) / 10**9
-    acc = 0.0
-    for mult, p in WHEEL_SECTORS:
-        acc += p
-        if r <= acc:
-            return mult
-    return WHEEL_SECTORS[-1][0]
+
+    def _one():
+        r = secrets.randbelow(10**9) / 10**9
+        acc = 0.0
+        for mult, p in WHEEL_SECTORS:
+            acc += p
+            if r <= acc:
+                return mult
+        return WHEEL_SECTORS[-1][0]
+
+    if not boost:
+        return _one()
+    return max(_one(), _one())
 
 
 def wheel_bet_ok(bet_mush: int) -> bool:

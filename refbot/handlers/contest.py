@@ -232,6 +232,16 @@ async def do_draw(c: CallbackQuery):
 
     rows = await contest.standings(draw["chat_id"], draw["period_start"])
     pool = [(r["user_id"], r["tickets"]) for r in rows if r["tickets"] > 0]
+    # персональная удача: билеты игрока × множитель (больше шанс победы в конкурсе)
+    try:
+        from services import inventory as _inv
+        boosted = []
+        for uid, tk in pool:
+            m = await _inv.luck_multiplier(uid, "contest")
+            boosted.append((uid, int(tk * m) if m > 1 else tk))
+        pool = boosted
+    except Exception:
+        pass
     winner_id, wt = contest.pick_winner(pool)
     if not winner_id:
         await db.pool().execute("UPDATE rb_week_draws SET status='empty' WHERE id=$1", did)

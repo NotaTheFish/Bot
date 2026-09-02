@@ -90,6 +90,15 @@ async def finalize(bot, gid: int) -> dict:
     prizes = gw["prizes"]
     pool = [e[0] for e in eligible]
     weights = [_weight(e[2]) for e in eligible]
+    # персональная удача: вес игрока × его множитель (больше шанс победы)
+    try:
+        from services import inventory as _inv
+        for i, uid in enumerate(pool):
+            m = await _inv.luck_multiplier(uid, "giveaway")
+            if m > 1:
+                weights[i] *= m
+    except Exception:
+        pass
     winners_ids = weighted_sample(pool, weights, places)
 
     # --- 4. начисление призов ---

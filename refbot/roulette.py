@@ -41,19 +41,13 @@ def roll_mushrooms(boosted: bool = False) -> int:
     return 250  # недостижимо, но пусть будет
 
 
-def roll(currency: str) -> tuple[int, bool]:
+def roll(currency: str, boost_override: bool = False) -> tuple[int, bool]:
     """
     Ежедневная прокрутка (!шайн). Возвращает (сумма, is_mega_jackpot).
-
-    Сначала бросаем на джекпоты (ROULETTE_JACKPOTS) — редкие фиксированные суммы.
-    Если ни один не выпал — полоса (roll_mushrooms).
-    Если активна акция x5 (boost_active()) — джекпоты ×BOOST_JACKPOT_MULT и
-    бустнутые полосы (крупное ×5, мелочь просажена).
-    is_mega_jackpot=True только для джекпота с флагом пасты (миллион).
-    Сумма в грибах; для коинов ×COIN_RATE.
+    boost_override=True — форсировать буст (персональная удача игрока), даже без акции.
     """
     from config import ROULETTE_JACKPOTS, BOOST_JACKPOT_MULT
-    boost = boost_active()
+    boost = boost_active() or boost_override
     r = _rand()
     acc = 0.0
     for amount, chance, has_paste in ROULETTE_JACKPOTS:
@@ -103,15 +97,14 @@ def boosted_bands():
     return out
 
 
-def roll_jackpot(currency: str) -> tuple[int, bool]:
+def roll_jackpot(currency: str, boost_override: bool = False) -> tuple[int, bool]:
     """
     Секретная джекпот-прокрутка (!шaйн). Возвращает (сумма, is_jackpot).
-    С шансом JACKPOT_CHANCE% выпадает РОВНО JACKPOT_MAX (джекпот), иначе равномерно
-    JACKPOT_MIN..JACKPOT_MAX-1 (выглядит как крупная обычная прокрутка).
-    Сумма в грибах; для коинов умножается на COIN_RATE.
+    boost_override=True (персональная удача) удваивает шанс джекпота.
     """
     from config import JACKPOT_MIN, JACKPOT_MAX, JACKPOT_CHANCE, ROULETTE_ROUND_TO
-    if _rand() * 100 < JACKPOT_CHANCE:
+    chance = JACKPOT_CHANCE * 2 if (boost_active() or boost_override) else JACKPOT_CHANCE
+    if _rand() * 100 < chance:
         m = JACKPOT_MAX
         is_jack = True
     else:

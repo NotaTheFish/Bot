@@ -184,7 +184,9 @@ async def cb_case_open(c: CallbackQuery):
             .replace(",", " "), show_alert=True)
 
     # ролл приза
-    mult, _p = casino.roll_prize(case_key)
+    from services import inventory as _inv
+    _luck = await _inv.luck_multiplier(uid, "cases")
+    mult, _p = casino.roll_prize(case_key, boost=(_luck > 1))
     won = casino.prize_amount(case_key, cur, mult)
 
     # оплата + приз в одной транзакции. idem уникален на каждое открытие (иначе
@@ -327,7 +329,9 @@ async def _spin_wheel(target, uid: int, bet_cur: int, cur: str, edit: bool):
         return await (ui.edit(target, txt, reply_markup=await kb.wheel_back()) if edit
                       else ui.answer_smart(target, uid, txt, reply_markup=await kb.wheel_back()))
 
-    mult = casino.roll_wheel()
+    from services import inventory as _inv
+    _luck = await _inv.luck_multiplier(uid, "roulette")
+    mult = casino.roll_wheel(boost=(_luck > 1))
     won = int(bet_cur * mult)
 
     # ставка -> выигрыш в одной транзакции

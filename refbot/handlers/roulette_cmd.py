@@ -172,7 +172,9 @@ async def spin_jackpot(msg: Message, bot: Bot):
                 msg, f"{e_rou} Ты уже крутил сегодня — выпало <b>{prev:,}</b> {e_cur}.\n"
                      f"Прокрутка одна в сутки.".replace(",", " "))
 
-    amount, is_jackpot = roulette.roll_jackpot(cur)
+    from services import inventory as _inv
+    _luck = await _inv.luck_multiplier(uid, "shine")
+    amount, is_jackpot = roulette.roll_jackpot(cur, boost_override=(_luck > 1))
 
     pos = spin_queue.position(msg.chat.id)
     wait_set = False
@@ -293,7 +295,9 @@ async def spin(msg: Message, bot: Bot):
                     msg, f"{e_rou} Ты уже крутил сегодня — выпало <b>{prev:,}</b> {e_cur}.\n"
                          f"Прокрутка одна в сутки. Возвращайся завтра.".replace(",", " "))
 
-    amount, is_mega = roulette.roll(cur)
+    from services import inventory as _inv
+    _luck = await _inv.luck_multiplier(uid, "shine")
+    amount, is_mega = roulette.roll(cur, boost_override=(_luck > 1))
 
     # ---------- ОЧЕРЕДЬ НА ЧАТ ----------
     # Пока в чате крутится чья-то анимация, ставим ждущему реакцию ожидания.

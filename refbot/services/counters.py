@@ -158,11 +158,13 @@ TRIGGER_LABELS = {
 
 async def sync_peak_balances(uid: int):
     """Обновить пиковые счётчики баланса (max_*) из текущих балансов.
-    Вызывать после начислений и при открытии достижений."""
+    Вызывать после начислений и при открытии достижений.
+    ВАЖНО: шимкоины в БД хранятся в ЦЕНТАХ (×100) — пиковый счётчик пишем в
+    ЦЕЛЫХ шимкоинах (делим на 100), чтобы порог достижения задавался как «666 ШК»."""
     try:
         b = await db.balances(uid)
         await bump_max(uid, C_MAX_MUSH, int(b.get("mushrooms", 0)))
         await bump_max(uid, C_MAX_COIN, int(b.get("coins", 0)))
-        await bump_max(uid, C_MAX_SHIM, int(b.get("shimcoins", 0)))
+        await bump_max(uid, C_MAX_SHIM, int(b.get("shimcoins", 0)) // 100)
     except Exception:
         pass

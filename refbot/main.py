@@ -38,6 +38,10 @@ async def hold_worker(bot: Bot):
                         f"Баланс: <b>{p['balance']:,}</b>".replace(",", " "))
         except Exception:
             log.exception("hold_worker упал, продолжаю")
+        # чистим просроченные бонусы (удача/скидка)
+        with contextlib.suppress(Exception):
+            from services import inventory as _inv
+            await _inv.cleanup_expired()
         await asyncio.sleep(60)
 
 
@@ -129,6 +133,11 @@ async def main():
     dp.include_router(achievements_ui.router)
     from handlers import ach_admin
     dp.include_router(ach_admin.router)
+    from handlers import shop_admin, shop_ui
+    dp.include_router(shop_admin.router)
+    dp.include_router(shop_ui.router)
+    from handlers import inventory_ui
+    dp.include_router(inventory_ui.router)
     dp.include_router(promo.router)
 
     log.info("EV рулетки: %.1f 🍄 / %.0f 🪙 за прокрутку",
