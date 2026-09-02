@@ -368,6 +368,16 @@ async def spin(msg: Message, bot: Bot):
             got_free = True
 
         await _animate(msg, e_rou, e_cur, label, amount, total, em)
+        # счётчики достижений: спин ежедневки
+        try:
+            from services import counters as _cnt
+            await _cnt.bump(uid, _cnt.C_SPIN_COUNT)
+            await _cnt.bump(uid, _cnt.C_SPIN_WON_TOTAL, int(amount))
+            await _cnt.bump_max(uid, _cnt.C_SPIN_MAX, int(amount))
+            if is_mega or _is_band_jackpot(amount, cur):
+                await _cnt.bump(uid, _cnt.C_JACKPOT)
+        except Exception:
+            pass
         # мега-джекпот (миллион) — паста «1 на 100 000», как у секретной !шaйн
         if is_mega:
             with contextlib.suppress(Exception):

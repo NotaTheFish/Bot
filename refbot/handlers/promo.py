@@ -249,6 +249,12 @@ async def promo_try_activate(msg: Message):
             new_bal = await db.apply(conn, msg.from_user.id, cur, amount,
                                      "promo", f"promo:{pid}:{msg.from_user.id}")
     await db.audit(msg.from_user.id, "promo_use", {"id": pid, "amount": amount, "cur": cur})
+    # счётчик достижений: промокод введён
+    try:
+        from services import counters as _cnt
+        await _cnt.bump(msg.from_user.id, _cnt.C_PROMO_ENTERED)
+    except Exception:
+        pass
     await ui.answer(msg,
         f"🎉 Промокод активирован!\n\n"
         f"Начислено: <b>{amount:,}</b> {sx['e_' + cur]} {sx['l_' + cur]}\n"

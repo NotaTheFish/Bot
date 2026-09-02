@@ -205,6 +205,8 @@ async def cb_case_open(c: CallbackQuery):
     await db.log_case_open(uid, case_key, cur, cost, won, mult)
     await db.audit(uid, "case_open",
                    {"case": case_key, "cur": cur, "cost": cost, "won": won, "mult": mult})
+    from services import counters as _cnt
+    await _cnt.casino_event(uid, "case", won, is_jackpot=(mult >= 10))
 
     await c.answer("Открываю…")
     await _animate_case(c, case_key, cur, mult, won, new_bal)
@@ -342,6 +344,8 @@ async def _spin_wheel(target, uid: int, bet_cur: int, cur: str, edit: bool):
         return
 
     await db.audit(uid, "wheel_spin", {"bet": bet_cur, "mult": mult, "won": won, "cur": cur})
+    from services import counters as _cnt
+    await _cnt.casino_event(uid, "wheel", won, is_jackpot=(mult >= 10))
     bet_mush = bet_cur // COIN_RATE if cur == "coins" else bet_cur
     await db.log_case_open(uid, "wheel", cur, bet_cur, won, mult)
 
@@ -656,6 +660,8 @@ async def _mines_cashout(c, state, forced: bool):
         return await c.answer("Уже забрано.", show_alert=True)
 
     await db.audit(uid, "mines_win", {"bet": g["bet_cur"], "mult": mult, "won": won, "cur": cur})
+    from services import counters as _cnt
+    await _cnt.casino_event(uid, "mines", won, is_jackpot=(mult >= 10))
     await db.log_case_open(uid, "mines", cur, g["bet_cur"], won, mult)
     await state.update_data(mines=None, last_mines={"bet": g["bet"], "key": g["key"]})
 

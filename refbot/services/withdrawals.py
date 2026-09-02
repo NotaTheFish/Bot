@@ -145,6 +145,14 @@ async def confirm(admin_id: int, wid: int, version: int) -> tuple[dict | None, s
                 "UPDATE rb_withdrawals SET status='confirmed', decided_at=now(), decided_by=$1 "
                 "WHERE id=$2 RETURNING *", admin_id, wid)
     await db.audit(admin_id, "wd_confirm", {"id": wid, "user": wd["tg_id"], "amount": wd["amount"]})
+    # счётчики достижений: вывод подтверждён
+    try:
+        from services import counters as _cnt
+        await _cnt.bump(wd["tg_id"], _cnt.C_WD_COUNT)
+        await _cnt.bump(wd["tg_id"], _cnt.C_WD_TOTAL, int(wd["amount"]))
+        await _cnt.bump_max(wd["tg_id"], _cnt.C_WD_MAX, int(wd["amount"]))
+    except Exception:
+        pass
     return dict(row), ""
 
 

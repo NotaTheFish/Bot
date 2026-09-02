@@ -125,3 +125,8 @@ async def _award(gid, tg_id, mode, prize, chosen_cur):
                 cur = chosen_cur or "mushrooms"
                 amount = prize["mushrooms"] if cur == "mushrooms" else prize["coins"]
                 await db.apply(conn, tg_id, cur, amount, "giveaway", idem)
+    try:
+        from services import counters as _cnt
+        await _cnt.bump(tg_id, _cnt.C_GIVEAWAY_WON)
+    except Exception:
+        pass

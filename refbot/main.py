@@ -125,6 +125,10 @@ async def main():
     dp.include_router(profile_ui.router)
     from handlers import titles_admin
     dp.include_router(titles_admin.router)
+    from handlers import achievements_ui
+    dp.include_router(achievements_ui.router)
+    from handlers import ach_admin
+    dp.include_router(ach_admin.router)
     dp.include_router(promo.router)
 
     log.info("EV рулетки: %.1f 🍄 / %.0f 🪙 за прокрутку",

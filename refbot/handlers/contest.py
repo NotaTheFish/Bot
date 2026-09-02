@@ -257,6 +257,11 @@ async def do_draw(c: CallbackQuery):
                 """, winner_id, wt, cur, amount, c.from_user.id, did)
     await db.audit(c.from_user.id, "contest_draw",
                    {"draw": did, "winner": winner_id, "amount": amount})
+    try:
+        from services import counters as _cnt
+        await _cnt.bump(winner_id, _cnt.C_CONTEST_WON)
+    except Exception:
+        pass
     await c.answer("Крутим!")
 
     # ---- анимация как у !шайн ----

@@ -257,6 +257,11 @@ async def credit_due(bot) -> list[dict]:
         if bal is not None:
             paid.append({"inviter_id": r["inviter_id"], "amount": r["amount"],
                          "currency": r["currency"], "balance": bal})
+            try:
+                from services import counters as _cnt
+                await _cnt.bump(r["inviter_id"], _cnt.C_REFERRALS)
+            except Exception:
+                pass
     return paid
 
 

@@ -212,6 +212,20 @@ async def finish(mid: int, winner: int | None) -> tuple[dict | None, str]:
                 win_val, mid)
             m = await conn.fetchrow("SELECT * FROM rb_matches WHERE id=$1", mid)
     await db.audit(m["p1"], "match_finish", {"id": mid, "winner": winner})
+    # счётчики достижений: обоим +сыграл, победителю +выиграл
+    try:
+        from services import counters as _cnt
+        g = m["game"]
+        won_type = {"ttt": _cnt.C_TTT_WON, "navy": _cnt.C_NAVY_WON}.get(g)
+        for pid in (m["p1"], m["p2"]):
+            if pid:
+                await _cnt.bump(pid, _cnt.C_PVP_PLAYED)
+        if winner:
+            await _cnt.bump(winner, _cnt.C_PVP_WON)
+            if won_type:
+                await _cnt.bump(winner, won_type)
+    except Exception:
+        pass
     return dict(m), ""
 
 
@@ -489,6 +503,17 @@ async def finish_multiplayer(mid: int, winner: int) -> tuple[dict | None, str]:
                 winner, mid)
             m = await conn.fetchrow("SELECT * FROM rb_matches WHERE id=$1", mid)
     await db.audit(winner, "rps_finish", {"id": mid, "payout": payout})
+    # счётчики: все участники +сыграл, победитель +выиграл КНБ
+    try:
+        from services import counters as _cnt
+        parts = await db.pool().fetch(
+            "SELECT tg_id FROM rb_match_players WHERE mid=$1 AND staked", mid)
+        for p in parts:
+            await _cnt.bump(p["tg_id"], _cnt.C_PVP_PLAYED)
+        await _cnt.bump(winner, _cnt.C_PVP_WON)
+        await _cnt.bump(winner, _cnt.C_RPS_WON)
+    except Exception:
+        pass
     return dict(m), ""
 
 
@@ -885,6 +910,18 @@ async def quiz_finish(mid: int) -> tuple[dict | None, str]:
                 winners[0], mid)
             st["winners"] = winners
             await conn.execute("UPDATE rb_matches SET state=$1 WHERE id=$2", json.dumps(st), mid)
+    # счётчики: все игроки +сыграл PvP, победители +выиграли викторину
+    try:
+        from services import counters as _cnt
+        parts = await db.pool().fetch(
+            "SELECT tg_id FROM rb_match_players WHERE mid=$1 AND staked", mid)
+        for p in parts:
+            await _cnt.bump(p["tg_id"], _cnt.C_PVP_PLAYED)
+        for w in winners:
+            await _cnt.bump(w, _cnt.C_PVP_WON)
+            await _cnt.bump(w, _cnt.C_QUIZ_WON)
+    except Exception:
+        pass
     return {**dict(m), "winners": winners, "share": share, "scores": all_scores,
             "draw_all": False}, ""
 

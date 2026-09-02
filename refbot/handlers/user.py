@@ -317,8 +317,12 @@ async def cb_profile(c: CallbackQuery):
 
     from services.ui import btn as _btn
     from aiogram.utils.keyboard import InlineKeyboardBuilder
+    from services import achievements as _ach
+    unclaimed = await _ach.unclaimed_count(c.from_user.id)
+    ach_label = f"🏆 Достижения ({unclaimed})" if unclaimed else "🏆 Достижения"
     kbp = InlineKeyboardBuilder()
     await _btn(kbp, "⚙️ Настроить профиль", "prof_setup")
+    await _btn(kbp, ach_label, "ach_open")
     await _btn(kbp, "Назад", "menu", "back")
     kbp.adjust(1)
     await ui.edit(c.message, text, reply_markup=kbp.as_markup())
