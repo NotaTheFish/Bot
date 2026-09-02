@@ -228,6 +228,12 @@ async def apply_admin(tg_id: int, currency: str, delta: int, reason: str,
                 bal = await conn.fetchval(
                     "SELECT COALESCE(amount,0) FROM rb_balances WHERE tg_id=$1 AND currency=$2",
                     tg_id, currency) or 0
+    # обновить пиковые балансы для достижений (max_*)
+    try:
+        from services import counters as _cnt
+        await _cnt.sync_peak_balances(tg_id)
+    except Exception:
+        pass
     return bal
 
 

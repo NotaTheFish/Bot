@@ -318,6 +318,8 @@ async def cb_profile(c: CallbackQuery):
     from services.ui import btn as _btn
     from aiogram.utils.keyboard import InlineKeyboardBuilder
     from services import achievements as _ach
+    from services import counters as _cnt
+    await _cnt.sync_peak_balances(c.from_user.id)
     unclaimed = await _ach.unclaimed_count(c.from_user.id)
     ach_label = f"🏆 Достижения ({unclaimed})" if unclaimed else "🏆 Достижения"
     kbp = InlineKeyboardBuilder()

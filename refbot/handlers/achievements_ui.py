@@ -47,6 +47,9 @@ def _reward_text(rewards: list) -> str:
 
 async def show_achievements(bot, chat_id: int, uid: int, page: int = 0, edit_msg_id: int | None = None):
     import json
+    # обновить пиковые балансы (max_*) перед показом — вдруг набрал баланс до фикса
+    from services import counters as _cnt
+    await _cnt.sync_peak_balances(uid)
     items = await ach.list_for_user(uid)
     total = len(items)
     pages = max(1, (total + PER_PAGE - 1) // PER_PAGE)

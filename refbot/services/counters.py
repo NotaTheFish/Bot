@@ -154,3 +154,15 @@ TRIGGER_LABELS = {
     C_TITLES: "Получено титулов",
     C_ACH_DONE: "Выполнено достижений",
 }
+
+
+async def sync_peak_balances(uid: int):
+    """Обновить пиковые счётчики баланса (max_*) из текущих балансов.
+    Вызывать после начислений и при открытии достижений."""
+    try:
+        b = await db.balances(uid)
+        await bump_max(uid, C_MAX_MUSH, int(b.get("mushrooms", 0)))
+        await bump_max(uid, C_MAX_COIN, int(b.get("coins", 0)))
+        await bump_max(uid, C_MAX_SHIM, int(b.get("shimcoins", 0)))
+    except Exception:
+        pass
