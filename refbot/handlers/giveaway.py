@@ -826,7 +826,8 @@ async def cb_gw_members(c: CallbackQuery):
     for m in members:
         missing = await gw_invites.check_all(c.bot, chats, m["tg_id"])
         u = await db.get_user(m["tg_id"])
-        name = f"@{u['username']}" if u and u["username"] else (u["first_name"] if u else m["tg_id"])
+        from services import profile as _prof
+        name = await _prof.display_name(m["tg_id"])
         if missing:
             lines.append(f"❌ {name} — отписался")
             gone += 1
@@ -948,7 +949,8 @@ async def cb_gw_strikes(c: CallbackQuery):
     kbd = InlineKeyboardBuilder()
     lines = []
     for r in rows[:30]:
-        name = f"@{r['username']}" if r["username"] else (r["first_name"] or r["tg_id"])
+        from services import profile as _prof
+        name = await _prof.display_name(r["tg_id"])
         flag = "🚫 бан" if r["banned"] else f"{r['strikes']}/3"
         lines.append(f"{name} — {flag}")
         await btn(kbd, f"♻️ Сбросить {name}", f"gwstr_clear:{r['tg_id']}")

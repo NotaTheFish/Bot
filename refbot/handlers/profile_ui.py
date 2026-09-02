@@ -93,13 +93,48 @@ async def msg_nick(msg: Message, state: FSMContext):
     ok, err2 = await prof.set_nick(msg.from_user.id, nick, mark_set=True)
     if not ok:
         return await ui.reply(msg, f"⚠️ {err2}")
-    await ui.reply(msg, f"✅ Ник установлен: <b>{nick}</b>")
+    # вернуть в профиль
+    kb = InlineKeyboardBuilder()
+    await btn(kb, "👤 В профиль", "profile", "back")
+    await ui.reply(msg, f"✅ Ник установлен: <b>{nick}</b>", reply_markup=kb.as_markup())
 
 
 # заглушки титул/эмодзи — следующие под-блоки
 @router.callback_query(F.data == "prof_titles")
-async def cb_titles_stub(c: CallbackQuery):
-    await c.answer("Выбор титула — скоро (после блока достижений).", show_alert=True)
+async def cb_titles(c: CallbackQuery):
+    from services import titles
+    tlist = await titles.user_titles(c.from_user.id)
+    kb = InlineKeyboardBuilder()
+    if not tlist:
+        await btn(kb, "Назад", "prof_setup", "back")
+        kb.adjust(1)
+        await ui.edit(c.message,
+            "🏅 <b>Титулы</b>\n\nУ тебя пока нет титулов. Их дают за достижения "
+            "или вручает админ.", reply_markup=kb.as_markup())
+        return await c.answer()
+    lines = ["🏅 <b>Твои титулы</b>\n\nВыбери, какой показывать:"]
+    for t in tlist:
+        mark = "⭐" if t["is_admin_grant"] else "•"
+        active = " ✅" if t["is_active"] else ""
+        lines.append(f"{mark} {t['name']}{active}")
+        await btn(kb, f"{t['name'][:25]}", f"prof_title_set:{t['id']}")
+    await btn(kb, "🚫 Не показывать титул", "prof_title_set:0")
+    await btn(kb, "Назад", "prof_setup", "back")
+    kb.adjust(1)
+    await ui.edit(c.message, "\n".join(lines), reply_markup=kb.as_markup())
+    await c.answer()
+
+
+@router.callback_query(F.data.startswith("prof_title_set:"))
+async def cb_title_set(c: CallbackQuery):
+    from services import titles
+    tid = int(c.data.split(":")[1])
+    ok = await titles.set_active_title(c.from_user.id, tid if tid else None)
+    if not ok:
+        return await c.answer("Не удалось (титул не твой).", show_alert=True)
+    await c.answer("Титул обновлён!" if tid else "Титул скрыт.")
+    c.data = "prof_titles"
+    await cb_titles(c)
 
 
 @router.callback_query(F.data == "prof_emoji")

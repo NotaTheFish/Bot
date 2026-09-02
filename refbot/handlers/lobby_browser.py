@@ -44,10 +44,8 @@ def _fmt(n: int) -> str:
 
 
 async def _name(uid: int) -> str:
-    u = await db.get_user(uid)
-    if u and u["username"]:
-        return f"@{u['username']}"
-    return (u["first_name"] if u else None) or str(uid)
+    from services import profile as _prof
+    return await _prof.display_name(uid)
 
 
 def _join_cb(game: str, mid: int) -> str:

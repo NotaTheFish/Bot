@@ -21,10 +21,8 @@ def _fmt(n: int) -> str:
 
 
 async def _name(uid: int) -> str:
-    u = await db.get_user(uid)
-    if u and u["username"]:
-        return f"@{u['username']}"
-    return (u["first_name"] if u else None) or str(uid)
+    from services import profile as _prof
+    return await _prof.display_name(uid)
 
 
 # in-memory: mid -> {invited: set, answered: set} для отслеживания приглашений

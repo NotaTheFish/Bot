@@ -269,8 +269,8 @@ async def do_draw(c: CallbackQuery):
             await r_edit(c.message, roulette.frame(i, e_rou), em)
     await asyncio.sleep(ANIM_DELAY)
 
-    name = (f"@{wu['username']}" if wu and wu["username"]
-            else escape((wu["first_name"] if wu else None) or "Победитель"))
+    from services import profile as _prof
+    name = await _prof.display_name(winner_id) if winner_id else "Победитель"
     total = sum(t for _, t in pool)
     chance = wt / total * 100 if total else 0
 
