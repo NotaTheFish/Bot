@@ -302,7 +302,26 @@ async def cb_profile(c: CallbackQuery):
     if tl:
         text += "\n\n" + "\n".join(tl)
 
-    await ui.edit(c.message, text, reply_markup=await kb.back_menu())
+    # строка с ником/титулом/эмодзи
+    from services import profile as prof
+    p = await prof.get_profile(c.from_user.id)
+    extra = []
+    if p and p.get("nickname"):
+        emo = (p.get("active_emoji") + " ") if p.get("active_emoji") else ""
+        extra.append(f"👤 Ник: {emo}<b>{p['nickname']}</b>")
+    tname = await prof.active_title_name(c.from_user.id)
+    if tname:
+        extra.append(f"🏅 Титул: <b>{tname}</b>")
+    if extra:
+        text += "\n\n" + "\n".join(extra)
+
+    from services.ui import btn as _btn
+    from aiogram.utils.keyboard import InlineKeyboardBuilder
+    kbp = InlineKeyboardBuilder()
+    await _btn(kbp, "⚙️ Настроить профиль", "prof_setup")
+    await _btn(kbp, "Назад", "menu", "back")
+    kbp.adjust(1)
+    await ui.edit(c.message, text, reply_markup=kbp.as_markup())
     await c.answer()
 
 

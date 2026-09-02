@@ -121,6 +121,8 @@ async def main():
     dp.include_router(offers.router)
     dp.include_router(skin.router)
     dp.include_router(user.router)
+    from handlers import profile_ui
+    dp.include_router(profile_ui.router)
     dp.include_router(promo.router)
 
     log.info("EV рулетки: %.1f 🍄 / %.0f 🪙 за прокрутку",
