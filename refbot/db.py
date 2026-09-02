@@ -606,6 +606,15 @@ EXPECTED_TABLES = [
     "rb_matches",
     "rb_match_players",
     "rb_quiz",
+    "rb_titles",
+    "rb_user_titles",
+    "rb_user_emojis",
+    "rb_counters",
+    "rb_achievements",
+    "rb_user_achievements",
+    "rb_shop",
+    "rb_inventory",
+    "rb_active_bonuses",
 ]
 
 

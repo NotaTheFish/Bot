@@ -397,6 +397,137 @@ CREATE TABLE IF NOT EXISTS rb_quiz (
 ALTER TABLE rb_quiz ADD COLUMN IF NOT EXISTS points SMALLINT NOT NULL DEFAULT 1;
 CREATE INDEX IF NOT EXISTS rb_quiz_active_idx ON rb_quiz (active);
 
+-- ==================== СИСТЕМА ДОСТИЖЕНИЙ, ПРОФИЛЯ, МАГАЗИНА ====================
+
+-- --- Расширение профиля (rb_users) ---
+ALTER TABLE rb_users ADD COLUMN IF NOT EXISTS nickname     TEXT;
+ALTER TABLE rb_users ADD COLUMN IF NOT EXISTS nickname_set BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE rb_users ADD COLUMN IF NOT EXISTS active_title BIGINT;
+ALTER TABLE rb_users ADD COLUMN IF NOT EXISTS active_emoji TEXT;
+-- уникальность ника (частичный индекс — NULL не мешают)
+CREATE UNIQUE INDEX IF NOT EXISTS rb_users_nickname_uidx
+    ON rb_users (lower(nickname)) WHERE nickname IS NOT NULL;
+
+-- --- Каталог титулов ---
+CREATE TABLE IF NOT EXISTS rb_titles (
+    id             BIGSERIAL PRIMARY KEY,
+    name           TEXT NOT NULL,
+    is_admin_grant BOOLEAN NOT NULL DEFAULT FALSE,  -- уникальный титул от админа
+    created_by     BIGINT,
+    created_at     TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- --- Титулы игроков (что у кого есть) ---
+CREATE TABLE IF NOT EXISTS rb_user_titles (
+    id         BIGSERIAL PRIMARY KEY,
+    tg_id      BIGINT NOT NULL,
+    title_id   BIGINT NOT NULL REFERENCES rb_titles(id) ON DELETE CASCADE,
+    granted_by BIGINT,          -- админ, или NULL если от достижения
+    granted_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (tg_id, title_id)
+);
+CREATE INDEX IF NOT EXISTS rb_user_titles_tg_idx ON rb_user_titles (tg_id);
+
+-- --- Персональные эмодзи игроков ---
+CREATE TABLE IF NOT EXISTS rb_user_emojis (
+    id      BIGSERIAL PRIMARY KEY,
+    tg_id   BIGINT NOT NULL,
+    emoji   TEXT NOT NULL,       -- символ (премиум подставляется через маппинг)
+    source  TEXT,                -- 'achievement' | 'shop'
+    got_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (tg_id, emoji)
+);
+CREATE INDEX IF NOT EXISTS rb_user_emojis_tg_idx ON rb_user_emojis (tg_id);
+
+-- --- Счётчики событий (сердце достижений) ---
+-- counter_type: 'pvp_played','pvp_won','withdraw_total','withdraw_count',
+--   'cases_played','wheel_won_total','promo_entered','referrals', ... (см. код)
+-- Пиковые счётчики (максимум за раз) имеют префикс 'max_' и берут MAX, не сумму.
+CREATE TABLE IF NOT EXISTS rb_counters (
+    tg_id        BIGINT NOT NULL,
+    counter_type TEXT   NOT NULL,
+    value        BIGINT NOT NULL DEFAULT 0,
+    updated_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (tg_id, counter_type)
+);
+CREATE INDEX IF NOT EXISTS rb_counters_type_idx ON rb_counters (counter_type);
+
+-- --- Каталог достижений (создаёт админ) ---
+CREATE TABLE IF NOT EXISTS rb_achievements (
+    id             BIGSERIAL PRIMARY KEY,
+    code           TEXT UNIQUE NOT NULL,
+    title          TEXT NOT NULL,
+    description    TEXT,
+    hidden         BOOLEAN NOT NULL DEFAULT FALSE,  -- скрытое (условия не видны)
+    trigger_type   TEXT NOT NULL,     -- какой счётчик отслеживать
+    trigger_target BIGINT NOT NULL,   -- порог
+    progress_style TEXT NOT NULL DEFAULT 'percent',  -- 'percent' | 'fraction'
+    rewards        JSONB NOT NULL DEFAULT '[]',  -- [{type,...}, ...]
+    active         BOOLEAN NOT NULL DEFAULT TRUE,
+    created_by     BIGINT,
+    created_at     TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS rb_ach_trigger_idx ON rb_achievements (trigger_type) WHERE active;
+
+-- --- Прогресс игроков по достижениям ---
+CREATE TABLE IF NOT EXISTS rb_user_achievements (
+    id           BIGSERIAL PRIMARY KEY,
+    tg_id        BIGINT NOT NULL,
+    ach_id       BIGINT NOT NULL REFERENCES rb_achievements(id) ON DELETE CASCADE,
+    progress     BIGINT NOT NULL DEFAULT 0,
+    completed    BOOLEAN NOT NULL DEFAULT FALSE,
+    claimed      BOOLEAN NOT NULL DEFAULT FALSE,
+    completed_at TIMESTAMPTZ,
+    claimed_at   TIMESTAMPTZ,
+    UNIQUE (tg_id, ach_id)
+);
+CREATE INDEX IF NOT EXISTS rb_user_ach_tg_idx ON rb_user_achievements (tg_id);
+CREATE INDEX IF NOT EXISTS rb_user_ach_claim_idx ON rb_user_achievements (tg_id)
+    WHERE completed AND NOT claimed;
+
+-- --- Магазин (товары) ---
+CREATE TABLE IF NOT EXISTS rb_shop (
+    id         BIGSERIAL PRIMARY KEY,
+    name       TEXT NOT NULL,
+    description TEXT,
+    item_type  TEXT NOT NULL,     -- 'luck' | 'discount' | 'title' | 'emoji'
+    price      BIGINT NOT NULL,
+    currency   TEXT NOT NULL,     -- 'shimcoins' | 'mushrooms' | 'coins'
+    payload    JSONB NOT NULL DEFAULT '{}',  -- luck:{minutes,scope,mult}; discount:{percent,target}; ...
+    active     BOOLEAN NOT NULL DEFAULT TRUE,
+    stock      INT,               -- NULL = безлимит
+    created_by BIGINT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS rb_shop_active_idx ON rb_shop (active);
+
+-- --- Инвентарь (купленные/полученные бонусы, ещё не активированные) ---
+CREATE TABLE IF NOT EXISTS rb_inventory (
+    id        BIGSERIAL PRIMARY KEY,
+    tg_id     BIGINT NOT NULL,
+    item_type TEXT NOT NULL,      -- 'luck' | 'discount'
+    payload   JSONB NOT NULL DEFAULT '{}',
+    used      BOOLEAN NOT NULL DEFAULT FALSE,
+    got_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+    used_at   TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS rb_inventory_tg_idx ON rb_inventory (tg_id) WHERE NOT used;
+
+-- --- Активные бонусы (удача/скидка, действующие сейчас) ---
+CREATE TABLE IF NOT EXISTS rb_active_bonuses (
+    id         BIGSERIAL PRIMARY KEY,
+    tg_id      BIGINT NOT NULL,
+    bonus_type TEXT NOT NULL,     -- 'luck' | 'discount'
+    scope      TEXT NOT NULL,     -- 'all' | 'roulette' | 'cases' | 'shine' | 'giveaway' | 'contest' | 'shop' | 'bank' | ...
+    multiplier NUMERIC NOT NULL DEFAULT 2,
+    expires_at TIMESTAMPTZ,       -- для удачи (суммируется время); NULL для скидки-до-использования
+    payload    JSONB NOT NULL DEFAULT '{}',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS rb_active_bonuses_tg_idx ON rb_active_bonuses (tg_id);
+CREATE INDEX IF NOT EXISTS rb_active_bonuses_exp_idx ON rb_active_bonuses (expires_at);
+
+
 
 
 -- ---------- 4b. Рулетка (одобренные чаты) ----------
@@ -574,7 +705,7 @@ ALTER TABLE rb_giveaways ADD COLUMN IF NOT EXISTS finish_photo TEXT;
 
 -- ---------- 5. Проверка ----------
 SELECT
-  (SELECT count(*) FROM pg_tables WHERE tablename ~ '^rb_')                   AS tables_expect_31,
+  (SELECT count(*) FROM pg_tables WHERE tablename ~ '^rb_')                   AS tables_expect_40,
   (SELECT count(*) FROM pg_type   WHERE typname ~ '^rb_' AND typtype = 'e')   AS enums_expect_3,
   (SELECT count(*) FROM pg_indexes WHERE indexname IN
      ('rb_referrals_alive_idx','rb_withdrawals_one_pending','rb_spins_daily',
