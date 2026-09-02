@@ -449,9 +449,10 @@ async def cb_refs(c: CallbackQuery):
         await ui.edit(c.message, f"{sx['e_refs']} Рефералов пока нет.",
                       reply_markup=await kb.back_menu())
         return await c.answer()
+    from services import profile as _prof
     lines = []
     for r in rows[:25]:
-        name = f"@{r['username']}" if r["username"] else (r["first_name"] or r["invitee_id"])
+        name = await _prof.display_name(r["invitee_id"])
         if r["status"] == "paid":
             lines.append(f"{sx['e_paid']} {name} — {fmt(r['amount'])} {sx['e_' + r['currency']]}")
         else:

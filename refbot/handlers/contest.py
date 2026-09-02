@@ -143,11 +143,13 @@ async def week(msg: Message):
     if not rows:
         return await ui.reply(msg, "📊 За этот период сообщений пока нет.")
 
+    from services import profile as _prof
     lines = []
     for i, r in enumerate(rows[:25], 1):
         mark = (f"🎫 {r['tickets']}" if r["tickets"]
                 else f"ещё {max(0, CONTEST_MIN_MSGS - r['msgs'])} до участия")
-        lines.append(f"{i}. {_name(r)} — <b>{r['msgs']}</b> ({mark})")
+        nm = await _prof.display_name(r["user_id"])
+        lines.append(f"{i}. {nm} — <b>{r['msgs']}</b> ({mark})")
 
     me = next((r for r in rows if r["user_id"] == msg.from_user.id), None)
     mine = ""

@@ -194,7 +194,7 @@ async def msg_ttt_opponent(msg: Message, state: FSMContext):
     await btn(inv, "✅ Принять", f"ttt_accept:{mid}")
     await btn(inv, "❌ Отклонить", f"ttt_decline:{mid}")
     inv.adjust(2)
-    challenger = f"@{msg.from_user.username}" if msg.from_user.username else msg.from_user.first_name
+    challenger = await _name_of(msg.from_user.id)
     sent_dm = False
     with contextlib.suppress(Exception):
         await ui.send(msg.bot, opp_id,
@@ -334,8 +334,8 @@ async def cmd_shine(msg: Message):
         await btn(inv, "✅ Принять", f"ttt_accept_chat:{mid}")
         await btn(inv, "❌ Отклонить", f"ttt_decline:{mid}")
         inv.adjust(2)
-        challenger = f"@{msg.from_user.username}" if msg.from_user.username else msg.from_user.first_name
-        oppname = f"@{opp.username}" if opp.username else opp.first_name
+        challenger = await _name_of(msg.from_user.id)
+        oppname = await _name_of(opp.id)
         sent = await ui.reply(msg,
             f"⚔️ <b>{challenger}</b> вызывает <b>{oppname}</b> на крестики-нолики!\n"
             f"Ставка: <b>{_fmt(bet)}</b> {sx['e_' + cur]}.\n\n"
@@ -352,7 +352,7 @@ async def cmd_shine(msg: Message):
     await btn(k, "⚔️ Принять вызов", f"ttt_join_chat:{mid}")
     await btn(k, "❌ Отменить", f"ttt_cancel:{mid}")
     k.adjust(1)
-    challenger = f"@{msg.from_user.username}" if msg.from_user.username else msg.from_user.first_name
+    challenger = await _name_of(msg.from_user.id)
     await ui.reply(msg,
         f"⚔️ <b>Открытый вызов!</b>\n\n"
         f"{challenger} играет в крестики-нолики.\n"
@@ -458,7 +458,7 @@ async def cb_ttt_again(c: CallbackQuery):
         return await c.answer(f"⚠️ {err}", show_alert=True)
     await c.answer("Вызов на реванш отправлен!")
     sx = await settings.ctx()
-    challenger = f"@{c.from_user.username}" if c.from_user.username else c.from_user.first_name
+    challenger = await _name_of(c.from_user.id)
 
     # реванш идёт туда же, где была игра: в чате -> приглашение в чат (accept_chat),
     # в ЛС -> приглашение в ЛС (accept)

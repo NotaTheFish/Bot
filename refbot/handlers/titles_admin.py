@@ -79,7 +79,7 @@ async def msg_title_name(msg: Message, state: FSMContext):
     tid = await titles.grant_title_by_name(tg_id, name, msg.from_user.id, admin_grant=True)
     pname = await prof.display_name(tg_id, link=False)
     kb = InlineKeyboardBuilder()
-    await btn(kb, "🏅 К титулам", f"a_title:{tg_id}", "back")
+    await btn(kb, "К титулам", f"a_title:{tg_id}", "back")
     await ui.reply(msg, f"✅ Титул «<b>{name}</b>» выдан игроку {pname}.",
                    reply_markup=kb.as_markup())
     # уведомить игрока

@@ -121,6 +121,18 @@ async def cmd_balance_profile(msg: Message):
             }
             text = await settings.profile_template()
             text = text.format(**data)
+            # ник и титул
+            from services import profile as _prof
+            p = await _prof.get_profile(uid)
+            extra = []
+            if p and p.get("nickname"):
+                emo = (p.get("active_emoji") + " ") if p.get("active_emoji") else ""
+                extra.append(f"👤 Ник: {emo}<b>{p['nickname']}</b>")
+            tname = await _prof.active_title_name(uid)
+            if tname:
+                extra.append(f"🏅 Титул: <b>{tname}</b>")
+            if extra:
+                text += "\n\n" + "\n".join(extra)
             tl = await tokens.owned_lines(b)
             if tl:
                 text += "\n\n" + "\n".join(tl)
