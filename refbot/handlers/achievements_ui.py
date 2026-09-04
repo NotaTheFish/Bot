@@ -16,6 +16,14 @@ router = Router()
 PER_PAGE = 5
 
 
+_DIGIT_EMO = ["0️⃣", "1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣"]
+
+
+def _num_emoji(n: int) -> str:
+    """Число -> эмодзи-цифры: 7 -> 7️⃣, 10 -> 1️⃣0️⃣."""
+    return "".join(_DIGIT_EMO[int(d)] for d in str(n))
+
+
 def _bar(cur: int, target: int, style: str = "percent") -> str:
     pct = min(100, int(cur / target * 100)) if target else 0
     filled = round(pct / 20)
@@ -73,7 +81,8 @@ async def show_achievements(bot, chat_id: int, uid: int, page: int = 0,
     header = f"🏆 <b>Достижения — {tab_name}</b>  ({done} из {total})\n"
 
     rows = []   # для rich: (текст, [(label, cb)])
-    for a in chunk:
+    for idx, a in enumerate(chunk):
+        num = page * PER_PAGE + idx + 1   # сквозной номер
         rewards = a["rewards"] if isinstance(a["rewards"], list) else json.loads(a["rewards"])
         # статус: собрано / готово к получению / в процессе
         if a["claimed"]:
@@ -91,7 +100,7 @@ async def show_achievements(bot, chat_id: int, uid: int, page: int = 0,
         bar = _bar(a["progress"], a["trigger_target"], a["progress_style"])
         reward = _reward_text(rewards)
 
-        lines = [f"<b>{title}</b>", cond, bar, f"Награда: {reward}"]
+        lines = [f"{_num_emoji(num)} <b>{title}</b>", cond, bar, f"Награда: {reward}"]
         if status:
             lines.append(status)
         block = "\n".join(lines)

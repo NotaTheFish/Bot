@@ -262,7 +262,9 @@ async def cb_list(c: CallbackQuery):
         st = "" if r["active"] else " ⛔"
         h = "🔒" if r["hidden"] else "👁"
         lines.append(f"{h} <b>{r['title']}</b> ({counters.TRIGGER_LABELS.get(r['trigger_type'],'?')} ≥ {r['trigger_target']}){st}")
-        await btn(kb, f"❌ {r['title'][:20]}", f"acha_del:{r['id']}")
+        if r["active"]:
+            await btn(kb, f"⛔ Откл: {r['title'][:16]}", f"acha_del:{r['id']}")
+        await btn(kb, f"🗑 Удалить: {r['title'][:16]}", f"acha_kill:{r['id']}")
     if not rows:
         lines.append("<i>Пусто.</i>")
     await btn(kb, "Назад", "profile", "back")
@@ -273,10 +275,39 @@ async def cb_list(c: CallbackQuery):
 
 @router.callback_query(F.data.startswith("acha_del:"))
 async def cb_del(c: CallbackQuery):
+    """Отключить достижение (скрыть, но данные сохранить)."""
     if not await _is_admin(c.from_user.id):
         return await c.answer("Только админ.", show_alert=True)
     aid = int(c.data.split(":")[1])
     await db.pool().execute("UPDATE rb_achievements SET active=false WHERE id=$1", aid)
     await c.answer("Достижение отключено.")
+    c.data = "acha_list:0"
+    await cb_list(c)
+
+
+@router.callback_query(F.data.startswith("acha_kill:"))
+async def cb_kill(c: CallbackQuery):
+    """Удалить достижение НАСОВСЕМ (с подтверждением)."""
+    if not await _is_admin(c.from_user.id):
+        return await c.answer("Только админ.", show_alert=True)
+    parts = c.data.split(":")
+    aid = int(parts[1])
+    confirmed = len(parts) > 2 and parts[2] == "yes"
+    a = await db.pool().fetchrow("SELECT title FROM rb_achievements WHERE id=$1", aid)
+    if not a:
+        return await c.answer("Уже удалено.", show_alert=True)
+    if not confirmed:
+        kb = InlineKeyboardBuilder()
+        await btn(kb, "🗑 Да, удалить насовсем", f"acha_kill:{aid}:yes")
+        await btn(kb, "Отмена", "acha_list:0", "back")
+        kb.adjust(1)
+        return await ui.edit(c.message,
+            f"🗑 <b>Удалить достижение?</b>\n\n«{a['title']}»\n\n"
+            f"Удалится полностью вместе с прогрессом всех игроков. "
+            f"Это <b>необратимо</b>.", reply_markup=kb.as_markup())
+    # удаляем прогресс + само достижение
+    await db.pool().execute("DELETE FROM rb_user_achievements WHERE ach_id=$1", aid)
+    await db.pool().execute("DELETE FROM rb_achievements WHERE id=$1", aid)
+    await c.answer("Достижение удалено насовсем.")
     c.data = "acha_list:0"
     await cb_list(c)
