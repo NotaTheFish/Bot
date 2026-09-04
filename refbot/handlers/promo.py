@@ -249,13 +249,45 @@ async def promo_try_activate(msg: Message):
             new_bal = await db.apply(conn, msg.from_user.id, cur, amount,
                                      "promo", f"promo:{pid}:{msg.from_user.id}")
     await db.audit(msg.from_user.id, "promo_use", {"id": pid, "amount": amount, "cur": cur})
-    # счётчик достижений: промокод введён
+    # счётчик достижений: промокод введён (+ отдельно секретный)
     try:
         from services import counters as _cnt
         await _cnt.bump(msg.from_user.id, _cnt.C_PROMO_ENTERED)
+        is_secret = await db.pool().fetchval(
+            "SELECT is_secret FROM rb_promo WHERE id=$1", pid)
+        if is_secret:
+            await _cnt.bump(msg.from_user.id, _cnt.C_PROMO_SECRET)
     except Exception:
         pass
     await ui.answer(msg,
         f"🎉 Промокод активирован!\n\n"
         f"Начислено: <b>{amount:,}</b> {sx['e_' + cur]} {sx['l_' + cur]}\n"
         f"Баланс: <b>{new_bal:,}</b> {sx['e_' + cur]}".replace(",", " "))
+
+
+@router.message(F.text.lower().startswith("!секретный"))
+async def cmd_mark_secret(msg: Message):
+    """!секретный <код> — пометить промокод секретным (для достижений).
+    Повторный вызов снимает пометку."""
+    if not await _is_admin(msg.from_user.id):
+        return
+    parts = (msg.text or "").split()
+    if len(parts) < 2:
+        rows = await db.pool().fetch(
+            "SELECT code FROM rb_promo WHERE is_secret ORDER BY created_at DESC LIMIT 20")
+        lst = ", ".join(r["code"] for r in rows) or "нет"
+        return await ui.answer(msg,
+            f"🤫 <b>Секретные промокоды:</b> {lst}\n\n"
+            f"Пометить/снять: <code>!секретный КОД</code>")
+    code = parts[1].strip()
+    row = await db.pool().fetchrow(
+        "SELECT id, code, is_secret FROM rb_promo WHERE lower(code)=lower($1) "
+        "ORDER BY created_at DESC LIMIT 1", code)
+    if not row:
+        return await ui.answer(msg, f"Промокод <code>{code}</code> не найден.")
+    new_val = not row["is_secret"]
+    await db.pool().execute("UPDATE rb_promo SET is_secret=$1 WHERE id=$2", new_val, row["id"])
+    await ui.answer(msg,
+        f"{'🤫 Промокод помечен СЕКРЕТНЫМ' if new_val else '👁 Пометка секретности снята'}: "
+        f"<code>{row['code']}</code>\n\n"
+        f"{'Активация даст прогресс достижениям на «секретный промокод».' if new_val else ''}")

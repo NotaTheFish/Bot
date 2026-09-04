@@ -541,11 +541,12 @@ async def casino_stats(tg_id: int) -> dict:
 
 
 async def promo_create(code: str, reward_mush: int, max_acts: int | None,
-                       expires_at, created_by: int, reward_kind: str = "rate") -> int:
+                       expires_at, created_by: int, reward_kind: str = "rate",
+                       is_secret: bool = False) -> int:
     return await pool().fetchval(
-        "INSERT INTO rb_promo (code, reward_mush, reward_kind, max_acts, expires_at, created_by) "
-        "VALUES ($1,$2,$3,$4,$5,$6) RETURNING id",
-        code, reward_mush, reward_kind, max_acts, expires_at, created_by)
+        "INSERT INTO rb_promo (code, reward_mush, reward_kind, max_acts, expires_at, "
+        "created_by, is_secret) VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id",
+        code, reward_mush, reward_kind, max_acts, expires_at, created_by, is_secret)
 
 
 async def promo_list() -> list:

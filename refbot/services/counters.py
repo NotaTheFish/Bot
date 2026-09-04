@@ -32,6 +32,8 @@ C_WHEEL_PLAYED = "wheel_played"
 C_MINES_PLAYED = "mines_played"
 C_JACKPOT = "jackpot"                       # джекпотов поймано
 C_MAX_WIN = "max_win"                       # крупнейший выигрыш за раз
+C_CASINO_LOST = "casino_lost"               # ПРОИГРАНО всего (в грибах-эквиваленте)
+C_MAX_LOSS = "max_loss"                     # крупнейший проигрыш за раз (грибы-экв.)
 # Спин-рулетка (!шайн / ежедневка)
 C_SPIN_COUNT = "spin_count"
 C_SPIN_WON_TOTAL = "spin_won_total"
@@ -49,6 +51,7 @@ C_GIVEAWAY_WON = "giveaway_won"
 C_GIVEAWAY_JOINED = "giveaway_joined"
 # Промо / рефералы
 C_PROMO_ENTERED = "promo_entered"
+C_PROMO_SECRET = "promo_secret"              # активировано СЕКРЕТНЫХ промокодов
 C_REFERRALS = "referrals"
 # Магазин / бонусы
 C_SHOP_BOUGHT = "shop_bought"
@@ -97,9 +100,11 @@ async def get_all(uid: int) -> dict:
     return {r["counter_type"]: r["value"] for r in rows}
 
 
-async def casino_event(uid: int, game: str, won: int, is_jackpot: bool = False):
-    """Единая фиксация казино-события: сыграл, выиграл, макс-выигрыш, джекпот.
-    game: 'case'|'wheel'|'mines'. won — сумма выигрыша (0 если проигрыш)."""
+async def casino_event(uid: int, game: str, won: int, is_jackpot: bool = False,
+                       bet: int = 0, currency: str = "mushrooms"):
+    """Единая фиксация казино-события: сыграл, выиграл, макс-выигрыш, джекпот,
+    а также ПРОИГРАНО (в грибах-эквиваленте: коины делятся на COIN_RATE).
+    game: 'case'|'wheel'|'mines'. won — выигрыш (0 если проигрыш). bet — ставка."""
     try:
         await bump(uid, C_CASINO_PLAYED)
         pgame = {"case": C_CASE_PLAYED, "wheel": C_WHEEL_PLAYED, "mines": C_MINES_PLAYED}.get(game)
@@ -110,6 +115,15 @@ async def casino_event(uid: int, game: str, won: int, is_jackpot: bool = False):
             await bump_max(uid, C_MAX_WIN, int(won))
         if is_jackpot:
             await bump(uid, C_JACKPOT)
+        # проигрыш: сколько игрок потерял на этой игре (ставка минус возврат)
+        if bet:
+            loss = bet - won
+            if loss > 0:
+                from config import COIN_RATE
+                loss_mush = loss // COIN_RATE if currency == "coins" else loss
+                if loss_mush > 0:
+                    await bump(uid, C_CASINO_LOST, int(loss_mush))
+                    await bump_max(uid, C_MAX_LOSS, int(loss_mush))
     except Exception:
         pass
 
@@ -134,6 +148,8 @@ TRIGGER_LABELS = {
     C_MINES_PLAYED: "Сыграно в мины",
     C_JACKPOT: "Джекпотов поймано",
     C_MAX_WIN: "Крупнейший выигрыш в казино (за раз)",
+    C_CASINO_LOST: "Проиграно в казино всего (в грибах)",
+    C_MAX_LOSS: "Крупнейший проигрыш за раз (в грибах)",
     C_SPIN_COUNT: "Прокруток ежедневки",
     C_SPIN_WON_TOTAL: "Выиграно в ежедневке (всего)",
     C_SPIN_MAX: "Крупнейший выигрыш в ежедневке (за раз)",
@@ -147,6 +163,7 @@ TRIGGER_LABELS = {
     C_GIVEAWAY_WON: "Побед в розыгрышах",
     C_GIVEAWAY_JOINED: "Участий в розыгрышах",
     C_PROMO_ENTERED: "Промокодов введено",
+    C_PROMO_SECRET: "Секретных промокодов введено",
     C_REFERRALS: "Приглашено друзей",
     C_SHOP_BOUGHT: "Покупок в магазине",
     C_SHOP_SPENT: "Потрачено в магазине",

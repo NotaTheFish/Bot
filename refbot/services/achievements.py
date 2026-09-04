@@ -68,6 +68,7 @@ async def claim(uid: int, ach_id: int) -> tuple[bool, str, list]:
                 return False, "Награда уже собрана.", []
             ach = await conn.fetchrow("SELECT * FROM rb_achievements WHERE id=$1", ach_id)
             rewards = ach["rewards"] if isinstance(ach["rewards"], list) else json.loads(ach["rewards"])
+            claim_note = ach["claim_text"] if "claim_text" in ach else None
             await conn.execute(
                 "UPDATE rb_user_achievements SET claimed=true, claimed_at=now() "
                 "WHERE tg_id=$1 AND ach_id=$2", uid, ach_id)
@@ -79,6 +80,8 @@ async def claim(uid: int, ach_id: int) -> tuple[bool, str, list]:
         await _cnt.bump(uid, _cnt.C_ACH_DONE)
     except Exception:
         pass
+    if claim_note:
+        given = given + [f"— «{claim_note}»"]
     return True, "", given
 
 

@@ -31,6 +31,7 @@ class AchNew(StatesGroup):
     trigger = State()
     target = State()
     rewards = State()
+    claim_text = State()
 
 
 @router.message(F.text.lower() == "!достижения")
@@ -197,7 +198,22 @@ async def s_rewards(msg: Message, state: FSMContext):
         return await ui.reply(msg, f"⚠️ {err}\nПопробуй ещё раз:")
     d = await state.get_data(); d["ach"]["rewards"] = rewards
     await state.update_data(ach=d["ach"])
-    # выбор скрытое/публичное
+    await state.set_state(AchNew.claim_text)
+    await ui.reply(msg,
+        "💬 Подпись при получении награды (например «ласт деп?»).\n"
+        "Или «-» чтобы без подписи:")
+
+
+@router.message(AchNew.claim_text)
+async def s_claim_text(msg: Message, state: FSMContext):
+    note = (msg.text or "").strip()
+    if note == "-":
+        note = ""
+    if len(note) > 100 or "<" in note or ">" in note:
+        return await ui.reply(msg, "До 100 символов, без скобок. Ещё раз:")
+    d = await state.get_data(); d["ach"]["claim_text"] = note
+    await state.update_data(ach=d["ach"])
+    await state.set_state(None)
     kb = InlineKeyboardBuilder()
     await btn(kb, "👁 Публичное (условия видны)", "acha_save:0")
     await btn(kb, "🔒 Скрытое (условия спрятаны)", "acha_save:1")
@@ -217,11 +233,12 @@ async def cb_save(c: CallbackQuery, state: FSMContext):
     code = f"ach_{int(time.time())}"
     await db.pool().execute(
         "INSERT INTO rb_achievements (code, title, description, hidden, trigger_type, "
-        "trigger_target, progress_style, rewards, created_by) "
-        "VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)",
+        "trigger_target, progress_style, rewards, created_by, claim_text) "
+        "VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)",
         code, a["title"], a.get("desc", ""), hidden, a["trigger"], a["target"],
         "fraction" if a["target"] <= 100 else "percent",
-        json.dumps(a["rewards"], ensure_ascii=False), c.from_user.id)
+        json.dumps(a["rewards"], ensure_ascii=False), c.from_user.id,
+        a.get("claim_text") or None)
     await c.answer("Достижение создано!")
     with contextlib.suppress(Exception):
         await c.message.edit_text(

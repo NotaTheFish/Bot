@@ -233,6 +233,9 @@ CREATE TABLE IF NOT EXISTS rb_promo (
 --   coins     — все получают reward_mush КОИНОВ независимо от своей валюты
 
 -- Активации промокодов: кто какой код активировал (одна активация на человека).
+-- секретные промокоды: активация даёт особый счётчик для достижений
+ALTER TABLE rb_promo ADD COLUMN IF NOT EXISTS is_secret BOOLEAN NOT NULL DEFAULT FALSE;
+
 CREATE TABLE IF NOT EXISTS rb_promo_acts (
     promo_id   BIGINT NOT NULL REFERENCES rb_promo(id) ON DELETE CASCADE,
     tg_id      BIGINT NOT NULL,
@@ -468,6 +471,8 @@ CREATE TABLE IF NOT EXISTS rb_achievements (
     created_at     TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS rb_ach_trigger_idx ON rb_achievements (trigger_type) WHERE active;
+-- текст-подпись, который показывается игроку при получении награды
+ALTER TABLE rb_achievements ADD COLUMN IF NOT EXISTS claim_text TEXT;
 
 -- --- Прогресс игроков по достижениям ---
 CREATE TABLE IF NOT EXISTS rb_user_achievements (
