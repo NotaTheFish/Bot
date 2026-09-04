@@ -563,6 +563,8 @@ async def cb_mines_open(c: CallbackQuery, state: FSMContext):
         opened = {i: ("💣" if field[i] == 0 else "💎") for i in range(g["total"])}
         await db.audit(uid, "mines_lose", {"bet": g["bet_cur"], "cur": g["cur"], "key": g["key"]})
         await db.log_case_open(uid, "mines", g["cur"], g["bet_cur"], 0, 0.0)
+        from services import counters as _cnt
+        await _cnt.casino_event(uid, "mines", 0)   # сыграл, но проиграл
         await state.update_data(mines=None)
         await ui.edit(c.message,
             f"💥 <b>Бомба!</b>\n\n"
