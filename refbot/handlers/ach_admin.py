@@ -143,7 +143,7 @@ async def s_target(msg: Message, state: FSMContext):
         "Напиши награды (можно несколько строк):")
 
 
-def _parse_rewards(text: str) -> tuple[list, str]:
+def _parse_rewards(text: str, premium_map: dict = None) -> tuple[list, str]:
     """Разобрать награды из текста. Возвращает (список, ошибка)."""
     from services.amount_parse import shk_parse, parse_amount
     rewards = []
@@ -164,8 +164,11 @@ def _parse_rewards(text: str) -> tuple[list, str]:
                 rewards.append({"type": kind, "amount": parse_amount(parts[1])})
             elif kind == "титул":
                 rewards.append({"type": "title", "title_name": " ".join(parts[1:])})
-            elif kind in ("эмодзи", "эмодзи"):
-                rewards.append({"type": "emoji", "emoji": parts[1]})
+            elif kind == "эмодзи":
+                sym = parts[1]
+                # если это премиум (есть в карте entities) — сохраняем как premium-тег
+                emoji_val = (premium_map or {}).get(sym, sym)
+                rewards.append({"type": "emoji", "emoji": emoji_val})
             elif kind == "удача":
                 rewards.append({"type": "luck", "mult": float(parts[1]),
                                 "minutes": int(parts[2]), "scope": parts[3] if len(parts) > 3 else "all"})
@@ -183,7 +186,13 @@ def _parse_rewards(text: str) -> tuple[list, str]:
 
 @router.message(AchNew.rewards)
 async def s_rewards(msg: Message, state: FSMContext):
-    rewards, err = _parse_rewards(msg.text or "")
+    # карта премиум-эмодзи из entities: символ -> <tg-emoji> тег
+    pmap = {}
+    for e in (msg.entities or []):
+        if e.type == "custom_emoji":
+            sym = (msg.text or "")[e.offset:e.offset + e.length]
+            pmap[sym] = f'<tg-emoji emoji-id="{e.custom_emoji_id}">{sym}</tg-emoji>'
+    rewards, err = _parse_rewards(msg.text or "", pmap)
     if err:
         return await ui.reply(msg, f"⚠️ {err}\nПопробуй ещё раз:")
     d = await state.get_data(); d["ach"]["rewards"] = rewards

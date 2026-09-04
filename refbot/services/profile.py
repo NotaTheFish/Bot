@@ -117,3 +117,19 @@ async def set_active_emoji(uid: int, emoji: str | None) -> bool:
     await db.pool().execute(
         "UPDATE rb_users SET active_emoji=$1 WHERE tg_id=$2", emoji, uid)
     return True
+
+
+def extract_emoji(msg) -> str | None:
+    """Извлечь эмодзи из сообщения. Если это премиум (custom_emoji entity) —
+    вернуть тег <tg-emoji emoji-id="...">символ</tg-emoji>, чтобы он рендерился
+    именно этим премиумом, не подменяясь общим маппингом бота.
+    Иначе — обычный символ."""
+    text = (msg.text or "").strip()
+    ents = msg.entities or []
+    for e in ents:
+        if e.type == "custom_emoji":
+            # символ-подложка под этим entity
+            sym = text[e.offset:e.offset + e.length]
+            return f'<tg-emoji emoji-id="{e.custom_emoji_id}">{sym}</tg-emoji>'
+    # обычный эмодзи — первый «символ» (может быть составным)
+    return text.split()[0] if text else None

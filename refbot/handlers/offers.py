@@ -153,37 +153,66 @@ async def _ask_limit(msg, state: FSMContext):
     await ui.answer(msg,
         f"📦 <b>Лимит акции</b>\n\n"
         f"Сколько ВСЕГО можно будет купить {hint}?\n"
+        f"Или задай лимит <b>в шимкоинах</b>: <code>200$</code> — бот сам посчитает, "
+        f"сколько валюты это по курсу акции.\n"
         f"Или напиши <code>безлим</code>.\n\n"
         + ("Для двух валют — два числа через пробел: <code>20м 500м</code> "
-           "(грибы коины)." if which == "both" else ""))
+           "(грибы коины). Лимит в $ для двух валют недоступен." if which == "both" else ""))
 
 
 @router.message(OfferNew.limit)
 async def offer_limit(msg: Message, state: FSMContext):
     if not await _is_admin(msg.from_user.id):
         return await state.clear()
+    from services.amount_parse import shk_parse
     data = await state.get_data()
     offer = data["offer"]
     which = offer["which"]
     txt = (msg.text or "").strip().lower()
     lim_mush = lim_coin = None
+
+    def _by_budget(budget_cents: int, price_cents: int, unit: int):
+        """Сколько валюты купится на budget_cents шимкоинов по курсу price_cents/unit."""
+        if not price_cents or price_cents <= 0:
+            return None
+        return int(budget_cents / price_cents * unit)
+
     if txt not in ("безлим", "бессрочно", "0", "-"):
-        parts = txt.split()
-        if which == "both":
-            if len(parts) != 2:
-                return await ui.answer(msg, "Нужно два числа: грибы коины. Или <code>безлим</code>.")
-            lim_mush = parse_amount(parts[0])
-            lim_coin = parse_amount(parts[1])
-            if lim_mush is None or lim_coin is None:
-                return await ui.answer(msg, "Не понял числа. Пример: <code>20м 500м</code>.")
-        elif which == "mush":
-            lim_mush = parse_amount(parts[0])
-            if lim_mush is None:
-                return await ui.answer(msg, "Не понял число.")
+        # ввод в шимкоинах ($200 / 200$) — пересчёт по курсу акции в лимит валюты
+        is_budget = "$" in txt
+        if is_budget:
+            budget = shk_parse(txt)
+            if budget is None or budget <= 0:
+                return await ui.answer(msg, "Не понял сумму в шимкоинах. Пример: <code>200$</code>.")
+            if which == "both":
+                return await ui.answer(msg,
+                    "Для акции на две валюты лимит в $ не работает — введи лимиты валют "
+                    "числом: <code>20м 500м</code> (грибы коины).")
+            if which == "mush":
+                lim_mush = _by_budget(budget, offer.get("price_mush", 0), MUSH_UNIT)
+                if lim_mush is None:
+                    return await ui.answer(msg, "Не задан курс грибов — начни заново.")
+            else:
+                lim_coin = _by_budget(budget, offer.get("price_coin", 0), COIN_UNIT)
+                if lim_coin is None:
+                    return await ui.answer(msg, "Не задан курс коинов — начни заново.")
         else:
-            lim_coin = parse_amount(parts[0])
-            if lim_coin is None:
-                return await ui.answer(msg, "Не понял число.")
+            parts = txt.split()
+            if which == "both":
+                if len(parts) != 2:
+                    return await ui.answer(msg, "Нужно два числа: грибы коины. Или <code>безлим</code>.")
+                lim_mush = parse_amount(parts[0])
+                lim_coin = parse_amount(parts[1])
+                if lim_mush is None or lim_coin is None:
+                    return await ui.answer(msg, "Не понял числа. Пример: <code>20м 500м</code>.")
+            elif which == "mush":
+                lim_mush = parse_amount(parts[0])
+                if lim_mush is None:
+                    return await ui.answer(msg, "Не понял число.")
+            else:
+                lim_coin = parse_amount(parts[0])
+                if lim_coin is None:
+                    return await ui.answer(msg, "Не понял число.")
     offer["limit_mush"] = lim_mush
     offer["limit_coin"] = lim_coin
     await state.update_data(offer=offer)

@@ -121,7 +121,15 @@ async def s_payload(msg: Message, state: FSMContext):
         elif t == "title":
             payload = {"title_name": txt}
         elif t == "emoji":
-            payload = {"emoji": txt.split()[0]}
+            # премиум-эмодзи -> сохраняем как <tg-emoji> тег (не подменяется маппингом)
+            sym = txt.split()[0]
+            emoji_val = sym
+            for e in (msg.entities or []):
+                if e.type == "custom_emoji":
+                    s2 = txt[e.offset:e.offset + e.length]
+                    emoji_val = f'<tg-emoji emoji-id="{e.custom_emoji_id}">{s2}</tg-emoji>'
+                    break
+            payload = {"emoji": emoji_val}
     except (IndexError, ValueError):
         return await ui.reply(msg, "Не понял параметры. Попробуй ещё раз по формату:")
     s["payload"] = payload
