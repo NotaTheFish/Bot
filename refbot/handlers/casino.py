@@ -737,3 +737,142 @@ async def cb_casino_toggle(c: CallbackQuery):
         + ("🟢 Теперь открыто всем." if new == "1" else "🔴 Теперь только админ."),
         reply_markup=await kb.casino_admin_toggle(new == "1", anim))
     await c.answer("Готово")
+
+
+# ==================== ПАКЕТНОЕ ОТКРЫТИЕ: ×5 КЕЙСОВ ====================
+@router.callback_query(F.data.startswith("casebuy5:"))
+async def cb_case_open5(c: CallbackQuery):
+    """Открыть 5 кейсов за раз. Списывает 5×цену, выдаёт сумму призов,
+    считает ровно 5 игр для достижений."""
+    if not await casino_visible(c.from_user.id):
+        return await c.answer("Казино закрыто.", show_alert=True)
+    _, case_key, cur = c.data.split(":")
+    uid = c.from_user.id
+    if await db.is_banned(uid):
+        return await c.answer("Ты заблокирован в системе.", show_alert=True)
+
+    N = 5
+    one_cost = casino.case_price(case_key, cur)
+    total_cost = one_cost * N
+    b = await db.balances(uid)
+    sx = await settings.ctx()
+    if b[cur] < total_cost:
+        return await c.answer(
+            f"Не хватает на 5 кейсов: нужно {total_cost:,} {sx['e_' + cur]}, "
+            f"у тебя {b[cur]:,}.".replace(",", " "), show_alert=True)
+
+    # 5 независимых роллов (с учётом удачи)
+    from services import inventory as _inv
+    _luck = await _inv.luck_multiplier(uid, "cases")
+    results = []
+    total_won = 0
+    for _ in range(N):
+        mult, _p = casino.roll_prize(case_key, boost=(_luck > 1))
+        won = casino.prize_amount(case_key, cur, mult)
+        results.append((mult, won))
+        total_won += won
+
+    import time
+    stamp = int(time.time() * 1000)
+    idem = f"case5:{uid}:{case_key}:{stamp}:{cur}"
+    try:
+        async with db.pool().acquire() as conn:
+            async with conn.transaction():
+                await db.apply(conn, uid, cur, -total_cost, "case_buy", idem + ":pay")
+                new_bal = await db.apply(conn, uid, cur, total_won, "case_win", idem + ":win")
+    except asyncpg.CheckViolationError:
+        return await c.answer("Не хватает баланса.", show_alert=True)
+    except asyncpg.UniqueViolationError:
+        return await c.answer("Повтори ещё раз.", show_alert=True)
+
+    # лог + счётчики: РОВНО 5 игр
+    from services import counters as _cnt
+    for mult, won in results:
+        await db.log_case_open(uid, case_key, cur, one_cost, won, mult)
+        await _cnt.casino_event(uid, "case", won, is_jackpot=(mult >= 10))
+    await db.audit(uid, "case_open5",
+                   {"case": case_key, "cur": cur, "cost": total_cost, "won": total_won})
+
+    await c.answer("Открываю 5 кейсов…")
+    # результат списком
+    e = sx["e_" + cur]
+    lines = [f"📦 <b>{casino.case_title(case_key)} ×5</b>", ""]
+    for i, (mult, won) in enumerate(results, 1):
+        tag = " 🔥" if mult >= 10 else (" ✨" if mult >= 5 else "")
+        lines.append(f"{i}. ×{mult:g} → <b>{won:,}</b> {e}{tag}".replace(",", " "))
+    profit = total_won - total_cost
+    sign = "+" if profit >= 0 else ""
+    lines += ["",
+              f"Потрачено: <b>{total_cost:,}</b> {e}".replace(",", " "),
+              f"Выиграно: <b>{total_won:,}</b> {e}".replace(",", " "),
+              f"Итог: <b>{sign}{profit:,}</b> {e}".replace(",", " "),
+              f"Баланс: <b>{new_bal:,}</b> {e}".replace(",", " ")]
+    await ui.edit(c.message, "\n".join(lines),
+                  reply_markup=await kb.case_again(case_key))
+
+
+@router.callback_query(F.data.startswith("wheelspin5:"))
+async def cb_wheel_x5(c: CallbackQuery):
+    """Крутить колесо 5 раз за раз."""
+    if not await casino_visible(c.from_user.id):
+        return await c.answer("Казино закрыто.", show_alert=True)
+    _, bet_s, cur = c.data.split(":")
+    bet_cur = int(bet_s)
+    uid = c.from_user.id
+    if await db.is_banned(uid):
+        return await c.answer("Ты заблокирован в системе.", show_alert=True)
+
+    N = 5
+    total_bet = bet_cur * N
+    b = await db.balances(uid)
+    sx = await settings.ctx()
+    if b[cur] < total_bet:
+        return await c.answer(
+            f"Не хватает на 5 прокруток: нужно {total_bet:,} {sx['e_' + cur]}, "
+            f"у тебя {b[cur]:,}.".replace(",", " "), show_alert=True)
+
+    from services import inventory as _inv
+    _luck = await _inv.luck_multiplier(uid, "roulette")
+    results = []
+    total_won = 0
+    for _ in range(N):
+        mult = casino.roll_wheel(boost=(_luck > 1))
+        won = int(bet_cur * mult)
+        results.append((mult, won))
+        total_won += won
+
+    import time
+    idem = f"wheel5:{uid}:{int(time.time()*1000)}:{cur}"
+    try:
+        async with db.pool().acquire() as conn:
+            async with conn.transaction():
+                await db.apply(conn, uid, cur, -total_bet, "wheel_bet", idem + ":bet")
+                new_bal = await db.apply(conn, uid, cur, total_won, "wheel_win", idem + ":win")
+    except asyncpg.CheckViolationError:
+        return await c.answer("Не хватает баланса.", show_alert=True)
+    except asyncpg.UniqueViolationError:
+        return await c.answer("Повтори ещё раз.", show_alert=True)
+
+    from services import counters as _cnt
+    for mult, won in results:
+        await db.log_case_open(uid, "wheel", cur, bet_cur, won, mult)
+        await _cnt.casino_event(uid, "wheel", won, is_jackpot=(mult >= 10))
+    await db.audit(uid, "wheel_spin5",
+                   {"bet": total_bet, "won": total_won, "cur": cur})
+
+    await c.answer("Кручу 5 раз…")
+    e = sx["e_" + cur]
+    lines = [f"🎡 <b>Рулетка ×5</b>", ""]
+    for i, (mult, won) in enumerate(results, 1):
+        tag = " 🔥" if mult >= 10 else (" ✨" if mult >= 5 else ("" if mult > 0 else " 💨"))
+        label = "×0" if mult == 0 else f"×{mult:g}"
+        lines.append(f"{i}. {label} → <b>{won:,}</b> {e}{tag}".replace(",", " "))
+    profit = total_won - total_bet
+    sign = "+" if profit >= 0 else ""
+    lines += ["",
+              f"Ставка: <b>{total_bet:,}</b> {e} (5 × {bet_cur:,})".replace(",", " "),
+              f"Выиграно: <b>{total_won:,}</b> {e}".replace(",", " "),
+              f"Итог: <b>{sign}{profit:,}</b> {e}".replace(",", " "),
+              f"Баланс: <b>{new_bal:,}</b> {e}".replace(",", " ")]
+    await ui.edit(c.message, "\n".join(lines),
+                  reply_markup=await kb.wheel_again(bet_cur, cur))

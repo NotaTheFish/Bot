@@ -608,6 +608,7 @@ async def wheel_again(bet: int, cur: str) -> InlineKeyboardMarkup:
     """После спина колеса: крутить снова той же ставкой или назад."""
     kb = InlineKeyboardBuilder()
     await btn(kb, f"🎡 Крутить ещё ({bet:,})".replace(",", " "), f"wheelspin:{bet}:{cur}")
+    await btn(kb, f"🎡 ×5 ({bet*5:,})".replace(",", " "), f"wheelspin5:{bet}:{cur}")
     await btn(kb, "🎰 Другая ставка", "wheel")
     await btn(kb, "Меню", "menu", "back")
     kb.adjust(1)
@@ -641,12 +642,14 @@ async def casino_cases(cases: list) -> InlineKeyboardMarkup:
 
 
 async def case_currency(case_key: str) -> InlineKeyboardMarkup:
-    """Выбор валюты оплаты кейса."""
+    """Выбор валюты оплаты кейса + пакет ×5."""
     kb = InlineKeyboardBuilder()
     await btn(kb, "🍄 Грибами", f"casebuy:{case_key}:mushrooms")
     await btn(kb, "🪙 Коинами", f"casebuy:{case_key}:coins")
+    await btn(kb, "🍄 ×5 Грибами", f"casebuy5:{case_key}:mushrooms")
+    await btn(kb, "🪙 ×5 Коинами", f"casebuy5:{case_key}:coins")
     await btn(kb, "Назад", "casino_cases", "back")
-    kb.adjust(2, 1)
+    kb.adjust(2, 2, 1)
     return kb.as_markup()
 
 
