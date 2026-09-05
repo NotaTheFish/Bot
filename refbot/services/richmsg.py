@@ -29,17 +29,45 @@ async def _premiumize(html_text: str) -> str:
 
 async def _rich_text_parts(text: str):
     """Разбить строку на массив RichText: обычный текст + премиум-эмодзи
-    (RichTextCustomEmoji). Так премиум показывается прямо в ТЕКСТЕ параграфа."""
+    (RichTextCustomEmoji). Понимает и готовые <tg-emoji emoji-id="..."> теги
+    (с их конкретным id), и символы из общего emoji_map."""
     from aiogram.types import RichTextCustomEmoji
     from services import settings
     import re
     em = await settings.emoji_map()
-    # убираем HTML-теги (rich-текст их не парсит)
-    clean = re.sub(r"<[^>]+>", "", text)
-    if not em:
-        return clean
-    # разбиваем по премиум-символам
+
+    # 1) сначала вытащим готовые <tg-emoji emoji-id="ID">СИМВОЛ</tg-emoji> теги —
+    #    их id конкретны и не должны подменяться общим маппингом.
     parts = []
+    pos = 0
+    tag_re = re.compile(r'<tg-emoji emoji-id="(\d+)">([^<]+)</tg-emoji>')
+    for m in tag_re.finditer(text):
+        # текст до тега (с вырезанием прочих html) — разберём по emoji_map
+        before = re.sub(r"<[^>]+>", "", text[pos:m.start()])
+        parts.extend(await _split_by_map(before, em))
+        # сам премиум-тег с конкретным id
+        parts.append(RichTextCustomEmoji(custom_emoji_id=m.group(1),
+                                         alternative_text=m.group(2)))
+        pos = m.end()
+    # хвост после последнего тега
+    tail = re.sub(r"<[^>]+>", "", text[pos:])
+    parts.extend(await _split_by_map(tail, em))
+
+    if not parts:
+        return re.sub(r"<[^>]+>", "", text)
+    if len(parts) == 1 and isinstance(parts[0], str):
+        return parts[0]
+    return parts
+
+
+async def _split_by_map(clean: str, em: dict):
+    """Разбить чистый текст на [str, RichTextCustomEmoji, ...] по символам emoji_map."""
+    from aiogram.types import RichTextCustomEmoji
+    if not clean:
+        return []
+    if not em:
+        return [clean]
+    out = []
     buf = ""
     i = 0
     while i < len(clean):
@@ -50,17 +78,14 @@ async def _rich_text_parts(text: str):
                 break
         if matched:
             if buf:
-                parts.append(buf)
-                buf = ""
-            parts.append(RichTextCustomEmoji(
-                custom_emoji_id=em[matched], alternative_text=matched))
+                out.append(buf); buf = ""
+            out.append(RichTextCustomEmoji(custom_emoji_id=em[matched], alternative_text=matched))
             i += len(matched)
         else:
-            buf += clean[i]
-            i += 1
+            buf += clean[i]; i += 1
     if buf:
-        parts.append(buf)
-    return parts if len(parts) > 1 else clean
+        out.append(buf)
+    return out
 
 
 async def _build_rich(header_html: str, rows: list[tuple[str, list[tuple[str, str]]]]):
