@@ -30,6 +30,13 @@ C_CASINO_WON = "casino_won"                 # выиграно раз
 C_CASE_PLAYED = "case_played"
 C_WHEEL_PLAYED = "wheel_played"
 C_MINES_PLAYED = "mines_played"
+# победы/проигрыши по каждой игре (по количеству раз)
+C_CASE_WON = "case_won"
+C_CASE_LOST = "case_lost"
+C_WHEEL_WON = "wheel_won"
+C_WHEEL_LOST = "wheel_lost"
+C_MINES_WON = "mines_won"
+C_MINES_LOST = "mines_lost"
 C_JACKPOT = "jackpot"                       # джекпотов поймано
 C_MAX_WIN = "max_win"                       # крупнейший выигрыш за раз
 C_CASINO_LOST = "casino_lost"               # ПРОИГРАНО всего (в грибах-эквиваленте)
@@ -101,18 +108,33 @@ async def get_all(uid: int) -> dict:
 
 
 async def casino_event(uid: int, game: str, won: int, is_jackpot: bool = False,
-                       bet: int = 0, currency: str = "mushrooms"):
-    """Единая фиксация казино-события: сыграл, выиграл, макс-выигрыш, джекпот,
-    а также ПРОИГРАНО (в грибах-эквиваленте: коины делятся на COIN_RATE).
-    game: 'case'|'wheel'|'mines'. won — выигрыш (0 если проигрыш). bet — ставка."""
+                       bet: int = 0, currency: str = "mushrooms", mult: float | None = None):
+    """Единая фиксация казино-события. Классификация по МНОЖИТЕЛЮ (mult):
+       mult > 1 — выигрыш, mult < 1 — проигрыш, mult == 1 — ничья (не считается).
+    Если mult не передан — определяем по won/bet. Проигрыш в грибах-экв. для достижений."""
     try:
         await bump(uid, C_CASINO_PLAYED)
         pgame = {"case": C_CASE_PLAYED, "wheel": C_WHEEL_PLAYED, "mines": C_MINES_PLAYED}.get(game)
         if pgame:
             await bump(uid, pgame)
-        if won > 0:
+        # определить исход по множителю
+        if mult is None:
+            mult = (won / bet) if bet else (2.0 if won > 0 else 0.0)
+        is_win = mult > 1.0
+        is_loss = mult < 1.0   # включая 0 (полный проигрыш) и частичный возврат (<ставки)
+        # ничья (mult == 1) — ничего не считаем
+
+        won_c = {"case": C_CASE_WON, "wheel": C_WHEEL_WON, "mines": C_MINES_WON}.get(game)
+        lost_c = {"case": C_CASE_LOST, "wheel": C_WHEEL_LOST, "mines": C_MINES_LOST}.get(game)
+
+        if is_win:
             await bump(uid, C_CASINO_WON)
             await bump_max(uid, C_MAX_WIN, int(won))
+            if won_c:
+                await bump(uid, won_c)
+        elif is_loss:
+            if lost_c:
+                await bump(uid, lost_c)
         if is_jackpot:
             await bump(uid, C_JACKPOT)
         # проигрыш: сколько игрок потерял на этой игре (ставка минус возврат)
@@ -144,6 +166,12 @@ TRIGGER_LABELS = {
     C_CASINO_PLAYED: "Сыграно в казино (всего)",
     C_CASINO_WON: "Побед в казино",
     C_CASE_PLAYED: "Открыто кейсов",
+    C_CASE_WON: "Побед в кейсах",
+    C_CASE_LOST: "Проигрышей в кейсах",
+    C_WHEEL_WON: "Побед в рулетке",
+    C_WHEEL_LOST: "Проигрышей в рулетке",
+    C_MINES_WON: "Побед в картах",
+    C_MINES_LOST: "Проигрышей в картах",
     C_WHEEL_PLAYED: "Прокруток колеса",
     C_MINES_PLAYED: "Сыграно в мины",
     C_JACKPOT: "Джекпотов поймано",

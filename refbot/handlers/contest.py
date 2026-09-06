@@ -288,13 +288,15 @@ async def do_draw(c: CallbackQuery):
 
     from services import profile as _prof
     name = await _prof.display_name(winner_id) if winner_id else "Победитель"
+    # для КНОПКИ — имя без HTML-ссылки (кнопки не парсят html)
+    btn_name = await _prof.display_name(winner_id, for_button=True) if winner_id else "Победитель"
     total = sum(t for _, t in pool)
     chance = wt / total * 100 if total else 0
 
     kb = InlineKeyboardBuilder()
     url = (f"https://t.me/{wu['username']}" if wu and wu["username"]
            else f"tg://user?id={winner_id}")
-    kb.button(text=f"👤 {name}", url=url)
+    kb.button(text=f"👤 {btn_name}", url=url)
 
     card = (
         f"{e_rou} <b>ПОБЕДИТЕЛЬ НЕДЕЛИ</b>\n"

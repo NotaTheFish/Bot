@@ -78,17 +78,31 @@ async def active_title_name(uid: int) -> str:
     return row["name"] if row else ""
 
 
-async def display_name(uid: int, with_emoji: bool = True, link: bool = True) -> str:
+async def display_name(uid: int, with_emoji: bool = True, link: bool = True,
+                       for_button: bool = False) -> str:
     """
     Главная функция отображения игрока. Если задан ник — показываем ник (со ссылкой
     на профиль по ID) + персональный эмодзи. Иначе @username или имя.
+    for_button=True — чистый текст для кнопок (без html-ссылок и <tg-emoji> тегов,
+    только видимая подложка эмодзи).
     """
+    import re
     p = await get_profile(uid)
     if not p:
         return str(uid)
     emo = ""
     if with_emoji and p.get("active_emoji"):
-        emo = p["active_emoji"] + " "
+        e = p["active_emoji"]
+        if for_button:
+            # из <tg-emoji ...>СИМВОЛ</tg-emoji> берём только символ-подложку
+            m = re.search(r">([^<]+)</tg-emoji>", e)
+            e = m.group(1) if m else e
+        emo = e + " "
+    if for_button:
+        # чистый текст: ник или @username, без html
+        base = p.get("nickname") or (f"@{p['username']}" if p.get("username")
+                                     else (p.get("first_name") or str(uid)))
+        return f"{emo}{base}"
     if p.get("nickname"):
         nk = html.escape(p["nickname"])
         if link:
