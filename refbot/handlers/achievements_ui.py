@@ -84,29 +84,34 @@ async def show_achievements(bot, chat_id: int, uid: int, page: int = 0,
     for idx, a in enumerate(chunk):
         num = page * PER_PAGE + idx + 1   # сквозной номер
         rewards = a["rewards"] if isinstance(a["rewards"], list) else json.loads(a["rewards"])
-        # статус: собрано / готово к получению / в процессе
+        # статус
         if a["claimed"]:
-            status = "✅ <b>Получено</b>"
+            status = "✅ Получено"
         elif a["completed"]:
-            status = "🎉 <b>Выполнено — забери награду!</b>"
+            status = "🎉 Готово — забери награду!"
         else:
-            status = ""
+            status = "⏳ в процессе"
         title = a["title"]
         # условие
         if a["hidden"] and not a["completed"]:
-            cond = "❔ <i>условие скрыто</i>"
+            cond = "❔ условие скрыто"
         else:
             cond = a["description"] or "—"
         bar = _bar(a["progress"], a["trigger_target"], a["progress_style"])
         reward = _reward_text(rewards)
 
-        lines = [f"{_num_emoji(num)} <b>{title}</b>", cond, bar, f"Награда: {reward}"]
-        if status:
-            lines.append(status)
+        # rich не поддерживает html-форматирование в блоках — оформляем текстом/эмодзи
+        lines = [
+            f"{_num_emoji(num)}  {title}",
+            f"   {cond}",
+            f"   {bar}   {status}",
+            f"   🎁 {reward}",
+            "━━━━━━━━━━━━━━",
+        ]
         block = "\n".join(lines)
 
         if a["completed"] and not a["claimed"]:
-            rows.append((block, [("🎁 Забрать награду", f"ach_claim:{a['id']}")]))
+            rows.append((block, [("🎁 Забрать награду", f"ach_claim:{a['id']}:{tab}:{page}")]))
         else:
             rows.append((block, []))
 
@@ -166,14 +171,15 @@ async def cb_page(c: CallbackQuery):
 
 @router.callback_query(F.data.startswith("ach_claim:"))
 async def cb_claim(c: CallbackQuery):
-    ach_id = int(c.data.split(":")[1])
+    parts = c.data.split(":")
+    ach_id = int(parts[1])
+    tab = parts[2] if len(parts) > 2 else "public"
+    page = int(parts[3]) if len(parts) > 3 else 0
     ok, err, given = await ach.claim(c.from_user.id, ach_id)
     if not ok:
         return await c.answer(err, show_alert=True)
     reward_str = ", ".join(given) if given else "награда"
     await c.answer(f"🎁 Получено: {reward_str}", show_alert=True)
-    # понять, на какой вкладке был игрок (по достижению)
-    a = await ach.get_ach(ach_id)
-    tab = "hidden" if (a and a["hidden"]) else "public"
-    await show_achievements(c.bot, c.message.chat.id, c.from_user.id, 0,
+    # вернуться на ту же страницу и вкладку
+    await show_achievements(c.bot, c.message.chat.id, c.from_user.id, page,
                             edit_msg_id=c.message.message_id, tab=tab)
