@@ -152,6 +152,7 @@ async def casino_event(uid: int, game: str, won: int, is_jackpot: bool = False,
 
 # человекочитаемые названия триггеров (для админки достижений)
 TRIGGER_LABELS = {
+    "secret_word": "🔑 Секретное слово (ввод в ЛС)",
     C_EARNED_MUSH: "Заработано грибов (всего)",
     C_EARNED_COIN: "Заработано коинов (всего)",
     C_SPENT_MUSH: "Потрачено грибов (всего)",

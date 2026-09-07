@@ -32,6 +32,7 @@ class AchNew(StatesGroup):
     target = State()
     rewards = State()
     claim_text = State()
+    secret = State()
 
 
 @router.message(F.text.lower() == "!достижения")
@@ -117,12 +118,44 @@ async def cb_trig(c: CallbackQuery, state: FSMContext):
     trig = c.data.split(":", 1)[1]
     d = await state.get_data(); d["ach"]["trigger"] = trig
     await state.update_data(ach=d["ach"])
-    await state.set_state(AchNew.target)
     label = counters.TRIGGER_LABELS.get(trig, trig)
-    await ui.edit(c.message,
-        f"Условие: <b>{label}</b>\n\nВведи <b>порог</b> (число, которого нужно достичь):",
-        reply_markup=None)
+    if trig == "secret_word":
+        # особый режим — вводим само слово, порог не нужен
+        await state.set_state(AchNew.secret)
+        await ui.edit(c.message,
+            "🔑 <b>Секретное слово</b>\n\nВведи слово-триггер (игрок напишет его боту в ЛС, "
+            "чтобы открыть достижение):", reply_markup=None)
+    else:
+        await state.set_state(AchNew.target)
+        await ui.edit(c.message,
+            f"Условие: <b>{label}</b>\n\nВведи <b>порог</b> (число, которого нужно достичь):",
+            reply_markup=None)
     await c.answer()
+
+
+@router.message(AchNew.secret)
+async def s_secret(msg: Message, state: FSMContext):
+    word = (msg.text or "").strip()
+    if len(word) < 2 or len(word) > 60:
+        return await ui.reply(msg, "Слово 2-60 символов. Ещё раз:")
+    if "<" in word or ">" in word:
+        return await ui.reply(msg, "Без скобок. Ещё раз:")
+    # проверим уникальность слова
+    import re
+    norm = re.sub(r"\s+", " ", word).lower()
+    exists = await db.pool().fetchval(
+        "SELECT 1 FROM rb_achievements WHERE active AND lower(secret_word)=$1", norm)
+    if exists:
+        return await ui.reply(msg, "Это слово уже используется другим достижением. Другое:")
+    d = await state.get_data(); d["ach"]["secret_word"] = word
+    d["ach"]["target"] = 1   # секретное = порог 1 (одноразово)
+    await state.update_data(ach=d["ach"])
+    await state.set_state(AchNew.rewards)
+    await ui.reply(msg,
+        "🎁 <b>Награды</b> — по одной в строке. Форматы:\n\n"
+        "<code>грибы 5000</code>\n<code>титул Звезда</code>\n<code>эмодзи ⭐</code>\n"
+        "<code>удача 2 15 all</code>\n<code>скидка 20 shop</code>\n\n"
+        "Напиши награды:")
 
 
 @router.message(AchNew.target)
@@ -233,12 +266,14 @@ async def cb_save(c: CallbackQuery, state: FSMContext):
     code = f"ach_{int(time.time())}"
     await db.pool().execute(
         "INSERT INTO rb_achievements (code, title, description, hidden, trigger_type, "
-        "trigger_target, progress_style, rewards, created_by, claim_text) "
-        "VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)",
-        code, a["title"], a.get("desc", ""), hidden, a["trigger"], a["target"],
+        "trigger_target, progress_style, rewards, created_by, claim_text, secret_word) "
+        "VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)",
+        code, a["title"], a.get("desc", ""),
+        hidden or bool(a.get("secret_word")),  # секретное слово -> всегда скрытое
+        a["trigger"], a["target"],
         "fraction" if a["target"] <= 100 else "percent",
         json.dumps(a["rewards"], ensure_ascii=False), c.from_user.id,
-        a.get("claim_text") or None)
+        a.get("claim_text") or None, a.get("secret_word") or None)
     await c.answer("Достижение создано!")
     with contextlib.suppress(Exception):
         await c.message.edit_text(

@@ -473,6 +473,8 @@ CREATE TABLE IF NOT EXISTS rb_achievements (
 CREATE INDEX IF NOT EXISTS rb_ach_trigger_idx ON rb_achievements (trigger_type) WHERE active;
 -- текст-подпись, который показывается игроку при получении награды
 ALTER TABLE rb_achievements ADD COLUMN IF NOT EXISTS claim_text TEXT;
+-- секретное слово: если задано, достижение выполняется вводом этого слова в ЛС
+ALTER TABLE rb_achievements ADD COLUMN IF NOT EXISTS secret_word TEXT;
 
 -- --- Прогресс игроков по достижениям ---
 CREATE TABLE IF NOT EXISTS rb_user_achievements (

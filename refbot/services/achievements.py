@@ -154,3 +154,38 @@ async def _add_luck(uid: int, scope: str, mult: float, minutes: int):
                     "INSERT INTO rb_active_bonuses (tg_id, bonus_type, scope, multiplier, expires_at) "
                     "VALUES ($1,'luck',$2,$3,$4)", uid, scope, mult,
                     now + timedelta(minutes=minutes))
+
+
+async def try_secret_word(uid: int, text: str) -> dict | None:
+    """Проверить, совпал ли текст с секретным словом какого-то достижения.
+    Если да и игрок ещё не выполнил его — засчитать (completed). Возвращает
+    достижение или None. Слово нормализуется (регистр, пробелы)."""
+    import re
+    word = re.sub(r"\s+", " ", (text or "").strip()).lower()
+    if not word or len(word) > 100:
+        return None
+    ach = await db.pool().fetchrow(
+        "SELECT * FROM rb_achievements WHERE active AND secret_word IS NOT NULL "
+        "AND lower(secret_word)=$1 LIMIT 1", word)
+    if not ach:
+        return None
+    # уже выполнено этим игроком?
+    ua = await db.pool().fetchrow(
+        "SELECT completed FROM rb_user_achievements WHERE tg_id=$1 AND ach_id=$2",
+        uid, ach["id"])
+    if ua and ua["completed"]:
+        return None   # одноразовое — повторный ввод игнор
+    # засчитать
+    await db.pool().execute(
+        "INSERT INTO rb_user_achievements (tg_id, ach_id, progress, completed, completed_at) "
+        "VALUES ($1,$2,1,true,now()) "
+        "ON CONFLICT (tg_id, ach_id) DO UPDATE SET completed=true, progress=1, "
+        "completed_at=COALESCE(rb_user_achievements.completed_at, now())",
+        uid, ach["id"])
+    # счётчик «секретных слов введено» — для достижений-счётчиков
+    try:
+        from services import counters as _cnt
+        await _cnt.bump(uid, _cnt.C_PROMO_SECRET)
+    except Exception:
+        pass
+    return dict(ach)

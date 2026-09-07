@@ -90,7 +90,7 @@ async def show_browser(bot, chat_id: int, uid: int, game: str, page: int = 0,
     pages = (total + PAGE - 1) // PAGE
     nav = []
     if page > 0:
-        await btn(ctrl, "◀️", f"lb_page:{game}:{page-1}")
+        await btn(ctrl, "🥕", f"lb_page:{game}:{page-1}")
         nav.append(1)
     if page + 1 < pages:
         await btn(ctrl, "▶️", f"lb_page:{game}:{page+1}")

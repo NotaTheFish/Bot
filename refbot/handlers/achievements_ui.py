@@ -127,7 +127,7 @@ async def show_achievements(bot, chat_id: int, uid: int, page: int = 0,
     nav = 0
     if pages > 1:
         if page > 0:
-            await btn(ctrl, "◀️", f"ach_page:{tab}:{page - 1}"); nav += 1
+            await btn(ctrl, "🥕", f"ach_page:{tab}:{page - 1}"); nav += 1
         if page < pages - 1:
             await btn(ctrl, "▶️", f"ach_page:{tab}:{page + 1}"); nav += 1
     await btn(ctrl, "Назад", "profile", "back")

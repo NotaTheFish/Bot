@@ -139,6 +139,9 @@ async def main():
     from handlers import inventory_ui
     dp.include_router(inventory_ui.router)
     dp.include_router(promo.router)
+    # ПОСЛЕДНИМ — ловит секретные слова, не мешая остальным
+    from handlers import secret_words
+    dp.include_router(secret_words.router)
 
     log.info("EV рулетки: %.1f 🍄 / %.0f 🪙 за прокрутку",
              roulette.expected_value("mushrooms"), roulette.expected_value("coins"))
