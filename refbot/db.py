@@ -622,6 +622,7 @@ EXPECTED_TABLES = [
     "rb_shop",
     "rb_inventory",
     "rb_active_bonuses",
+    "rb_piggy",
 ]
 
 

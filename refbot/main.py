@@ -140,6 +140,8 @@ async def main():
     dp.include_router(inventory_ui.router)
     dp.include_router(promo.router)
     # ПОСЛЕДНИМ — ловит секретные слова, не мешая остальным
+    from handlers import piggy_ui
+    dp.include_router(piggy_ui.router)
     from handlers import secret_words
     dp.include_router(secret_words.router)
 

@@ -476,6 +476,17 @@ ALTER TABLE rb_achievements ADD COLUMN IF NOT EXISTS claim_text TEXT;
 -- секретное слово: если задано, достижение выполняется вводом этого слова в ЛС
 ALTER TABLE rb_achievements ADD COLUMN IF NOT EXISTS secret_word TEXT;
 
+-- ---------- Копилки (личные хранилища валюты) ----------
+CREATE TABLE IF NOT EXISTS rb_piggy (
+    id         BIGSERIAL PRIMARY KEY,
+    tg_id      BIGINT NOT NULL,
+    name       TEXT NOT NULL,
+    currency   TEXT NOT NULL,       -- 'mushrooms' | 'coins' | 'shimcoins'
+    amount     BIGINT NOT NULL DEFAULT 0,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS rb_piggy_tg_idx ON rb_piggy (tg_id);
+
 -- --- Прогресс игроков по достижениям ---
 CREATE TABLE IF NOT EXISTS rb_user_achievements (
     id           BIGSERIAL PRIMARY KEY,
@@ -712,7 +723,7 @@ ALTER TABLE rb_giveaways ADD COLUMN IF NOT EXISTS finish_photo TEXT;
 
 -- ---------- 5. Проверка ----------
 SELECT
-  (SELECT count(*) FROM pg_tables WHERE tablename ~ '^rb_')                   AS tables_expect_40,
+  (SELECT count(*) FROM pg_tables WHERE tablename ~ '^rb_')                   AS tables_expect_41,
   (SELECT count(*) FROM pg_type   WHERE typname ~ '^rb_' AND typtype = 'e')   AS enums_expect_3,
   (SELECT count(*) FROM pg_indexes WHERE indexname IN
      ('rb_referrals_alive_idx','rb_withdrawals_one_pending','rb_spins_daily',

@@ -191,12 +191,17 @@ def _parse(text: str):
     if len(parts) < 3:
         return "help"
     game = _GAME_WORDS.get(parts[0].lower())
-    bet = parse_amount(parts[1])
     cur = None
     for w in parts[2:]:
         if w.lower() in _CUR_WORDS:
             cur = _CUR_WORDS[w.lower()]
             break
+    # «вабанк» — весь баланс (маркер, точную сумму подставит обработчик)
+    if parts[1].lower() in ("вабанк", "ва-банк", "allin", "олл-ин", "оллин"):
+        if not game or cur is None:
+            return "help"
+        return game, "ALLIN", cur
+    bet = parse_amount(parts[1])
     if not game or bet is None or bet <= 0 or cur is None:
         return "help"
     return game, bet, cur
@@ -241,10 +246,26 @@ async def cmd_casino(msg: Message):
 
 async def _launch(msg_or_c, uid: int, game: str, bet: int, cur: str, again_of):
     """Запустить игру. msg_or_c — Message (новая) или CallbackQuery («ещё»)."""
+    allin = False
+    # «вабанк» — весь баланс (обходит обычный лимит ставки)
+    if bet == "ALLIN":
+        b = await db.balances(uid)
+        bet = int(b.get(cur, 0))
+        allin = True
+        target = msg_or_c.message if hasattr(msg_or_c, "message") else msg_or_c
+        if bet <= 0:
+            with contextlib.suppress(Exception):
+                await ui.reply(target, "Ва-банк не вышел — баланс пуст 😅")
+            return
+        if game != "wheel":
+            with contextlib.suppress(Exception):
+                await ui.reply(target, "Ва-банк доступен только в рулетке: "
+                                       "<code>!казино рулетка вабанк грибы</code>")
+            return
     if game == "cases":
         await _play_case_chat(msg_or_c, uid, bet, cur, again_of)
     elif game == "wheel":
-        await _play_wheel_chat(msg_or_c, uid, bet, cur, again_of)
+        await _play_wheel_chat(msg_or_c, uid, bet, cur, again_of, allin=allin)
     elif game == "mines":
         target = msg_or_c.message if hasattr(msg_or_c, "message") else msg_or_c
         await _mines_choose_field(target, uid, bet, cur)
@@ -597,17 +618,24 @@ async def _play_case_chat(msg_or_c, uid: int, bet: int, cur: str, again_of):
 
 
 # ---------------- рулетка в чате ----------------
-async def _play_wheel_chat(msg_or_c, uid: int, bet: int, cur: str, again_of):
+async def _play_wheel_chat(msg_or_c, uid: int, bet: int, cur: str, again_of, allin: bool = False):
     target = msg_or_c.message if hasattr(msg_or_c, "message") else msg_or_c
     rate = _rate(cur)
     bet_mush = bet // rate
-    if not casino.wheel_bet_ok(bet_mush):
+    # при вабанке лимит не проверяем (кроме минимума), обычно — как раньше
+    if not allin and not casino.wheel_bet_ok(bet_mush):
         with contextlib.suppress(Exception):
             await ui.reply(target,
                 f"🎡 Ставка рулетки: {fmt(WHEEL_MIN_BET*rate)}–{fmt(WHEEL_MAX_BET*rate)} {'🪙' if cur=='coins' else '🍄'}.")
         return
+    if allin and bet_mush < WHEEL_MIN_BET:
+        with contextlib.suppress(Exception):
+            await ui.reply(target, f"Слишком мало для ва-банка (мин. {fmt(WHEEL_MIN_BET*rate)}).")
+        return
 
-    mult = casino.roll_wheel()
+    from services import inventory as _inv
+    _luck = await _inv.luck_multiplier(uid, "roulette")
+    mult = casino.roll_wheel(boost=(_luck > 1))
     won = int(bet * mult)
     idem = f"cchwheel:{uid}:{int(time.time()*1000)}"
     try:

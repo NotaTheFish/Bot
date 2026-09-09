@@ -22,6 +22,8 @@ async def main_menu(currency: str, is_admin: bool,
     rows.append(1)
     await btn(kb, "🛒 Магазин", "shop_open")
     rows.append(1)
+    await btn(kb, "🐷 Копилки", "piggy_open")
+    rows.append(1)
     if show_offers:
         await btn(kb, "🏷 Особые предложения", "off_my")
         rows.append(1)
