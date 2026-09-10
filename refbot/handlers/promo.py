@@ -216,13 +216,40 @@ async def promo_try_activate(msg: Message):
     if await db.is_banned(msg.from_user.id):
         return
     code = (msg.text or "").strip()
-    # игнорим служебный текст reply-кнопок и слишком длинное/пустое
-    if not code or len(code) > 40 or " " in code or code in ("☰ Меню", "✖️ Скрыть"):
+    if not code or code in ("☰ Меню", "✖️ Скрыть"):
         return
+    # секретное слово достижения может быть длинным/с пробелами — проверим первым
+    if len(code) > 40 or " " in code:
+        from services import achievements as _ach
+        ach_row = await _ach.try_secret_word(msg.from_user.id, code)
+        if ach_row:
+            from services.ui import btn as _btn
+            from aiogram.utils.keyboard import InlineKeyboardBuilder
+            kb = InlineKeyboardBuilder()
+            await _btn(kb, "🎁 Забрать награду", f"ach_claim:{ach_row['id']}:hidden:0")
+            await _btn(kb, "🏆 К достижениям", "ach_open")
+            kb.adjust(1)
+            await ui.answer(msg,
+                f"🔓 <b>Секретное достижение открыто!</b>\n\n«{ach_row['title']}»\n\n"
+                f"Забери награду 👇", reply_markup=kb.as_markup())
+        return   # длинный/многословный — не промокод
 
     status, reward_mush, pid, kind = await db.promo_activate(msg.from_user.id, code, COIN_RATE)
     if status == "notfound":
-        return  # молчим — это обычный текст, не промокод
+        # не промокод — может, это секретное слово достижения?
+        from services import achievements as _ach
+        ach_row = await _ach.try_secret_word(msg.from_user.id, code)
+        if ach_row:
+            from services.ui import btn as _btn
+            from aiogram.utils.keyboard import InlineKeyboardBuilder
+            kb = InlineKeyboardBuilder()
+            await _btn(kb, "🎁 Забрать награду", f"ach_claim:{ach_row['id']}:hidden:0")
+            await _btn(kb, "🏆 К достижениям", "ach_open")
+            kb.adjust(1)
+            await ui.answer(msg,
+                f"🔓 <b>Секретное достижение открыто!</b>\n\n«{ach_row['title']}»\n\n"
+                f"Забери награду 👇", reply_markup=kb.as_markup())
+        return  # молчим — обычный текст
     if status == "expired":
         return await ui.answer(msg, "⏳ Этот промокод больше не действует — истёк срок.")
     if status == "used_up":

@@ -28,6 +28,11 @@ async def get_piggy(pid: int, uid: int) -> dict | None:
 async def create_piggy(uid: int, name: str, currency: str) -> tuple[int | None, str]:
     if await count_piggy(uid) >= MAX_PIGGY:
         return None, f"У тебя уже {MAX_PIGGY} копилок — разбей одну, чтобы создать новую."
+    # имя уникально среди копилок игрока
+    dup = await db.pool().fetchval(
+        "SELECT 1 FROM rb_piggy WHERE tg_id=$1 AND lower(name)=lower($2)", uid, name)
+    if dup:
+        return None, "Копилка с таким названием уже есть — придумай другое."
     pid = await db.pool().fetchval(
         "INSERT INTO rb_piggy (tg_id, name, currency) VALUES ($1,$2,$3) RETURNING id",
         uid, name, currency)
