@@ -61,9 +61,10 @@ def _reward_text(rewards: list) -> str:
 async def show_achievements(bot, chat_id: int, uid: int, page: int = 0,
                             edit_msg_id: int | None = None, tab: str = "public"):
     import json
-    # обновить пиковые балансы (max_*) перед показом — вдруг набрал баланс до фикса
+    # обновить пиковые балансы (max_*) и перепроверить все достижения по счётчикам
     from services import counters as _cnt
     await _cnt.sync_peak_balances(uid)
+    await ach.recheck_all(uid)
     items = await ach.list_for_user(uid)
     # фильтр по вкладке: public | hidden
     if tab == "hidden":

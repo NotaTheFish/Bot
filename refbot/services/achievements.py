@@ -189,3 +189,33 @@ async def try_secret_word(uid: int, text: str) -> dict | None:
     except Exception:
         pass
     return dict(ach)
+
+
+async def recheck_all(uid: int):
+    """Перепроверить прогресс всех достижений игрока по текущим счётчикам.
+    Вызывать при открытии достижений/профиля — ловит счётчики, набранные до
+    того, как достижение было создано, или когда счётчик чинили миграцией."""
+    try:
+        from services import counters as _cnt
+        vals = await _cnt.get_all(uid)
+        achs = await db.pool().fetch(
+            "SELECT id, trigger_type, trigger_target FROM rb_achievements WHERE active "
+            "AND secret_word IS NULL")
+        for a in achs:
+            v = vals.get(a["trigger_type"], 0)
+            if v <= 0:
+                continue
+            completed = v >= a["trigger_target"]
+            prog = min(v, a["trigger_target"])
+            await db.pool().execute(
+                "INSERT INTO rb_user_achievements (tg_id, ach_id, progress, completed, completed_at) "
+                "VALUES ($1,$2,$3,$4, CASE WHEN $4 THEN now() ELSE NULL END) "
+                "ON CONFLICT (tg_id, ach_id) DO UPDATE "
+                "SET progress = GREATEST(rb_user_achievements.progress, $3), "
+                "    completed = rb_user_achievements.completed OR $4, "
+                "    completed_at = COALESCE(rb_user_achievements.completed_at, "
+                "                            CASE WHEN $4 THEN now() ELSE NULL END)",
+                uid, a["id"], prog, completed)
+    except Exception:
+        import logging
+        logging.getLogger("refbot").warning("recheck_all failed for %s", uid)

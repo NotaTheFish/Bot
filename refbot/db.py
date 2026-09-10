@@ -65,6 +65,26 @@ async def apply(conn, tg_id: int, currency: str, delta: int,
         """,
         tg_id, currency, delta, new_balance, reason, ref_id, idem,
     )
+    # счётчики «заработано / потрачено» для достижений (в той же транзакции, без тяжёлой
+    # проверки достижений — она сработает при открытии профиля/достижений)
+    try:
+        ctype = None
+        if delta > 0:
+            ctype = {"mushrooms": "earned_mush", "coins": "earned_coin"}.get(currency)
+            amt = delta
+        else:
+            ctype = {"mushrooms": "spent_mush", "coins": "spent_coin",
+                     "shimcoins": "spent_shim"}.get(currency)
+            amt = -delta
+        if ctype:
+            await conn.execute(
+                "INSERT INTO rb_counters (tg_id, counter_type, value, updated_at) "
+                "VALUES ($1,$2,$3, now()) "
+                "ON CONFLICT (tg_id, counter_type) DO UPDATE "
+                "SET value = rb_counters.value + $3, updated_at = now()",
+                tg_id, ctype, int(amt))
+    except Exception:
+        pass
     return new_balance
 
 
