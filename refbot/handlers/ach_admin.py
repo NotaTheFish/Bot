@@ -220,13 +220,16 @@ def _parse_rewards(text: str, premium_map: dict = None) -> tuple[list, str]:
 
 @router.message(AchNew.rewards)
 async def s_rewards(msg: Message, state: FSMContext):
-    # карта премиум-эмодзи из entities: символ -> <tg-emoji> тег
+    # карта премиум-эмодзи из entities: символ -> <tg-emoji> тег.
+    # entity offset/length — в UTF-16 единицах, поэтому режем по utf-16.
     pmap = {}
+    raw = msg.text or ""
+    u16 = raw.encode("utf-16-le")
     for e in (msg.entities or []):
         if e.type == "custom_emoji":
-            sym = (msg.text or "")[e.offset:e.offset + e.length]
+            sym = u16[e.offset * 2:(e.offset + e.length) * 2].decode("utf-16-le")
             pmap[sym] = f'<tg-emoji emoji-id="{e.custom_emoji_id}">{sym}</tg-emoji>'
-    rewards, err = _parse_rewards(msg.text or "", pmap)
+    rewards, err = _parse_rewards(raw, pmap)
     if err:
         return await ui.reply(msg, f"⚠️ {err}\nПопробуй ещё раз:")
     d = await state.get_data(); d["ach"]["rewards"] = rewards

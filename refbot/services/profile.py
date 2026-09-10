@@ -143,7 +143,7 @@ def extract_emoji(msg) -> str | None:
     for e in ents:
         if e.type == "custom_emoji":
             # символ-подложка под этим entity
-            sym = text[e.offset:e.offset + e.length]
+            sym = text.encode("utf-16-le")[e.offset*2:(e.offset+e.length)*2].decode("utf-16-le")
             return f'<tg-emoji emoji-id="{e.custom_emoji_id}">{sym}</tg-emoji>'
     # обычный эмодзи — первый «символ» (может быть составным)
     return text.split()[0] if text else None

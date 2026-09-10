@@ -174,16 +174,24 @@ async def repanel(bot, chat_id: int, html_text: str, **kw):
 # Bot API 9.4 добавил icon_custom_emoji_id для InlineKeyboardButton.
 # Иконка рисуется ОТДЕЛЬНО от текста, поэтому если премиум есть — эмодзи из
 # текста убираем, иначе получим иконку и эмодзи подряд.
-async def btn(kb, text: str, callback_data: str, slot: str | None = None, **kw):
+async def btn(kb, text: str, callback_data: str, slot: str | None = None,
+              emoji_id: str | None = None, **kw):
     """
     kb — InlineKeyboardBuilder.
     slot — ключ из settings.EMOJI_SLOTS: эмодзи слота подставится в начало текста.
+    emoji_id — явный custom_emoji_id для иконки (минует общий маппинг; для персональных
+      эмодзи с собственным премиумом, которые нельзя подменять свободными заменами).
     Без слота просто пиши эмодзи в тексте: "📊 Сводка".
 
     Дальше — автоматика: если первый символ текста замаплен на премиум (через слот
     или через свободную замену), он превращается в icon_custom_emoji_id и убирается
     из текста. Ничего прописывать руками не надо.
     """
+    # явный emoji_id — приоритет над маппингом (персональные эмодзи)
+    if emoji_id:
+        label = text if text else "\u2063"
+        return kb.button(text=label, callback_data=callback_data,
+                         icon_custom_emoji_id=emoji_id, **kw)
     if slot:
         text = f"{await settings.emoji(slot)} {text}"
     em = await settings.emoji_map()
@@ -191,9 +199,6 @@ async def btn(kb, text: str, callback_data: str, slot: str | None = None, **kw):
     for ch in sorted(em, key=len, reverse=True):
         if text.startswith(ch):
             rest = text[len(ch):].lstrip()
-            # если после выноса эмодзи текста не осталось (кнопка была ТОЛЬКО эмодзи),
-            # ставим невидимый символ — иначе `rest or text` вернул бы эмодзи обратно
-            # в текст, и он задвоился бы с premium-иконкой (баг двойного 💎).
             label = rest if rest else "\u2063"
             return kb.button(text=label, callback_data=callback_data,
                              icon_custom_emoji_id=em[ch], **kw)

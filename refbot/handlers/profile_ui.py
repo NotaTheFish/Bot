@@ -154,9 +154,12 @@ async def cb_emoji(c: CallbackQuery):
     # callback по ИНДЕКСУ (тег/символ в callback_data невалиден для Telegram)
     for i, e in enumerate(emojis):
         mark = " ✅" if e == active else ""
-        # в тексте кнопки — символ-подложка (из тега вытащим видимый символ)
-        label = _emoji_label(e)
-        await btn(kb, f"{label}{mark}", f"prof_emoji_set:{i}")
+        # извлечь собственный premium-id и подложку из тега (минуя общий маппинг)
+        eid, sym = _emoji_parts(e)
+        if eid:
+            await btn(kb, f"{sym}{mark}", f"prof_emoji_set:{i}", emoji_id=eid)
+        else:
+            await btn(kb, f"{sym}{mark}", f"prof_emoji_set:{i}")
     await btn(kb, "🚫 Не показывать", "prof_emoji_set:none")
     await btn(kb, "Назад", "prof_setup", "back")
     n = len(emojis)
@@ -169,11 +172,14 @@ async def cb_emoji(c: CallbackQuery):
     await c.answer()
 
 
-def _emoji_label(e: str) -> str:
-    """Видимый символ эмодзи для текста кнопки (из premium-тега вытащить подложку)."""
+def _emoji_parts(e: str):
+    """Из <tg-emoji emoji-id="ID">СИМВОЛ</tg-emoji> -> (id, символ).
+    Для обычного эмодзи -> (None, эмодзи)."""
     import re
-    m = re.search(r">([^<]+)</tg-emoji>", e)
-    return m.group(1) if m else e
+    m = re.match(r'<tg-emoji emoji-id="(\d+)">([^<]+)</tg-emoji>', e)
+    if m:
+        return m.group(1), m.group(2)
+    return None, e
 
 
 @router.callback_query(F.data.startswith("prof_emoji_set:"))
