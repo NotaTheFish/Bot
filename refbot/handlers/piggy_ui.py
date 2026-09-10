@@ -34,23 +34,8 @@ def _fmt_amt(amount: int, cur: str) -> str:
 
 @router.callback_query(F.data == "piggy_open")
 async def cb_open(c: CallbackQuery):
-    items = await piggy.list_piggy(c.from_user.id)
-    kb = InlineKeyboardBuilder()
-    lines = ["🐷 <b>Копилки</b>\n"]
-    if not items:
-        lines.append("<i>Пока нет копилок. Создай первую!</i>")
-    for p in items:
-        e = _CUR_E.get(p["currency"], "")
-        # эмодзи валюты перед названием + сумма
-        lines.append(f"{e} <b>{p['name']}</b> — {_amt_only(p['amount'], p['currency'])}")
-        # кнопка: эмодзи валюты (через слот-премиум) + название, один эмодзи
-        await btn(kb, f"{e} {p['name']}", f"piggy_view:{p['id']}")
-    lines.append(f"\nКопилок: {len(items)}/{piggy.MAX_PIGGY}")
-    if len(items) < piggy.MAX_PIGGY:
-        await btn(kb, "➕ Новая копилка", "piggy_new")
-    await btn(kb, "Назад", "menu", "back")
-    kb.adjust(1)
-    await ui.edit(c.message, "\n".join(lines), reply_markup=kb.as_markup())
+    text, markup = await _piggy_list_content(c.from_user.id)
+    await ui.edit(c.message, text, reply_markup=markup)
     await c.answer()
 
 
@@ -88,6 +73,53 @@ async def msg_name(msg: Message, state: FSMContext):
                    reply_markup=kb.as_markup())
 
 
+async def _piggy_list_content(uid: int):
+    """Построить (текст, клавиатура) списка копилок."""
+    items = await piggy.list_piggy(uid)
+    kb = InlineKeyboardBuilder()
+    lines = ["🐷 <b>Копилки</b>\n"]
+    if not items:
+        lines.append("<i>Пока нет копилок. Создай первую!</i>")
+    for p in items:
+        e = _CUR_E.get(p["currency"], "")
+        lines.append(f"{e} <b>{p['name']}</b> — {_amt_only(p['amount'], p['currency'])}")
+        await btn(kb, f"{e} {p['name']}", f"piggy_view:{p['id']}")
+    lines.append(f"\nКопилок: {len(items)}/{piggy.MAX_PIGGY}")
+    if len(items) < piggy.MAX_PIGGY:
+        await btn(kb, "➕ Новая копилка", "piggy_new")
+    await btn(kb, "Назад", "menu", "back")
+    kb.adjust(1)
+    return "\n".join(lines), kb.as_markup()
+
+
+async def _send_piggy_list(bot, chat_id: int, uid: int):
+    text, markup = await _piggy_list_content(uid)
+    await ui.send(bot, chat_id, text, reply_markup=markup)
+
+
+async def _piggy_view_content(uid: int, pid: int):
+    p = await piggy.get_piggy(pid, uid)
+    if not p:
+        return None, None
+    b = await db.balances(uid)
+    kb = InlineKeyboardBuilder()
+    await btn(kb, "➕ Пополнить", f"piggy_in:{pid}")
+    await btn(kb, "➖ Снять", f"piggy_out:{pid}")
+    await btn(kb, "🔨 Разбить", f"piggy_smash:{pid}")
+    await btn(kb, "Назад", "piggy_open", "back")
+    kb.adjust(2, 1, 1)
+    text = (f"🐷 <b>{p['name']}</b>\n\n"
+            f"В копилке: <b>{_fmt_amt(p['amount'], p['currency'])}</b>\n"
+            f"На балансе: {_fmt_amt(b.get(p['currency'], 0), p['currency'])}")
+    return text, kb.as_markup()
+
+
+async def _send_piggy_view(bot, chat_id: int, uid: int, pid: int):
+    text, markup = await _piggy_view_content(uid, pid)
+    if text:
+        await ui.send(bot, chat_id, text, reply_markup=markup)
+
+
 @router.callback_query(F.data.startswith("piggycur:"))
 async def cb_cur(c: CallbackQuery, state: FSMContext):
     cur = c.data.split(":")[1]
@@ -96,39 +128,27 @@ async def cb_cur(c: CallbackQuery, state: FSMContext):
     if not name:
         return await c.answer("Название потеряно, начни заново.", show_alert=True)
     pid, err = await piggy.create_piggy(c.from_user.id, name, cur)
-    if err:
-        # например, дубль имени — не бросаем, показываем ошибку с возвратом
-        await c.answer(f"⚠️ {err}", show_alert=True)
-        kb = InlineKeyboardBuilder()
-        await btn(kb, "🐷 К копилкам", "piggy_open", "back")
-        with contextlib.suppress(Exception):
-            await c.message.edit_text(f"⚠️ {err}", reply_markup=kb.as_markup())
-        await state.update_data(piggy_name=None)
-        return
     await state.update_data(piggy_name=None)
+    if err:
+        await c.answer(f"⚠️ {err}", show_alert=True)
+        # заменить сообщение выбора валюты на список копилок
+        with contextlib.suppress(Exception):
+            await c.message.delete()
+        return await _send_piggy_list(c.bot, c.message.chat.id, c.from_user.id)
     await c.answer("Копилка создана!")
-    c.data = f"piggy_view:{pid}"
-    await cb_view(c)
+    # удалить сообщение выбора валюты, показать свежую копилку новым сообщением
+    with contextlib.suppress(Exception):
+        await c.message.delete()
+    await _send_piggy_view(c.bot, c.message.chat.id, c.from_user.id, pid)
 
 
 @router.callback_query(F.data.startswith("piggy_view:"))
 async def cb_view(c: CallbackQuery):
     pid = int(c.data.split(":")[1])
-    p = await piggy.get_piggy(pid, c.from_user.id)
-    if not p:
+    text, markup = await _piggy_view_content(c.from_user.id, pid)
+    if not text:
         return await c.answer("Копилка не найдена.", show_alert=True)
-    b = await db.balances(c.from_user.id)
-    kb = InlineKeyboardBuilder()
-    await btn(kb, "➕ Пополнить", f"piggy_in:{pid}")
-    await btn(kb, "➖ Снять", f"piggy_out:{pid}")
-    await btn(kb, "🔨 Разбить", f"piggy_smash:{pid}")
-    await btn(kb, "Назад", "piggy_open", "back")
-    kb.adjust(2, 1, 1)
-    await ui.edit(c.message,
-        f"🐷 <b>{p['name']}</b>\n\n"
-        f"В копилке: <b>{_fmt_amt(p['amount'], p['currency'])}</b>\n"
-        f"На балансе: {_fmt_amt(b.get(p['currency'], 0), p['currency'])}",
-        reply_markup=kb.as_markup())
+    await ui.edit(c.message, text, reply_markup=markup)
     await c.answer()
 
 
@@ -217,5 +237,7 @@ async def cb_smash(c: CallbackQuery):
     if err:
         return await c.answer(f"⚠️ {err}", show_alert=True)
     await c.answer("Копилка разбита!")
-    c.data = "piggy_open"
-    await cb_open(c)
+    # удалить меню копилки, показать свежий список новым сообщением
+    with contextlib.suppress(Exception):
+        await c.message.delete()
+    await _send_piggy_list(c.bot, c.message.chat.id, c.from_user.id)

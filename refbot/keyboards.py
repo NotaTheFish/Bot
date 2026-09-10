@@ -17,23 +17,25 @@ async def main_menu(currency: str, is_admin: bool,
     await btn(kb, f"Валюта: {await settings.label(currency)}", "toggle_cur", currency)
     await btn(kb, "Мои рефералы", "myrefs", "refs")
     await btn(kb, "Вывод", "wd_menu", "withdraw")
+    # верх: Профиль+Ссылка, Валюта (одна), Рефералы+Вывод
     rows = [2, 1, 2]
-    await btn(kb, "🏦 Банк", "bank")
-    rows.append(1)
-    await btn(kb, "🛒 Магазин", "shop_open")
-    rows.append(1)
-    await btn(kb, "🐷 Копилки", "piggy_open")
-    rows.append(1)
+    # разделы — собираем в список и раскладываем по 2 в ряд
+    sections = []
+    await btn(kb, "🏦 Банк", "bank"); sections.append(1)
+    await btn(kb, "🛒 Магазин", "shop_open"); sections.append(1)
+    await btn(kb, "🐷 Копилки", "piggy_open"); sections.append(1)
     if show_offers:
-        await btn(kb, "🏷 Особые предложения", "off_my")
-        rows.append(1)
+        await btn(kb, "🏷 Предложения", "off_my"); sections.append(1)
     if show_casino:
-        await btn(kb, "🎰 Казино", "casino")
+        await btn(kb, "🎰 Казино", "casino"); sections.append(1)
+    # раскладываем разделы по 2 в ряд
+    n = len(sections)
+    rows += [2] * (n // 2)
+    if n % 2:
         rows.append(1)
     if is_admin:
         await btn(kb, "Админка", "admin", "admin")
         rows.append(1)
-    # тумблер эфемерного меню — только в группе
     if in_group:
         await btn(kb, "🙈 Показать меню только мне" if not eph_on
                   else "👁 Обычное меню (видно всем)", "menu_eph_toggle")
