@@ -154,10 +154,10 @@ async def cb_emoji(c: CallbackQuery):
     # callback по ИНДЕКСУ (тег/символ в callback_data невалиден для Telegram)
     for i, e in enumerate(emojis):
         mark = " ✅" if e == active else ""
-        # извлечь собственный premium-id и подложку из тега (минуя общий маппинг)
         eid, sym = _emoji_parts(e)
         if eid:
-            await btn(kb, f"{sym}{mark}", f"prof_emoji_set:{i}", emoji_id=eid)
+            # премиум-иконка через emoji_id; в тексте только галочка (без подложки)
+            await btn(kb, mark.strip(), f"prof_emoji_set:{i}", emoji_id=eid)
         else:
             await btn(kb, f"{sym}{mark}", f"prof_emoji_set:{i}")
     await btn(kb, "🚫 Не показывать", "prof_emoji_set:none")
