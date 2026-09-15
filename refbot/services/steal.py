@@ -35,6 +35,9 @@ async def active_involving(uid: int) -> dict | None:
 
 
 async def can_steal_today(uid: int) -> bool:
+    from config import UNLIMITED_SPIN_IDS
+    if uid in UNLIMITED_SPIN_IDS:
+        return True   # безлимитное воровство (как безлимитный !шайн)
     row = await db.pool().fetchval("SELECT last_day FROM rb_steal_cd WHERE tg_id=$1", uid)
     if not row:
         return True
@@ -117,13 +120,14 @@ async def defend(uid: int) -> tuple[dict | None, str]:
     """Жертва отбивает атаку командой !шимщит. Штраф вору (вор->жертва)."""
     async with db.pool().acquire() as conn:
         async with conn.transaction():
-            m = await conn.fetchrow(
+            r = await conn.fetchrow(
                 "SELECT * FROM rb_steal WHERE victim=$1 AND status='active' FOR UPDATE", uid)
-            if not m:
+            if not r:
                 return None, "На тебя сейчас нет активного налёта."
-            await _finish(conn, m, defended=True)
-            res = await conn.fetchrow("SELECT * FROM rb_steal WHERE id=$1", m["id"])
-    return dict(res), ""
+            m = dict(r)
+            pay = await _finish(conn, m, defended=True)
+            m["_pay"] = pay
+    return m, ""
 
 
 async def expire_due(bot=None) -> list[dict]:
@@ -134,40 +138,37 @@ async def expire_due(bot=None) -> list[dict]:
             rows = await conn.fetch(
                 "SELECT * FROM rb_steal WHERE status='active' AND deadline < now() "
                 "FOR UPDATE SKIP LOCKED")
-            for m in rows:
-                # авто-щит разовый: если у жертвы есть — срабатывает вместо кражи
+            for r in rows:
+                m = dict(r)
                 once = await _consume_once_shield(conn, m["victim"])
-                await _finish(conn, m, defended=once)
-                d = dict(m); d["auto_shield"] = once
-                out.append(d)
+                pay = await _finish(conn, m, defended=once)
+                m["auto_shield"] = once
+                m["_pay"] = pay
+                out.append(m)
     return out
 
 
-async def _finish(conn, m: dict, defended: bool):
-    """Провести исход атаки. defended=True -> штраф вору; иначе кража."""
+async def _finish(conn, m: dict, defended: bool) -> int:
+    """Провести исход атаки. defended=True -> штраф вору; иначе кража.
+    Возвращает сумму перевода (pay). m — обычный dict."""
     thief, victim, amount = m["thief"], m["victim"], m["amount"]
-    # пересчёт на случай изменения балансов (страховка)
     tb = await conn.fetchval(
         "SELECT amount FROM rb_balances WHERE tg_id=$1 AND currency='mushrooms'", thief) or 0
     vb = await conn.fetchval(
         "SELECT amount FROM rb_balances WHERE tg_id=$1 AND currency='mushrooms'", victim) or 0
-    import time
-    stamp = int(time.time() * 1000)
     if defended:
-        # штраф: вор -> жертва (не больше баланса вора и не больше суммы)
         pay = min(amount, tb)
         if pay > 0:
             await db.apply(conn, thief, "mushrooms", -pay, "steal_penalty", f"stlp:{m['id']}")
             await db.apply(conn, victim, "mushrooms", pay, "steal_defended", f"stld:{m['id']}")
         await conn.execute(
             "UPDATE rb_steal SET status='defended', finished_at=now() WHERE id=$1", m["id"])
-        m["_pay"] = pay
+        return pay
     else:
-        # кража: жертва -> вор (не больше баланса жертвы)
         got = min(amount, vb)
         if got > 0:
             await db.apply(conn, victim, "mushrooms", -got, "stolen_from", f"stlf:{m['id']}")
             await db.apply(conn, thief, "mushrooms", got, "steal_success", f"stls:{m['id']}")
         await conn.execute(
             "UPDATE rb_steal SET status='success', finished_at=now() WHERE id=$1", m["id"])
-        m["_pay"] = got
+        return got

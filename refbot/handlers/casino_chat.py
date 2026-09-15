@@ -246,6 +246,16 @@ async def cmd_casino(msg: Message):
 
 async def _launch(msg_or_c, uid: int, game: str, bet: int, cur: str, again_of):
     """Запустить игру. msg_or_c — Message (новая) или CallbackQuery («ещё»)."""
+    # нельзя играть во время налёта (валюта заморожена)
+    try:
+        from services import steal as _steal
+        if await _steal.active_involving(uid):
+            target = msg_or_c.message if hasattr(msg_or_c, "message") else msg_or_c
+            with contextlib.suppress(Exception):
+                await ui.reply(target, "Идёт налёт — казино недоступно, пока он не завершится.")
+            return
+    except Exception:
+        pass
     allin = False
     # «вабанк» — весь баланс (обходит обычный лимит ставки)
     if bet == "ALLIN":

@@ -204,6 +204,12 @@ async def exchange(tg_id: int, src: str, dst: str, amount: int) -> tuple[int, st
     ВСЁ в одной транзакции: проверка стопа/лимита + списание + начисление + счётчик.
     """
     is_gm = {src, dst} == {"mushrooms", "coins"}   # обмен грибы<->коины?
+    try:
+        from services import steal as _steal
+        if await _steal.active_involving(tg_id):
+            return 0, "Идёт налёт — обмен недоступен, пока он не завершится."
+    except Exception:
+        pass
     got, shk_after, err = await quote(src, dst, amount)
     if err:
         return 0, err

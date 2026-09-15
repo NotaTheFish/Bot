@@ -43,6 +43,12 @@ async def deposit(uid: int, pid: int, amount: int) -> tuple[bool, str]:
     """Положить в копилку: списать с баланса, добавить в копилку."""
     if amount <= 0:
         return False, "Сумма должна быть больше нуля."
+    try:
+        from services import steal as _steal
+        if await _steal.active_involving(uid):
+            return False, "Идёт налёт — пополнение копилки недоступно."
+    except Exception:
+        pass
     async with db.pool().acquire() as conn:
         async with conn.transaction():
             p = await conn.fetchrow(

@@ -39,6 +39,13 @@ async def create(tg_id: int, chat_id: int, currency: str, amount: int) -> tuple[
         return None, step_err
     if await db.is_banned(tg_id):
         return None, "Аккаунт заблокирован."
+    # нельзя выводить во время налёта (валюта заморожена)
+    try:
+        from services import steal as _steal
+        if await _steal.active_involving(tg_id):
+            return None, "Идёт налёт — вывод недоступен, пока он не завершится."
+    except Exception:
+        pass
 
     # Замораживаем средства СРАЗУ: списываем с баланса при создании заявки, чтобы их
     # нельзя было потратить в казино, пока админ думает. Возврат — при отмене/отклонении.
