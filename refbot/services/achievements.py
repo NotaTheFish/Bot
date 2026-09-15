@@ -126,6 +126,20 @@ async def _grant_rewards(uid: int, ach_id: int, rewards: list) -> list[str]:
                     "VALUES ($1,'discount',$2,1,$3)", uid, target,
                     __import__("json").dumps({"percent": percent}))
                 out.append(f"🏷 скидка {percent}%")
+            elif t == "shield":
+                if rw.get("kind") == "time":
+                    minutes = int(rw.get("minutes", 60))
+                    exp = datetime.now(timezone.utc) + timedelta(minutes=minutes)
+                    await db.pool().execute(
+                        "INSERT INTO rb_shield (tg_id, kind, expires_at) VALUES ($1,'time',$2)",
+                        uid, exp)
+                    out.append(f"🛡 щит на {minutes} мин")
+                else:
+                    uses = int(rw.get("uses", 1))
+                    await db.pool().execute(
+                        "INSERT INTO rb_shield (tg_id, kind, uses_left) VALUES ($1,'uses',$2)",
+                        uid, uses)
+                    out.append(f"🛡 щит ×{uses}")
         except Exception:
             import logging
             logging.getLogger("refbot").warning("reward grant failed: %s", t)

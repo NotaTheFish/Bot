@@ -15,7 +15,7 @@ from services.amount_parse import shk_fmt
 router = Router()
 
 _CUR_E = {"mushrooms": "🍄", "coins": "🪙", "shimcoins": "💠"}
-_TYPE_E = {"luck": "🍀", "discount": "🏷", "title": "🏅", "emoji": "😎"}
+_TYPE_E = {"luck": "🍀", "discount": "🏷", "title": "🏅", "emoji": "😎", "shield": "🛡"}
 
 
 def _price_txt(item) -> str:
@@ -34,6 +34,10 @@ def _payload_desc(item) -> str:
         return f"титул «{p.get('title_name','?')}»"
     if t == "emoji":
         return f"эмодзи {p.get('emoji','')}"
+    if t == "shield":
+        if p.get("kind") == "time":
+            return f"щит от воровства на {p.get('minutes',60)} мин"
+        return f"щит от воровства ×{p.get('uses',1)}"
     return ""
 
 
@@ -71,8 +75,12 @@ async def cb_buy(c: CallbackQuery):
         note = "Добавлено в инвентарь — активируй, когда нужно."
     elif t == "title":
         note = "Титул выдан — выбери его в профиле."
-    else:
+    elif t == "emoji":
         note = "Эмодзи выдан — выбери его в профиле."
+    elif t == "shield":
+        note = "🛡 Щит активен — защитит от воровства!"
+    else:
+        note = "Готово!"
     await c.answer(f"✅ Куплено: {item['name']}\n{note}", show_alert=True)
     # обновить витрину
     c.data = "shop_open"

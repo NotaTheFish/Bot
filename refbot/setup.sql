@@ -487,6 +487,42 @@ CREATE TABLE IF NOT EXISTS rb_piggy (
 );
 CREATE INDEX IF NOT EXISTS rb_piggy_tg_idx ON rb_piggy (tg_id);
 
+-- ---------- Воровство (!сшайнить / !шимщит) ----------
+-- Активная атака: висит до 20 мин, потом воркер завершает (удача вору),
+-- либо жертва отбивает !шимщит (неудача вору). Один активный налёт на связку.
+CREATE TABLE IF NOT EXISTS rb_steal (
+    id          BIGSERIAL PRIMARY KEY,
+    thief       BIGINT NOT NULL,
+    victim      BIGINT NOT NULL,
+    amount      BIGINT NOT NULL,       -- зафиксированная сумма (грибы)
+    status      TEXT NOT NULL DEFAULT 'active',  -- active|success|defended|expired
+    chat_id     BIGINT,               -- где была команда (для уведомлений)
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    deadline    TIMESTAMPTZ NOT NULL, -- created + 20 мин
+    finished_at TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS rb_steal_active_idx ON rb_steal (status) WHERE status='active';
+CREATE INDEX IF NOT EXISTS rb_steal_thief_idx ON rb_steal (thief);
+CREATE INDEX IF NOT EXISTS rb_steal_victim_idx ON rb_steal (victim);
+
+-- Кулдаун воровства (раз в день, сброс 00:00 МСК) — по дате последней атаки
+CREATE TABLE IF NOT EXISTS rb_steal_cd (
+    tg_id     BIGINT PRIMARY KEY,
+    last_day  DATE NOT NULL           -- дата (МСК) последнего !сшайнить
+);
+
+-- Активные щиты-предметы (временные): защищают мгновенно, пока не истекут.
+-- Разовые щиты лежат в rb_inventory (item_type='shield_once'), временные — здесь.
+CREATE TABLE IF NOT EXISTS rb_shield (
+    id         BIGSERIAL PRIMARY KEY,
+    tg_id      BIGINT NOT NULL,
+    kind       TEXT NOT NULL,         -- 'time' | 'uses'
+    expires_at TIMESTAMPTZ,           -- для time
+    uses_left  INT,                   -- для uses
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS rb_shield_tg_idx ON rb_shield (tg_id);
+
 -- --- Прогресс игроков по достижениям ---
 CREATE TABLE IF NOT EXISTS rb_user_achievements (
     id           BIGSERIAL PRIMARY KEY,
@@ -723,7 +759,7 @@ ALTER TABLE rb_giveaways ADD COLUMN IF NOT EXISTS finish_photo TEXT;
 
 -- ---------- 5. Проверка ----------
 SELECT
-  (SELECT count(*) FROM pg_tables WHERE tablename ~ '^rb_')                   AS tables_expect_41,
+  (SELECT count(*) FROM pg_tables WHERE tablename ~ '^rb_')                   AS tables_expect_44,
   (SELECT count(*) FROM pg_type   WHERE typname ~ '^rb_' AND typtype = 'e')   AS enums_expect_3,
   (SELECT count(*) FROM pg_indexes WHERE indexname IN
      ('rb_referrals_alive_idx','rb_withdrawals_one_pending','rb_spins_daily',

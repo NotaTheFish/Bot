@@ -142,6 +142,8 @@ async def main():
     # ПОСЛЕДНИМ — ловит секретные слова, не мешая остальным
     from handlers import piggy_ui
     dp.include_router(piggy_ui.router)
+    from handlers import steal as steal_h
+    dp.include_router(steal_h.router)
     from handlers import secret_words
     dp.include_router(secret_words.router)
 
@@ -172,6 +174,8 @@ async def main():
     asyncio.create_task(rps_game.timeout_worker(bot))
     from handlers import navy_game
     asyncio.create_task(navy_game.timeout_worker(bot))
+    from handlers import steal as steal_h
+    asyncio.create_task(steal_h.steal_worker(bot))
     await bot.delete_webhook(drop_pending_updates=True)
     # регистрируем /secret как ЭФЕМЕРНУЮ команду (невидимый ввод в группах).
     # Фича свежая — если Telegram/версия не примут is_ephemeral, команда всё равно

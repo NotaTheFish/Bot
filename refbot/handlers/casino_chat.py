@@ -491,11 +491,11 @@ async def _cm_cashout(c, mid: int, forced: bool):
     await c.answer("Забрал!")
 
 
-def _again_kb(uid: int, game: str, bet: int, cur: str):
+def _again_kb(uid: int, game: str, bet: int, cur: str, allin: bool = False):
     k = InlineKeyboardBuilder()
-    # в callback зашиваем автора, игру, ставку, валюту
-    import base64
-    payload = f"{uid}:{game}:{bet}:{cur}"
+    # в callback зашиваем автора, игру, ставку, валюту. Вабанк -> маркер ALLIN.
+    bet_part = "ALLIN" if allin else str(bet)
+    payload = f"{uid}:{game}:{bet_part}:{cur}"
     k.button(text="🔁 Крутить ещё", callback_data=f"cch:{payload}")
     k.adjust(1)
     return k.as_markup()
@@ -670,7 +670,7 @@ async def _play_wheel_chat(msg_or_c, uid: int, bet: int, cur: str, again_of, all
               f"Баланс: {fmt(new_bal)} {e}")
     frames = [f"🎡 <b>Рулетка</b>\n\n<blockquote>{f}</blockquote>"
               for f in ["🎡 крутится…", "🎡💨 крутится…", "🎡💨 замедляется…", "🎯 стоп!"]]
-    markup = _again_kb(uid, "wheel", bet, cur)
+    markup = _again_kb(uid, "wheel", bet, cur, allin=allin)
     await _animate_and_finish(msg_or_c, target, uid, frames, result, markup, again_of)
 
 
@@ -681,7 +681,7 @@ async def cb_again(c: CallbackQuery):
     try:
         owner_s, game, bet_s, cur = payload.split(":")
         owner = int(owner_s)
-        bet = int(bet_s)
+        bet = "ALLIN" if bet_s == "ALLIN" else int(bet_s)
     except ValueError:
         return  # молча
     # только автор команды; чужие — игнорируем МОЛЧА (не отвечаем на callback)

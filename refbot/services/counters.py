@@ -64,6 +64,23 @@ C_REFERRALS = "referrals"
 C_SHOP_BOUGHT = "shop_bought"
 C_SHOP_SPENT = "shop_spent"
 C_LUCK_USED = "luck_used"
+# воровство: удачи/неудачи в краже и защите
+C_STEAL_WIN = "steal_win"              # удачных краж
+C_STEAL_WIN_MAX = "steal_win_max"      # макс украдено за раз
+C_STEAL_WIN_STREAK = "steal_win_streak"    # удачных краж подряд (текущий стрик)
+C_STEAL_LOSS = "steal_loss"            # неудачных краж (отбили)
+C_STEAL_LOSS_MAX = "steal_loss_max"    # макс потеряно при неудаче за раз
+C_STEAL_LOSS_STREAK = "steal_loss_streak"
+C_DEF_WIN = "def_win"                  # удачных защит (отбил атаку)
+C_DEF_WIN_MAX = "def_win_max"          # макс компенсация при защите
+C_DEF_WIN_STREAK = "def_win_streak"
+C_DEF_LOSS = "def_loss"                # неудачных защит (обокрали)
+C_DEF_LOSS_MAX = "def_loss_max"        # макс потеряно при неудачной защите
+C_DEF_LOSS_STREAK = "def_loss_streak"
+# стрики казино/pvp (победы/джекпоты подряд)
+C_CASINO_WIN_STREAK = "casino_win_streak"
+C_JACKPOT_STREAK = "jackpot_streak"
+C_PVP_WIN_STREAK = "pvp_win_streak"
 # Мета
 C_TITLES = "titles"
 C_ACH_DONE = "ach_done"
@@ -132,11 +149,17 @@ async def casino_event(uid: int, game: str, won: int, is_jackpot: bool = False,
             await bump_max(uid, C_MAX_WIN, int(won))
             if won_c:
                 await bump(uid, won_c)
+            await streak(uid, C_CASINO_WIN_STREAK)
         elif is_loss:
             if lost_c:
                 await bump(uid, lost_c)
+            await streak_reset(uid, C_CASINO_WIN_STREAK)
         if is_jackpot:
             await bump(uid, C_JACKPOT)
+            await streak(uid, C_JACKPOT_STREAK)
+        elif bet:
+            # была игра, но без джекпота — стрик джекпотов рвётся
+            await streak_reset(uid, C_JACKPOT_STREAK)
         # проигрыш: сколько игрок потерял на этой игре (ставка минус возврат)
         if bet:
             loss = bet - won
@@ -197,6 +220,21 @@ TRIGGER_LABELS = {
     C_SHOP_BOUGHT: "Покупок в магазине",
     C_SHOP_SPENT: "Потрачено в магазине",
     C_LUCK_USED: "Активаций удачи",
+    C_STEAL_WIN: "Удачных краж",
+    C_STEAL_WIN_MAX: "Украдено за раз (макс)",
+    C_STEAL_WIN_STREAK: "Удачных краж подряд",
+    C_STEAL_LOSS: "Неудачных краж",
+    C_STEAL_LOSS_MAX: "Потеряно при краже за раз (макс)",
+    C_STEAL_LOSS_STREAK: "Неудачных краж подряд",
+    C_DEF_WIN: "Удачных защит",
+    C_DEF_WIN_MAX: "Компенсация за защиту (макс)",
+    C_DEF_WIN_STREAK: "Удачных защит подряд",
+    C_DEF_LOSS: "Неудачных защит",
+    C_DEF_LOSS_MAX: "Потеряно при защите за раз (макс)",
+    C_DEF_LOSS_STREAK: "Неудачных защит подряд",
+    C_CASINO_WIN_STREAK: "Побед в казино подряд",
+    C_JACKPOT_STREAK: "Джекпотов подряд",
+    C_PVP_WIN_STREAK: "Побед в PvP подряд",
     C_TITLES: "Получено титулов",
     C_ACH_DONE: "Выполнено достижений",
 }
@@ -214,3 +252,31 @@ async def sync_peak_balances(uid: int):
         await bump_max(uid, C_MAX_SHIM, int(b.get("shimcoins", 0)) // 100)
     except Exception:
         pass
+
+
+async def streak(uid: int, inc_type: str):
+    """Инкремент стрик-счётчика (растёт при успехе подряд)."""
+    return await bump(uid, inc_type)
+
+
+async def streak_reset(uid: int, stype: str):
+    """Сбросить стрик в 0 (при неудаче/промахе)."""
+    try:
+        await db.pool().execute(
+            "INSERT INTO rb_counters (tg_id, counter_type, value, updated_at) "
+            "VALUES ($1,$2,0, now()) ON CONFLICT (tg_id, counter_type) DO UPDATE SET value=0",
+            uid, stype)
+    except Exception:
+        pass
+
+
+# какие триггеры имеют «подряд»-версию: обычный -> стрик-счётчик
+STREAK_VARIANTS = {
+    C_JACKPOT: C_JACKPOT_STREAK,
+    C_CASINO_WON: C_CASINO_WIN_STREAK,
+    C_PVP_WON: C_PVP_WIN_STREAK,
+    C_STEAL_WIN: C_STEAL_WIN_STREAK,
+    C_STEAL_LOSS: C_STEAL_LOSS_STREAK,
+    C_DEF_WIN: C_DEF_WIN_STREAK,
+    C_DEF_LOSS: C_DEF_LOSS_STREAK,
+}

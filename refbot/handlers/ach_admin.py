@@ -166,13 +166,41 @@ async def s_target(msg: Message, state: FSMContext):
         return await ui.reply(msg, "Нужно положительное число. Ещё раз:")
     d = await state.get_data(); d["ach"]["target"] = n
     await state.update_data(ach=d["ach"])
+    # если у триггера есть «подряд»-версия — предложить выбор режима
+    trig = d["ach"]["trigger"]
+    if trig in counters.STREAK_VARIANTS:
+        kb = InlineKeyboardBuilder()
+        await btn(kb, "📊 За всё время", "acha_mode:total")
+        await btn(kb, "🔥 Подряд", "acha_mode:streak")
+        kb.adjust(1)
+        return await ui.reply(msg,
+            f"Как считать «{counters.TRIGGER_LABELS.get(trig)}» — за всё время или подряд?",
+            reply_markup=kb.as_markup())
     await state.set_state(AchNew.rewards)
+    await _ask_rewards(msg)
+
+
+@router.callback_query(F.data.startswith("acha_mode:"))
+async def cb_mode(c: CallbackQuery, state: FSMContext):
+    mode = c.data.split(":")[1]
+    d = await state.get_data()
+    if mode == "streak":
+        # заменить триггер на стрик-версию
+        trig = d["ach"]["trigger"]
+        d["ach"]["trigger"] = counters.STREAK_VARIANTS.get(trig, trig)
+        await state.update_data(ach=d["ach"])
+    await state.set_state(AchNew.rewards)
+    await c.answer("Ок")
+    await _ask_rewards(c.message)
+
+
+async def _ask_rewards(msg):
     await ui.reply(msg,
         "🎁 <b>Награды</b> — по одной в строке. Форматы:\n\n"
         "<code>грибы 5000</code>\n<code>коины 100000</code>\n<code>шимкоины 5</code>\n"
         "<code>титул Звезда</code>\n<code>эмодзи ⭐</code>\n"
-        "<code>удача 2 15 all</code> (×2 на 15 мин, scope all/roulette/cases/shine/giveaway/contest)\n"
-        "<code>скидка 20 shop</code> (20% на shop/bank/all)\n"
+        "<code>удача 2 15 all</code>\n<code>скидка 20 shop</code>\n"
+        "<code>щит время 60</code> / <code>щит разы 3</code>\n"
         "<code>revive 3</code> / <code>max 1</code> / <code>partials 10</code>\n\n"
         "Напиши награды (можно несколько строк):")
 
@@ -209,6 +237,14 @@ def _parse_rewards(text: str, premium_map: dict = None) -> tuple[list, str]:
             elif kind == "скидка":
                 rewards.append({"type": "discount", "percent": int(parts[1]),
                                 "target": parts[2] if len(parts) > 2 else "shop"})
+            elif kind in ("щит", "шимщит"):
+                # щит время N  /  щит разы N
+                sub = parts[1].lower()
+                val = int(parts[2])
+                if sub in ("время", "time"):
+                    rewards.append({"type": "shield", "kind": "time", "minutes": val})
+                else:
+                    rewards.append({"type": "shield", "kind": "uses", "uses": val})
             else:
                 return [], f"Не понял строку: {line}"
         except (IndexError, ValueError):

@@ -5,7 +5,7 @@
 import json
 import db
 
-ITEM_TYPES = ("luck", "discount", "title", "emoji")
+ITEM_TYPES = ("luck", "discount", "title", "emoji", "shield")
 LUCK_SCOPES = ("all", "roulette", "cases", "shine", "giveaway", "contest")
 DISCOUNT_TARGETS = ("shop", "bank", "all")
 
@@ -121,3 +121,15 @@ async def _deliver(uid: int, item: dict, disc: int, paid: int):
             await db.pool().execute(
                 "INSERT INTO rb_user_emojis (tg_id, emoji, source) VALUES ($1,$2,'shop') "
                 "ON CONFLICT (tg_id, emoji) DO NOTHING", uid, emo)
+    elif t == "shield":
+        kind = p.get("kind", "uses")
+        if kind == "time":
+            from datetime import datetime, timezone, timedelta
+            minutes = int(p.get("minutes", 60))
+            exp = datetime.now(timezone.utc) + timedelta(minutes=minutes)
+            await db.pool().execute(
+                "INSERT INTO rb_shield (tg_id, kind, expires_at) VALUES ($1,'time',$2)", uid, exp)
+        else:
+            uses = int(p.get("uses", 1))
+            await db.pool().execute(
+                "INSERT INTO rb_shield (tg_id, kind, uses_left) VALUES ($1,'uses',$2)", uid, uses)

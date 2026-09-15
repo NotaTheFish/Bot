@@ -222,8 +222,13 @@ async def finish(mid: int, winner: int | None) -> tuple[dict | None, str]:
                 await _cnt.bump(pid, _cnt.C_PVP_PLAYED)
         if winner:
             await _cnt.bump(winner, _cnt.C_PVP_WON)
+            await _cnt.streak(winner, _cnt.C_PVP_WIN_STREAK)
             if won_type:
                 await _cnt.bump(winner, won_type)
+            # проигравший рвёт стрик
+            loser = m["p2"] if winner == m["p1"] else m["p1"]
+            if loser:
+                await _cnt.streak_reset(loser, _cnt.C_PVP_WIN_STREAK)
     except Exception:
         pass
     return dict(m), ""

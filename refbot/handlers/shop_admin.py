@@ -57,6 +57,7 @@ async def cb_new(c: CallbackQuery, state: FSMContext):
     await btn(kb, "🏷 Скидка", "shopa_type:discount")
     await btn(kb, "🏅 Титул", "shopa_type:title")
     await btn(kb, "😎 Эмодзи", "shopa_type:emoji")
+    await btn(kb, "🛡 Щит (шимщит)", "shopa_type:shield")
     kb.adjust(2)
     await state.update_data(shop={})
     await ui.edit(c.message, "🛒 <b>Новый товар</b>\n\nЧто продаём?", reply_markup=kb.as_markup())
@@ -101,6 +102,9 @@ async def s_desc(msg: Message, state: FSMContext):
                     "Пример: <code>20 shop</code> (20% на магазин).\nЦель: shop/bank/all",
         "title": "Название титула, который получит покупатель:",
         "emoji": "Эмодзи, который получит покупатель:",
+        "shield": "Параметры щита: <code>тип значение</code>\n"
+                  "• <code>время 60</code> — щит на 60 минут (мгновенная защита)\n"
+                  "• <code>разы 3</code> — 3 авто-блока атак",
     }[t]
     await ui.reply(msg, f"⚙️ {hint}")
 
@@ -131,6 +135,16 @@ async def s_payload(msg: Message, state: FSMContext):
                     emoji_val = f'<tg-emoji emoji-id="{e.custom_emoji_id}">{s2}</tg-emoji>'
                     break
             payload = {"emoji": emoji_val}
+        elif t == "shield":
+            parts = txt.split()
+            kind_word = parts[0].lower()
+            val = int(parts[1])
+            if kind_word in ("время", "time", "мин", "минуты"):
+                payload = {"kind": "time", "minutes": val}
+            elif kind_word in ("разы", "раз", "uses"):
+                payload = {"kind": "uses", "uses": val}
+            else:
+                return await ui.reply(msg, "Тип щита: «время» или «разы». Ещё раз:")
     except (IndexError, ValueError):
         return await ui.reply(msg, "Не понял параметры. Попробуй ещё раз по формату:")
     s["payload"] = payload
