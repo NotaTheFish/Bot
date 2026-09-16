@@ -261,6 +261,13 @@ CREATE TABLE IF NOT EXISTS rb_offers (
     created_by      BIGINT,
     created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+-- акция-бонус: продать конкретному игроку бонус (удача/скидка/щит/эмодзи/титул) по спеццене
+ALTER TABLE rb_offers ADD COLUMN IF NOT EXISTS kind TEXT NOT NULL DEFAULT 'currency';
+ALTER TABLE rb_offers ADD COLUMN IF NOT EXISTS bonus_type TEXT;
+ALTER TABLE rb_offers ADD COLUMN IF NOT EXISTS bonus_payload JSONB;
+ALTER TABLE rb_offers ADD COLUMN IF NOT EXISTS bonus_price BIGINT;
+ALTER TABLE rb_offers ADD COLUMN IF NOT EXISTS bonus_currency TEXT;
+ALTER TABLE rb_offers ADD COLUMN IF NOT EXISTS bonus_bought BOOLEAN NOT NULL DEFAULT FALSE;
 CREATE INDEX IF NOT EXISTS rb_offers_user_idx ON rb_offers (tg_id) WHERE active = TRUE;
 
 -- Карта username -> tg_id, чтобы резолвить @username в шёпотах (!секрет).

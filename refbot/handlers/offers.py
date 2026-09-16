@@ -43,6 +43,8 @@ class OfferNew(StatesGroup):
     price_coin = State()
     limit = State()
     expiry = State()
+    bonus_params = State()
+    bonus_price = State()
 
 
 def _parse_expiry(text: str):
@@ -72,10 +74,43 @@ async def cb_offer_new(c: CallbackQuery, state: FSMContext):
     tg_id = int(c.data.split(":")[1])
     await state.set_state(None)
     await state.update_data(offer={"tg_id": tg_id})
+    kb = InlineKeyboardBuilder()
+    from services.ui import btn as _btn
+    await _btn(kb, "💱 Обмен валюты", f"off_kind:currency:{tg_id}")
+    await _btn(kb, "🎁 Бонус", f"off_kind:bonus:{tg_id}")
+    await _btn(kb, "Отмена", "admin", "back")
+    kb.adjust(1)
     await ui.edit(c.message,
-        f"🏷 <b>Новая акция</b> для <code>{tg_id}</code>\n\n"
-        f"Какую валюту можно будет купить за Шимкоины?",
-        reply_markup=await kb.offer_currency(tg_id))
+        f"🏷 <b>Новая акция</b> для <code>{tg_id}</code>\n\nЧто предложить?",
+        reply_markup=kb.as_markup())
+    await c.answer()
+
+
+@router.callback_query(F.data.startswith("off_kind:"))
+async def cb_offer_kind(c: CallbackQuery, state: FSMContext):
+    if not await _is_admin(c.from_user.id):
+        return await c.answer("Только главный админ.", show_alert=True)
+    _, kind, tg_s = c.data.split(":")
+    tg_id = int(tg_s)
+    data = await state.get_data()
+    offer = data.get("offer") or {"tg_id": tg_id}
+    offer["kind"] = kind
+    await state.update_data(offer=offer)
+    if kind == "currency":
+        await ui.edit(c.message,
+            f"🏷 <b>Акция-обмен</b>\n\nКакую валюту можно купить за Шимкоины?",
+            reply_markup=await kb.offer_currency(tg_id))
+    else:
+        # бонус: выбор типа
+        from services.ui import btn as _btn
+        k = InlineKeyboardBuilder()
+        await _btn(k, "🍀 Удача", f"off_bt:luck:{tg_id}")
+        await _btn(k, "🏷 Скидка", f"off_bt:discount:{tg_id}")
+        await _btn(k, "🛡 Щит", f"off_bt:shield:{tg_id}")
+        await _btn(k, "Отмена", "admin", "back")
+        k.adjust(2, 1, 1)
+        await ui.edit(c.message, "🎁 <b>Акция-бонус</b>\n\nКакой бонус продать?",
+                      reply_markup=k.as_markup())
     await c.answer()
 
 
@@ -335,6 +370,9 @@ async def cb_my_offers(c: CallbackQuery):
     nums = "1️⃣2️⃣3️⃣4️⃣5️⃣6️⃣7️⃣8️⃣9️⃣🔟"
     for i, o in enumerate(live):
         badge = nums[i] if i < len(nums) else f"{i+1}."
+        if o.get("kind") == "bonus":
+            lines.append(f"{badge} 🎁 {_bonus_offer_desc(o)}")
+            continue
         parts = []
         if o["price_mush"]:
             parts.append(f"{sx['e_mushrooms']} {shk_fmt(o['price_mush'])}💠/млн")
@@ -347,21 +385,74 @@ async def cb_my_offers(c: CallbackQuery):
     await c.answer()
 
 
+def _bonus_offer_desc(o) -> str:
+    import json
+    p = o.get("bonus_payload") or {}
+    if isinstance(p, str):
+        p = json.loads(p)
+    bt = o.get("bonus_type")
+    from services.amount_parse import shk_fmt
+    cur = o.get("bonus_currency", "")
+    price = o.get("bonus_price", 0)
+    ptxt = shk_fmt(price) + "💠" if cur == "shimcoins" else f"{price:,}".replace(",", " ") + \
+        (" 🍄" if cur == "mushrooms" else " 🪙")
+    if bt == "luck":
+        what = f"удача ×{p.get('mult',2):g} на {p.get('minutes',15)} мин"
+    elif bt == "discount":
+        what = f"скидка {p.get('percent',10)}%"
+    elif bt == "shield":
+        what = f"щит {'на '+str(p.get('minutes',60))+' мин' if p.get('kind')=='time' else '×'+str(p.get('uses',1))}"
+    else:
+        what = bt
+    return f"{what} — {ptxt}"
+
+
 @router.callback_query(F.data.startswith("offb:"))
 async def cb_offer_pick(c: CallbackQuery, state: FSMContext):
     oid = int(c.data.split(":")[1])
     o = await db.offer_get(oid)
     if not o or not await db.offer_is_live(o):
         return await c.answer("Предложение больше не действует.", show_alert=True)
+    # бонус-акция — разовая покупка
+    if o.get("kind") == "bonus":
+        return await _buy_bonus_offer(c, o)
     has_m = o["price_mush"] is not None
     has_c = o["price_coin"] is not None
-    # если обе валюты — спросим какую; если одна — сразу к вводу
     if has_m and has_c:
         await ui.edit(c.message, "Что покупаешь?",
                       reply_markup=await kb.offer_buy_currency(oid))
         return await c.answer()
     cur = "mushrooms" if has_m else "coins"
     await _ask_buy_amount(c, state, oid, cur)
+
+
+async def _buy_bonus_offer(c: CallbackQuery, o):
+    import json, time
+    uid = c.from_user.id
+    cur = o["bonus_currency"]; price = o["bonus_price"]
+    b = await db.balances(uid)
+    from services.amount_parse import shk_fmt
+    if b.get(cur, 0) < price:
+        return await c.answer("Недостаточно средств.", show_alert=True)
+    payload = o["bonus_payload"]
+    if isinstance(payload, str):
+        payload = json.loads(payload)
+    # атомарно: списать + пометить купленным (разовая акция)
+    async with db.pool().acquire() as conn:
+        async with conn.transaction():
+            row = await conn.fetchrow(
+                "SELECT bonus_bought, active FROM rb_offers WHERE id=$1 FOR UPDATE", o["id"])
+            if not row or row["bonus_bought"] or not row["active"]:
+                return await c.answer("Уже куплено или неактивно.", show_alert=True)
+            spent = await db.apply(conn, uid, cur, -price, "offer_bonus", f"offb:{o['id']}:{int(time.time())}")
+            if spent is None:
+                return await c.answer("Не хватило средств.", show_alert=True)
+            await conn.execute("UPDATE rb_offers SET bonus_bought=true, active=false WHERE id=$1", o["id"])
+    from services import shop as _shop
+    desc = await _shop.grant_bonus(uid, o["bonus_type"], payload)
+    await c.answer(f"✅ Куплено: {desc}\nЗабери в 🎒 Инвентаре.", show_alert=True)
+    with contextlib.suppress(Exception):
+        await c.message.edit_text(f"✅ Куплено: {desc}\nЗабери в 🎒 Инвентаре.")
 
 
 @router.callback_query(F.data.startswith("offbc:"))
@@ -549,3 +640,107 @@ class _LimitHit(Exception):
 
 class _NoShim(Exception):
     pass
+
+
+# ==================== АКЦИЯ-БОНУС ====================
+def _bonus_minutes(text: str) -> int:
+    import re
+    t = text.strip().lower().replace(" ", "")
+    m = re.match(r"^(\d+)\s*([дdчhмm]?)", t)
+    if not m:
+        return int(re.sub(r"\D", "", t) or 0)
+    n = int(m.group(1)); suf = m.group(2)
+    if suf in ("д", "d"): return n * 1440
+    if suf in ("ч", "h"): return n * 60
+    return n
+
+
+@router.callback_query(F.data.startswith("off_bt:"))
+async def cb_offer_bonus_type(c: CallbackQuery, state: FSMContext):
+    if not await _is_admin(c.from_user.id):
+        return await c.answer("Только главный админ.", show_alert=True)
+    _, bt, tg_s = c.data.split(":")
+    data = await state.get_data()
+    offer = data.get("offer") or {"tg_id": int(tg_s)}
+    offer["bonus_type"] = bt
+    await state.update_data(offer=offer)
+    await state.set_state(OfferNew.bonus_params)
+    hint = {
+        "luck": "Удача: <code>множитель минуты область</code>\nПример: <code>2 15 all</code>",
+        "discount": "Скидка: <code>процент цель</code>\nПример: <code>20 shop</code>",
+        "shield": "Щит: <code>время 100д</code> (или 5ч/30) либо <code>разы 3</code>",
+    }[bt]
+    await ui.edit(c.message, f"⚙️ {hint}\n\nВведи параметры бонуса:", reply_markup=None)
+    await c.answer()
+
+
+@router.message(OfferNew.bonus_params)
+async def msg_bonus_params(msg: Message, state: FSMContext):
+    if not await _is_admin(msg.from_user.id):
+        return await state.clear()
+    data = await state.get_data()
+    offer = data["offer"]; bt = offer["bonus_type"]
+    parts = (msg.text or "").split()
+    payload = {}
+    try:
+        if bt == "luck":
+            payload = {"mult": float(parts[0]), "minutes": int(parts[1]),
+                       "scope": parts[2] if len(parts) > 2 else "all"}
+        elif bt == "discount":
+            payload = {"percent": int(parts[0]), "target": parts[1] if len(parts) > 1 else "shop"}
+        elif bt == "shield":
+            kw = parts[0].lower()
+            if kw in ("время", "time"):
+                payload = {"kind": "time", "minutes": _bonus_minutes(parts[1])}
+            else:
+                payload = {"kind": "uses", "uses": int(parts[1])}
+    except (IndexError, ValueError):
+        return await ui.reply(msg, "Не понял параметры. Ещё раз:")
+    offer["bonus_payload"] = payload
+    await state.update_data(offer=offer)
+    await state.set_state(OfferNew.bonus_price)
+    kb = InlineKeyboardBuilder()
+    from services.ui import btn as _btn
+    await _btn(kb, "🍄 Грибы", "off_bcur:mushrooms")
+    await _btn(kb, "🪙 Коины", "off_bcur:coins")
+    await _btn(kb, "💠 Шимкоины", "off_bcur:shimcoins")
+    kb.adjust(3)
+    await ui.reply(msg, "В какой валюте цена бонуса?", reply_markup=kb.as_markup())
+
+
+@router.callback_query(F.data.startswith("off_bcur:"))
+async def cb_offer_bonus_cur(c: CallbackQuery, state: FSMContext):
+    cur = c.data.split(":")[1]
+    data = await state.get_data()
+    offer = data["offer"]; offer["bonus_currency"] = cur
+    await state.update_data(offer=offer)
+    await ui.edit(c.message,
+        f"Цена бонуса в {cur} — введи число:" +
+        ("\n<i>(шимкоины: 5 = 5.00)</i>" if cur == "shimcoins" else ""), reply_markup=None)
+    await c.answer()
+
+
+@router.message(OfferNew.bonus_price)
+async def msg_bonus_price(msg: Message, state: FSMContext):
+    from services.amount_parse import parse_amount, shk_parse, shk_fmt
+    data = await state.get_data()
+    offer = data["offer"]; cur = offer.get("bonus_currency")
+    if not cur:
+        return await ui.reply(msg, "Сначала выбери валюту кнопкой выше.")
+    price = shk_parse(msg.text or "") if cur == "shimcoins" else parse_amount(msg.text or "")
+    if price is None or price <= 0:
+        return await ui.reply(msg, "Нужно положительное число. Ещё раз:")
+    await state.set_state(None)
+    import json
+    await db.pool().execute(
+        "INSERT INTO rb_offers (tg_id, kind, bonus_type, bonus_payload, bonus_price, "
+        "bonus_currency, created_by) VALUES ($1,'bonus',$2,$3,$4,$5,$6)",
+        offer["tg_id"], offer["bonus_type"], json.dumps(offer["bonus_payload"]),
+        price, cur, msg.from_user.id)
+    from services import shop as _shop
+    ptxt = shk_fmt(price) if cur == "shimcoins" else f"{price:,}".replace(",", " ")
+    await ui.reply(msg, f"✅ Акция-бонус создана для <code>{offer['tg_id']}</code>: "
+                        f"{offer['bonus_type']} за {ptxt} {cur}.")
+    with contextlib.suppress(Exception):
+        await ui.send(msg.bot, offer["tg_id"],
+            "🎁 Тебе доступно особое предложение! Загляни в «🏷 Особые предложения».")

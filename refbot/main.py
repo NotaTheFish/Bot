@@ -129,6 +129,8 @@ async def main():
     dp.include_router(profile_ui.router)
     from handlers import titles_admin
     dp.include_router(titles_admin.router)
+    from handlers import bonus_grant
+    dp.include_router(bonus_grant.router)
     from handlers import achievements_ui
     dp.include_router(achievements_ui.router)
     from handlers import ach_admin

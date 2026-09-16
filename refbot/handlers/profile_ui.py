@@ -95,7 +95,7 @@ async def msg_nick(msg: Message, state: FSMContext):
         return await ui.reply(msg, f"⚠️ {err2}")
     # вернуть в профиль
     kb = InlineKeyboardBuilder()
-    await btn(kb, "👤 В профиль", "profile", "back")
+    await btn(kb, "В профиль", "profile", "back")
     await ui.reply(msg, f"✅ Ник установлен: <b>{nick}</b>", reply_markup=kb.as_markup())
 
 

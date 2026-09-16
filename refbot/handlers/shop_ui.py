@@ -78,7 +78,7 @@ async def cb_buy(c: CallbackQuery):
     elif t == "emoji":
         note = "Эмодзи выдан — выбери его в профиле."
     elif t == "shield":
-        note = "🛡 Щит активен — защитит от воровства!"
+        note = "🛡 Щит в инвентаре — активируй, когда нужно."
     else:
         note = "Готово!"
     await c.answer(f"✅ Куплено: {item['name']}\n{note}", show_alert=True)

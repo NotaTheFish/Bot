@@ -33,11 +33,12 @@ def _fmt_left(expires) -> str:
 async def cb_inv(c: CallbackQuery):
     items = await inv.inventory(c.from_user.id)
     active = await inv.active_bonuses(c.from_user.id)
+    shields = await inv.active_shields(c.from_user.id)
     kb = InlineKeyboardBuilder()
     lines = ["🎒 <b>Инвентарь</b>", ""]
 
-    # активные бонусы
-    if active:
+    # активные бонусы + щиты (с кнопками отключения)
+    if active or shields:
         lines.append("⚡ <b>Активно сейчас:</b>")
         for a in active:
             if a["bonus_type"] == "luck":
@@ -47,27 +48,57 @@ async def cb_inv(c: CallbackQuery):
             else:
                 pct = a["payload"].get("percent", 0)
                 lines.append(f"🏷 Скидка {pct}% ({_SCOPE_NAMES.get(a['scope'], a['scope'])})")
+            await btn(kb, f"🚫 Отключить: {a['bonus_type']}", f"inv_off:{a['id']}")
+        for sh in shields:
+            if sh["kind"] == "time":
+                lines.append(f"🛡 Щит — до {_fmt_left(sh['expires_at'])}")
+            else:
+                lines.append(f"🛡 Щит — осталось {sh['uses_left']} исп.")
+            await btn(kb, "🚫 Снять щит", f"inv_shoff:{sh['id']}")
         lines.append("")
 
-    # предметы для активации
+    # предметы к активации
     if not items:
-        lines.append("<i>Пусто. Купи бонусы в магазине или получи за достижения.</i>")
+        lines.append("<i>Нет предметов. Купи в магазине или получи за достижения.</i>")
     else:
         lines.append("📦 <b>Доступно к активации:</b>")
         for it in items:
-            p = it["payload"]
-            if it["item_type"] == "luck":
+            p = it["payload"]; t = it["item_type"]
+            if t == "luck":
                 label = (f"🍀 Удача ×{p.get('mult',2):g} на {p.get('minutes',15)} мин "
                          f"({_SCOPE_NAMES.get(p.get('scope','all'), p.get('scope','all'))})")
-            else:
+            elif t == "discount":
                 label = f"🏷 Скидка {p.get('percent',10)}% ({_SCOPE_NAMES.get(p.get('target','shop'))})"
+            elif t == "shield":
+                if p.get("kind") == "time":
+                    label = f"🛡 Щит на {p.get('minutes',60)} мин"
+                else:
+                    label = f"🛡 Щит ×{p.get('uses',1)}"
+            else:
+                label = t
             lines.append(f"• {label}")
-            await btn(kb, f"Активировать: {label[:28]}", f"inv_use:{it['id']}")
+            await btn(kb, f"Активировать: {label[:26]}", f"inv_use:{it['id']}")
 
     await btn(kb, "Назад", "menu", "back")
     kb.adjust(1)
     await ui.edit(c.message, "\n".join(lines), reply_markup=kb.as_markup())
     await c.answer()
+
+
+@router.callback_query(F.data.startswith("inv_off:"))
+async def cb_disable(c: CallbackQuery):
+    await inv.disable_bonus(c.from_user.id, int(c.data.split(":")[1]))
+    await c.answer("Бонус отключён.")
+    c.data = "inv_open"
+    await cb_inv(c)
+
+
+@router.callback_query(F.data.startswith("inv_shoff:"))
+async def cb_shield_off(c: CallbackQuery):
+    await inv.disable_shield(c.from_user.id, int(c.data.split(":")[1]))
+    await c.answer("Щит снят.")
+    c.data = "inv_open"
+    await cb_inv(c)
 
 
 @router.callback_query(F.data.startswith("inv_use:"))

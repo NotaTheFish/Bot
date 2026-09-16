@@ -22,6 +22,11 @@ async def remove_item(item_id: int):
     await db.pool().execute("UPDATE rb_shop SET active=false WHERE id=$1", item_id)
 
 
+async def delete_item(item_id: int):
+    """Удалить товар насовсем из магазина."""
+    await db.pool().execute("DELETE FROM rb_shop WHERE id=$1", item_id)
+
+
 async def list_items(active_only: bool = True) -> list[dict]:
     q = "SELECT * FROM rb_shop"
     if active_only:
@@ -122,14 +127,29 @@ async def _deliver(uid: int, item: dict, disc: int, paid: int):
                 "INSERT INTO rb_user_emojis (tg_id, emoji, source) VALUES ($1,$2,'shop') "
                 "ON CONFLICT (tg_id, emoji) DO NOTHING", uid, emo)
     elif t == "shield":
-        kind = p.get("kind", "uses")
-        if kind == "time":
-            from datetime import datetime, timezone, timedelta
-            minutes = int(p.get("minutes", 60))
-            exp = datetime.now(timezone.utc) + timedelta(minutes=minutes)
-            await db.pool().execute(
-                "INSERT INTO rb_shield (tg_id, kind, expires_at) VALUES ($1,'time',$2)", uid, exp)
-        else:
-            uses = int(p.get("uses", 1))
-            await db.pool().execute(
-                "INSERT INTO rb_shield (tg_id, kind, uses_left) VALUES ($1,'uses',$2)", uid, uses)
+        # в инвентарь — активирует игрок сам
+        await db.pool().execute(
+            "INSERT INTO rb_inventory (tg_id, item_type, payload) VALUES ($1,'shield',$2)",
+            uid, json.dumps(p))
+
+
+async def grant_bonus(uid: int, item_type: str, payload: dict) -> str:
+    """Выдать бонус игроку напрямую (админ/акция). Использует ту же логику доставки.
+    Возвращает человекочитаемое описание выданного."""
+    fake_item = {"item_type": item_type, "payload": payload}
+    await _deliver(uid, fake_item, 0, 0)
+    # описание
+    p = payload
+    if item_type == "luck":
+        return f"🍀 удача ×{p.get('mult',2):g} на {p.get('minutes',15)} мин"
+    if item_type == "discount":
+        return f"🏷 скидка {p.get('percent',10)}%"
+    if item_type == "shield":
+        if p.get("kind") == "time":
+            return f"🛡 щит на {p.get('minutes',60)} мин"
+        return f"🛡 щит ×{p.get('uses',1)}"
+    if item_type == "emoji":
+        return f"😎 эмодзи {p.get('emoji','')}"
+    if item_type == "title":
+        return f"🏅 титул «{p.get('title_name','?')}»"
+    return item_type

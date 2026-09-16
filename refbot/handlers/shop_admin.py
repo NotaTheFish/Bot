@@ -23,6 +23,20 @@ async def _is_admin(uid: int) -> bool:
 
 router = Router()
 
+def _parse_minutes(text: str) -> int:
+    """Длительность в минуты: '100д'/'100d'=дни, '5ч'/'5h'=часы, '30м'/'30'=минуты."""
+    t = text.strip().lower().replace(" ", "")
+    import re
+    m = re.match(r"^(\d+)\s*([дdчhмm]?)", t)
+    if not m:
+        return int(re.sub(r"\D", "", t) or 0)
+    n = int(m.group(1)); suf = m.group(2)
+    if suf in ("д", "d"): return n * 1440
+    if suf in ("ч", "h"): return n * 60
+    return n   # минуты по умолчанию
+
+
+
 _CUR_NAMES = {"mushrooms": "🍄 грибы", "coins": "🪙 коины", "shimcoins": "💠 шимкоины"}
 
 
@@ -103,7 +117,7 @@ async def s_desc(msg: Message, state: FSMContext):
         "title": "Название титула, который получит покупатель:",
         "emoji": "Эмодзи, который получит покупатель:",
         "shield": "Параметры щита: <code>тип значение</code>\n"
-                  "• <code>время 60</code> — щит на 60 минут (мгновенная защита)\n"
+                  "• <code>время 60</code> — 60 минут. Можно <code>время 100д</code> (дни), <code>время 5ч</code> (часы)\n"
                   "• <code>разы 3</code> — 3 авто-блока атак",
     }[t]
     await ui.reply(msg, f"⚙️ {hint}")
@@ -138,11 +152,10 @@ async def s_payload(msg: Message, state: FSMContext):
         elif t == "shield":
             parts = txt.split()
             kind_word = parts[0].lower()
-            val = int(parts[1])
             if kind_word in ("время", "time", "мин", "минуты"):
-                payload = {"kind": "time", "minutes": val}
+                payload = {"kind": "time", "minutes": _parse_minutes(parts[1])}
             elif kind_word in ("разы", "раз", "uses"):
-                payload = {"kind": "uses", "uses": val}
+                payload = {"kind": "uses", "uses": int(parts[1])}
             else:
                 return await ui.reply(msg, "Тип щита: «время» или «разы». Ещё раз:")
     except (IndexError, ValueError):
@@ -203,7 +216,8 @@ async def cb_list(c: CallbackQuery):
         price_txt = shk_fmt(it["price"]) if it["currency"] == "shimcoins" else f"{it['price']:,}".replace(",", " ")
         lines.append(f"• <b>{it['name']}</b> — {price_txt} {_CUR_NAMES.get(it['currency'],'')}{st}")
         if it["active"]:
-            await btn(kb, f"❌ {it['name'][:20]}", f"shopa_del:{it['id']}")
+            await btn(kb, f"⛔ Откл: {it['name'][:16]}", f"shopa_del:{it['id']}")
+        await btn(kb, f"🗑 Удалить: {it['name'][:16]}", f"shopa_kill:{it['id']}")
     if not items:
         lines.append("<i>Пусто.</i>")
     await btn(kb, "Назад", "admin", "back")
@@ -217,6 +231,28 @@ async def cb_del(c: CallbackQuery):
     if not await _is_admin(c.from_user.id):
         return await c.answer("Только админ.", show_alert=True)
     await shop.remove_item(int(c.data.split(":")[1]))
-    await c.answer("Товар убран из магазина.")
+    await c.answer("Товар отключён.")
     c.data = "shopa_list"
     await cb_list(c)
+
+
+@router.callback_query(F.data.startswith("shopa_kill:"))
+async def cb_kill(c: CallbackQuery):
+    if not await _is_admin(c.from_user.id):
+        return await c.answer("Только админ.", show_alert=True)
+    parts = c.data.split(":")
+    iid = int(parts[1])
+    if len(parts) > 2 and parts[2] == "yes":
+        await shop.delete_item(iid)
+        await c.answer("Товар удалён насовсем.")
+        c.data = "shopa_list"
+        return await cb_list(c)
+    it = await shop.get_item(iid)
+    kb = InlineKeyboardBuilder()
+    await btn(kb, "🗑 Да, удалить", f"shopa_kill:{iid}:yes")
+    await btn(kb, "Отмена", "shopa_list", "back")
+    kb.adjust(1)
+    await ui.edit(c.message,
+        f"🗑 Удалить товар «{it['name'] if it else '?'}» насовсем?",
+        reply_markup=kb.as_markup())
+    await c.answer()

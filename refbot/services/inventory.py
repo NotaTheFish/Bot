@@ -40,6 +40,16 @@ async def activate(uid: int, inv_id: int) -> tuple[bool, str]:
                     "INSERT INTO rb_active_bonuses (tg_id, bonus_type, scope, multiplier, payload) "
                     "VALUES ($1,'discount',$2,1,$3)", uid, p.get("target", "shop"),
                     json.dumps({"percent": p.get("percent", 10)}))
+            elif t == "shield":
+                if p.get("kind") == "time":
+                    exp = datetime.now(timezone.utc) + timedelta(minutes=int(p.get("minutes", 60)))
+                    await conn.execute(
+                        "INSERT INTO rb_shield (tg_id, kind, expires_at) VALUES ($1,'time',$2)",
+                        uid, exp)
+                else:
+                    await conn.execute(
+                        "INSERT INTO rb_shield (tg_id, kind, uses_left) VALUES ($1,'uses',$2)",
+                        uid, int(p.get("uses", 1)))
             await conn.execute(
                 "UPDATE rb_inventory SET used=true, used_at=now() WHERE id=$1", inv_id)
     # счётчик активаций удачи
@@ -99,3 +109,26 @@ async def cleanup_expired():
     """Удалить просроченные бонусы (вызывать периодически)."""
     await db.pool().execute(
         "DELETE FROM rb_active_bonuses WHERE expires_at IS NOT NULL AND expires_at < now()")
+
+
+async def active_shields(uid: int) -> list[dict]:
+    """Активные щиты (временные не истёкшие + разовые с остатком)."""
+    now = datetime.now(timezone.utc)
+    rows = await db.pool().fetch(
+        "SELECT * FROM rb_shield WHERE tg_id=$1 AND "
+        "((kind='time' AND expires_at>$2) OR (kind='uses' AND uses_left>0)) ORDER BY id",
+        uid, now)
+    return [dict(r) for r in rows]
+
+
+async def disable_bonus(uid: int, bonus_id: int) -> bool:
+    """Досрочно отключить активный бонус (удача/скидка)."""
+    r = await db.pool().execute(
+        "DELETE FROM rb_active_bonuses WHERE id=$1 AND tg_id=$2", bonus_id, uid)
+    return True
+
+
+async def disable_shield(uid: int, shield_id: int) -> bool:
+    """Досрочно снять щит."""
+    await db.pool().execute("DELETE FROM rb_shield WHERE id=$1 AND tg_id=$2", shield_id, uid)
+    return True
