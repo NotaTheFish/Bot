@@ -55,6 +55,11 @@ def _reward_text(rewards: list) -> str:
             parts.append(f"🍀 удача ×{rw.get('mult', 2):g} на {rw.get('minutes', 15)} мин")
         elif t == "discount":
             parts.append(f"🏷 скидка {rw.get('percent', 10)}%")
+        elif t == "shield":
+            if rw.get("kind") == "time":
+                parts.append(f"🛡 щит на {rw.get('minutes', 60)} мин")
+            else:
+                parts.append(f"🛡 щит ×{rw.get('uses', 1)}")
     return " + ".join(parts) if parts else "—"
 
 
