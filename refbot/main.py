@@ -131,6 +131,8 @@ async def main():
     dp.include_router(titles_admin.router)
     from handlers import bonus_grant
     dp.include_router(bonus_grant.router)
+    from handlers import salary as salary_h
+    dp.include_router(salary_h.router)
     from handlers import achievements_ui
     dp.include_router(achievements_ui.router)
     from handlers import ach_admin
@@ -178,6 +180,8 @@ async def main():
     asyncio.create_task(navy_game.timeout_worker(bot))
     from handlers import steal as steal_h
     asyncio.create_task(steal_h.steal_worker(bot))
+    from handlers import salary as salary_h
+    asyncio.create_task(salary_h.salary_worker(bot))
     await bot.delete_webhook(drop_pending_updates=True)
     # регистрируем /secret как ЭФЕМЕРНУЮ команду (невидимый ввод в группах).
     # Фича свежая — если Telegram/версия не примут is_ephemeral, команда всё равно

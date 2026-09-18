@@ -89,12 +89,13 @@ async def find_card(tg_id: int, banned: bool, manage: bool = True) -> InlineKeyb
         await btn(kb, "🏷 Предложить акцию", f"off_new:{tg_id}")
         await btn(kb, "🏅 Титул", f"a_title:{tg_id}")
         await btn(kb, "🎁 Бонус", f"a_bonus:{tg_id}")
+        await btn(kb, "💼 Зарплата", f"a_salary:{tg_id}")
         if banned:
             await btn(kb, "😡 бан", f"a_toggleban:{tg_id}")
         else:
             await btn(kb, "🥳 бан", f"a_toggleban:{tg_id}")
     await btn(kb, "Админка", "admin", "back")
-    kb.adjust(2, 1, 2, 1)
+    kb.adjust(2, 1, 2, 1, 1)
     return kb.as_markup()
 
 

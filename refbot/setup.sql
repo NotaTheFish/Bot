@@ -530,6 +530,18 @@ CREATE TABLE IF NOT EXISTS rb_shield (
 );
 CREATE INDEX IF NOT EXISTS rb_shield_tg_idx ON rb_shield (tg_id);
 
+-- ---------- Зарплаты (ежемесячные выплаты, назначает админ) ----------
+CREATE TABLE IF NOT EXISTS rb_salary (
+    tg_id       BIGINT PRIMARY KEY,
+    amount      BIGINT NOT NULL,
+    currency    TEXT NOT NULL,        -- mushrooms|coins|shimcoins
+    pay_day     SMALLINT NOT NULL,    -- день месяца (1-28) для выплаты
+    active      BOOLEAN NOT NULL DEFAULT TRUE,
+    last_paid   DATE,                 -- дата последней выплаты (чтобы не дублить)
+    set_by      BIGINT,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
 -- --- Прогресс игроков по достижениям ---
 CREATE TABLE IF NOT EXISTS rb_user_achievements (
     id           BIGSERIAL PRIMARY KEY,
@@ -766,7 +778,7 @@ ALTER TABLE rb_giveaways ADD COLUMN IF NOT EXISTS finish_photo TEXT;
 
 -- ---------- 5. Проверка ----------
 SELECT
-  (SELECT count(*) FROM pg_tables WHERE tablename ~ '^rb_')                   AS tables_expect_44,
+  (SELECT count(*) FROM pg_tables WHERE tablename ~ '^rb_')                   AS tables_expect_45,
   (SELECT count(*) FROM pg_type   WHERE typname ~ '^rb_' AND typtype = 'e')   AS enums_expect_3,
   (SELECT count(*) FROM pg_indexes WHERE indexname IN
      ('rb_referrals_alive_idx','rb_withdrawals_one_pending','rb_spins_daily',
