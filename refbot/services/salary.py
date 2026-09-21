@@ -13,13 +13,25 @@ def _today_msk():
     return datetime.now(MSK).date()
 
 
-async def set_salary(tg_id: int, amount: int, currency: str, pay_day: int, by: int):
+async def set_salary(tg_id: int, amount: int, currency: str, pay_day: int, by: int,
+                     pay_now: bool = False):
     pay_day = max(1, min(28, pay_day))   # 1-28, чтобы день был в любом месяце
-    await db.pool().execute(
-        "INSERT INTO rb_salary (tg_id, amount, currency, pay_day, active, set_by) "
-        "VALUES ($1,$2,$3,$4,TRUE,$5) "
-        "ON CONFLICT (tg_id) DO UPDATE SET amount=$2, currency=$3, pay_day=$4, "
-        "active=TRUE, set_by=$5", tg_id, amount, currency, pay_day, by)
+    today = _today_msk()
+    last_paid = None
+    async with db.pool().acquire() as conn:
+        async with conn.transaction():
+            if pay_now:
+                import time
+                idem = f"salary:{tg_id}:{today.year}-{today.month}"
+                bal = await db.apply(conn, tg_id, currency, amount, "salary", idem)
+                if bal is not None:
+                    last_paid = today   # чтобы воркер не заплатил повторно в этом месяце
+            await conn.execute(
+                "INSERT INTO rb_salary (tg_id, amount, currency, pay_day, active, set_by, last_paid) "
+                "VALUES ($1,$2,$3,$4,TRUE,$5,$6) "
+                "ON CONFLICT (tg_id) DO UPDATE SET amount=$2, currency=$3, pay_day=$4, "
+                "active=TRUE, set_by=$5, last_paid=COALESCE($6, rb_salary.last_paid)",
+                tg_id, amount, currency, pay_day, by, last_paid)
 
 
 async def stop_salary(tg_id: int):
@@ -54,3 +66,22 @@ async def pay_due() -> list[dict]:
                     out.append({"tg_id": r["tg_id"], "amount": r["amount"],
                                 "currency": r["currency"]})
     return out
+
+
+def next_payment_date(sal: dict):
+    """Дата следующей выплаты по pay_day и last_paid."""
+    from datetime import date
+    import calendar
+    today = _today_msk()
+    day = sal["pay_day"]
+    last = sal.get("last_paid")
+    # уже платили в этом месяце? тогда следующая — в следующем месяце
+    paid_this_month = last and last.year == today.year and last.month == today.month
+    y, mth = today.year, today.month
+    if today.day > day or paid_this_month:
+        # переносим на следующий месяц
+        mth += 1
+        if mth > 12:
+            mth = 1; y += 1
+    d = min(day, calendar.monthrange(y, mth)[1])
+    return date(y, mth, d)

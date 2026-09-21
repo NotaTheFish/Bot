@@ -29,15 +29,13 @@ def _fmt_left(expires) -> str:
     return f"{mins // 60} ч {mins % 60} мин"
 
 
-@router.callback_query(F.data == "inv_open")
-async def cb_inv(c: CallbackQuery):
-    items = await inv.inventory(c.from_user.id)
-    active = await inv.active_bonuses(c.from_user.id)
-    shields = await inv.active_shields(c.from_user.id)
+async def _inv_content(uid: int):
+    """Построить (текст, клавиатура) инвентаря."""
+    items = await inv.inventory(uid)
+    active = await inv.active_bonuses(uid)
+    shields = await inv.active_shields(uid)
     kb = InlineKeyboardBuilder()
     lines = ["🎒 <b>Инвентарь</b>", ""]
-
-    # активные бонусы + щиты (с кнопками отключения)
     if active or shields:
         lines.append("⚡ <b>Активно сейчас:</b>")
         for a in active:
@@ -56,8 +54,6 @@ async def cb_inv(c: CallbackQuery):
                 lines.append(f"🛡 Щит — осталось {sh['uses_left']} исп.")
             await btn(kb, "🚫 Снять щит", f"inv_shoff:{sh['id']}")
         lines.append("")
-
-    # предметы к активации
     if not items:
         lines.append("<i>Нет предметов. Купи в магазине или получи за достижения.</i>")
     else:
@@ -78,10 +74,26 @@ async def cb_inv(c: CallbackQuery):
                 label = t
             lines.append(f"• {label}")
             await btn(kb, f"Активировать: {label[:26]}", f"inv_use:{it['id']}")
-
     await btn(kb, "Назад", "menu", "back")
     kb.adjust(1)
-    await ui.edit(c.message, "\n".join(lines), reply_markup=kb.as_markup())
+    return "\n".join(lines), kb.as_markup()
+
+
+async def _refresh(c: CallbackQuery):
+    """Обновить инвентарь надёжно: edit, а если не вышло — удалить+послать заново."""
+    text, markup = await _inv_content(c.from_user.id)
+    try:
+        await ui.edit(c.message, text, reply_markup=markup)
+    except Exception:
+        with contextlib.suppress(Exception):
+            await c.message.delete()
+        await ui.send(c.bot, c.message.chat.id, text, reply_markup=markup)
+
+
+@router.callback_query(F.data == "inv_open")
+async def cb_inv(c: CallbackQuery):
+    text, markup = await _inv_content(c.from_user.id)
+    await ui.edit(c.message, text, reply_markup=markup)
     await c.answer()
 
 
@@ -89,16 +101,14 @@ async def cb_inv(c: CallbackQuery):
 async def cb_disable(c: CallbackQuery):
     await inv.disable_bonus(c.from_user.id, int(c.data.split(":")[1]))
     await c.answer("Бонус отключён.")
-    c.data = "inv_open"
-    await cb_inv(c)
+    await _refresh(c)
 
 
 @router.callback_query(F.data.startswith("inv_shoff:"))
 async def cb_shield_off(c: CallbackQuery):
     await inv.disable_shield(c.from_user.id, int(c.data.split(":")[1]))
     await c.answer("Щит снят.")
-    c.data = "inv_open"
-    await cb_inv(c)
+    await _refresh(c)
 
 
 @router.callback_query(F.data.startswith("inv_use:"))
@@ -108,5 +118,4 @@ async def cb_use(c: CallbackQuery):
     if not ok:
         return await c.answer(f"⚠️ {err}", show_alert=True)
     await c.answer("✅ Бонус активирован!", show_alert=True)
-    c.data = "inv_open"
-    await cb_inv(c)
+    await _refresh(c)

@@ -47,6 +47,13 @@ async def cb_salary(c: CallbackQuery):
     if cur_sal and cur_sal["active"]:
         lines.append(f"Сейчас: <b>{_fmt(cur_sal['amount'], cur_sal['currency'])}</b> "
                      f"каждое {cur_sal['pay_day']} число.")
+        # следующая выплата + обратный отсчёт
+        nxt = salary.next_payment_date(cur_sal)
+        if nxt:
+            from datetime import date
+            days_left = (nxt - salary._today_msk()).days
+            lines.append(f"📅 Следующая выплата: <b>{nxt.strftime('%d.%m.%Y')}</b> "
+                         f"(через {days_left} дн.)")
         await btn(kb, "✏️ Изменить", f"a_sal_set:{tg_id}")
         await btn(kb, "🛑 Остановить", f"a_sal_stop:{tg_id}")
     else:
@@ -109,15 +116,43 @@ async def msg_sal_day(msg: Message, state: FSMContext):
     if day is None or day < 1 or day > 28:
         return await ui.reply(msg, "Введи день от 1 до 28:")
     data = await state.get_data(); sal = data.get("sal", {})
+    sal["day"] = int(day)
+    await state.update_data(sal=sal)
     await state.set_state(None)
-    await salary.set_salary(sal["tg_id"], sal["amount"], sal["currency"], int(day),
-                            msg.from_user.id)
+    kb = InlineKeyboardBuilder()
+    await btn(kb, "💸 Выплатить сегодня и далее ежемесячно", "a_sal_now:1")
+    await btn(kb, "📅 Начать со следующего месяца", "a_sal_now:0")
+    kb.adjust(1)
+    await ui.reply(msg, "Когда сделать первую выплату?", reply_markup=kb.as_markup())
+
+
+@router.callback_query(F.data.startswith("a_sal_now:"))
+async def cb_sal_now(c: CallbackQuery, state: FSMContext):
+    if not await _can(c.from_user.id):
+        return await c.answer("Только админ.", show_alert=True)
+    pay_now = c.data.split(":")[1] == "1"
+    data = await state.get_data(); sal = data.get("sal", {})
+    await state.set_state(None)
+    if not sal.get("tg_id"):
+        return await c.answer("Данные потеряны, начни заново.", show_alert=True)
+    await salary.set_salary(sal["tg_id"], sal["amount"], sal["currency"], sal["day"],
+                            c.from_user.id, pay_now=pay_now)
     pname = await profile.display_name(sal["tg_id"], link=False)
+    paid_note = ""
+    if pay_now:
+        # мгновенная выплата
+        e = (await settings.ctx())["e_" + sal["currency"]]
+        amt = shk_fmt(sal["amount"]) if sal["currency"] == "shimcoins" \
+            else f"{sal['amount']:,}".replace(",", " ")
+        with contextlib.suppress(Exception):
+            await ui.send(c.bot, sal["tg_id"], f"💼 Вам начислена зарплата в размере {amt} {e}")
+        paid_note = "\n💸 Первая выплата зачислена сейчас."
     kb = InlineKeyboardBuilder()
     await btn(kb, "К пользователю", f"a_findback:{sal['tg_id']}", "back")
-    await ui.reply(msg,
+    await ui.edit(c.message,
         f"✅ Зарплата назначена {pname}: <b>{_fmt(sal['amount'], sal['currency'])}</b> "
-        f"каждое {int(day)} число.", reply_markup=kb.as_markup())
+        f"каждое {sal['day']} число.{paid_note}", reply_markup=kb.as_markup())
+    await c.answer()
 
 
 @router.callback_query(F.data.startswith("a_sal_stop:"))
