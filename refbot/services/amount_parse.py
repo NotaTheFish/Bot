@@ -131,3 +131,14 @@ def shk_fmt(cents: int) -> str:
 def shk_to_float(cents: int) -> float:
     """Центы -> шимкоины как float. Только для отображения/расчёта курса, НЕ для хранения."""
     return cents / SHK_CENTS
+
+
+def fmt_mult(m) -> str:
+    """Множитель без научной записи: 2 -> '2', 2.5 -> '2.5', 100000 -> '100 000'."""
+    try:
+        f = float(m)
+    except (TypeError, ValueError):
+        return str(m)
+    if f == int(f):
+        return f"{int(f):,}".replace(",", " ")
+    return f"{f:.2f}".rstrip("0").rstrip(".")

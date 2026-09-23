@@ -43,7 +43,7 @@ def _reward_text(rewards: list) -> str:
                      "revive": "revive", "max": "max", "partials": "partials"}
             amt = rw.get("amount", 0)
             if t == "shimcoins":
-                from services.amount_parse import shk_fmt
+                from services.amount_parse import shk_fmt, fmt_mult
                 parts.append(f"{shk_fmt(amt)} {names[t]}")
             else:
                 parts.append(f"{amt:,}".replace(",", " ") + f" {names.get(t, t)}")
@@ -52,7 +52,7 @@ def _reward_text(rewards: list) -> str:
         elif t == "emoji":
             parts.append(f"😎 эмодзи {rw.get('emoji', '')}")
         elif t == "luck":
-            parts.append(f"🍀 удача ×{rw.get('mult', 2):g} на {rw.get('minutes', 15)} мин")
+            parts.append(f"🍀 удача ×{fmt_mult(rw.get('mult', 2))} на {rw.get('minutes', 15)} мин")
         elif t == "discount":
             parts.append(f"🏷 скидка {rw.get('percent', 10)}%")
         elif t == "shield":

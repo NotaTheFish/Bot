@@ -186,7 +186,7 @@ async def cb_case_open(c: CallbackQuery):
     # ролл приза
     from services import inventory as _inv
     _luck = await _inv.luck_multiplier(uid, "cases")
-    mult, _p = casino.roll_prize(case_key, boost=(_luck > 1))
+    mult, _p = casino.roll_prize(case_key, rolls=max(1, int(_luck)))
     won = casino.prize_amount(case_key, cur, mult)
 
     # оплата + приз в одной транзакции. idem уникален на каждое открытие (иначе
@@ -331,7 +331,7 @@ async def _spin_wheel(target, uid: int, bet_cur: int, cur: str, edit: bool):
 
     from services import inventory as _inv
     _luck = await _inv.luck_multiplier(uid, "roulette")
-    mult = casino.roll_wheel(boost=(_luck > 1))
+    mult = casino.roll_wheel(rolls=max(1, int(_luck)))
     won = int(bet_cur * mult)
 
     # ставка -> выигрыш в одной транзакции
@@ -767,7 +767,7 @@ async def cb_case_open5(c: CallbackQuery):
     results = []
     total_won = 0
     for _ in range(N):
-        mult, _p = casino.roll_prize(case_key, boost=(_luck > 1))
+        mult, _p = casino.roll_prize(case_key, rolls=max(1, int(_luck)))
         won = casino.prize_amount(case_key, cur, mult)
         results.append((mult, won))
         total_won += won
@@ -836,7 +836,7 @@ async def cb_wheel_x5(c: CallbackQuery):
     results = []
     total_won = 0
     for _ in range(N):
-        mult = casino.roll_wheel(boost=(_luck > 1))
+        mult = casino.roll_wheel(rolls=max(1, int(_luck)))
         won = int(bet_cur * mult)
         results.append((mult, won))
         total_won += won

@@ -41,7 +41,7 @@ async def _inv_content(uid: int):
         for a in active:
             if a["bonus_type"] == "luck":
                 left = _fmt_left(a["expires_at"])
-                lines.append(f"🍀 Удача ×{float(a['multiplier']):g} "
+                lines.append(f"🍀 Удача ×{fmt_mult(a['multiplier'])} "
                              f"({_SCOPE_NAMES.get(a['scope'], a['scope'])}) — {left}")
             else:
                 pct = a["payload"].get("percent", 0)
@@ -61,7 +61,7 @@ async def _inv_content(uid: int):
         for it in items:
             p = it["payload"]; t = it["item_type"]
             if t == "luck":
-                label = (f"🍀 Удача ×{p.get('mult',2):g} на {p.get('minutes',15)} мин "
+                label = (f"🍀 Удача ×{fmt_mult(p.get('mult',2))} на {p.get('minutes',15)} мин "
                          f"({_SCOPE_NAMES.get(p.get('scope','all'), p.get('scope','all'))})")
             elif t == "discount":
                 label = f"🏷 Скидка {p.get('percent',10)}% ({_SCOPE_NAMES.get(p.get('target','shop'))})"

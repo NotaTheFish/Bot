@@ -27,12 +27,12 @@ async def visible(uid: int) -> bool:
     return uid in SUPER_ADMINS or bool(await db.admin_chats(uid))
 
 
-def roll_prize(case_key: str, boost: bool = False) -> tuple[float, float]:
+def roll_prize(case_key: str, boost: bool = False, rolls: int = 1) -> tuple[float, float]:
     """
     Выбрать приз кейса. Возвращает (множитель, вероятность_этого_приза).
-    Множитель — доля от цены (0.25..10.0).
-    boost=True (удача игрока) — сдвигает шансы к крупным призам: делаем два броска
-    и берём лучший по множителю (даёт ~×2 к шансу хорошего исхода, не ломая веса).
+    boost/rolls — удача: делаем N бросков и берём лучший по множителю. Чем выше
+    множитель удачи, тем больше бросков и выше шанс крупного приза.
+    rolls берётся из множителя удачи (×2 -> 2 броска, ×5 -> 5 и т.д.), потолок 50.
     """
     _, _, prizes = CASES[case_key]
 
@@ -45,11 +45,17 @@ def roll_prize(case_key: str, boost: bool = False) -> tuple[float, float]:
                 return mult, p
         return prizes[-1][0], prizes[-1][1]
 
-    if not boost:
+    n = max(1, min(int(rolls), 50))
+    if boost and n < 2:
+        n = 2
+    if n <= 1:
         return _one()
-    # с удачей — два броска, берём с большим множителем
-    a, b = _one(), _one()
-    return a if a[0] >= b[0] else b
+    best = _one()
+    for _ in range(n - 1):
+        cand = _one()
+        if cand[0] > best[0]:
+            best = cand
+    return best
 
 
 def case_price(case_key: str, currency: str) -> int:
@@ -74,9 +80,9 @@ def all_cases() -> list[tuple[str, str, int]]:
 
 
 # ---------- рулетка (колесо) ----------
-def roll_wheel(boost: bool = False) -> float:
-    """Крутануть колесо. Возвращает множитель (0.0..50.0).
-    boost=True (удача) — два броска, берём больший множитель (×2 к шансу крупного)."""
+def roll_wheel(boost: bool = False, rolls: int = 1) -> float:
+    """Крутануть колесо. Возвращает множитель. Удача: N бросков, берём больший
+    (чем выше множитель удачи — тем больше бросков и выше шанс крупного)."""
     from config import WHEEL_SECTORS
 
     def _one():
@@ -88,9 +94,12 @@ def roll_wheel(boost: bool = False) -> float:
                 return mult
         return WHEEL_SECTORS[-1][0]
 
-    if not boost:
+    n = max(1, min(int(rolls), 50))
+    if boost and n < 2:
+        n = 2
+    if n <= 1:
         return _one()
-    return max(_one(), _one())
+    return max(_one() for _ in range(n))
 
 
 def wheel_bet_ok(bet_mush: int) -> bool:

@@ -4,6 +4,7 @@
 """
 import json
 import db
+from services.amount_parse import fmt_mult
 
 ITEM_TYPES = ("luck", "discount", "title", "emoji", "shield")
 LUCK_SCOPES = ("all", "roulette", "cases", "shine", "giveaway", "contest")
@@ -141,7 +142,7 @@ async def grant_bonus(uid: int, item_type: str, payload: dict) -> str:
     # описание
     p = payload
     if item_type == "luck":
-        return f"🍀 удача ×{p.get('mult',2):g} на {p.get('minutes',15)} мин"
+        return f"🍀 удача ×{fmt_mult(p.get('mult',2))} на {p.get('minutes',15)} мин"
     if item_type == "discount":
         return f"🏷 скидка {p.get('percent',10)}%"
     if item_type == "shield":

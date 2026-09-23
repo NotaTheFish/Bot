@@ -18,9 +18,11 @@ from services.amount_parse import parse_amount, shk_parse, shk_fmt
 router = Router()
 
 _CUR_E = {"mushrooms": "🍄", "coins": "🪙", "shimcoins": "💠",
-          "revive": "revive", "max": "max", "partials": "partials"}
+          "revive": "❤️‍🔥", "max": "🔱", "partials": "🧩"}
 _CUR_NAME = {"mushrooms": "Грибы", "coins": "Коины", "shimcoins": "Шимкоины",
              "revive": "Revive", "max": "Max", "partials": "Partials"}
+# слоты settings для премиум-эмодзи валют/токенов (эмодзи-иконка кнопки)
+_CUR_SLOT = {"revive": "revive", "max": "max", "partials": "partials"}
 
 
 class GiftFSM(StatesGroup):
@@ -35,16 +37,24 @@ def _fmt(amount: int, cur: str) -> str:
     return f"{amount:,}".replace(",", " ") + f" {e}"
 
 
+def _amt(amount: int, cur: str) -> str:
+    """Только число без эмодзи (эмодзи ставится в начало кнопки отдельно)."""
+    if cur == "shimcoins":
+        return shk_fmt(amount)
+    return f"{amount:,}".replace(",", " ")
+
+
 @router.callback_query(F.data == "gift_open")
 async def cb_gift(c: CallbackQuery):
     b = await db.balances(c.from_user.id)
     kb = InlineKeyboardBuilder()
     lines = ["🎁 <b>Подарить</b>\n\nЧто передать другому игроку? (без комиссии)"]
-    # валюты/токены с ненулевым балансом
+    # валюты/токены с ненулевым балансом — эмодзи В НАЧАЛЕ (для премиума)
     for cur in transfer.CURRENCIES:
         if b.get(cur, 0) > 0:
-            await btn(kb, f"{_CUR_NAME[cur]}: {_fmt(b[cur], cur)}", f"gift_cur:{cur}")
-    # предметы инвентаря
+            e = _CUR_E.get(cur, "")
+            text = f"{e} {_CUR_NAME[cur]}: {_amt(b[cur], cur)}"
+            await btn(kb, text, f"gift_cur:{cur}")
     items = await inv.inventory(c.from_user.id)
     if items:
         await btn(kb, "📦 Предмет из инвентаря", "gift_items")

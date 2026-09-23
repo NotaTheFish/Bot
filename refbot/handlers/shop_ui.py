@@ -10,7 +10,7 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 import db
 from services import ui, shop, settings
 from services.ui import btn
-from services.amount_parse import shk_fmt
+from services.amount_parse import shk_fmt, fmt_mult
 
 router = Router()
 
@@ -27,7 +27,7 @@ def _price_txt(item) -> str:
 def _payload_desc(item) -> str:
     p = item["payload"]; t = item["item_type"]
     if t == "luck":
-        return f"×{p.get('mult',2):g} удача на {p.get('minutes',15)} мин ({p.get('scope','all')})"
+        return f"×{fmt_mult(p.get('mult',2))} удача на {p.get('minutes',15)} мин ({p.get('scope','all')})"
     if t == "discount":
         return f"скидка {p.get('percent',10)}% на {p.get('target','shop')}"
     if t == "title":
