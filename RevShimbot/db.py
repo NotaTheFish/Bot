@@ -95,6 +95,7 @@ CREATE TABLE IF NOT EXISTS rvb_reviews (
     status TEXT NOT NULL DEFAULT 'pending',
     show_buyer_button BOOLEAN NOT NULL DEFAULT TRUE,
     proof_count INT NOT NULL DEFAULT 0,
+    proof_file_ids TEXT,
     is_anonymous BOOLEAN NOT NULL DEFAULT FALSE,
     review_html TEXT,
     verify_code TEXT UNIQUE,
@@ -296,6 +297,10 @@ class Database:
             await conn.execute("""
                 ALTER TABLE rvb_reviews
                 ADD COLUMN IF NOT EXISTS proof_count INT NOT NULL DEFAULT 0
+            """)
+            await conn.execute("""
+                ALTER TABLE rvb_reviews
+                ADD COLUMN IF NOT EXISTS proof_file_ids TEXT
             """)
             await conn.execute("""
                 ALTER TABLE rvb_reviews
@@ -858,7 +863,8 @@ class Database:
         item_bought: str, stars: int, template_used: str,
         card_file_id: Optional[str] = None, show_buyer_button: bool = True,
         proof_count: int = 0, verify_code: Optional[str] = None,
-        is_anonymous: bool = False, review_html: Optional[str] = None
+        is_anonymous: bool = False, review_html: Optional[str] = None,
+        proof_file_ids: Optional[str] = None
     ) -> dict:
         async with self.pool.acquire() as conn:
             last_err = None
@@ -870,12 +876,13 @@ class Database:
                             (seller_id, buyer_id, buyer_name, buyer_username,
                              review_text, item_bought, stars, template_used, card_file_id,
                              show_buyer_button, proof_count, verify_code, is_anonymous,
-                             review_html)
-                        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
+                             review_html, proof_file_ids)
+                        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
                         RETURNING *
                     """, seller_id, buyer_id, buyer_name, buyer_username,
                         review_text, item_bought, stars, template_used, card_file_id,
-                        show_buyer_button, proof_count, code, is_anonymous, review_html)
+                        show_buyer_button, proof_count, code, is_anonymous, review_html,
+                        proof_file_ids)
                     return dict(row)
                 except Exception as e:
                     # Коллизия кода (вероятность ~0) — регенерируем и пробуем ещё
@@ -984,6 +991,13 @@ class Database:
             await conn.execute(
                 "UPDATE rvb_reviews SET card_file_id = $1 WHERE id = $2",
                 card_file_id, review_id)
+
+    async def update_review_proofs(self, review_id: int, proof_file_ids: str):
+        """Обновляет сохранённые оригиналы пруфов (JSON-список file_id)."""
+        async with self.pool.acquire() as conn:
+            await conn.execute(
+                "UPDATE rvb_reviews SET proof_file_ids = $1 WHERE id = $2",
+                proof_file_ids, review_id)
 
     async def get_pending_reviews(self, seller_id: int) -> list:
         async with self.pool.acquire() as conn:

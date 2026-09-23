@@ -21,10 +21,20 @@ class NickFSM(StatesGroup):
     entering = State()
 
 
+class PidFSM(StatesGroup):
+    entering = State()
+
+
 async def _nick_price() -> int:
     """Цена замены ника в шимкоинах (центах), из настроек."""
     s = await settings.load()
     return int(s.get("nickname_price", 0) or 0)
+
+
+async def _id_price() -> int:
+    """Цена замены публичного ID в шимкоинах (центах)."""
+    s = await settings.load()
+    return int(s.get("public_id_price", 0) or 0)
 
 
 @router.callback_query(F.data == "prof_setup")
@@ -37,14 +47,22 @@ async def cb_setup(c: CallbackQuery):
         await btn(kb, label, "prof_nick")
     else:
         await btn(kb, "✏️ Установить ник (бесплатно)", "prof_nick")
+    if p and p.get("public_id_set"):
+        pprice = await _id_price()
+        plabel = f"🆔 Сменить ID ({shk_fmt(pprice)} 💠)" if pprice else "🆔 Сменить ID"
+        await btn(kb, plabel, "prof_pid")
+    else:
+        await btn(kb, "🆔 Установить ID (бесплатно)", "prof_pid")
     await btn(kb, "🏅 Выбрать титул", "prof_titles")
     await btn(kb, "😎 Персональный эмодзи", "prof_emoji")
     await btn(kb, "Назад", "profile", "back")
     kb.adjust(1)
-    cur_nick = f"\nТекущий ник: <b>{p['nickname']}</b>" if p and p.get("nickname") else ""
+    cur_nick = f"\nНик: <b>{p['nickname']}</b>" if p and p.get("nickname") else ""
+    cur_id = f"\nID: <code>{p['public_id']}</code>" if p and p.get("public_id") else ""
     await ui.edit(c.message,
-        f"⚙️ <b>Настройка профиля</b>{cur_nick}\n\n"
-        f"• Ник — твоё имя в боте (можно поставить один раз бесплатно).\n"
+        f"⚙️ <b>Настройка профиля</b>{cur_nick}{cur_id}\n\n"
+        f"• Ник и ID — можно поставить один раз бесплатно, смена за 💠.\n"
+        f"• ID нужен, чтобы тебе дарили валюту и предметы.\n"
         f"• Титул и эмодзи — за достижения.",
         reply_markup=kb.as_markup())
     await c.answer()
@@ -219,3 +237,68 @@ async def cmd_nick_price(msg: Message):
         return await ui.reply(msg, "Нужно число (шимкоины). Пример: <code>!ценаника 5</code>")
     await settings.set("nickname_price", str(price), msg.from_user.id)
     await ui.reply(msg, f"✅ Цена смены ника: <b>{shk_fmt(price)}</b> 💠")
+
+
+# ---------------- публичный ID ----------------
+@router.callback_query(F.data == "prof_pid")
+async def cb_pid(c: CallbackQuery, state: FSMContext):
+    p = await prof.get_profile(c.from_user.id)
+    if p and p.get("public_id_set"):
+        price = await _id_price()
+        if price > 0:
+            b = await db.balances(c.from_user.id)
+            if b.get("shimcoins", 0) < price:
+                return await c.answer(
+                    f"Смена ID стоит {shk_fmt(price)} 💠, у тебя {shk_fmt(b.get('shimcoins',0))} 💠.",
+                    show_alert=True)
+    await state.set_state(PidFSM.entering)
+    await ui.edit(c.message,
+        "🆔 <b>Введи свой ID</b>\n\n4-5 символов: латинские буквы и/или цифры.\n"
+        "Пример: <code>Ab12</code>, <code>x9k2q</code>",
+        reply_markup=None)
+    await c.answer()
+
+
+@router.message(PidFSM.entering)
+async def msg_pid(msg: Message, state: FSMContext):
+    pid, err = prof.validate_public_id(msg.text or "")
+    if err:
+        return await ui.reply(msg, f"⚠️ {err}\nПопробуй другой ID:")
+    if await prof.public_id_taken(pid, exclude_uid=msg.from_user.id):
+        return await ui.reply(msg, "Этот ID уже занят. Придумай другой:")
+    await state.set_state(None)
+    p = await prof.get_profile(msg.from_user.id)
+    if p and p.get("public_id_set"):
+        price = await _id_price()
+        if price > 0:
+            async with db.pool().acquire() as conn:
+                async with conn.transaction():
+                    spent = await db.apply(conn, msg.from_user.id, "shimcoins", -price,
+                                           "id_change", f"pid:{msg.from_user.id}:{pid}")
+                    if spent is None:
+                        return await ui.reply(msg, "Не хватило шимкоинов на смену ID.")
+    ok, err2 = await prof.set_public_id(msg.from_user.id, pid, mark_set=True)
+    if not ok:
+        return await ui.reply(msg, f"⚠️ {err2}")
+    kb = InlineKeyboardBuilder()
+    await btn(kb, "В профиль", "profile", "back")
+    await ui.reply(msg, f"✅ ID установлен: <code>{pid}</code>", reply_markup=kb.as_markup())
+
+
+@router.message(F.text.lower().startswith("!ценаид"))
+async def cmd_id_price(msg: Message):
+    from config import SUPER_ADMINS
+    is_admin = msg.from_user.id in SUPER_ADMINS or bool(await db.admin_chats(msg.from_user.id))
+    if not is_admin:
+        return
+    from services.amount_parse import shk_parse
+    parts = (msg.text or "").split()
+    if len(parts) < 2:
+        cur = await _id_price()
+        return await ui.reply(msg, f"Текущая цена смены ID: <b>{shk_fmt(cur)}</b> 💠\n"
+                                   f"Изменить: <code>!ценаид 5</code>")
+    price = shk_parse(parts[1])
+    if price is None or price < 0:
+        return await ui.reply(msg, "Нужно число (шимкоины). Пример: <code>!ценаид 5</code>")
+    await settings.set("public_id_price", str(price), msg.from_user.id)
+    await ui.reply(msg, f"✅ Цена смены ID: <b>{shk_fmt(price)}</b> 💠")

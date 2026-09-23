@@ -127,6 +127,8 @@ async def main():
     dp.include_router(user.router)
     from handlers import profile_ui
     dp.include_router(profile_ui.router)
+    from handlers import transfer as transfer_h
+    dp.include_router(transfer_h.router)
     from handlers import titles_admin
     dp.include_router(titles_admin.router)
     from handlers import bonus_grant

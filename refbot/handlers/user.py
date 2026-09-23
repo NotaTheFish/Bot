@@ -309,6 +309,8 @@ async def cb_profile(c: CallbackQuery):
     if p and p.get("nickname"):
         emo = (p.get("active_emoji") + " ") if p.get("active_emoji") else ""
         extra.append(f"👤 Ник: {emo}<b>{p['nickname']}</b>")
+    if p and p.get("public_id"):
+        extra.append(f"🆔 ID: <code>{p['public_id']}</code>")
     tname = await prof.active_title_name(c.from_user.id)
     if tname:
         extra.append(f"🏅 Титул: <b>{tname}</b>")
@@ -325,6 +327,7 @@ async def cb_profile(c: CallbackQuery):
     kbp = InlineKeyboardBuilder()
     await _btn(kbp, "⚙️ Настроить профиль", "prof_setup")
     await _btn(kbp, ach_label, "ach_open")
+    await _btn(kbp, "🎁 Подарить", "gift_open")
     await _btn(kbp, "Назад", "menu", "back")
     kbp.adjust(1)
     await ui.edit(c.message, text, reply_markup=kbp.as_markup())

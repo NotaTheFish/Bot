@@ -24,9 +24,8 @@ logger = logging.getLogger(__name__)
 _PENDING_INLINE: dict[str, dict] = {}
 _PENDING_MAX = 500
 
-# Дебаунс инлайна: рендерим только когда юзер перестал печатать
+# Защита от гонки инлайна: держим id последнего запроса каждого юзера
 _LAST_INLINE_Q: dict[int, str] = {}
-_DEBOUNCE_SEC = 0.55
 
 import html as _html_mod
 
@@ -138,16 +137,15 @@ async def inline_review(query: InlineQuery, db: Database, bot, config):
         await _safe_answer(query, results=[], cache_time=1)
         return
 
-    # Дебаунс: Telegram шлёт запрос почти на каждый символ — ждём паузу в наборе.
-    # Рендерим только самый свежий запрос, устаревшие молча умирают.
+    # Задержки нет — скорость важнее экономии на лог-чате (он самоочищается).
+    # Оставляем только защиту от гонки: помечаем последний запрос юзера, и если
+    # пока рендерилась карточка пришёл более свежий — устаревший молча умирает,
+    # чтобы в чат не прилетел старый результат поверх нового.
     _uid = query.from_user.id
     _LAST_INLINE_Q[_uid] = query.id
     if len(_LAST_INLINE_Q) > 2000:
         _LAST_INLINE_Q.clear()
         _LAST_INLINE_Q[_uid] = query.id
-    await asyncio.sleep(_DEBOUNCE_SEC)
-    if _LAST_INLINE_Q.get(_uid) != query.id:
-        return
 
     buyer_name = query.from_user.full_name or "Трейдер"
 
@@ -287,6 +285,9 @@ async def inline_review(query: InlineQuery, db: Database, bot, config):
     # ── СЛУЧАЙ 2: pub_id + текст → карточка отзыва по шаблону продавца ──────
     if seller and config.CACHE_CHAT_ID and review_text:
         file_id, verify_code = await get_or_generate_card(query, seller, review_text, bot, config, db)
+        # Пока рендерилась карточка юзер мог допечатать — не шлём устаревший результат
+        if _LAST_INLINE_Q.get(_uid) != query.id:
+            return
         if file_id:
             inline_is_anon = bool(seller.get("inline_anon", False))
             if inline_is_anon:
@@ -361,6 +362,8 @@ async def inline_review(query: InlineQuery, db: Database, bot, config):
                 "item_mode": "free", "item_value": "",
             }
             file_id, _ = await get_or_generate_card(query, fake_seller, review_text, bot, config, db)
+            if _LAST_INLINE_Q.get(_uid) != query.id:
+                return
             if file_id:
                 await _safe_answer(query,
                     results=[InlineQueryResultCachedPhoto(
@@ -384,6 +387,8 @@ async def inline_review(query: InlineQuery, db: Database, bot, config):
                 "item_mode": "free", "item_value": "",
             }
             file_id, _ = await get_or_generate_card(query, fake_seller, review_text, bot, config, db)
+            if _LAST_INLINE_Q.get(_uid) != query.id:
+                return
             if file_id:
                 await _safe_answer(query,
                     results=[InlineQueryResultCachedPhoto(

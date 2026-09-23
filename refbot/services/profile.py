@@ -46,8 +46,8 @@ async def nick_taken(nick: str, exclude_uid: int | None = None) -> bool:
 
 async def get_profile(uid: int) -> dict | None:
     row = await db.pool().fetchrow(
-        "SELECT tg_id, username, first_name, nickname, nickname_set, active_title, active_emoji "
-        "FROM rb_users WHERE tg_id=$1", uid)
+        "SELECT tg_id, username, first_name, nickname, nickname_set, active_title, active_emoji, "
+        "public_id, public_id_set FROM rb_users WHERE tg_id=$1", uid)
     return dict(row) if row else None
 
 
@@ -147,3 +147,41 @@ def extract_emoji(msg) -> str | None:
             return f'<tg-emoji emoji-id="{e.custom_emoji_id}">{sym}</tg-emoji>'
     # обычный эмодзи — первый «символ» (может быть составным)
     return text.split()[0] if text else None
+
+
+import re as _re
+_PUBID_RE = _re.compile(r"^[A-Za-z0-9]{4,5}$")
+
+
+def validate_public_id(raw: str) -> tuple[str | None, str]:
+    """Публичный ID: 4-5 символов, только латинские буквы и цифры."""
+    if not raw:
+        return None, "Пустой ID."
+    pid = raw.strip()
+    if not _PUBID_RE.match(pid):
+        return None, "ID — 4-5 символов, только латинские буквы и цифры (без пробелов и символов)."
+    return pid, ""
+
+
+async def public_id_taken(pid: str, exclude_uid: int | None = None) -> bool:
+    row = await db.pool().fetchval(
+        "SELECT tg_id FROM rb_users WHERE lower(public_id)=lower($1) "
+        "AND ($2::bigint IS NULL OR tg_id<>$2)", pid, exclude_uid)
+    return row is not None
+
+
+async def set_public_id(uid: int, pid: str, mark_set: bool = True) -> tuple[bool, str]:
+    pid, err = validate_public_id(pid)
+    if err:
+        return False, err
+    if await public_id_taken(pid, exclude_uid=uid):
+        return False, "Этот ID уже занят. Придумай другой."
+    await db.pool().execute(
+        "UPDATE rb_users SET public_id=$1, public_id_set=$2 WHERE tg_id=$3", pid, mark_set, uid)
+    return True, ""
+
+
+async def resolve_public_id(pid: str) -> int | None:
+    """Найти tg_id игрока по публичному ID."""
+    return await db.pool().fetchval(
+        "SELECT tg_id FROM rb_users WHERE lower(public_id)=lower($1)", pid.strip())

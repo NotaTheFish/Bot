@@ -597,6 +597,10 @@ async def finalize_review(event, state: FSMContext, db: Database, bot, config,
     # В канале кнопки нет при анонимности
     show_button_channel = False if is_anon else show_button_pm
 
+    import json as _pj
+    proof_fids = data.get("proof_file_ids") or []
+    proof_fids_json = _pj.dumps(proof_fids) if proof_fids else None
+
     file_id = sent.photo[-1].file_id if sent.photo else None
     review_row = await db.save_review(
         seller_id=seller["id"],
@@ -613,6 +617,7 @@ async def finalize_review(event, state: FSMContext, db: Database, bot, config,
         verify_code=verify_code,
         is_anonymous=is_anon,
         review_html=text_html,
+        proof_file_ids=proof_fids_json,
     )
     review_id = review_row["id"]
     await state.clear()
@@ -746,15 +751,18 @@ async def _add_proof_photo(message: Message, state: FSMContext, bot):
     async with _proof_lock(message.from_user.id):
         data = await state.get_data()
         proofs = list(data.get("proofs_b64", []))
+        proof_fids = list(data.get("proof_file_ids", []))
         if data.get("proofs_done") or len(proofs) >= MAX_PROOFS:
             return proofs, False
         if b64 is not None:
             proofs.append(b64)
+            proof_fids.append(photo.file_id)  # оригинал для последующего редактирования
         if len(proofs) >= MAX_PROOFS:
             # Лимит достигнут этим фото — продолжаем ровно один раз
-            await state.update_data(proofs_b64=proofs, proofs_done=True)
+            await state.update_data(proofs_b64=proofs, proof_file_ids=proof_fids,
+                                    proofs_done=True)
             return proofs, True
-        await state.update_data(proofs_b64=proofs)
+        await state.update_data(proofs_b64=proofs, proof_file_ids=proof_fids)
         # Статус обновляем ПОД ЛОКОМ — иначе альбом плодит несколько сообщений
         if proofs:
             await _upsert_status(
@@ -1069,7 +1077,7 @@ class ProofEditSG(StatesGroup):
 
 
 @router.callback_query(F.data.startswith("proofedit:"))
-async def cb_proofedit(call: CallbackQuery, state: FSMContext, db: Database):
+async def cb_proofedit(call: CallbackQuery, state: FSMContext, db: Database, bot):
     review_id = int(call.data.split(":")[1])
     review = await db.get_review(review_id)
     if not review or review["seller_id"] != call.from_user.id:
@@ -1084,9 +1092,43 @@ async def cb_proofedit(call: CallbackQuery, state: FSMContext, db: Database):
     await state.update_data(pe_review_id=review_id, pe_needed=needed,
                             pe_collected=[], pe_card_msg_id=call.message.message_id,
                             pe_done=False, pe_status_msg_id=None)
+
+    # Отдаём продавцу оригиналы пруфов — чтобы он их скачал, замазал ники и залил обратно
+    import json as _pj
+    fids = []
+    raw = review.get("proof_file_ids")
+    if raw:
+        try:
+            fids = _pj.loads(raw)
+        except Exception:
+            fids = []
+    if fids:
+        sent_any = False
+        # Шлём оригиналы как ДОКУМЕНТЫ (без сжатия) — чтобы продавец правил без потери качества
+        for i, fid in enumerate(fids[:MAX_PROOFS], 1):
+            try:
+                await bot.send_document(
+                    call.from_user.id, document=fid,
+                    caption=f"Оригинал пруфа {i}/{len(fids)} — сохрани, замажь ники и залей обратно"
+                    if i == 1 else None)
+                sent_any = True
+            except Exception:
+                # Если file_id как документ не прошёл — пробуем как фото
+                try:
+                    await bot.send_photo(call.from_user.id, photo=fid)
+                    sent_any = True
+                except Exception as e:
+                    logger.info(f"Не удалось отдать оригинал пруфа: {e}")
+        intro = ("👆 Выше — оригиналы пруфов. Скачай, замажь на них личные данные "
+                 "(ники, суммы и т.п.) и пришли обратно.\n\n") if sent_any else ""
+    else:
+        # Старые отзывы без сохранённых оригиналов
+        intro = ("<i>Оригиналы этого отзыва не сохранены (старый отзыв) — "
+                 "пришли свои версии фото.</i>\n\n")
+
     word = "фото" if needed == 1 else f"{needed} фото"
     await call.message.answer(
-        f"🖼 Пришли <b>{word}</b> — они заменят текущие пруфы на карточке.\n"
+        f"{intro}🖼 Пришли <b>{word}</b> — они заменят текущие пруфы на карточке.\n"
         f"/cancel — отмена."
     )
 
@@ -1119,17 +1161,21 @@ async def pe_photo(message: Message, state: FSMContext, db: Database, bot, confi
         if data.get("pe_done"):
             return
         collected = list(data.get("pe_collected", []))
+        collected_fids = list(data.get("pe_collected_fids", []))
         needed = data["pe_needed"]
         collected.append(b64)
+        collected_fids.append(photo.file_id)
         if len(collected) < needed:
-            await state.update_data(pe_collected=collected)
+            await state.update_data(pe_collected=collected,
+                                    pe_collected_fids=collected_fids)
             # Единый статус (редактируется, а не плодит сообщения при альбоме)
             await _upsert_status(
                 message, state, "pe_status_msg_id",
                 f"📸 <b>{len(collected)}/{needed}</b> — жду ещё.")
             return
         # Все собраны — помечаем и выходим из-под лока на генерацию
-        await state.update_data(pe_collected=collected, pe_done=True)
+        await state.update_data(pe_collected=collected,
+                                pe_collected_fids=collected_fids, pe_done=True)
 
     # Все фото собраны — перегенерируем карточку
     review_id = data["pe_review_id"]
@@ -1255,6 +1301,13 @@ async def pe_photo(message: Message, state: FSMContext, db: Database, bot, confi
 
     if new_file_id:
         await db.update_review_card(review_id, new_file_id)
+        # Обновляем сохранённые оригиналы новыми (уже отредактированными) —
+        # чтобы при повторном редактировании продавец получил исправленные версии
+        try:
+            import json as _pj
+            await db.update_review_proofs(review_id, _pj.dumps(collected_fids))
+        except Exception as e:
+            logger.info(f"Не удалось обновить proof_file_ids: {e}")
 
     try:
         await status.delete()

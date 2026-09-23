@@ -128,6 +128,8 @@ async def cmd_balance_profile(msg: Message):
             if p and p.get("nickname"):
                 emo = (p.get("active_emoji") + " ") if p.get("active_emoji") else ""
                 extra.append(f"👤 Ник: {emo}<b>{p['nickname']}</b>")
+            if p.get("public_id"):
+                extra.append(f"🆔 ID: <code>{p['public_id']}</code>")
             tname = await _prof.active_title_name(uid)
             if tname:
                 extra.append(f"🏅 Титул: <b>{tname}</b>")

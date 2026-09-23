@@ -414,6 +414,10 @@ ALTER TABLE rb_users ADD COLUMN IF NOT EXISTS nickname     TEXT;
 ALTER TABLE rb_users ADD COLUMN IF NOT EXISTS nickname_set BOOLEAN NOT NULL DEFAULT FALSE;
 ALTER TABLE rb_users ADD COLUMN IF NOT EXISTS active_title BIGINT;
 ALTER TABLE rb_users ADD COLUMN IF NOT EXISTS active_emoji TEXT;
+ALTER TABLE rb_users ADD COLUMN IF NOT EXISTS public_id     TEXT;
+ALTER TABLE rb_users ADD COLUMN IF NOT EXISTS public_id_set BOOLEAN NOT NULL DEFAULT FALSE;
+CREATE UNIQUE INDEX IF NOT EXISTS rb_users_public_id_uidx
+    ON rb_users (lower(public_id)) WHERE public_id IS NOT NULL;
 -- уникальность ника (частичный индекс — NULL не мешают)
 CREATE UNIQUE INDEX IF NOT EXISTS rb_users_nickname_uidx
     ON rb_users (lower(nickname)) WHERE nickname IS NOT NULL;
