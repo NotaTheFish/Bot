@@ -10,6 +10,7 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from services import ui, inventory as inv
 from services.ui import btn
+from services.amount_parse import fmt_mult
 
 router = Router()
 
