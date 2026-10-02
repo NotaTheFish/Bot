@@ -151,8 +151,15 @@ async def cb_start_client(call: CallbackQuery, state: FSMContext, db: Database):
 
 @router.callback_query(F.data == "start:quick")
 async def cb_start_quick(call: CallbackQuery, state: FSMContext, db: Database):
-    await call.answer()
-    await call.message.edit_reply_markup(reply_markup=None)
+    # call.answer может протухнуть при тормозах — не даём этому уронить хендлер
+    try:
+        await call.answer()
+    except Exception:
+        pass
+    try:
+        await call.message.edit_reply_markup(reply_markup=None)
+    except Exception:
+        pass
     await state.set_state(QuickReviewSG.choose_template)
     rows = [[InlineKeyboardButton(text=label, callback_data=f"quick_tpl:{tid}")]
             for tid, label in TEMPLATE_NAMES.items()]

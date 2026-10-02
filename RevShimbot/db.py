@@ -176,7 +176,14 @@ class Database:
         self.pool: Optional[asyncpg.Pool] = None
 
     async def init(self):
-        self.pool = await asyncpg.create_pool(self.url, min_size=2, max_size=10)
+        # command_timeout — запрос не может висеть вечно и держать соединение из пула;
+        # без него при тормозах БД пул исчерпывается и весь бот зависает.
+        # max_size побольше — несколько ботов делят один инстанс PostgreSQL.
+        self.pool = await asyncpg.create_pool(
+            self.url, min_size=2, max_size=20,
+            command_timeout=15, timeout=10,
+            max_inactive_connection_lifetime=300,
+        )
         async with self.pool.acquire() as conn:
             await conn.execute(CREATE_TABLES)
             # Авто-миграция: добавляем title_font если таблица уже существовала без неё
@@ -1019,6 +1026,22 @@ class Database:
                 "UPDATE rvb_reviews SET status = $1 WHERE id = $2",
                 status, review_id
             )
+
+    async def try_accept_review(self, review_id: int) -> bool:
+        """Атомарно помечает отзыв accepted, НО только если он ещё pending.
+        Возвращает True ровно ОДИН раз — тому вызову, который реально сменил статус.
+        Защита от двойной публикации: повторные/гоночные нажатия «Принять»
+        получат False и не будут публиковать карточку второй раз."""
+        async with self.pool.acquire() as conn:
+            result = await conn.execute(
+                "UPDATE rvb_reviews SET status = 'accepted' "
+                "WHERE id = $1 AND status = 'pending'",
+                review_id
+            )
+        try:
+            return int(result.split()[-1]) > 0
+        except (ValueError, IndexError):
+            return False
 
     async def get_total_cards(self, seller_id: int) -> int:
         async with self.pool.acquire() as conn:

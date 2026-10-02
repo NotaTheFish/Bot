@@ -904,6 +904,17 @@ async def cb_review_accept(call: CallbackQuery, bot: Bot, db: Database, config):
         await call.answer("Файл карточки не найден", show_alert=True)
         return
 
+    # ЗАЩИТА ОТ ДУБЛЕЙ: атомарно захватываем отзыв. Кто первый пометил accepted —
+    # тот и публикует. Повторное/гоночное нажатие получит False и молча выйдет.
+    if not await db.try_accept_review(review_id):
+        await call.answer("Этот отзыв уже обработан", show_alert=True)
+        # Кнопки у устаревшего сообщения убираем, чтобы не жали повторно
+        try:
+            await call.message.edit_reply_markup(reply_markup=None)
+        except Exception:
+            pass
+        return
+
     file_id = row["card_file_id"]
     buyer_name = row["buyer_name"]
     buyer_username = row["buyer_username"]
@@ -974,10 +985,12 @@ async def cb_review_accept(call: CallbackQuery, bot: Bot, db: Database, config):
                 parse_mode="HTML",
             )
         except Exception as e:
+            # Публикация не удалась — откатываем захват, чтобы можно было повторить
+            await db.set_review_status(review_id, "pending")
             await call.answer(f"Ошибка публикации: {e}", show_alert=True)
             return
 
-    await db.set_review_status(review_id, "accepted")
+    # Статус уже 'accepted' (захвачен в начале try_accept_review) — повторно не ставим
 
     # ── Нумерация ──
     mode = ch.get("numbering_mode", "off")

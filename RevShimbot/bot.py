@@ -65,6 +65,32 @@ async def main():
     dp.callback_query.middleware(throttle_mw)
     dp.inline_query.middleware(throttle_mw)
 
+    # Глобальный перехват ошибок: безобидные сетевые/UI-ошибки гасим без шума,
+    # чтобы один протухший callback или гонка правок не ломали поток обработки.
+    from aiogram.exceptions import TelegramBadRequest, TelegramRetryAfter
+    from aiogram.types import ErrorEvent
+
+    @dp.errors()
+    async def on_error(event: ErrorEvent):
+        exc = event.exception
+        msg = str(exc)
+        if isinstance(exc, TelegramBadRequest):
+            low = msg.lower()
+            # Протухший callback, уже отвеченный, не изменённое сообщение — не наши баги
+            if ("query is too old" in low or "query id is invalid" in low
+                    or "message is not modified" in low
+                    or "message to edit not found" in low
+                    or "message can't be edited" in low):
+                logger.info(f"Безобидная Telegram-ошибка проглочена: {msg}")
+                return True
+        if isinstance(exc, TelegramRetryAfter):
+            logger.warning(f"Rate limit от Telegram: подождать {exc.retry_after}s")
+            return True
+        # Остальное логируем с трейсом, но не даём уронить поллинг
+        logger.error(f"Необработанная ошибка в апдейте: {type(exc).__name__}: {msg}",
+                     exc_info=exc)
+        return True
+
     dp.include_router(admin.router)
     dp.include_router(start.router)
     dp.include_router(setup.router)

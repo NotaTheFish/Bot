@@ -1,4 +1,5 @@
 """Middleware: блокировка забаненных пользователей на уровне всех апдейтов."""
+import asyncio
 import logging
 from aiogram import BaseMiddleware
 from aiogram.types import Message, CallbackQuery, InlineQuery, ReplyKeyboardRemove
@@ -25,7 +26,12 @@ class BanMiddleware(BaseMiddleware):
             return await handler(event, data)
 
         try:
-            banned = await self.db.is_banned(user.id)
+            # Короткий таймаут: проверка бана не должна тормозить каждый апдейт.
+            # Если БД залипла — пропускаем дальше (fail-open), чтобы бот жил.
+            banned = await asyncio.wait_for(self.db.is_banned(user.id), timeout=3)
+        except asyncio.TimeoutError:
+            logger.warning("Проверка бана по таймауту — пропускаю апдейт")
+            return await handler(event, data)
         except Exception as e:
             logger.error(f"Ошибка проверки бана: {e}")
             return await handler(event, data)
