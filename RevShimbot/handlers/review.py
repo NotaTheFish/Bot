@@ -534,7 +534,9 @@ async def finalize_review(event, state: FSMContext, db: Database, bot, config,
     try:
         img_bytes = await generate_card(card_data)
     except Exception as e:
-        await answer(f"❌ Ошибка генерации карточки: {e}")
+        logger.error(f"Ошибка генерации карточки (seller={seller['id']}): {e}")
+        await answer("⚠️ Не получилось собрать карточку с первого раза — "
+                     "сервис был загружен. Попробуй ещё раз через пару секунд 🙏")
         return
 
     # Проверяем, есть ли у продавца подключённый канал — от этого зависит,

@@ -6,6 +6,13 @@ import pytz
 
 MSK = pytz.timezone("Europe/Moscow")
 
+# Весь рендер идёт в ОДНОМ выделенном потоке: sync_playwright не терпит работы из
+# разных потоков event-loop'а, поэтому держим единственный воркер, а браузер живёт
+# внутри него и переиспользуется. Карточки рендерятся по очереди — это дёшево
+# (2-3с каждая) и не плодит процессы, в отличие от "браузер на каждый вызов".
+from concurrent.futures import ThreadPoolExecutor as _TPE
+_render_executor = _TPE(max_workers=1, thread_name_prefix="card-render")
+
 # ── Emoji helpers ──────────────────────────────────────────────────────────
 
 import re as _re
@@ -457,35 +464,100 @@ HTML_BUILDERS = {
 }
 
 
-def _render_html(html: str) -> bytes:
-    from playwright.sync_api import sync_playwright
-    import io as _io
+# ── Переиспользуемый браузер ───────────────────────────────────────────────
+# Раньше на КАЖДУЮ карточку запускался новый Chromium (launch()). Под нагрузкой
+# это упирало систему в лимит процессов/памяти → "[Errno 11] Resource temporarily
+# unavailable". Теперь браузер запускается ОДИН раз и переиспользуется; доступ
+# к нему сериализован локом (sync_playwright не потокобезопасен).
+import threading as _threading
 
-    with sync_playwright() as p:
-        browser = p.chromium.launch()
-        page = browser.new_page(
-            viewport={"width": 900, "height": 600},
-            device_scale_factor=2
-        )
-        page.set_content(html, wait_until="networkidle")
+_pw = None
+_browser = None
+_render_lock = _threading.Lock()
+
+
+def _get_browser():
+    """Ленивая инициализация единственного браузера. Если он умер — перезапускаем."""
+    global _pw, _browser
+    from playwright.sync_api import sync_playwright
+    if _browser is not None:
         try:
-            page.evaluate("async () => { await document.fonts.ready; }")
+            if _browser.is_connected():
+                return _browser
         except Exception:
             pass
-        page.wait_for_timeout(350)
-        # Расширяем viewport под полную высоту контента (иначе высокие пруфы обрезаются)
-        full_height = page.evaluate("document.body.scrollHeight")
-        page.set_viewport_size({"width": 900, "height": int(full_height) + 40})
-        page.wait_for_timeout(120)
-        target = page.query_selector(".frame") or page.query_selector(".card")
-        box = target.bounding_box()
-        png = page.screenshot(
-            type="png",
-            clip={"x": box["x"], "y": box["y"],
-                  "width": box["width"], "height": box["height"]}
-        )
-        browser.close()
-    return png
+    # Перезапуск: чистим старое
+    try:
+        if _browser is not None:
+            _browser.close()
+    except Exception:
+        pass
+    try:
+        if _pw is not None:
+            _pw.stop()
+    except Exception:
+        pass
+    _pw = sync_playwright().start()
+    _browser = _pw.chromium.launch(args=[
+        "--no-sandbox",
+        "--disable-dev-shm-usage",      # не упираться в /dev/shm (частая причина падений в контейнере)
+        "--disable-gpu",
+        "--single-process",             # меньше процессов — меньше шансов на Errno 11
+    ])
+    return _browser
+
+
+def _render_html(html: str) -> bytes:
+    # Сериализуем рендеры: один браузер обслуживает карточки по очереди,
+    # вместо того чтобы плодить по браузеру на каждую (и исчерпывать ресурсы).
+    with _render_lock:
+        for attempt in range(2):
+            page = None
+            try:
+                browser = _get_browser()
+                page = browser.new_page(
+                    viewport={"width": 900, "height": 600},
+                    device_scale_factor=2
+                )
+                page.set_content(html, wait_until="networkidle")
+                try:
+                    page.evaluate("async () => { await document.fonts.ready; }")
+                except Exception:
+                    pass
+                page.wait_for_timeout(350)
+                full_height = page.evaluate("document.body.scrollHeight")
+                page.set_viewport_size({"width": 900, "height": int(full_height) + 40})
+                page.wait_for_timeout(120)
+                target = page.query_selector(".frame") or page.query_selector(".card")
+                box = target.bounding_box()
+                png = page.screenshot(
+                    type="png",
+                    clip={"x": box["x"], "y": box["y"],
+                          "width": box["width"], "height": box["height"]}
+                )
+                return png
+            except Exception as e:
+                # Браузер мог умереть — на первой попытке сбрасываем его и пробуем снова
+                global _browser
+                try:
+                    if page is not None:
+                        page.close()
+                except Exception:
+                    pass
+                if attempt == 0:
+                    try:
+                        _browser.close()
+                    except Exception:
+                        pass
+                    _browser = None
+                    continue
+                raise
+            finally:
+                try:
+                    if page is not None:
+                        page.close()
+                except Exception:
+                    pass
 
 
 def _proof_imgs_html(proof_b64_list: list, accent: str) -> str:
@@ -626,4 +698,6 @@ async def generate_card(data: dict) -> bytes:
     if data.get("verify_code"):
         html = _inject_verify_code(html, data["verify_code"], data.get("bot_username", "RevShimbot"))
     loop = asyncio.get_event_loop()
-    return await loop.run_in_executor(None, _render_html, html)
+    # Один выделенный поток-воркер: браузер живёт в нём и обслуживает карточки
+    # по очереди. Наплыв клиентов выстраивается в очередь, а не плодит браузеры.
+    return await loop.run_in_executor(_render_executor, _render_html, html)
