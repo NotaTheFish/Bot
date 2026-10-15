@@ -149,6 +149,13 @@ async def start_review_flow(message: Message, seller: dict, state: FSMContext, d
     # Ранняя проверка анти-накрутки — чтобы не заставлять печатать отзыв зря
     from config import Config
     _cfg = Config()
+    # Персональный ЧС: продавец заблокировал этого покупателя. Нейтральный отказ,
+    # чтобы троль не понял, что он в чёрном списке (иначе создаст новый аккаунт).
+    if await db.is_blacklisted(seller["id"], message.from_user.id):
+        await message.answer(
+            f"🔒 Продавец <b>{seller['shop_name']}</b> сейчас не принимает отзывы.\n"
+            "Попробуй позже.")
+        return
     if message.from_user.id != _cfg.ADMIN_TG_ID:
         if await db.has_recent_review(message.from_user.id, seller["id"], hours=6):
             await message.answer(
@@ -472,6 +479,12 @@ async def finalize_review(event, state: FSMContext, db: Database, bot, config,
     buyer_name = user.full_name or user.first_name or "Покупатель"
     buyer_username = user.username
 
+    # ЧС мог появиться пока клиент писал отзыв — проверяем и на финале
+    if await db.is_blacklisted(seller["id"], user.id):
+        await answer(f"🔒 Продавец <b>{seller['shop_name']}</b> сейчас не принимает отзывы.")
+        await state.clear()
+        return
+
     # Анти-накрутка: 1 отзыв продавцу в 6 часов + суточный лимит (админ — без лимитов для тестов)
     if user.id != config.ADMIN_TG_ID:
         if await db.has_recent_review(user.id, seller["id"], hours=6):
@@ -644,6 +657,9 @@ async def finalize_review(event, state: FSMContext, db: Database, bot, config,
     if proofs:
         rows.append([InlineKeyboardButton(text="🖼 Редактировать пруф",
                                           callback_data=f"proofedit:{review_id}")])
+    # Кнопка быстрого бана тролля — убирает отзывы этого покупателя продавцу
+    rows.append([InlineKeyboardButton(text="🚫 В чёрный список",
+                                      callback_data=f"blfast:{user.id}")])
     seller_kb = InlineKeyboardMarkup(inline_keyboard=rows) if rows else None
 
     # Под карточкой — АНОН-НИК (как на самой карточке). Реальный автор — только пометкой.

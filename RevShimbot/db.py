@@ -127,6 +127,14 @@ CREATE TABLE IF NOT EXISTS rvb_review_numbers (
     number_msg_id BIGINT,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+CREATE TABLE IF NOT EXISTS rvb_seller_blacklist (
+    seller_id BIGINT NOT NULL,
+    buyer_id BIGINT NOT NULL,
+    buyer_username TEXT,
+    buyer_name TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (seller_id, buyer_id)
+);
 CREATE TABLE IF NOT EXISTS rvb_bot_users (
     id BIGINT PRIMARY KEY,
     username TEXT,
@@ -438,6 +446,17 @@ class Database:
             await conn.execute("""
                 CREATE INDEX IF NOT EXISTS rvb_review_numbers_seller_idx
                 ON rvb_review_numbers(seller_id, number)
+            """)
+            # Авто-миграция: персональный чёрный список продавца
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS rvb_seller_blacklist (
+                    seller_id BIGINT NOT NULL,
+                    buyer_id BIGINT NOT NULL,
+                    buyer_username TEXT,
+                    buyer_name TEXT,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    PRIMARY KEY (seller_id, buyer_id)
+                )
             """)
         logger.info("Database initialized")
 
@@ -1332,6 +1351,61 @@ class Database:
             return bool(await conn.fetchval(
                 "SELECT notified FROM rvb_banned_users WHERE id = $1", user_id
             ))
+
+    # ── Персональный ЧС продавца (блок пары продавец↔покупатель) ───────────
+
+    async def is_blacklisted(self, seller_id: int, buyer_id: int) -> bool:
+        """Покупатель в ЧС у конкретного продавца? (у других продавцов — нет)."""
+        async with self.pool.acquire() as conn:
+            return bool(await conn.fetchval(
+                "SELECT 1 FROM rvb_seller_blacklist WHERE seller_id = $1 AND buyer_id = $2",
+                seller_id, buyer_id))
+
+    async def add_to_blacklist(self, seller_id: int, buyer_id: int,
+                               buyer_username=None, buyer_name=None) -> bool:
+        """Добавляет покупателя в ЧС продавца. Возвращает True, если это новая запись."""
+        async with self.pool.acquire() as conn:
+            result = await conn.execute("""
+                INSERT INTO rvb_seller_blacklist (seller_id, buyer_id, buyer_username, buyer_name)
+                VALUES ($1, $2, $3, $4)
+                ON CONFLICT (seller_id, buyer_id) DO UPDATE
+                    SET buyer_username = COALESCE(EXCLUDED.buyer_username, rvb_seller_blacklist.buyer_username),
+                        buyer_name = COALESCE(EXCLUDED.buyer_name, rvb_seller_blacklist.buyer_name)
+            """, seller_id, buyer_id, buyer_username, buyer_name)
+            return result.endswith("1")  # "INSERT 0 1" при новой записи
+
+    async def remove_from_blacklist(self, seller_id: int, buyer_id: int) -> bool:
+        """Убирает покупателя из ЧС продавца. True, если запись была."""
+        async with self.pool.acquire() as conn:
+            result = await conn.execute(
+                "DELETE FROM rvb_seller_blacklist WHERE seller_id = $1 AND buyer_id = $2",
+                seller_id, buyer_id)
+            return result.endswith("1")
+
+    async def list_blacklist(self, seller_id: int) -> list:
+        """Весь ЧС продавца, свежие сверху."""
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT buyer_id, buyer_username, buyer_name, created_at "
+                "FROM rvb_seller_blacklist WHERE seller_id = $1 ORDER BY created_at DESC",
+                seller_id)
+            return [dict(r) for r in rows]
+
+    async def count_blacklist(self, seller_id: int) -> int:
+        async with self.pool.acquire() as conn:
+            return await conn.fetchval(
+                "SELECT COUNT(*) FROM rvb_seller_blacklist WHERE seller_id = $1",
+                seller_id) or 0
+
+    async def find_buyer_by_username(self, username: str):
+        """Ищет покупателя по @username среди известных боту пользователей.
+        Возвращает (id, username) или None — для добавления в ЧС вручную."""
+        uname = username.lstrip("@").strip()
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT id, username FROM rvb_bot_users WHERE LOWER(username) = LOWER($1) LIMIT 1",
+                uname)
+            return dict(row) if row else None
 
     async def mark_ban_notified(self, user_id: int):
         async with self.pool.acquire() as conn:

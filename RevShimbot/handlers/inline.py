@@ -282,6 +282,12 @@ async def inline_review(query: InlineQuery, db: Database, bot, config):
         )
         return
 
+    # Персональный ЧС: продавец заблокировал этого покупателя.
+    # Не отдаём карточку (пустой результат) — троль не поймёт, что он в ЧС.
+    if seller and await db.is_blacklisted(seller["id"], query.from_user.id):
+        await _safe_answer(query, results=[], cache_time=1)
+        return
+
     # ── СЛУЧАЙ 2: pub_id + текст → карточка отзыва по шаблону продавца ──────
     if seller and config.CACHE_CHAT_ID and review_text:
         file_id, verify_code = await get_or_generate_card(query, seller, review_text, bot, config, db)
@@ -531,6 +537,8 @@ async def on_chosen_inline_result(chosen, bot, db: Database, config):
             InlineKeyboardButton(text="✅ Принять", callback_data=f"review:accept:{review_id}"),
             InlineKeyboardButton(text="❌ Отклонить", callback_data=f"review:reject:{review_id}"),
         ])
+    rows.append([InlineKeyboardButton(text="🚫 В чёрный список",
+                                      callback_data=f"blfast:{buyer_id}")])
     seller_kb = InlineKeyboardMarkup(inline_keyboard=rows) if rows else None
 
     # Уведомление продавцу — только если он его включил. Отзыв в БД сохраняется всегда.
