@@ -41,13 +41,17 @@ def roll_mushrooms(boosted: bool = False) -> int:
     return 250  # недостижимо, но пусть будет
 
 
-def roll(currency: str, boost_override: bool = False) -> tuple[int, bool]:
+def roll(currency: str, boost_override: bool = False, jinx: bool = False) -> tuple[int, bool]:
     """
     Ежедневная прокрутка (!шайн). Возвращает (сумма, is_mega_jackpot).
     boost_override=True — форсировать буст (персональная удача игрока), даже без акции.
+    jinx=True — порча: два броска, берём ХУДШИЙ, без джекпота. Буст перебивает порчу.
     """
     from config import ROULETTE_JACKPOTS, BOOST_JACKPOT_MULT
     boost = boost_active() or boost_override
+    if jinx and not boost:
+        m = min(roll_mushrooms(False), roll_mushrooms(False))
+        return (m * COIN_RATE if currency == "coins" else m), False
     r = _rand()
     acc = 0.0
     for amount, chance, has_paste in ROULETTE_JACKPOTS:
@@ -97,13 +101,23 @@ def boosted_bands():
     return out
 
 
-def roll_jackpot(currency: str, boost_override: bool = False) -> tuple[int, bool]:
+def roll_jackpot(currency: str, boost_override: bool = False,
+                 jinx: bool = False) -> tuple[int, bool]:
     """
     Секретная джекпот-прокрутка (!шaйн). Возвращает (сумма, is_jackpot).
     boost_override=True (персональная удача) удваивает шанс джекпота.
+    jinx=True — порча: два броска, берём меньший, без джекпота. Буст перебивает порчу.
     """
     from config import JACKPOT_MIN, JACKPOT_MAX, JACKPOT_CHANCE, ROULETTE_ROUND_TO
-    chance = JACKPOT_CHANCE * 2 if (boost_active() or boost_override) else JACKPOT_CHANCE
+    boost = boost_active() or boost_override
+    if jinx and not boost:
+        def _one():
+            val = JACKPOT_MIN + _rand() * (JACKPOT_MAX - 1 - JACKPOT_MIN)
+            v = int(round(val / ROULETTE_ROUND_TO) * ROULETTE_ROUND_TO)
+            return max(JACKPOT_MIN, min(JACKPOT_MAX - 1, v))
+        m = min(_one(), _one())
+        return (m * COIN_RATE if currency == "coins" else m), False
+    chance = JACKPOT_CHANCE * 2 if boost else JACKPOT_CHANCE
     if _rand() * 100 < chance:
         m = JACKPOT_MAX
         is_jack = True

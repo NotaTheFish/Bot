@@ -162,7 +162,16 @@ async def count_message(chat_id: int, user_id: int) -> None:
 
     Ограничителя частоты тут нет намеренно: за флудом в чате следит отдельный бот,
     дублировать его — значит спорить с ним за то, что считать сообщением.
+
+    Припадок (проклятье): сообщения проклятого НЕ считаются — процесс недели для
+    него «замирает» и продолжится с того же места, как только проклятье спадёт.
     """
+    try:
+        from services import curses as _curses
+        if await _curses.has(user_id, "fit"):
+            return
+    except Exception:
+        pass
     start, _ = period_bounds()
     await db.pool().execute(
         """

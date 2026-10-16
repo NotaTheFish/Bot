@@ -132,6 +132,11 @@ async def _deliver(uid: int, item: dict, disc: int, paid: int):
         await db.pool().execute(
             "INSERT INTO rb_inventory (tg_id, item_type, payload) VALUES ($1,'shield',$2)",
             uid, json.dumps(p))
+    elif t == "uncurse":
+        # эликсир снятия проклятия — в инвентарь, активирует игрок сам
+        await db.pool().execute(
+            "INSERT INTO rb_inventory (tg_id, item_type, payload) VALUES ($1,'uncurse',$2)",
+            uid, json.dumps({"count": int(p.get("count", 1))}))
 
 
 async def grant_bonus(uid: int, item_type: str, payload: dict) -> str:
@@ -149,6 +154,8 @@ async def grant_bonus(uid: int, item_type: str, payload: dict) -> str:
         if p.get("kind") == "time":
             return f"🛡 щит на {p.get('minutes',60)} мин"
         return f"🛡 щит ×{p.get('uses',1)}"
+    if item_type == "uncurse":
+        return f"🧪 эликсир снятия проклятия ×{p.get('count',1)}"
     if item_type == "emoji":
         return f"😎 эмодзи {p.get('emoji','')}"
     if item_type == "title":

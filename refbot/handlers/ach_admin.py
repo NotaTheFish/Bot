@@ -322,23 +322,23 @@ async def cb_save(c: CallbackQuery, state: FSMContext):
 
 
 # ---------------- список/удаление ----------------
+# Схема простая: выбрал достижение -> карточка -> кнопка «Удалить» -> удаляется
+# полностью (и прогресс игроков тоже). Никаких «отключить» и кеша: нет позиции —
+# нет и её данных.
 @router.callback_query(F.data.startswith("acha_list:"))
 async def cb_list(c: CallbackQuery):
     if not await _is_admin(c.from_user.id):
         return await c.answer("Только админ.", show_alert=True)
-    page = int(c.data.split(":")[1])
     rows = await db.pool().fetch(
-        "SELECT id, title, trigger_type, trigger_target, active, hidden "
-        "FROM rb_achievements ORDER BY id DESC LIMIT 10 OFFSET $1", page * 10)
+        "SELECT id, title, trigger_type, trigger_target, hidden "
+        "FROM rb_achievements ORDER BY id DESC")
     kb = InlineKeyboardBuilder()
-    lines = ["🏆 <b>Достижения</b>\n"]
+    lines = ["🏆 <b>Достижения</b>\n\nНажми достижение, чтобы удалить:\n"]
     for r in rows:
-        st = "" if r["active"] else " ⛔"
         h = "🔒" if r["hidden"] else "👁"
-        lines.append(f"{h} <b>{r['title']}</b> ({counters.TRIGGER_LABELS.get(r['trigger_type'],'?')} ≥ {r['trigger_target']}){st}")
-        if r["active"]:
-            await btn(kb, f"⛔ Откл: {r['title'][:16]}", f"acha_del:{r['id']}")
-        await btn(kb, f"🗑 Удалить: {r['title'][:16]}", f"acha_kill:{r['id']}")
+        lines.append(f"{h} <b>{r['title']}</b> "
+                     f"({counters.TRIGGER_LABELS.get(r['trigger_type'],'?')} ≥ {r['trigger_target']})")
+        await btn(kb, f"{r['title'][:24]}", f"acha_pick:{r['id']}")
     if not rows:
         lines.append("<i>Пусто.</i>")
     await btn(kb, "Назад", "profile", "back")
@@ -347,41 +347,37 @@ async def cb_list(c: CallbackQuery):
     await c.answer()
 
 
-@router.callback_query(F.data.startswith("acha_del:"))
-async def cb_del(c: CallbackQuery):
-    """Отключить достижение (скрыть, но данные сохранить)."""
+@router.callback_query(F.data.startswith("acha_pick:"))
+async def cb_pick(c: CallbackQuery):
     if not await _is_admin(c.from_user.id):
         return await c.answer("Только админ.", show_alert=True)
     aid = int(c.data.split(":")[1])
-    await db.pool().execute("UPDATE rb_achievements SET active=false WHERE id=$1", aid)
-    await c.answer("Достижение отключено.")
-    c.data = "acha_list:0"
-    await cb_list(c)
+    a = await db.pool().fetchrow(
+        "SELECT id, title, description, trigger_type, trigger_target, hidden "
+        "FROM rb_achievements WHERE id=$1", aid)
+    if not a:
+        c.data = "acha_list:0"
+        return await cb_list(c)
+    kb = InlineKeyboardBuilder()
+    await btn(kb, "🗑 Удалить", f"acha_kill:{aid}")
+    await btn(kb, "Назад", "acha_list:0", "back")
+    kb.adjust(1)
+    await ui.edit(c.message,
+        f"{'🔒' if a['hidden'] else '👁'} <b>{a['title']}</b>\n"
+        f"{a.get('description') or ''}\n"
+        f"Условие: {counters.TRIGGER_LABELS.get(a['trigger_type'],'?')} ≥ {a['trigger_target']}",
+        reply_markup=kb.as_markup())
+    await c.answer()
 
 
 @router.callback_query(F.data.startswith("acha_kill:"))
 async def cb_kill(c: CallbackQuery):
-    """Удалить достижение НАСОВСЕМ (с подтверждением)."""
+    """Удалить достижение НАСОВСЕМ вместе с прогрессом игроков."""
     if not await _is_admin(c.from_user.id):
         return await c.answer("Только админ.", show_alert=True)
-    parts = c.data.split(":")
-    aid = int(parts[1])
-    confirmed = len(parts) > 2 and parts[2] == "yes"
-    a = await db.pool().fetchrow("SELECT title FROM rb_achievements WHERE id=$1", aid)
-    if not a:
-        return await c.answer("Уже удалено.", show_alert=True)
-    if not confirmed:
-        kb = InlineKeyboardBuilder()
-        await btn(kb, "🗑 Да, удалить насовсем", f"acha_kill:{aid}:yes")
-        await btn(kb, "Отмена", "acha_list:0", "back")
-        kb.adjust(1)
-        return await ui.edit(c.message,
-            f"🗑 <b>Удалить достижение?</b>\n\n«{a['title']}»\n\n"
-            f"Удалится полностью вместе с прогрессом всех игроков. "
-            f"Это <b>необратимо</b>.", reply_markup=kb.as_markup())
-    # удаляем прогресс + само достижение
+    aid = int(c.data.split(":")[1])
     await db.pool().execute("DELETE FROM rb_user_achievements WHERE ach_id=$1", aid)
     await db.pool().execute("DELETE FROM rb_achievements WHERE id=$1", aid)
-    await c.answer("Достижение удалено насовсем.")
+    await c.answer("Достижение удалено.")
     c.data = "acha_list:0"
     await cb_list(c)

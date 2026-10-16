@@ -33,6 +33,7 @@ def roll_prize(case_key: str, boost: bool = False, rolls: int = 1) -> tuple[floa
     boost/rolls — удача: делаем N бросков и берём лучший по множителю. Чем выше
     множитель удачи, тем больше бросков и выше шанс крупного приза.
     rolls берётся из множителя удачи (×2 -> 2 броска, ×5 -> 5 и т.д.), потолок 50.
+    rolls<0 — порча (неудача): |rolls| бросков, берём ХУДШИЙ.
     """
     _, _, prizes = CASES[case_key]
 
@@ -45,15 +46,17 @@ def roll_prize(case_key: str, boost: bool = False, rolls: int = 1) -> tuple[floa
                 return mult, p
         return prizes[-1][0], prizes[-1][1]
 
-    n = max(1, min(int(rolls), 50))
-    if boost and n < 2:
-        n = 2
-    if n <= 1:
+    n = int(rolls)
+    worst = n < 0
+    an = max(1, min(abs(n), 50))
+    if boost and an < 2:
+        an = 2
+    if an <= 1:
         return _one()
     best = _one()
-    for _ in range(n - 1):
+    for _ in range(an - 1):
         cand = _one()
-        if cand[0] > best[0]:
+        if (cand[0] < best[0]) if worst else (cand[0] > best[0]):
             best = cand
     return best
 
@@ -82,7 +85,8 @@ def all_cases() -> list[tuple[str, str, int]]:
 # ---------- рулетка (колесо) ----------
 def roll_wheel(boost: bool = False, rolls: int = 1) -> float:
     """Крутануть колесо. Возвращает множитель. Удача: N бросков, берём больший
-    (чем выше множитель удачи — тем больше бросков и выше шанс крупного)."""
+    (чем выше множитель удачи — тем больше бросков и выше шанс крупного).
+    rolls<0 — порча (неудача): |rolls| бросков, берём меньший."""
     from config import WHEEL_SECTORS
 
     def _one():
@@ -94,12 +98,15 @@ def roll_wheel(boost: bool = False, rolls: int = 1) -> float:
                 return mult
         return WHEEL_SECTORS[-1][0]
 
-    n = max(1, min(int(rolls), 50))
-    if boost and n < 2:
-        n = 2
-    if n <= 1:
+    n = int(rolls)
+    worst = n < 0
+    an = max(1, min(abs(n), 50))
+    if boost and an < 2:
+        an = 2
+    if an <= 1:
         return _one()
-    return max(_one() for _ in range(n))
+    vals = [_one() for _ in range(an)]
+    return min(vals) if worst else max(vals)
 
 
 def wheel_bet_ok(bet_mush: int) -> bool:

@@ -11,7 +11,7 @@ from aiogram.types import CallbackQuery
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 import db
-from services import matches, navy, settings, ui
+from services import matches, navy, settings, ui, render
 
 router = Router()
 
@@ -20,6 +20,8 @@ router = Router()
 _place: dict[tuple, dict] = {}
 # id эфемерного сообщения-поля: (mid, uid) -> message (для правки)
 _eph: dict[tuple, object] = {}
+# ключи, где поле ушло в ЛС (запасной путь) — правятся по обычному message_id
+_dm_place: set = set()
 
 
 async def _emo() -> dict:
@@ -57,6 +59,14 @@ async def _send_placement(bot, chat_id: int, mid: int, uid: int):
     text = await _placement_text(mid, uid, field)
     kb = await _placement_kb(mid, uid, field)
     emsg = _eph.get(key)
+    # поле в ЛС (запасной путь) — правим как обычное сообщение
+    if key in _dm_place and emsg is not None:
+        try:
+            await render.edit_by_id(bot, uid, emsg.message_id, text,
+                                    await settings.emoji_map(), reply_markup=kb)
+            return
+        except Exception:
+            _eph.pop(key, None); _dm_place.discard(key)
     eph_id = getattr(emsg, "ephemeral_message_id", None) if emsg else None
     if eph_id:
         try:
@@ -65,13 +75,28 @@ async def _send_placement(bot, chat_id: int, mid: int, uid: int):
         except Exception:
             # эфемерку нельзя отредактировать (устарела/заморожена) — шлём новую
             _eph.pop(key, None)
+    sent_ok = False
     try:
         m = await ui.send_ephemeral(bot, chat_id, uid, text, reply_markup=kb)
-        if m:
+        if m and getattr(m, "ephemeral_message_id", None):
             _eph[key] = m
+            sent_ok = True
     except Exception as e:
         import logging
-        logging.getLogger("refbot").warning("navy placement send failed: %s", type(e).__name__)
+        logging.getLogger("refbot").warning("navy placement eph failed: %s", type(e).__name__)
+    # запасной путь: если эфемерка не ушла (игрок не в чате/не писал) — шлём в ЛС,
+    # чтобы игрок не застрял без поля расстановки
+    if not sent_ok:
+        try:
+            dm = await ui.send(bot, uid, text, reply_markup=kb)
+            if dm:
+                # помечаем как DM-эфемерку: правим по обычному message_id
+                _eph[key] = dm
+                _dm_place.add(key)
+        except Exception:
+            import logging
+            logging.getLogger("refbot").warning(
+                "navy placement: не смог доставить поле игроку %s (ни чат, ни ЛС)", uid)
 
 
 async def _placement_text(mid: int, uid: int, field: dict) -> str:

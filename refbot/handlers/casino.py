@@ -185,8 +185,8 @@ async def cb_case_open(c: CallbackQuery):
 
     # ролл приза
     from services import inventory as _inv
-    _luck = await _inv.luck_multiplier(uid, "cases")
-    mult, _p = casino.roll_prize(case_key, rolls=max(1, int(_luck)))
+    _rolls = await _inv.effective_rolls(uid, "cases")
+    mult, _p = casino.roll_prize(case_key, rolls=_rolls)
     won = casino.prize_amount(case_key, cur, mult)
 
     # оплата + приз в одной транзакции. idem уникален на каждое открытие (иначе
@@ -330,8 +330,8 @@ async def _spin_wheel(target, uid: int, bet_cur: int, cur: str, edit: bool):
                       else ui.answer_smart(target, uid, txt, reply_markup=await kb.wheel_back()))
 
     from services import inventory as _inv
-    _luck = await _inv.luck_multiplier(uid, "roulette")
-    mult = casino.roll_wheel(rolls=max(1, int(_luck)))
+    _rolls = await _inv.effective_rolls(uid, "roulette")
+    mult = casino.roll_wheel(rolls=_rolls)
     won = int(bet_cur * mult)
 
     # ставка -> выигрыш в одной транзакции
@@ -763,11 +763,11 @@ async def cb_case_open5(c: CallbackQuery):
 
     # 5 независимых роллов (с учётом удачи)
     from services import inventory as _inv
-    _luck = await _inv.luck_multiplier(uid, "cases")
+    _rolls = await _inv.effective_rolls(uid, "cases")
     results = []
     total_won = 0
     for _ in range(N):
-        mult, _p = casino.roll_prize(case_key, rolls=max(1, int(_luck)))
+        mult, _p = casino.roll_prize(case_key, rolls=_rolls)
         won = casino.prize_amount(case_key, cur, mult)
         results.append((mult, won))
         total_won += won
@@ -832,11 +832,11 @@ async def cb_wheel_x5(c: CallbackQuery):
             f"у тебя {b[cur]:,}.".replace(",", " "), show_alert=True)
 
     from services import inventory as _inv
-    _luck = await _inv.luck_multiplier(uid, "roulette")
+    _rolls = await _inv.effective_rolls(uid, "roulette")
     results = []
     total_won = 0
     for _ in range(N):
-        mult = casino.roll_wheel(rolls=max(1, int(_luck)))
+        mult = casino.roll_wheel(rolls=_rolls)
         won = int(bet_cur * mult)
         results.append((mult, won))
         total_won += won

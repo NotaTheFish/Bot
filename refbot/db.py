@@ -647,6 +647,9 @@ EXPECTED_TABLES = [
     "rb_steal_cd",
     "rb_shield",
     "rb_salary",
+    "rb_curses",
+    "rb_boo",
+    "rb_boo_cd",
 ]
 
 

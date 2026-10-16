@@ -35,9 +35,11 @@ async def _inv_content(uid: int):
     items = await inv.inventory(uid)
     active = await inv.active_bonuses(uid)
     shields = await inv.active_shields(uid)
+    from services import curses as _curses
+    curse_list = await _curses.active(uid)
     kb = InlineKeyboardBuilder()
     lines = ["🎒 <b>Инвентарь</b>", ""]
-    if active or shields:
+    if active or shields or curse_list:
         lines.append("⚡ <b>Активно сейчас:</b>")
         for a in active:
             if a["bonus_type"] == "luck":
@@ -54,6 +56,11 @@ async def _inv_content(uid: int):
             else:
                 lines.append(f"🛡 Щит — осталось {sh['uses_left']} исп.")
             await btn(kb, "🚫 Снять щит", f"inv_shoff:{sh['id']}")
+        for cz in curse_list:
+            lines.append(f"{_curses.kind_label(cz['kind'])} — проклятие "
+                         f"(до {_fmt_left(cz['expires_at'])})")
+        if curse_list:
+            lines.append("<i>Проклятия снимает 🧪 эликсир из магазина или 00:00 МСК.</i>")
         lines.append("")
     if not items:
         lines.append("<i>Нет предметов. Купи в магазине или получи за достижения.</i>")

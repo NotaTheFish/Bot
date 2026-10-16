@@ -534,6 +534,41 @@ CREATE TABLE IF NOT EXISTS rb_shield (
 );
 CREATE INDEX IF NOT EXISTS rb_shield_tg_idx ON rb_shield (tg_id);
 
+-- ---------- Хеллоуин: !буу (трик-о-трит) и проклятья ----------
+-- Активные проклятья игрока. kind: 'leak' (дырявый мешок), 'hex' (порча),
+-- 'fit' (припадок). Снимаются в 00:00 МСК (expires_at) или эликсиром (одно рандомное).
+-- Проклятья суммируются — у игрока может быть несколько строк одного вида.
+CREATE TABLE IF NOT EXISTS rb_curses (
+    id          BIGSERIAL PRIMARY KEY,
+    tg_id       BIGINT NOT NULL,
+    kind        TEXT NOT NULL,                 -- 'leak' | 'hex' | 'fit'
+    meta        JSONB NOT NULL DEFAULT '{}',   -- для leak: {cap, leaked, drip_no}
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    expires_at  TIMESTAMPTZ NOT NULL           -- ближайшая полночь МСК
+);
+CREATE INDEX IF NOT EXISTS rb_curses_tg_idx ON rb_curses (tg_id);
+CREATE INDEX IF NOT EXISTS rb_curses_kind_idx ON rb_curses (tg_id, kind);
+
+-- Висящий «бу!»: цель 5 минут выбирает !Сладость или !Гадость. Не успел — проклятье.
+CREATE TABLE IF NOT EXISTS rb_boo (
+    id          BIGSERIAL PRIMARY KEY,
+    caster      BIGINT NOT NULL,               -- кто сказал !буу
+    target      BIGINT NOT NULL,               -- проклятый (отвечает он)
+    chat_id     BIGINT,
+    status      TEXT NOT NULL DEFAULT 'pending',  -- pending|treat|trick|expired
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    deadline    TIMESTAMPTZ NOT NULL,          -- created + 5 мин
+    finished_at TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS rb_boo_pending_idx ON rb_boo (status) WHERE status='pending';
+CREATE INDEX IF NOT EXISTS rb_boo_target_idx ON rb_boo (target) WHERE status='pending';
+
+-- Кулдаун !буу: раз в день (сброс 00:00 МСК) — по дате последнего применения.
+CREATE TABLE IF NOT EXISTS rb_boo_cd (
+    tg_id     BIGINT PRIMARY KEY,
+    last_day  DATE NOT NULL
+);
+
 -- ---------- Зарплаты (ежемесячные выплаты, назначает админ) ----------
 CREATE TABLE IF NOT EXISTS rb_salary (
     tg_id       BIGINT PRIMARY KEY,

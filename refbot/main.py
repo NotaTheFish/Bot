@@ -150,6 +150,8 @@ async def main():
     dp.include_router(piggy_ui.router)
     from handlers import steal as steal_h
     dp.include_router(steal_h.router)
+    from handlers import boo as boo_h
+    dp.include_router(boo_h.router)
     from handlers import secret_words
     dp.include_router(secret_words.router)
 
@@ -182,6 +184,8 @@ async def main():
     asyncio.create_task(navy_game.timeout_worker(bot))
     from handlers import steal as steal_h
     asyncio.create_task(steal_h.steal_worker(bot))
+    from handlers import boo as boo_h
+    asyncio.create_task(boo_h.boo_worker(bot))
     from handlers import salary as salary_h
     asyncio.create_task(salary_h.salary_worker(bot))
     await bot.delete_webhook(drop_pending_updates=True)

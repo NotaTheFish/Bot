@@ -55,11 +55,70 @@ async def cmd_shop_admin(msg: Message):
     active = sum(1 for i in items if i["active"])
     kb = InlineKeyboardBuilder()
     await btn(kb, "➕ Добавить товар", "shopa_new")
-    await btn(kb, "📋 Список товаров", "shopa_list")
+    await btn(kb, "📋 Товары (удалить)", "shopa_list")
+    await btn(kb, "💲 Цены смены ника/ID", "shopa_prices")
     kb.adjust(1)
     await ui.reply(msg,
-        f"🛒 <b>Управление магазином</b>\n\nАктивных товаров: <b>{active}</b>",
+        f"🛒 <b>Управление магазином</b>\n\nТоваров: <b>{len(items)}</b>",
         reply_markup=kb.as_markup())
+
+
+@router.callback_query(F.data == "shopa_prices")
+async def cb_prices(c: CallbackQuery):
+    if not await _is_admin(c.from_user.id):
+        return await c.answer("Только админ.", show_alert=True)
+    from services import settings as _s
+    s = await _s.load()
+    nick_p = int(s.get("nickname_price", 0) or 0)
+    id_p = int(s.get("public_id_price", 0) or 0)
+    kb = InlineKeyboardBuilder()
+    await btn(kb, f"✏️ Ник: {shk_fmt(nick_p)} 💠", "shopa_setprice:nick")
+    await btn(kb, f"🆔 ID: {shk_fmt(id_p)} 💠", "shopa_setprice:id")
+    await btn(kb, "Назад", "admin", "back")
+    kb.adjust(1)
+    await ui.edit(c.message,
+        "💲 <b>Цены повторной смены</b>\n\nПервая установка — бесплатно, "
+        "последующие — за эту цену в шимкоинах. Нажми, чтобы изменить:",
+        reply_markup=kb.as_markup())
+    await c.answer()
+
+
+class PriceFSM(StatesGroup):
+    value = State()
+
+
+@router.callback_query(F.data.startswith("shopa_setprice:"))
+async def cb_setprice(c: CallbackQuery, state: FSMContext):
+    if not await _is_admin(c.from_user.id):
+        return await c.answer("Только админ.", show_alert=True)
+    what = c.data.split(":")[1]
+    await state.set_state(PriceFSM.value)
+    await state.update_data(price_what=what)
+    name = "ника" if what == "nick" else "ID"
+    await ui.edit(c.message, f"Введи цену смены {name} в шимкоинах (например 5):",
+                  reply_markup=None)
+    await c.answer()
+
+
+@router.message(PriceFSM.value)
+async def msg_setprice(msg: Message, state: FSMContext):
+    if not await _is_admin(msg.from_user.id):
+        return await state.clear()
+    from services.amount_parse import shk_parse
+    from services import settings as _s
+    price = shk_parse(msg.text or "")
+    if price is None or price < 0:
+        return await ui.reply(msg, "Нужно число (шимкоины). Ещё раз:")
+    data = await state.get_data()
+    what = data.get("price_what")
+    await state.set_state(None)
+    key = "nickname_price" if what == "nick" else "public_id_price"
+    await _s.set(key, str(price), msg.from_user.id)
+    name = "ника" if what == "nick" else "ID"
+    kb = InlineKeyboardBuilder()
+    await btn(kb, "К ценам", "shopa_prices", "back")
+    await ui.reply(msg, f"✅ Цена смены {name}: <b>{shk_fmt(price)}</b> 💠",
+                   reply_markup=kb.as_markup())
 
 
 @router.callback_query(F.data == "shopa_new")
@@ -72,6 +131,7 @@ async def cb_new(c: CallbackQuery, state: FSMContext):
     await btn(kb, "🏅 Титул", "shopa_type:title")
     await btn(kb, "😎 Эмодзи", "shopa_type:emoji")
     await btn(kb, "🛡 Щит (шимщит)", "shopa_type:shield")
+    await btn(kb, "🧪 Эликсир (снятие проклятия)", "shopa_type:uncurse")
     kb.adjust(2)
     await state.update_data(shop={})
     await ui.edit(c.message, "🛒 <b>Новый товар</b>\n\nЧто продаём?", reply_markup=kb.as_markup())
@@ -119,6 +179,8 @@ async def s_desc(msg: Message, state: FSMContext):
         "shield": "Параметры щита: <code>тип значение</code>\n"
                   "• <code>время 60</code> — 60 минут. Можно <code>время 100д</code> (дни), <code>время 5ч</code> (часы)\n"
                   "• <code>разы 3</code> — 3 авто-блока атак",
+        "uncurse": "Сколько проклятий снимает эликсир (число, обычно <code>1</code>).\n"
+                   "Снимает случайные проклятья. Напиши число:",
     }[t]
     await ui.reply(msg, f"⚙️ {hint}")
 
@@ -158,6 +220,8 @@ async def s_payload(msg: Message, state: FSMContext):
                 payload = {"kind": "uses", "uses": int(parts[1])}
             else:
                 return await ui.reply(msg, "Тип щита: «время» или «разы». Ещё раз:")
+        elif t == "uncurse":
+            payload = {"count": max(1, int(txt.split()[0]))}
     except (IndexError, ValueError):
         return await ui.reply(msg, "Не понял параметры. Попробуй ещё раз по формату:")
     s["payload"] = payload
@@ -208,16 +272,13 @@ async def s_price(msg: Message, state: FSMContext):
 async def cb_list(c: CallbackQuery):
     if not await _is_admin(c.from_user.id):
         return await c.answer("Только админ.", show_alert=True)
-    items = await shop.list_items(active_only=False)
+    items = await shop.list_items(active_only=True)
     kb = InlineKeyboardBuilder()
-    lines = ["🛒 <b>Товары магазина</b>\n"]
+    lines = ["🛒 <b>Товары магазина</b>\n\nНажми товар, чтобы удалить:\n"]
     for it in items:
-        st = "" if it["active"] else " ⛔"
         price_txt = shk_fmt(it["price"]) if it["currency"] == "shimcoins" else f"{it['price']:,}".replace(",", " ")
-        lines.append(f"• <b>{it['name']}</b> — {price_txt} {_CUR_NAMES.get(it['currency'],'')}{st}")
-        if it["active"]:
-            await btn(kb, f"⛔ Откл: {it['name'][:16]}", f"shopa_del:{it['id']}")
-        await btn(kb, f"🗑 Удалить: {it['name'][:16]}", f"shopa_kill:{it['id']}")
+        lines.append(f"• <b>{it['name']}</b> — {price_txt} {_CUR_NAMES.get(it['currency'],'')}")
+        await btn(kb, f"{it['name'][:24]}", f"shopa_pick:{it['id']}")
     if not items:
         lines.append("<i>Пусто.</i>")
     await btn(kb, "Назад", "admin", "back")
@@ -226,33 +287,33 @@ async def cb_list(c: CallbackQuery):
     await c.answer()
 
 
-@router.callback_query(F.data.startswith("shopa_del:"))
-async def cb_del(c: CallbackQuery):
+@router.callback_query(F.data.startswith("shopa_pick:"))
+async def cb_pick(c: CallbackQuery):
     if not await _is_admin(c.from_user.id):
         return await c.answer("Только админ.", show_alert=True)
-    await shop.remove_item(int(c.data.split(":")[1]))
-    await c.answer("Товар отключён.")
-    c.data = "shopa_list"
-    await cb_list(c)
+    iid = int(c.data.split(":")[1])
+    it = await shop.get_item(iid)
+    if not it:
+        c.data = "shopa_list"
+        return await cb_list(c)
+    price_txt = shk_fmt(it["price"]) if it["currency"] == "shimcoins" else f"{it['price']:,}".replace(",", " ")
+    kb = InlineKeyboardBuilder()
+    await btn(kb, "🗑 Удалить", f"shopa_kill:{iid}")
+    await btn(kb, "Назад", "shopa_list", "back")
+    kb.adjust(1)
+    await ui.edit(c.message,
+        f"🛒 <b>{it['name']}</b>\n{it.get('description') or ''}\n"
+        f"Цена: {price_txt} {_CUR_NAMES.get(it['currency'],'')}",
+        reply_markup=kb.as_markup())
+    await c.answer()
 
 
 @router.callback_query(F.data.startswith("shopa_kill:"))
 async def cb_kill(c: CallbackQuery):
     if not await _is_admin(c.from_user.id):
         return await c.answer("Только админ.", show_alert=True)
-    parts = c.data.split(":")
-    iid = int(parts[1])
-    if len(parts) > 2 and parts[2] == "yes":
-        await shop.delete_item(iid)
-        await c.answer("Товар удалён насовсем.")
-        c.data = "shopa_list"
-        return await cb_list(c)
-    it = await shop.get_item(iid)
-    kb = InlineKeyboardBuilder()
-    await btn(kb, "🗑 Да, удалить", f"shopa_kill:{iid}:yes")
-    await btn(kb, "Отмена", "shopa_list", "back")
-    kb.adjust(1)
-    await ui.edit(c.message,
-        f"🗑 Удалить товар «{it['name'] if it else '?'}» насовсем?",
-        reply_markup=kb.as_markup())
-    await c.answer()
+    iid = int(c.data.split(":")[1])
+    await shop.delete_item(iid)
+    await c.answer("Товар удалён.")
+    c.data = "shopa_list"
+    await cb_list(c)

@@ -147,6 +147,10 @@ async def spin_jackpot(msg: Message, bot: Bot):
     await db.upsert_user(uid, msg.from_user.username, msg.from_user.first_name)
     if await db.is_banned(uid):
         return await ui.reply(msg, "🚫 Ты заблокирован в системе.")
+    from services import curses as _curses
+    if await _curses.has(uid, "fit"):
+        return await ui.reply(msg, "😵 Ты в <b>припадке</b> — !шайн недоступен, пока "
+                                   "проклятие не снято (эликсир) или до 00:00 по МСК.")
 
     user = await db.get_user(uid)
     cur = user["currency"]
@@ -174,7 +178,8 @@ async def spin_jackpot(msg: Message, bot: Bot):
 
     from services import inventory as _inv
     _luck = await _inv.luck_multiplier(uid, "shine")
-    amount, is_jackpot = roulette.roll_jackpot(cur, boost_override=(_luck > 1))
+    _jinx = await _curses.has(uid, "hex")
+    amount, is_jackpot = roulette.roll_jackpot(cur, boost_override=(_luck > 1), jinx=_jinx)
 
     pos = spin_queue.position(msg.chat.id)
     wait_set = False
@@ -253,6 +258,10 @@ async def spin(msg: Message, bot: Bot):
     if await db.is_banned(uid):
         log.info("  -> забанен, выход")
         return await ui.reply(msg, "🚫 Ты заблокирован в системе.")
+    from services import curses as _curses
+    if await _curses.has(uid, "fit"):
+        return await ui.reply(msg, "😵 Ты в <b>припадке</b> — !шайн недоступен, пока "
+                                   "проклятие не снято (эликсир) или до 00:00 по МСК.")
 
     user = await db.get_user(uid)
     cur = user["currency"]
@@ -297,7 +306,8 @@ async def spin(msg: Message, bot: Bot):
 
     from services import inventory as _inv
     _luck = await _inv.luck_multiplier(uid, "shine")
-    amount, is_mega = roulette.roll(cur, boost_override=(_luck > 1))
+    _jinx = await _curses.has(uid, "hex")
+    amount, is_mega = roulette.roll(cur, boost_override=(_luck > 1), jinx=_jinx)
 
     # ---------- ОЧЕРЕДЬ НА ЧАТ ----------
     # Пока в чате крутится чья-то анимация, ставим ждущему реакцию ожидания.

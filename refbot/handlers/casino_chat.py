@@ -646,8 +646,8 @@ async def _play_wheel_chat(msg_or_c, uid: int, bet: int, cur: str, again_of, all
         return
 
     from services import inventory as _inv
-    _luck = await _inv.luck_multiplier(uid, "roulette")
-    mult = casino.roll_wheel(rolls=max(1, int(_luck)))
+    _rolls = await _inv.effective_rolls(uid, "roulette")
+    mult = casino.roll_wheel(rolls=_rolls)
     won = int(bet * mult)
     idem = f"cchwheel:{uid}:{int(time.time()*1000)}"
     try:
