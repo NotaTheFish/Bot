@@ -52,15 +52,13 @@ async def activate(uid: int, inv_id: int) -> tuple[bool, str]:
                         uid, int(p.get("uses", 1)))
             elif t == "uncurse":
                 # эликсир: снимает одно (или count) случайное проклятье тем же conn.
-                # Нечего снимать — предмет не тратим (строка останется в инвентаре).
+                # Сглаз снимает по заряду (нужно 5). Нечего снимать — предмет не тратим.
+                from services import curses as _c
                 removed = 0
                 for _ in range(max(1, int(p.get("count", 1)))):
-                    cr = await conn.fetchrow(
-                        "SELECT id FROM rb_curses WHERE tg_id=$1 AND expires_at>now() "
-                        "ORDER BY random() LIMIT 1 FOR UPDATE SKIP LOCKED", uid)
-                    if not cr:
+                    res = await _c.elixir_remove(conn, uid)
+                    if res is None:
                         break
-                    await conn.execute("DELETE FROM rb_curses WHERE id=$1", cr["id"])
                     removed += 1
                 if removed == 0:
                     return False, "Активных проклятий нет — эликсир не нужен."
@@ -107,15 +105,15 @@ async def luck_multiplier(uid: int, scope: str) -> float:
 
 
 async def effective_rolls(uid: int, scope: str) -> int:
-    """Сколько бросков делать игре с учётом удачи И порчи.
-    >0 — берём лучший (удача), <0 — берём худший (порча), порча перебивает удачу."""
+    """Сколько бросков делать игре с учётом удачи И неудачи (Порча/Сглаз).
+    >0 — берём лучший (удача), <0 — берём худший (неудача). Неудача перебивает удачу
+    и НЕ суммируется: порча/сглаз — это ×2 неудача (худший из двух), не больше."""
     try:
         from services import curses as _c
-        hexn = await _c.hex_count(uid)
+        if await _c.jinxed(uid):
+            return -2
     except Exception:
-        hexn = 0
-    if hexn > 0:
-        return -(1 + int(hexn))        # порча: худший из (1+кол-во порч)
+        pass
     luck = await luck_multiplier(uid, scope)
     return max(1, int(luck))
 

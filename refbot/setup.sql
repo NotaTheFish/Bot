@@ -418,9 +418,13 @@ ALTER TABLE rb_users ADD COLUMN IF NOT EXISTS public_id     TEXT;
 ALTER TABLE rb_users ADD COLUMN IF NOT EXISTS public_id_set BOOLEAN NOT NULL DEFAULT FALSE;
 CREATE UNIQUE INDEX IF NOT EXISTS rb_users_public_id_uidx
     ON rb_users (lower(public_id)) WHERE public_id IS NOT NULL;
--- уникальность ника (частичный индекс — NULL не мешают)
+-- уникальность ника (частичный индекс — NULL не мешают). Исключение — проклятье
+-- «Тыквоголовый»: это имя может висеть сразу на многих, поэтому выводим его из
+-- уникальности. DROP нужен, чтобы на уже накатанной базе индекс пересоздался с условием.
+DROP INDEX IF EXISTS rb_users_nickname_uidx;
 CREATE UNIQUE INDEX IF NOT EXISTS rb_users_nickname_uidx
-    ON rb_users (lower(nickname)) WHERE nickname IS NOT NULL;
+    ON rb_users (lower(nickname))
+    WHERE nickname IS NOT NULL AND lower(nickname) <> 'тыквоголовый';
 
 -- --- Каталог титулов ---
 CREATE TABLE IF NOT EXISTS rb_titles (

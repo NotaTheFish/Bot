@@ -56,11 +56,17 @@ async def _inv_content(uid: int):
             else:
                 lines.append(f"🛡 Щит — осталось {sh['uses_left']} исп.")
             await btn(kb, "🚫 Снять щит", f"inv_shoff:{sh['id']}")
-        for cz in curse_list:
-            lines.append(f"{_curses.kind_label(cz['kind'])} — проклятие "
-                         f"(до {_fmt_left(cz['expires_at'])})")
         if curse_list:
-            lines.append("<i>Проклятия снимает 🧪 эликсир из магазина или 00:00 МСК.</i>")
+            from collections import Counter
+            cnt = Counter(cz["kind"] for cz in curse_list)
+            for kind, n in cnt.items():
+                extra = f" ×{n}" if n > 1 else ""
+                if kind == "evil":
+                    hp = min((int(cz["meta"].get("hp", 5)) for cz in curse_list
+                              if cz["kind"] == "evil"), default=5)
+                    extra = f" — осталось зарядов {hp}/5"
+                lines.append(f"{_curses.kind_label(kind)}{extra}")
+            lines.append("<i>Снимает 🧪 эликсир (Сглаз — 5 эликсиров) или 00:00 МСК.</i>")
         lines.append("")
     if not items:
         lines.append("<i>Нет предметов. Купи в магазине или получи за достижения.</i>")
@@ -78,6 +84,9 @@ async def _inv_content(uid: int):
                     label = f"🛡 Щит на {p.get('minutes',60)} мин"
                 else:
                     label = f"🛡 Щит ×{p.get('uses',1)}"
+            elif t == "uncurse":
+                cnt = int(p.get("count", 1))
+                label = "🧪 Эликсир снятия проклятия" + (f" ×{cnt}" if cnt > 1 else "")
             else:
                 label = t
             lines.append(f"• {label}")

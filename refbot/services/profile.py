@@ -7,6 +7,10 @@ import html
 import db
 
 MAX_NICK = 32
+# Проклятье «Тыквоголовый»: имя/эмодзи принудительные, одинаковые у всех проклятых.
+# Это ЕДИНСТВЕННОЕ имя-исключение из правила уникальности ников.
+PUMPKIN_NICK = "Тыквоголовый"
+PUMPKIN_EMOJI = "🎃"
 # разрешены буквы (рус/лат), цифры, пробел, дефис, подчёркивание
 _NICK_RE = re.compile(r"^[A-Za-zА-Яа-яЁё0-9 _\-]{1,32}$")
 # запрещённые подстроки (ссылки, инъекции, разметка)
@@ -33,11 +37,16 @@ def validate_nick(raw: str) -> tuple[str | None, str]:
             return None, "Ник содержит запрещённые символы (ссылки, @, скобки — нельзя)."
     if not _NICK_RE.match(nick):
         return None, "Только буквы, цифры, пробел, дефис и подчёркивание. Эмодзи и символы нельзя."
+    if nick.lower() == PUMPKIN_NICK.lower():
+        return None, "Это имя зарезервировано проклятием. Выбери другое."
     return nick, ""
 
 
 async def nick_taken(nick: str, exclude_uid: int | None = None) -> bool:
-    """Занят ли ник (регистронезависимо)."""
+    """Занят ли ник (регистронезависимо). Имя «Тыквоголовый» занять нельзя —
+    оно принадлежит проклятию и может висеть сразу на многих."""
+    if nick.strip().lower() == PUMPKIN_NICK.lower():
+        return True
     row = await db.pool().fetchval(
         "SELECT tg_id FROM rb_users WHERE lower(nickname)=lower($1) "
         "AND ($2::bigint IS NULL OR tg_id<>$2)", nick, exclude_uid)

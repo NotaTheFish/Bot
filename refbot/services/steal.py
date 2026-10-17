@@ -59,7 +59,16 @@ async def start_steal(thief: int, victim: int, chat_id: int) -> tuple[dict | Non
         return None, "Аккаунт заблокирован."
     if not within_hours():
         return None, f"Воровать можно с {STEAL_HOUR_FROM}:00 до {STEAL_HOUR_TO}:00 по МСК."
-    if not await can_steal_today(thief):
+    # Сглаз у жертвы: обворовать можно сверх дневного лимита и сквозь щит, но
+    # один вор — не больше EVIL_STEAL_CAP раз в день (3+ по одной жертве нечестно).
+    from services import curses
+    victim_evil = await curses.has(victim, "evil")
+    if victim_evil:
+        hits = await curses.evil_steal_count_today(thief, victim)
+        if hits >= curses.EVIL_STEAL_CAP:
+            return None, (f"На эту жертву ты уже нападал {curses.EVIL_STEAL_CAP} раза сегодня "
+                          f"— хватит, дай другим.")
+    elif not await can_steal_today(thief):
         return None, "Ты уже воровал сегодня. Попробуй после 00:00 по МСК."
     if await active_involving(thief):
         return None, "Ты уже участвуешь в налёте — дождись конца."
@@ -74,13 +83,15 @@ async def start_steal(thief: int, victim: int, chat_id: int) -> tuple[dict | Non
     cap = min(tb, vb, STEAL_MAX)
     amount = await _roll_amount(cap)
 
-    # временный щит у жертвы — блок мгновенно, вор теряет попытку дня
-    shield = await _consume_time_shield(victim)
+    # временный щит у жертвы — блок мгновенно (НЕ работает под Сглазом).
+    shield = (not victim_evil) and await _consume_time_shield(victim)
     async with db.pool().acquire() as conn:
         async with conn.transaction():
-            await conn.execute(
-                "INSERT INTO rb_steal_cd (tg_id, last_day) VALUES ($1,$2) "
-                "ON CONFLICT (tg_id) DO UPDATE SET last_day=$2", thief, _now_msk().date())
+            # Сглаз: лимит дня не тратим (это сверхлимитные налёты, обычная кража цела)
+            if not victim_evil:
+                await conn.execute(
+                    "INSERT INTO rb_steal_cd (tg_id, last_day) VALUES ($1,$2) "
+                    "ON CONFLICT (tg_id) DO UPDATE SET last_day=$2", thief, _now_msk().date())
             if shield:
                 # мгновенная защита — атака даже не начинается
                 return {"instant_shield": True, "victim": victim, "thief": thief}, ""
@@ -138,9 +149,14 @@ async def expire_due(bot=None) -> list[dict]:
             rows = await conn.fetch(
                 "SELECT * FROM rb_steal WHERE status='active' AND deadline < now() "
                 "FOR UPDATE SKIP LOCKED")
+            from services import curses
             for r in rows:
                 m = dict(r)
-                once = await _consume_once_shield(conn, m["victim"])
+                # под Сглазом разовый щит тоже не спасает
+                if await curses.has(m["victim"], "evil"):
+                    once = False
+                else:
+                    once = await _consume_once_shield(conn, m["victim"])
                 pay = await _finish(conn, m, defended=once)
                 m["auto_shield"] = once
                 m["_pay"] = pay

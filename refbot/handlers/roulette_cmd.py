@@ -178,7 +178,7 @@ async def spin_jackpot(msg: Message, bot: Bot):
 
     from services import inventory as _inv
     _luck = await _inv.luck_multiplier(uid, "shine")
-    _jinx = await _curses.has(uid, "hex")
+    _jinx = await _curses.jinxed(uid)
     amount, is_jackpot = roulette.roll_jackpot(cur, boost_override=(_luck > 1), jinx=_jinx)
 
     pos = spin_queue.position(msg.chat.id)
@@ -306,7 +306,7 @@ async def spin(msg: Message, bot: Bot):
 
     from services import inventory as _inv
     _luck = await _inv.luck_multiplier(uid, "shine")
-    _jinx = await _curses.has(uid, "hex")
+    _jinx = await _curses.jinxed(uid)
     amount, is_mega = roulette.roll(cur, boost_override=(_luck > 1), jinx=_jinx)
 
     # ---------- ОЧЕРЕДЬ НА ЧАТ ----------

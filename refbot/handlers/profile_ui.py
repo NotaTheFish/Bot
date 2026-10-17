@@ -70,6 +70,10 @@ async def cb_setup(c: CallbackQuery):
 
 @router.callback_query(F.data == "prof_nick")
 async def cb_nick(c: CallbackQuery, state: FSMContext):
+    from services import curses as _curses
+    if await _curses.has(c.from_user.id, "pumpkin"):
+        return await c.answer("🎃 Пока на тебе «Тыквоголовый» — имя не сменить. "
+                              "Сними проклятие (эликсир) или жди 00:00 МСК.", show_alert=True)
     p = await prof.get_profile(c.from_user.id)
     # платная замена?
     if p and p.get("nickname_set"):
@@ -202,6 +206,10 @@ def _emoji_parts(e: str):
 
 @router.callback_query(F.data.startswith("prof_emoji_set:"))
 async def cb_emoji_set(c: CallbackQuery):
+    from services import curses as _curses
+    if await _curses.has(c.from_user.id, "pumpkin"):
+        return await c.answer("🎃 Пока на тебе «Тыквоголовый» — эмодзи не сменить.",
+                              show_alert=True)
     val = c.data.split(":", 1)[1]
     if val == "none":
         emoji = None
