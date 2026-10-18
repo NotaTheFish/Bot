@@ -55,6 +55,14 @@ async def cmd_steal(msg: Message):
         await ui.reply(msg,
             f"🛡 {vname} под защитой (щит)! Кража сорвалась, {tname} ушёл ни с чем.")
         return
+    if m.get("instant_evil"):
+        # жертва под Сглазом — кража мгновенная, защиты нет
+        pay = m.get("_pay", 0)
+        await ui.send(msg.bot, msg.chat.id,
+            f"👁 <b>Сглаз!</b>\n\n{tname} мгновенно обчистил {vname} на "
+            f"<b>{_fmt(pay)}</b> 🍄 — под Сглазом не защититься.")
+        await _apply_counters(m, defended=False)
+        return
     # сигнал жертве и вору
     await ui.send(msg.bot, msg.chat.id,
         f"🥷 <b>Налёт!</b>\n\n{tname} пытается обчистить {vname}!\n\n"

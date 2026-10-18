@@ -26,12 +26,22 @@ def _fmt(n: int) -> str:
 
 
 async def _target(msg: Message):
-    """Цель = автор сообщения, на которое ответили (не бот, не ты сам)."""
+    """Цель: reply -> автор сообщения; иначе @ник / id из текста."""
     if msg.reply_to_message and msg.reply_to_message.from_user:
         u = msg.reply_to_message.from_user
         if u.is_bot:
             return None
         return u.id
+    parts = (msg.text or "").split()
+    for w in parts[1:]:
+        w = w.strip().lstrip("@")
+        if not w:
+            continue
+        uid = await db.resolve_username(w.lower())
+        if not uid and w.isdigit():
+            uid = int(w)
+        if uid:
+            return uid
     return None
 
 
@@ -54,7 +64,8 @@ async def cmd_boo(msg: Message):
     target = await _target(msg)
     if not target:
         return await ui.reply(msg,
-            "👻 Кого пугаем? Ответь командой <code>!буу</code> на сообщение игрока.")
+            "👻 Кого пугаем? Ответь командой <code>!буу</code> на сообщение игрока "
+            "или укажи: <code>!буу @ник</code>")
     await db.upsert_user(caster, msg.from_user.username, msg.from_user.first_name)
     m, err = await curses.start_boo(caster, target, msg.chat.id)
     if err:
@@ -70,6 +81,17 @@ async def cmd_boo(msg: Message):
         with contextlib.suppress(Exception):
             await ui.send(msg.bot, caster, f"👁 Сглаз сработал по тебе: {_curse_card(kind)}{souv}")
         return
+    # цель под Сглазом — мгновенное проклятие, без окна и выбора
+    if m.get("instant_curse"):
+        kind = m["curse"]["kind"]
+        souv = _souvenir_line(m["curse"])
+        tname = await profile.display_name(target)
+        await ui.send(msg.bot, msg.chat.id,
+            f"👁 <b>БУУ!</b> {cname} напугал {tname} — под Сглазом не отвертеться, "
+            f"проклятие сразу:\n{_curse_card(kind)}{souv}")
+        with contextlib.suppress(Exception):
+            await ui.send(msg.bot, target, f"👁 Тебя мгновенно прокляли: {_curse_card(kind)}{souv}")
+        return
     tname = await profile.display_name(target)
     await ui.send(msg.bot, msg.chat.id,
         f"👻 <b>БУУ!</b>\n\n{cname} подкрался к {tname}!\n\n"
@@ -80,6 +102,27 @@ async def cmd_boo(msg: Message):
         await ui.send(msg.bot, target,
             f"👻 Тебя напугал {cname}! Ответь в чате <code>!Сладость</code> "
             f"или <code>!Гадость</code> за 5 минут, иначе получишь проклятье.")
+
+
+@router.message(F.text.func(lambda t: t and t.lower().split()[0] in ("!проклятия", "/проклятия", "!проклятья")))
+async def cmd_curses(msg: Message):
+    uid = msg.from_user.id
+    rows = await curses.active(uid)
+    if not rows:
+        return await ui.reply(msg, "✨ На тебе нет проклятий. Чисто!")
+    from collections import Counter
+    cnt = Counter(r["kind"] for r in rows)
+    lines = [f"🔮 <b>Твои проклятия ({len(rows)}):</b>", ""]
+    for kind, n in cnt.items():
+        e, name, desc = curses.CURSE_KINDS.get(kind, ("🔮", kind, ""))
+        extra = f" ×{n}" if n > 1 else ""
+        if kind == "evil":
+            hp = min((int(r["meta"].get("hp", 5)) for r in rows if r["kind"] == "evil"), default=5)
+            extra = f" — осталось зарядов {hp}/5"
+        lines.append(f"{e} <b>{name}</b>{extra}\n    <i>{desc}</i>")
+    lines.append("")
+    lines.append("Снять: 🧪 эликсир из магазина (Сглаз — 5 эликсиров) или само спадёт в 00:00 по МСК.")
+    await ui.reply(msg, "\n".join(lines))
 
 
 @router.message(F.chat.type.in_({"group", "supergroup"}),

@@ -385,6 +385,14 @@ async def start_boo(caster: int, target: int, chat_id: int) -> tuple[dict | None
         curse = await apply_curse(caster)
         return {"backfire": True, "caster": caster, "curse": curse}, ""
 
+    # Сглаз у цели: от !буу не защититься — проклятие МГНОВЕННОЕ, без окна и выбора.
+    if await has(target, "evil"):
+        async with db.pool().acquire() as conn:
+            async with conn.transaction():
+                await _mark_boo_used(conn, caster)
+        curse = await apply_curse(target)
+        return {"instant_curse": True, "caster": caster, "target": target, "curse": curse}, ""
+
     dl = datetime.now(timezone.utc) + timedelta(minutes=BOO_WINDOW_MIN)
     async with db.pool().acquire() as conn:
         async with conn.transaction():

@@ -83,15 +83,27 @@ async def start_steal(thief: int, victim: int, chat_id: int) -> tuple[dict | Non
     cap = min(tb, vb, STEAL_MAX)
     amount = await _roll_amount(cap)
 
-    # временный щит у жертвы — блок мгновенно (НЕ работает под Сглазом).
-    shield = (not victim_evil) and await _consume_time_shield(victim)
+    # Сглаз у жертвы: кража МГНОВЕННАЯ — без окна, без !шимщит, без щита.
+    if victim_evil:
+        async with db.pool().acquire() as conn:
+            async with conn.transaction():
+                dl = datetime.now(timezone.utc)
+                sid = await conn.fetchval(
+                    "INSERT INTO rb_steal (thief, victim, amount, chat_id, deadline) "
+                    "VALUES ($1,$2,$3,$4,$5) RETURNING id", thief, victim, amount, chat_id, dl)
+                m = dict(await conn.fetchrow("SELECT * FROM rb_steal WHERE id=$1", sid))
+                pay = await _finish(conn, m, defended=False)   # сразу списываем
+        m["_pay"] = pay
+        m["instant_evil"] = True
+        return m, ""
+
+    # временный щит у жертвы — блок мгновенно.
+    shield = await _consume_time_shield(victim)
     async with db.pool().acquire() as conn:
         async with conn.transaction():
-            # Сглаз: лимит дня не тратим (это сверхлимитные налёты, обычная кража цела)
-            if not victim_evil:
-                await conn.execute(
-                    "INSERT INTO rb_steal_cd (tg_id, last_day) VALUES ($1,$2) "
-                    "ON CONFLICT (tg_id) DO UPDATE SET last_day=$2", thief, _now_msk().date())
+            await conn.execute(
+                "INSERT INTO rb_steal_cd (tg_id, last_day) VALUES ($1,$2) "
+                "ON CONFLICT (tg_id) DO UPDATE SET last_day=$2", thief, _now_msk().date())
             if shield:
                 # мгновенная защита — атака даже не начинается
                 return {"instant_shield": True, "victim": victim, "thief": thief}, ""
