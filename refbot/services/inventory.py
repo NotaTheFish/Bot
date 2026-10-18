@@ -22,7 +22,9 @@ async def inventory(uid: int) -> list[dict]:
 
 
 async def activate(uid: int, inv_id: int) -> tuple[bool, str]:
-    """Активировать предмет из инвентаря (удача/скидка)."""
+    """Активировать предмет из инвентаря. Возвращает (ok, сообщение).
+    При успехе сообщение может нести спец-текст (иначе пустая строка — общий текст)."""
+    note = ""
     async with db.pool().acquire() as conn:
         async with conn.transaction():
             item = await conn.fetchrow(
@@ -62,6 +64,20 @@ async def activate(uid: int, inv_id: int) -> tuple[bool, str]:
                     removed += 1
                 if removed == 0:
                     return False, "Активных проклятий нет — эликсир не нужен."
+            elif t == "boo_charge":
+                # зелье жажды: навсегда +1 !буу в день (до максимума). На потолке пить
+                # нельзя — предмет остаётся (можно передать другому).
+                from services import curses as _c
+                cur_bonus = await conn.fetchval(
+                    "SELECT boo_bonus FROM rb_users WHERE tg_id=$1", uid) or 0
+                if 1 + int(cur_bonus) >= _c.BOO_MAX_DAILY:
+                    return False, (f"У тебя уже максимум {_c.BOO_MAX_DAILY} !буу в день — "
+                                   f"выпить нельзя, но можно передать другому.")
+                await conn.execute(
+                    "UPDATE rb_users SET boo_bonus = boo_bonus + 1 WHERE tg_id=$1", uid)
+                new_cap = min(2 + int(cur_bonus), _c.BOO_MAX_DAILY)
+                note = (f"🍶 Гнилая настойка оказалась эликсиром охоты! "
+                        f"Теперь ты можешь использовать {new_cap} !буу в день.")
             await conn.execute(
                 "UPDATE rb_inventory SET used=true, used_at=now() WHERE id=$1", inv_id)
     # счётчик активаций удачи
@@ -71,7 +87,7 @@ async def activate(uid: int, inv_id: int) -> tuple[bool, str]:
             await _cnt.bump(uid, _cnt.C_LUCK_USED)
         except Exception:
             pass
-    return True, ""
+    return True, note
 
 
 async def _add_luck_conn(conn, uid: int, scope: str, mult: float, minutes: int):

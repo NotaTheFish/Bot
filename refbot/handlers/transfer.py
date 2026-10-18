@@ -107,6 +107,10 @@ async def cb_gift_items(c: CallbackQuery):
             lbl = f"🏷 Скидка {p.get('percent',10)}%"
         elif t == "shield":
             lbl = f"🛡 Щит {'на '+str(p.get('minutes',60))+'м' if p.get('kind')=='time' else '×'+str(p.get('uses',1))}"
+        elif t == "uncurse":
+            lbl = "🧪 Эликсир снятия проклятия" + (f" ×{p.get('count',1)}" if int(p.get('count',1)) > 1 else "")
+        elif t == "boo_charge":
+            lbl = "🍶 Гнилая настойка"
         else:
             lbl = t
         await btn(kb, lbl, f"gift_item:{it['id']}")

@@ -45,6 +45,8 @@ REFLECT_PCT = 20            # шанс вернуть проклятье отп�
 REFLECT_PCT_EVIL = 70       # то же, если отправитель под Сглазом
 SELF_CURSE_PCT = 50         # шанс проклясть себя, если пугаешь под Сглазом
 EVIL_STEAL_CAP = 2          # сколько раз один вор может обворовать сглаженного за день
+BOO_MAX_DAILY = 15          # потолок дневных !буу (зелья жажды поднимают лимит до него)
+BOO_REWARD_PCT = 20         # шанс выпасть зелью жажды при осознанной !Гадость
 
 # код -> (эмодзи, название, короткое описание)
 CURSE_KINDS = {
@@ -52,11 +54,12 @@ CURSE_KINDS = {
     "hex":     ("💀", "Порча", "×2 неудача — казино, рулетка, колесо дают худшее"),
     "fit":     ("😵", "Припадок", "нельзя крутить !шайн, сообщения не в зачёт конкурса"),
     "pumpkin": ("🎃", "Тыквоголовый", "имя и эмодзи принудительно меняются до снятия"),
+    "glut":    ("🤤", "Обжора", "съедает 1% с каждого выигрыша и начисления"),
     "evil":    ("👁", "Сглаз", "хардкор: щит не работает, ×2 неудача, снимается 5 эликсирами"),
 }
 
 # веса для случайного проклятья от !буу (Сглаз — редкий)
-_WEIGHTS = {"leak": 25, "hex": 25, "fit": 25, "pumpkin": 20, "evil": 5}
+_WEIGHTS = {"leak": 22, "hex": 22, "fit": 22, "pumpkin": 17, "glut": 12, "evil": 5}
 
 
 def _now_msk() -> datetime:
@@ -104,19 +107,25 @@ async def apply_curse(uid: int, kind: str | None = None) -> dict:
         meta = {"cap": cap, "leaked": 0, "drip_no": 0}
     elif kind == "evil":
         meta = {"hp": EVIL_HP}
-    elif kind == "pumpkin":
-        meta = await _pumpkin_on(uid)
+    souvenir = False
+    if kind == "pumpkin":
+        meta, souvenir = await _pumpkin_on(uid)
 
     exp = next_midnight_msk()
     cid = await db.pool().fetchval(
         "INSERT INTO rb_curses (tg_id, kind, meta, expires_at) VALUES ($1,$2,$3,$4) RETURNING id",
         uid, kind, json.dumps(meta), exp)
-    return {"id": cid, "kind": kind, "meta": meta, "expires_at": exp}
+    res = {"id": cid, "kind": kind, "meta": meta, "expires_at": exp}
+    if kind == "pumpkin":
+        res["souvenir"] = souvenir
+    return res
 
 
-async def _pumpkin_on(uid: int) -> dict:
+async def _pumpkin_on(uid: int) -> tuple[dict, bool]:
     """Включить тыквоголовость: сохранить прежние имя/эмодзи и подменить их.
-    Если тыква уже висит — берём сохранённое из неё (чтобы не потерять оригинал)."""
+    Если тыква уже висит — берём сохранённое из неё (чтобы не потерять оригинал).
+    За ПЕРВУЮ в жизни тыкву выдаём сувенир: титул «Тыквоголовый» + эмодзи 🎃 навсегда.
+    Возвращает (meta, выдан_ли_сувенир)."""
     rows = await db.pool().fetch(
         "SELECT meta FROM rb_curses WHERE tg_id=$1 AND kind='pumpkin' AND expires_at>now() LIMIT 1",
         uid)
@@ -132,10 +141,27 @@ async def _pumpkin_on(uid: int) -> dict:
         saved_nick = r["nickname"] if r else None
         saved_emoji = r["active_emoji"] if r else None
         saved_set = bool(r["nickname_set"]) if r else False
+
+    # сувенир за первую тыкву — по владению титулом «Тыквоголовый»
+    souvenir = False
+    try:
+        from services import titles
+        tid = await titles.create_title(PUMPKIN_NICK, False, 0)
+        has_title = await db.pool().fetchval(
+            "SELECT 1 FROM rb_user_titles WHERE tg_id=$1 AND title_id=$2", uid, tid)
+        if not has_title:
+            await titles.grant_title(uid, tid, None)
+            await db.pool().execute(
+                "INSERT INTO rb_user_emojis (tg_id, emoji, source) VALUES ($1,$2,'curse') "
+                "ON CONFLICT (tg_id, emoji) DO NOTHING", uid, PUMPKIN_EMOJI)
+            souvenir = True
+    except Exception as e:
+        log.warning("pumpkin souvenir %s: %s", uid, e)
+
     await db.pool().execute(
         "UPDATE rb_users SET nickname=$1, nickname_set=TRUE, active_emoji=$2 WHERE tg_id=$3",
         PUMPKIN_NICK, PUMPKIN_EMOJI, uid)
-    return {"saved_nick": saved_nick, "saved_emoji": saved_emoji, "saved_nick_set": saved_set}
+    return {"saved_nick": saved_nick, "saved_emoji": saved_emoji, "saved_nick_set": saved_set}, souvenir
 
 
 async def _pumpkin_restore(conn, uid: int, meta: dict) -> None:
@@ -304,12 +330,21 @@ async def leak_tick() -> list[tuple[int, int]]:
 
 
 # ---------------- !буу (трик-о-трит) ----------------
+async def boo_cap(uid: int) -> int:
+    """Дневной лимит !буу: 1 база + зелья жажды (boo_bonus), максимум BOO_MAX_DAILY."""
+    bonus = await db.pool().fetchval("SELECT boo_bonus FROM rb_users WHERE tg_id=$1", uid) or 0
+    return min(1 + int(bonus), BOO_MAX_DAILY)
+
+
 async def can_boo_today(uid: int) -> bool:
     from config import UNLIMITED_SPIN_IDS
     if uid in UNLIMITED_SPIN_IDS:
         return True
-    row = await db.pool().fetchval("SELECT last_day FROM rb_boo_cd WHERE tg_id=$1", uid)
-    return (not row) or row < _now_msk().date()
+    row = await db.pool().fetchrow(
+        "SELECT last_day, used FROM rb_boo_cd WHERE tg_id=$1", uid)
+    if not row or row["last_day"] < _now_msk().date():
+        return True                       # новый день — счётчик обнулится при использовании
+    return row["used"] < await boo_cap(uid)
 
 
 async def pending_for(uid: int) -> dict | None:
@@ -320,9 +355,13 @@ async def pending_for(uid: int) -> dict | None:
 
 
 async def _mark_boo_used(conn, caster: int) -> None:
+    today = _now_msk().date()
+    # новый день — счётчик с 1, тот же день — +1
     await conn.execute(
-        "INSERT INTO rb_boo_cd (tg_id, last_day) VALUES ($1,$2) "
-        "ON CONFLICT (tg_id) DO UPDATE SET last_day=$2", caster, _now_msk().date())
+        "INSERT INTO rb_boo_cd (tg_id, last_day, used) VALUES ($1,$2,1) "
+        "ON CONFLICT (tg_id) DO UPDATE SET "
+        "used = CASE WHEN rb_boo_cd.last_day < $2 THEN 1 ELSE rb_boo_cd.used + 1 END, "
+        "last_day = $2", caster, today)
 
 
 async def start_boo(caster: int, target: int, chat_id: int) -> tuple[dict | None, str]:
@@ -332,7 +371,9 @@ async def start_boo(caster: int, target: int, chat_id: int) -> tuple[dict | None
     if await db.is_banned(caster):
         return None, "Аккаунт заблокирован."
     if not await can_boo_today(caster):
-        return None, "Ты уже пугал сегодня. Следующий «бу!» — после 00:00 по МСК."
+        cap = await boo_cap(caster)
+        return None, (f"На сегодня !буу закончились (лимит {cap}/день). "
+                      f"Приходи после 00:00 по МСК.")
     if await pending_for(target):
         return None, "На эту жертву уже висит «бу!» — дождись, пока ответит."
 
@@ -404,13 +445,21 @@ async def trick(uid_or_bid: int, deliberate: bool) -> tuple[dict | None, str]:
                 "UPDATE rb_boo SET status='trick', finished_at=now() WHERE id=$1", r["id"])
     caster, target = r["caster"], r["target"]
     reflected = False
+    reward = False
     if deliberate:
         chance = REFLECT_PCT_EVIL if await has(caster, "evil") else REFLECT_PCT
         reflected = secrets.randbelow(100) < chance
+        # за смелость (осознанная !Гадость) — шанс на зелье жажды тому, кто выбрал Гадость
+        if secrets.randbelow(100) < BOO_REWARD_PCT:
+            await db.pool().execute(
+                "INSERT INTO rb_inventory (tg_id, item_type, payload) VALUES ($1,'boo_charge','{}')",
+                target)
+            reward = True
     victim = caster if reflected else target
     curse = await apply_curse(victim)
     m = dict(r)
-    m.update(caster=caster, target=target, reflected=reflected, victim=victim, curse=curse)
+    m.update(caster=caster, target=target, reflected=reflected, victim=victim,
+             curse=curse, reward=reward)
     return m, ""
 
 

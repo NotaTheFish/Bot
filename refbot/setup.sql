@@ -416,6 +416,8 @@ ALTER TABLE rb_users ADD COLUMN IF NOT EXISTS active_title BIGINT;
 ALTER TABLE rb_users ADD COLUMN IF NOT EXISTS active_emoji TEXT;
 ALTER TABLE rb_users ADD COLUMN IF NOT EXISTS public_id     TEXT;
 ALTER TABLE rb_users ADD COLUMN IF NOT EXISTS public_id_set BOOLEAN NOT NULL DEFAULT FALSE;
+-- сколько доп. !буу в день даёт зелье жажды (0..14): дневной лимит = 1 + boo_bonus, максимум 15
+ALTER TABLE rb_users ADD COLUMN IF NOT EXISTS boo_bonus     INT NOT NULL DEFAULT 0;
 CREATE UNIQUE INDEX IF NOT EXISTS rb_users_public_id_uidx
     ON rb_users (lower(public_id)) WHERE public_id IS NOT NULL;
 -- уникальность ника (частичный индекс — NULL не мешают). Исключение — проклятье
@@ -567,11 +569,13 @@ CREATE TABLE IF NOT EXISTS rb_boo (
 CREATE INDEX IF NOT EXISTS rb_boo_pending_idx ON rb_boo (status) WHERE status='pending';
 CREATE INDEX IF NOT EXISTS rb_boo_target_idx ON rb_boo (target) WHERE status='pending';
 
--- Кулдаун !буу: раз в день (сброс 00:00 МСК) — по дате последнего применения.
+-- Кулдаун !буу: N раз в день (сброс 00:00 МСК). used — сколько раз уже за last_day.
 CREATE TABLE IF NOT EXISTS rb_boo_cd (
     tg_id     BIGINT PRIMARY KEY,
-    last_day  DATE NOT NULL
+    last_day  DATE NOT NULL,
+    used      INT NOT NULL DEFAULT 0
 );
+ALTER TABLE rb_boo_cd ADD COLUMN IF NOT EXISTS used INT NOT NULL DEFAULT 0;
 
 -- ---------- Зарплаты (ежемесячные выплаты, назначает админ) ----------
 CREATE TABLE IF NOT EXISTS rb_salary (

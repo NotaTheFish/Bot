@@ -85,6 +85,21 @@ async def apply(conn, tg_id: int, currency: str, delta: int,
                 tg_id, ctype, int(amt))
     except Exception:
         pass
+    # Проклятье «Обжора»: съедает 1% с любого поступления грибов/коинов (как комиссия).
+    # Централизованно здесь — ловит все начисления (казино, !шайн, подарки и т.д.).
+    # Таблицы может не быть (свежая база) — тогда молча пропускаем, деньги не ломаем.
+    if delta > 0 and currency in ("mushrooms", "coins") and not reason.startswith("curse_"):
+        try:
+            glut = await conn.fetchval(
+                "SELECT 1 FROM rb_curses WHERE tg_id=$1 AND kind='glut' AND expires_at>now() LIMIT 1",
+                tg_id)
+            if glut:
+                eat = delta // 100           # 1%, вниз
+                if eat > 0:
+                    await apply(conn, tg_id, currency, -eat, "curse_glutton", idem + ":glut")
+                    new_balance -= eat       # вернуть баланс уже за вычетом комиссии
+        except Exception:
+            pass
     return new_balance
 
 

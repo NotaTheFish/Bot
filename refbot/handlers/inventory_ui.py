@@ -87,6 +87,8 @@ async def _inv_content(uid: int):
             elif t == "uncurse":
                 cnt = int(p.get("count", 1))
                 label = "🧪 Эликсир снятия проклятия" + (f" ×{cnt}" if cnt > 1 else "")
+            elif t == "boo_charge":
+                label = "🍶 Гнилая настойка (неизвестный эффект)"
             else:
                 label = t
             lines.append(f"• {label}")
@@ -131,8 +133,8 @@ async def cb_shield_off(c: CallbackQuery):
 @router.callback_query(F.data.startswith("inv_use:"))
 async def cb_use(c: CallbackQuery):
     inv_id = int(c.data.split(":")[1])
-    ok, err = await inv.activate(c.from_user.id, inv_id)
+    ok, note = await inv.activate(c.from_user.id, inv_id)
     if not ok:
-        return await c.answer(f"⚠️ {err}", show_alert=True)
-    await c.answer("✅ Бонус активирован!", show_alert=True)
+        return await c.answer(f"⚠️ {note}", show_alert=True)
+    await c.answer(note or "✅ Бонус активирован!", show_alert=True)
     await _refresh(c)

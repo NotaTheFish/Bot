@@ -40,6 +40,13 @@ def _curse_card(kind: str) -> str:
     return f"{e} <b>{name}</b> — {desc}"
 
 
+def _souvenir_line(curse: dict) -> str:
+    if curse.get("souvenir"):
+        return ("\n\n🎁 <b>Первая тыква!</b> Титул «Тыквоголовый» и эмодзи 🎃 "
+                "теперь твои навсегда — загляни в профиль.")
+    return ""
+
+
 @router.message(F.chat.type.in_({"group", "supergroup"}),
                 F.text.func(lambda t: t and t.lower().split()[0] in ("!буу", "/буу", "!бу")))
 async def cmd_boo(msg: Message):
@@ -56,11 +63,12 @@ async def cmd_boo(msg: Message):
     # Сглаз обернулся против пугающего
     if m.get("backfire"):
         kind = m["curse"]["kind"]
+        souv = _souvenir_line(m["curse"])
         await ui.send(msg.bot, msg.chat.id,
             f"👁 <b>Сглаз обернулся против тебя!</b>\n\n{cname} хотел напугать, "
-            f"но проклял сам себя:\n{_curse_card(kind)}")
+            f"но проклял сам себя:\n{_curse_card(kind)}{souv}")
         with contextlib.suppress(Exception):
-            await ui.send(msg.bot, caster, f"👁 Сглаз сработал по тебе: {_curse_card(kind)}")
+            await ui.send(msg.bot, caster, f"👁 Сглаз сработал по тебе: {_curse_card(kind)}{souv}")
         return
     tname = await profile.display_name(target)
     await ui.send(msg.bot, msg.chat.id,
@@ -100,20 +108,23 @@ async def cmd_trick(msg: Message):
     kind = m["curse"]["kind"]
     caster_name = await profile.display_name(m["caster"])
     target_name = await profile.display_name(m["target"])
+    reward_line = ("\n\n🍶 <b>Повезло!</b> За смелость выпало зелье <b>«Гнилая настойка»</b> "
+                   "— эффект неизвестен. Выпей его в инвентаре.") if m.get("reward") else ""
+    souv = _souvenir_line(m["curse"])
     if m["reflected"]:
         await ui.send(msg.bot, msg.chat.id,
             f"🔄 <b>Срикошетило!</b>\n\n{target_name} принял Гадость — и проклятие "
             f"отскочило в {caster_name}:\n{_curse_card(kind)}\n\n"
-            f"{caster_name} проклят и отказаться не может, а {target_name} — чист.")
+            f"{caster_name} проклят и отказаться не может, а {target_name} — чист.{reward_line}")
         with contextlib.suppress(Exception):
             await ui.send(msg.bot, m["caster"],
-                f"🔄 Твоё проклятье вернулось к тебе: {_curse_card(kind)}")
+                f"🔄 Твоё проклятье вернулось к тебе: {_curse_card(kind)}{souv}")
     else:
         await ui.send(msg.bot, msg.chat.id,
             f"👹 <b>Гадость так гадость!</b>\n\n{target_name} сам накликал проклятье:\n"
-            f"{_curse_card(kind)}\n\nСнять: эликсиром из магазина или в 00:00 по МСК.")
+            f"{_curse_card(kind)}{souv}\n\nСнять: эликсиром из магазина или в 00:00 по МСК.{reward_line}")
         with contextlib.suppress(Exception):
-            await ui.send(msg.bot, m["target"], f"👹 Ты принял проклятье: {_curse_card(kind)}")
+            await ui.send(msg.bot, m["target"], f"👹 Ты принял проклятье: {_curse_card(kind)}{souv}")
 
 
 async def boo_worker(bot):
@@ -128,15 +139,16 @@ async def boo_worker(bot):
         try:
             for m in await curses.expire_boos():
                 kind = m["curse"]["kind"]
+                souv = _souvenir_line(m["curse"])
                 tname = await profile.display_name(m["target"])
                 with contextlib.suppress(Exception):
                     if m.get("chat_id"):
                         await ui.send(bot, m["chat_id"],
                             f"🕯 <b>Время вышло!</b>\n\n{tname} не ответил — "
-                            f"проклятье настигло его:\n{_curse_card(kind)}")
+                            f"проклятье настигло его:\n{_curse_card(kind)}{souv}")
                 with contextlib.suppress(Exception):
                     await ui.send(bot, m["target"],
-                        f"🕯 Ты не успел ответить на «бу!» — проклятье: {_curse_card(kind)}")
+                        f"🕯 Ты не успел ответить на «бу!» — проклятье: {_curse_card(kind)}{souv}")
         except Exception as e:
             log.warning("boo worker (expire): %s", e)
 
