@@ -697,6 +697,7 @@ async def promo_kind() -> InlineKeyboardMarkup:
     await btn(kb, "🔁 По курсу", "pkind:rate")
     await btn(kb, "🍄 Только грибы", "pkind:mushrooms")
     await btn(kb, "🪙 Только коины", "pkind:coins")
+    await btn(kb, "🍄🪙 Грибы и коины (вручную)", "pkind:both")
     kb.adjust(1)
     return kb.as_markup()
 

@@ -332,7 +332,10 @@ async def leak_tick() -> list[tuple[int, int]]:
 # ---------------- !буу (трик-о-трит) ----------------
 async def boo_cap(uid: int) -> int:
     """Дневной лимит !буу: 1 база + зелья жажды (boo_bonus), максимум BOO_MAX_DAILY."""
-    bonus = await db.pool().fetchval("SELECT boo_bonus FROM rb_users WHERE tg_id=$1", uid) or 0
+    try:
+        bonus = await db.pool().fetchval("SELECT boo_bonus FROM rb_users WHERE tg_id=$1", uid) or 0
+    except asyncpg.UndefinedColumnError:
+        return 1   # столбца ещё нет (не накатан setup.sql) — базовый лимит
     return min(1 + int(bonus), BOO_MAX_DAILY)
 
 

@@ -34,6 +34,7 @@ class PromoNew(StatesGroup):
     code = State()
     reward = State()
     kind = State()
+    coins = State()      # только для kind='both': ручной ввод коинов
     acts = State()
     expiry = State()
 
@@ -57,7 +58,7 @@ async def cb_promo_all(c: CallbackQuery):
         return await ui.edit(c.message, "🎟 <b>Промокоды</b>\n\nПока нет ни одного.",
                              reply_markup=await kb.promo_back())
     lines = ["🎟 <b>Все промокоды</b>\n"]
-    _kind_ic = {"rate": "🍄🪙", "mushrooms": "🍄", "coins": "🪙"}
+    _kind_ic = {"rate": "🍄🪙", "mushrooms": "🍄", "coins": "🪙", "both": "🍄🪙"}
     for p in rows:
         flag = "🔴" if not promo.is_active(p) else "🟢"
         kind = p["reward_kind"] if "reward_kind" in p else "rate"
@@ -81,10 +82,14 @@ async def cb_promo_view(c: CallbackQuery):
     kind = p["reward_kind"] if "reward_kind" in p else "rate"
     kind_name = {"rate": "🍄🪙 по курсу (валюта игрока)",
                  "mushrooms": "🍄 только грибы",
-                 "coins": "🪙 только коины"}.get(kind, "по курсу")
+                 "coins": "🪙 только коины",
+                 "both": "🍄🪙 грибы и коины (вручную)"}.get(kind, "по курсу")
+    _rc = (p["reward_coins"] if "reward_coins" in p else 0) or 0
+    reward_line = (f"Награда: 🍄 {p['reward_mush']:,} + 🪙 {_rc:,}" if kind == "both"
+                   else f"Награда: {p['reward_mush']:,}")
     await ui.edit(c.message,
         f"🎟 <b>{p['code']}</b>\n\n"
-        f"Награда: {p['reward_mush']:,}\n"
+        f"{reward_line}\n"
         f"Выдача: {kind_name}\n"
         f"Статус: {flag}\n"
         f"{promo.status_line(p)}".replace(",", " "),
@@ -145,7 +150,8 @@ async def promo_reward_input(msg: Message, state: FSMContext):
         "Шаг 3/5 — в какой валюте выдавать?\n\n"
         "🍄🪙 <b>По курсу</b> — игрок получит в своей валюте (грибы→грибы, коины по курсу)\n"
         "🍄 <b>Только грибы</b> — все получают грибы\n"
-        "🪙 <b>Только коины</b> — все получают коины",
+        "🪙 <b>Только коины</b> — все получают коины\n"
+        "🍄🪙 <b>Грибы и коины</b> — обе валюты, суммы вводишь вручную",
         reply_markup=await kb.promo_kind())
 
 
@@ -153,14 +159,38 @@ async def promo_reward_input(msg: Message, state: FSMContext):
 async def promo_kind_choice(c: CallbackQuery, state: FSMContext):
     if not await _is_admin(c.from_user.id):
         return await state.clear()
-    kind = c.data.split(":")[1]  # rate|mushrooms|coins
+    kind = c.data.split(":")[1]  # rate|mushrooms|coins|both
     await state.update_data(kind=kind)
+    if kind == "both":
+        # грибы уже ввели на шаге 2 (reward), теперь отдельно коины
+        data = await state.get_data()
+        await state.set_state(PromoNew.coins)
+        return await ui.edit(c.message,
+            f"🍄 Грибы: <b>{data['reward']:,}</b>\n\n".replace(",", " ") +
+            "Сколько <b>коинов</b> выдавать? Введи число вручную (без курса). "
+            "Например <code>100000</code> или <code>100к</code>.")
     await state.set_state(PromoNew.acts)
     name = {"rate": "по курсу", "mushrooms": "только грибы", "coins": "только коины"}[kind]
     await ui.edit(c.message,
         f"Валюта: <b>{name}</b>\n\nШаг 4/5 — сколько активаций? "
         f"Число (например <code>100</code>) или <code>безлим</code>.")
     await c.answer()
+
+
+@router.message(PromoNew.coins)
+async def promo_coins_input(msg: Message, state: FSMContext):
+    if not await _is_admin(msg.from_user.id):
+        return await state.clear()
+    from services.amount_parse import parse_amount
+    amount = parse_amount(msg.text or "")
+    if amount is None or amount <= 0:
+        return await ui.answer(msg, "Нужно число. Например <code>100000</code> или <code>100к</code>.")
+    await state.update_data(reward_coins=amount)
+    await state.set_state(PromoNew.acts)
+    await ui.answer(msg,
+        f"🪙 Коины: <b>{amount:,}</b>\n\n".replace(",", " ") +
+        "Шаг 4/5 — сколько активаций? Число (например <code>100</code>) "
+        "или <code>безлим</code>.")
 
 
 @router.message(PromoNew.acts)
@@ -188,20 +218,26 @@ async def promo_expiry_input(msg: Message, state: FSMContext):
                                "<code>24ч</code> или <code>безлим</code>.")
     data = await state.get_data()
     kind = data.get("kind", "rate")
+    reward_coins = int(data.get("reward_coins", 0))
     pid = await db.promo_create(data["code"], data["reward"], data["acts"],
-                                exp, msg.from_user.id, reward_kind=kind)
+                                exp, msg.from_user.id, reward_kind=kind,
+                                reward_coins=reward_coins)
     await db.audit(msg.from_user.id, "promo_create",
-                   {"id": pid, "code": data["code"], "reward": data["reward"], "kind": kind})
+                   {"id": pid, "code": data["code"], "reward": data["reward"],
+                    "kind": kind, "reward_coins": reward_coins})
     await state.clear()
     lim = "безлимит" if data["acts"] is None else str(data["acts"])
     when = "бессрочно" if exp is None else exp.strftime("%d.%m %H:%M МСК")
     kind_name = {"rate": "🍄🪙 по курсу (валюта игрока)",
                  "mushrooms": "🍄 только грибы",
-                 "coins": "🪙 только коины"}[kind]
+                 "coins": "🪙 только коины",
+                 "both": "🍄🪙 грибы и коины (вручную)"}[kind]
+    reward_line = (f"Награда: 🍄 {data['reward']:,} + 🪙 {reward_coins:,}" if kind == "both"
+                   else f"Награда: {data['reward']:,}")
     await ui.answer(msg,
         f"✅ Промокод создан!\n\n"
         f"Код: <b>{data['code']}</b>\n"
-        f"Награда: {data['reward']:,}\n"
+        f"{reward_line}\n"
         f"Выдача: {kind_name}\n"
         f"Активаций: {lim}\n"
         f"Срок: {when}".replace(",", " "),
@@ -257,9 +293,31 @@ async def promo_try_activate(msg: Message):
     if status == "already":
         return await ui.answer(msg, "❗ Ты уже активировал этот промокод.")
 
+    sx = await settings.ctx()
     # ok — начисляем по режиму промокода:
     #   rate      — в валюте игрока (грибы→грибы, коины ×COIN_RATE)
     #   mushrooms — всегда грибы; coins — всегда коины
+    #   both      — и грибы, и коины: суммы заданы вручную при создании
+    if kind == "both":
+        reward_coins = await db.pool().fetchval(
+            "SELECT reward_coins FROM rb_promo WHERE id=$1", pid) or 0
+        async with db.pool().acquire() as conn:
+            async with conn.transaction():
+                bm = await db.apply(conn, msg.from_user.id, "mushrooms", reward_mush,
+                                    "promo", f"promo:{pid}:{msg.from_user.id}:m")
+                bc = await db.apply(conn, msg.from_user.id, "coins", int(reward_coins),
+                                    "promo", f"promo:{pid}:{msg.from_user.id}:c")
+        await db.audit(msg.from_user.id, "promo_use",
+                       {"id": pid, "mush": reward_mush, "coins": int(reward_coins)})
+        try:
+            from services import counters as _cnt
+            await _cnt.bump(msg.from_user.id, _cnt.C_PROMO_ENTERED)
+        except Exception:
+            pass
+        return await ui.answer(msg,
+            f"🎉 Промокод активирован!\n\n"
+            f"Начислено: <b>{reward_mush:,}</b> {sx['e_mushrooms']} + "
+            f"<b>{int(reward_coins):,}</b> {sx['e_coins']}".replace(",", " "))
     if kind == "mushrooms":
         cur = "mushrooms"
         amount = reward_mush
@@ -270,7 +328,6 @@ async def promo_try_activate(msg: Message):
         u = await db.get_user(msg.from_user.id)
         cur = u["currency"]
         amount = reward_mush * COIN_RATE if cur == "coins" else reward_mush
-    sx = await settings.ctx()
     async with db.pool().acquire() as conn:
         async with conn.transaction():
             new_bal = await db.apply(conn, msg.from_user.id, cur, amount,

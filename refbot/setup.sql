@@ -811,6 +811,8 @@ CREATE TABLE IF NOT EXISTS rb_giveaway_members (
 ALTER TABLE rb_users ADD COLUMN IF NOT EXISTS strikes INT NOT NULL DEFAULT 0;
 ALTER TABLE rb_users ADD COLUMN IF NOT EXISTS wheel_anim TEXT NOT NULL DEFAULT 'runner';
 ALTER TABLE rb_promo ADD COLUMN IF NOT EXISTS reward_kind TEXT NOT NULL DEFAULT 'rate';
+-- для reward_kind='both': грибы в reward_mush, коины отдельно здесь (вводятся вручную)
+ALTER TABLE rb_promo ADD COLUMN IF NOT EXISTS reward_coins BIGINT NOT NULL DEFAULT 0;
 -- Разрешаем отрицательный баланс (админ-штрафы). Снимаем старый CHECK, если он есть.
 ALTER TABLE rb_balances DROP CONSTRAINT IF EXISTS rb_balances_amount_check;
 ALTER TABLE rb_users ADD COLUMN IF NOT EXISTS free_spins INT NOT NULL DEFAULT 0;

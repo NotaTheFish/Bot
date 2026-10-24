@@ -104,6 +104,31 @@ async def cmd_boo(msg: Message):
             f"или <code>!Гадость</code> за 5 минут, иначе получишь проклятье.")
 
 
+@router.message(F.text.func(lambda t: t and t.lower().split()[0] in ("!буулимит", "/буулимит")))
+async def cmd_boo_limit(msg: Message):
+    """Админ: выставить игроку дневной лимит !буу (чинит застрявших / выдаёт бонус)."""
+    from config import SUPER_ADMINS
+    if msg.from_user.id not in SUPER_ADMINS and not await db.admin_chats(msg.from_user.id):
+        return
+    target = await _target(msg)
+    if not target:
+        return await ui.reply(msg, "Кому? <code>!буулимит @ник N</code> (реплай тоже можно).")
+    parts = (msg.text or "").split()
+    n = None
+    for w in reversed(parts[1:]):
+        if w.isdigit():
+            n = int(w); break
+    tname = await profile.display_name(target)
+    if n is None:
+        cap = await curses.boo_cap(target)
+        return await ui.reply(msg, f"Текущий лимит !буу у {tname}: <b>{cap}/день</b>.\n"
+                                   f"Изменить: <code>!буулимит @ник 5</code>")
+    n = max(1, min(n, curses.BOO_MAX_DAILY))
+    await db.pool().execute(
+        "UPDATE rb_users SET boo_bonus=$1 WHERE tg_id=$2", n - 1, target)
+    await ui.reply(msg, f"✅ Лимит !буу для {tname}: <b>{n}/день</b>.")
+
+
 @router.message(F.text.func(lambda t: t and t.lower().split()[0] in ("!проклятия", "/проклятия", "!проклятья")))
 async def cmd_curses(msg: Message):
     uid = msg.from_user.id
