@@ -115,6 +115,15 @@ async def apply_curse(uid: int, kind: str | None = None) -> dict:
     cid = await db.pool().fetchval(
         "INSERT INTO rb_curses (tg_id, kind, meta, expires_at) VALUES ($1,$2,$3,$4) RETURNING id",
         uid, kind, json.dumps(meta), exp)
+    # достижение «собрать все проклятия разом» — когда активны все виды сразу
+    try:
+        distinct = await db.pool().fetchval(
+            "SELECT count(DISTINCT kind) FROM rb_curses WHERE tg_id=$1 AND expires_at>now()", uid)
+        if distinct and int(distinct) >= len(CURSE_KINDS):
+            from services import counters as _cnt
+            await _cnt.bump_max(uid, _cnt.C_ALL_CURSES, 1)
+    except Exception:
+        pass
     res = {"id": cid, "kind": kind, "meta": meta, "expires_at": exp}
     if kind == "pumpkin":
         res["souvenir"] = souvenir

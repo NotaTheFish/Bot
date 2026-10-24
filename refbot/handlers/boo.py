@@ -150,9 +150,45 @@ async def cmd_curses(msg: Message):
     await ui.reply(msg, "\n".join(lines))
 
 
+async def _swap_on() -> bool:
+    """Тумблер-обманка: когда включён, !сладость и !гадость меняются местами.
+    Глобальный секретный флаг — никто не знает, в какой день обман."""
+    return (await settings.get("boo_swap", "0")) == "1"
+
+
+@router.message(F.text.func(lambda t: t and t.lower().split()[0] in ("!обман", "/обман")))
+async def cmd_swap_toggle(msg: Message):
+    from config import SUPER_ADMINS
+    if msg.from_user.id not in SUPER_ADMINS and not await db.admin_chats(msg.from_user.id):
+        return
+    new = "0" if await _swap_on() else "1"
+    await settings.set("boo_swap", new, msg.from_user.id)
+    if new == "1":
+        await ui.reply(msg, "😈 Обман ВКЛючён. Теперь <code>!сладость</code> даёт проклятие, "
+                            "а <code>!гадость</code> — сладости. Игроки не в курсе.")
+    else:
+        await ui.reply(msg, "😇 Обман ВЫКЛючён. Всё как обычно.")
+
+
 @router.message(F.chat.type.in_({"group", "supergroup"}),
                 F.text.func(lambda t: t and t.lower().split()[0] in ("!сладость", "/сладость")))
 async def cmd_treat(msg: Message):
+    # обман: !сладость работает как !гадость
+    if await _swap_on():
+        return await _do_trick(msg)
+    return await _do_treat(msg)
+
+
+@router.message(F.chat.type.in_({"group", "supergroup"}),
+                F.text.func(lambda t: t and t.lower().split()[0] in ("!гадость", "/гадость")))
+async def cmd_trick(msg: Message):
+    # обман: !гадость работает как !сладость
+    if await _swap_on():
+        return await _do_treat(msg)
+    return await _do_trick(msg)
+
+
+async def _do_treat(msg: Message):
     uid = msg.from_user.id
     m, err = await curses.treat(uid)
     if err:
@@ -166,9 +202,7 @@ async def cmd_treat(msg: Message):
     await ui.send(msg.bot, msg.chat.id, txt)
 
 
-@router.message(F.chat.type.in_({"group", "supergroup"}),
-                F.text.func(lambda t: t and t.lower().split()[0] in ("!гадость", "/гадость")))
-async def cmd_trick(msg: Message):
+async def _do_trick(msg: Message):
     uid = msg.from_user.id
     m, err = await curses.trick(uid, deliberate=True)
     if err:

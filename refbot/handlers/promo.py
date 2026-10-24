@@ -85,8 +85,12 @@ async def cb_promo_view(c: CallbackQuery):
                  "coins": "🪙 только коины",
                  "both": "🍄🪙 грибы и коины (вручную)"}.get(kind, "по курсу")
     _rc = (p["reward_coins"] if "reward_coins" in p else 0) or 0
-    reward_line = (f"Награда: 🍄 {p['reward_mush']:,} + 🪙 {_rc:,}" if kind == "both"
-                   else f"Награда: {p['reward_mush']:,}")
+    if kind == "both":
+        reward_line = f"Награда: 🍄 {p['reward_mush']:,} + 🪙 {_rc:,}"
+    elif kind == "rate" and _rc > 0:
+        reward_line = f"Награда: {p['reward_mush']:,} (коинов вручную: {_rc:,})"
+    else:
+        reward_line = f"Награда: {p['reward_mush']:,}"
     await ui.edit(c.message,
         f"🎟 <b>{p['code']}</b>\n\n"
         f"{reward_line}\n"
@@ -169,11 +173,37 @@ async def promo_kind_choice(c: CallbackQuery, state: FSMContext):
             f"🍄 Грибы: <b>{data['reward']:,}</b>\n\n".replace(",", " ") +
             "Сколько <b>коинов</b> выдавать? Введи число вручную (без курса). "
             "Например <code>100000</code> или <code>100к</code>.")
+    if kind == "rate":
+        # по курсу: коины авто (×курс) или задать вручную — гибко
+        return await ui.edit(c.message,
+            "🔁 <b>По курсу</b>\n\nКоины для тех, у кого выбрана валюта «коины»:\n"
+            "🔁 <b>авто</b> — посчитаются по курсу от грибов\n"
+            "✏️ <b>вручную</b> — задашь точное число коинов сам",
+            reply_markup=await kb.promo_rate_mode())
     await state.set_state(PromoNew.acts)
     name = {"rate": "по курсу", "mushrooms": "только грибы", "coins": "только коины"}[kind]
     await ui.edit(c.message,
         f"Валюта: <b>{name}</b>\n\nШаг 4/5 — сколько активаций? "
         f"Число (например <code>100</code>) или <code>безлим</code>.")
+    await c.answer()
+
+
+@router.callback_query(PromoNew.kind, F.data.startswith("prate:"))
+async def promo_rate_mode_choice(c: CallbackQuery, state: FSMContext):
+    if not await _is_admin(c.from_user.id):
+        return await state.clear()
+    mode = c.data.split(":")[1]  # auto|manual
+    if mode == "manual":
+        await state.set_state(PromoNew.coins)
+        return await ui.edit(c.message,
+            "✏️ Сколько <b>коинов</b> выдавать тем, у кого валюта «коины»? "
+            "Введи число. Например <code>100000</code> или <code>100к</code>.")
+    # auto — reward_coins=0, при активации посчитается по курсу
+    await state.update_data(reward_coins=0)
+    await state.set_state(PromoNew.acts)
+    await ui.edit(c.message,
+        "🔁 Коины — по курсу (авто).\n\nШаг 4/5 — сколько активаций? "
+        "Число (например <code>100</code>) или <code>безлим</code>.")
     await c.answer()
 
 
@@ -327,7 +357,13 @@ async def promo_try_activate(msg: Message):
     else:  # rate
         u = await db.get_user(msg.from_user.id)
         cur = u["currency"]
-        amount = reward_mush * COIN_RATE if cur == "coins" else reward_mush
+        if cur == "coins":
+            # ручная сумма коинов, если задана; иначе по курсу
+            rc = await db.pool().fetchval(
+                "SELECT reward_coins FROM rb_promo WHERE id=$1", pid) or 0
+            amount = int(rc) if rc > 0 else reward_mush * COIN_RATE
+        else:
+            amount = reward_mush
     async with db.pool().acquire() as conn:
         async with conn.transaction():
             new_bal = await db.apply(conn, msg.from_user.id, cur, amount,

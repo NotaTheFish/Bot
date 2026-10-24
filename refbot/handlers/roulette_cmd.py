@@ -1,7 +1,7 @@
 import asyncio
 import contextlib
 import logging
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 import asyncpg
@@ -465,6 +465,27 @@ async def _animate(msg, e_rou, e_cur, label, amount, total, em):
         # стартовый кадр не ушёл (флуд) — отдадим хотя бы результат, тоже без падения
         with contextlib.suppress(Exception):
             await r_reply(msg, card, em)
+
+
+@router.message(F.chat.type.in_({"group", "supergroup"}),
+                F.text.func(lambda t: t and t.lower().split()[0] in ("!акция", "/акция")))
+async def cmd_action(msg: Message):
+    """Обратный отсчёт до следующей волны акции ×5. Сбрасывается в 00:00 МСК."""
+    if roulette.boost_active():
+        left = roulette.boost_seconds_left()
+        return await ui.reply(msg,
+            f"⚡️ <b>Акция ×5 идёт ПРЯМО СЕЙЧАС!</b>\n\n"
+            f"Крути <b>!шайн</b> — осталось <b>{left // 60} мин {left % 60} сек</b>.")
+    now = datetime.now(ZoneInfo(ROULETTE_TZ))
+    nxt = (now + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+    left = int((nxt - now).total_seconds())
+    h, m = left // 3600, (left % 3600) // 60
+    await ui.reply(msg,
+        f"⚡️ <b>Акция ×5</b>\n\n"
+        f"Бывает раз в день в <b>случайное время</b> — точный момент держим в секрете, "
+        f"чтобы не набегали ровно на эти минуты.\n\n"
+        f"Новая волна разыгрывается каждые сутки. До обновления (00:00 МСК): "
+        f"<b>{h} ч {m} мин</b>.")
 
 
 @router.message(F.chat.type.in_({"group", "supergroup"}),

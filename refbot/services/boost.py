@@ -38,12 +38,7 @@ async def _announce_start(bot):
     for ch in chats:
         with contextlib.suppress(Exception):
             await ui.send(bot, ch["chat_id"], text)
-    # тихое уведомление админам в личку
-    for admin_id in SUPER_ADMINS:
-        with contextlib.suppress(Exception):
-            await ui.send(bot, admin_id,
-                f"🔔 Акция ×5 стартовала на {dur} мин (в {len(chats)} чатах). "
-                f"Это служебное уведомление, в чатах объявлено громко.")
+    # админам в личку больше НЕ пишем (по просьбе) — только громко в чатах
 
 
 async def _announce_end(bot):
@@ -164,8 +159,8 @@ async def worker(bot):
                 log.info("на сегодня окна для акции нет, жду завтра")
                 await _sleep_until_next_plan(now)
                 continue
-            # уведомляем админа ТОЛЬКО про реальную будущую акцию
-            await _notify_admins_schedule(bot, target)
+            # админам про расписание больше НЕ пишем (по просьбе)
+            log.info("акция x5 назначена на %s МСК", target.strftime("%H:%M"))
         except asyncio.CancelledError:
             raise
         except Exception:

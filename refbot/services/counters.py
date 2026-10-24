@@ -84,6 +84,7 @@ C_PVP_WIN_STREAK = "pvp_win_streak"
 # Мета
 C_TITLES = "titles"
 C_ACH_DONE = "ach_done"
+C_ALL_CURSES = "all_curses"          # собрать все проклятия одновременно (разом)
 
 
 async def bump(uid: int, counter_type: str, delta: int = 1) -> int:
@@ -237,6 +238,7 @@ TRIGGER_LABELS = {
     C_PVP_WIN_STREAK: "Побед в PvP подряд",
     C_TITLES: "Получено титулов",
     C_ACH_DONE: "Выполнено достижений",
+    C_ALL_CURSES: "🔮 Собрать все проклятия разом",
 }
 
 

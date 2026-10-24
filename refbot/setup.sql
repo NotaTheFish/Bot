@@ -813,6 +813,15 @@ ALTER TABLE rb_users ADD COLUMN IF NOT EXISTS wheel_anim TEXT NOT NULL DEFAULT '
 ALTER TABLE rb_promo ADD COLUMN IF NOT EXISTS reward_kind TEXT NOT NULL DEFAULT 'rate';
 -- для reward_kind='both': грибы в reward_mush, коины отдельно здесь (вводятся вручную)
 ALTER TABLE rb_promo ADD COLUMN IF NOT EXISTS reward_coins BIGINT NOT NULL DEFAULT 0;
+
+-- Готовое скрытое достижение «Коллекционер проклятий» (собрать все проклятия разом).
+-- Награда — одноимённый титул. Идемпотентно: по code не продублируется. Правится в !достижения.
+INSERT INTO rb_achievements (code, title, description, hidden, trigger_type, trigger_target,
+                            progress_style, rewards)
+VALUES ('all_curses_once', 'Коллекционер проклятий',
+        'Носить все проклятия одновременно', TRUE, 'all_curses', 1, 'fraction',
+        '[{"type":"title","title_name":"Коллекционер проклятий"}]'::jsonb)
+ON CONFLICT (code) DO NOTHING;
 -- Разрешаем отрицательный баланс (админ-штрафы). Снимаем старый CHECK, если он есть.
 ALTER TABLE rb_balances DROP CONSTRAINT IF EXISTS rb_balances_amount_check;
 ALTER TABLE rb_users ADD COLUMN IF NOT EXISTS free_spins INT NOT NULL DEFAULT 0;

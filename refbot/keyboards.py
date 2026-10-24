@@ -702,6 +702,15 @@ async def promo_kind() -> InlineKeyboardMarkup:
     return kb.as_markup()
 
 
+async def promo_rate_mode() -> InlineKeyboardMarkup:
+    """По курсу: коины считать автоматически или задать вручную."""
+    kb = InlineKeyboardBuilder()
+    await btn(kb, "🔁 Коины по курсу (авто)", "prate:auto")
+    await btn(kb, "✏️ Коины вручную", "prate:manual")
+    kb.adjust(1)
+    return kb.as_markup()
+
+
 async def promo_back() -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
     await btn(kb, "Назад", "promo_menu", "back")
