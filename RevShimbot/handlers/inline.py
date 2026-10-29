@@ -35,15 +35,21 @@ def _esc(t) -> str:
     return _html_mod.escape(str(t or ""))
 
 
-def _flatten_premium(text: str) -> str:
-    """Срезает премиум-теги <tg-emoji emoji-id="…">X</tg-emoji> → X.
-    Нужно для инлайн-результата: Telegram всё равно срежет custom_emoji на
-    входе, но если текст будет побайтово равен тому, что бот потом пишет в
-    правке, Telegram ответит "message is not modified". Поэтому в результат
-    кладём заведомо плоскую версию, а правка возвращает премиум."""
+def _strip_premium(text: str) -> str:
+    """Полностью убирает премиум-эмодзи (тег + сам глиф) из текста.
+    Используется для НАЧАЛЬНОГО инлайн-результата: если оставить тот же глиф,
+    что и в премиум-версии, то при правке Telegram увидит одинаковый текст и
+    ответит "message is not modified" (entity он при сравнении игнорирует).
+    Поэтому в первый показ эмодзи вообще отсутствуют, а правка в
+    on_chosen_inline_result возвращает полный премиум-текст — тексты заведомо
+    разные, и правка применяется."""
     if not text or "<tg-emoji" not in text:
         return text or ""
-    return _re_premium.sub(r'<tg-emoji[^>]*>(.*?)</tg-emoji>', r'\1', text)
+    out = _re_premium.sub(r'<tg-emoji[^>]*>.*?</tg-emoji>', '', text)
+    # Схлопываем задвоенные пробелы, появившиеся на месте вырезанных эмодзи,
+    # но НЕ трогаем переносы строк.
+    out = _re_premium.sub(r'[ \t]{2,}', ' ', out)
+    return out
 
 
 async def _safe_answer(query: InlineQuery, **kwargs):
@@ -261,12 +267,11 @@ async def inline_review(query: InlineQuery, db: Database, bot, config):
                 # тогда восстановление работает даже если Telegram отдал результат
                 # из своего кеша (бот при этом не вызывается) или бот перезапустился.
                 inv_id = f"invite:{seller['id']}"
-                # В сам инлайн-результат кладём «плоскую» версию (премиум-теги →
-                # обычные эмодзи). Правка в on_chosen_inline_result вернёт премиум,
-                # но Telegram применит её ТОЛЬКО если контент отличается от
-                # показанного — иначе "message is not modified". Поэтому flat здесь
-                # и полный caption в правке обязаны различаться.
-                flat_caption = _flatten_premium(caption)
+                # В сам инлайн-результат кладём версию БЕЗ премиум-эмодзи (вырезаны
+                # целиком). Правка в on_chosen_inline_result вернёт полный премиум —
+                # и так как тексты заведомо разные (в первом нет этих эмодзи вовсе),
+                # Telegram применит правку, а не ответит "message is not modified".
+                flat_caption = _strip_premium(caption)
                 await _safe_answer(query,
                     results=[
                         InlineQueryResultCachedPhoto(
@@ -456,10 +461,15 @@ async def on_chosen_inline_result(chosen, bot, db: Database, config):
     Если продавец включил уведомления — шлём ему карточку в ЛС с кнопками."""
     result_id = chosen.result_id
 
-    # Приглашение с премиум-эмодзи: Telegram срезает custom_emoji в инлайн-результате,
-    # но правка сообщения самим ботом их сохраняет. Переписываем caption поверх.
+    # Премиум-эмодзи в инлайн-приглашении.
+    # ВАЖНО (ограничение Telegram, не баг): бот может ставить custom_emoji только
+    # в чатах, где он сам участник. Инлайн-результат уходит в ПРОИЗВОЛЬНЫЙ чат
+    # (избранное, личка клиента, группа, канал), где бота нет, — там Telegram
+    # срезает кастом-эмодзи и при отправке, и при правке. Поэтому правка ниже
+    # реально применится только если приглашение отправили в личку с самим ботом;
+    # во всех остальных случаях Telegram вернёт "message is not modified" и останется
+    # обычный вариант эмодзи (это ожидаемо, клиент видит корректный fallback).
     if result_id.startswith("invite:"):
-        # Восстанавливаем пасту из БД (не из памяти) — надёжно при кеше Telegram
         if not chosen.inline_message_id:
             return
         try:
@@ -481,7 +491,10 @@ async def on_chosen_inline_result(chosen, bot, db: Database, config):
                 reply_markup=build_invite_kb(seller, config.BOT_USERNAME),
             )
         except Exception as e:
-            logger.info(f"Не удалось вернуть премиум-эмодзи в приглашение: {e}")
+            msg = str(e).lower()
+            # "not modified" / запрет кастом-эмодзи в чужом чате — штатный исход, не шумим
+            if "not modified" not in msg and "custom" not in msg and "emoji" not in msg:
+                logger.info(f"Правка инлайн-приглашения не удалась: {e}")
         return
 
     if not result_id.startswith("notify:"):
