@@ -272,6 +272,12 @@ async def inline_review(query: InlineQuery, db: Database, bot, config):
                 # и так как тексты заведомо разные (в первом нет этих эмодзи вовсе),
                 # Telegram применит правку, а не ответит "message is not modified".
                 flat_caption = _strip_premium(caption)
+                logger.info(
+                    "[INVITE-PREM] result: seller_id=%s has_premium_in_full=%s "
+                    "full_len=%d flat_len=%d flat=%r",
+                    seller.get("id"), ("<tg-emoji" in caption),
+                    len(caption), len(flat_caption), flat_caption[:300],
+                )
                 await _safe_answer(query,
                     results=[
                         InlineQueryResultCachedPhoto(
@@ -470,31 +476,47 @@ async def on_chosen_inline_result(chosen, bot, db: Database, config):
     # во всех остальных случаях Telegram вернёт "message is not modified" и останется
     # обычный вариант эмодзи (это ожидаемо, клиент видит корректный fallback).
     if result_id.startswith("invite:"):
+        logger.info("[INVITE-PREM] chosen: result_id=%r inline_message_id=%r from=%s",
+                    result_id, chosen.inline_message_id,
+                    getattr(chosen.from_user, "id", None))
         if not chosen.inline_message_id:
+            logger.info("[INVITE-PREM] chosen: НЕТ inline_message_id — правка невозможна "
+                        "(в результате не было reply_markup?)")
             return
         try:
             seller_id = int(result_id.split(":")[1])
         except (IndexError, ValueError):
+            logger.info("[INVITE-PREM] chosen: не разобрал seller_id из %r", result_id)
             return
         seller = await db.get_seller(seller_id)
         if not seller:
+            logger.info("[INVITE-PREM] chosen: продавец %s не найден", seller_id)
             return
         from handlers.invite import build_invite_caption, build_invite_kb
         caption = build_invite_caption(seller, config.BOT_USERNAME)
+        logger.info("[INVITE-PREM] chosen: edit caption has_premium=%s len=%d caption=%r",
+                    ("<tg-emoji" in caption), len(caption), caption[:400])
         if "<tg-emoji" not in caption:
+            logger.info("[INVITE-PREM] chosen: премиума в подписи нет — править нечего")
             return  # премиума нет — править нечего
         try:
-            await bot.edit_message_caption(
+            res = await bot.edit_message_caption(
                 inline_message_id=chosen.inline_message_id,
                 caption=caption,
                 parse_mode="HTML",
                 reply_markup=build_invite_kb(seller, config.BOT_USERNAME),
             )
+            # res может быть True или отредактированным сообщением
+            ents = None
+            try:
+                ents = getattr(res, "caption_entities", None)
+            except Exception:
+                pass
+            logger.info("[INVITE-PREM] chosen: ПРАВКА ПРИМЕНЕНА, res_type=%s entities=%s",
+                        type(res).__name__, ents)
         except Exception as e:
-            msg = str(e).lower()
-            # "not modified" / запрет кастом-эмодзи в чужом чате — штатный исход, не шумим
-            if "not modified" not in msg and "custom" not in msg and "emoji" not in msg:
-                logger.info(f"Правка инлайн-приглашения не удалась: {e}")
+            logger.info("[INVITE-PREM] chosen: ПРАВКА НЕ ПРИМЕНЕНА: %s: %s",
+                        type(e).__name__, e)
         return
 
     if not result_id.startswith("notify:"):
