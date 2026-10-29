@@ -370,7 +370,7 @@ async def cb_profile(call: CallbackQuery, db: Database, config):
 
 
 @router.callback_query(F.data == "menu:pending")
-async def cb_pending_reviews(call: CallbackQuery, db: Database):
+async def cb_pending_reviews(call: CallbackQuery, db: Database, bot, config):
     pending = await db.get_pending_reviews(call.from_user.id)
     await call.answer()
 
@@ -380,6 +380,7 @@ async def cb_pending_reviews(call: CallbackQuery, db: Database):
 
     await call.message.answer(f"📬 <b>Необработанные заявки ({len(pending)})</b>")
 
+    from handlers.review import send_review_card_safe
     for r in pending:
         stars_line = "★" * r["stars"] if r["stars"] > 0 else ""
         caption = (
@@ -391,14 +392,8 @@ async def cb_pending_reviews(call: CallbackQuery, db: Database):
             InlineKeyboardButton(text="✅ Принять", callback_data=f"review:accept:{r['id']}"),
             InlineKeyboardButton(text="❌ Отклонить", callback_data=f"review:reject:{r['id']}"),
         ]])
-        if r.get("card_file_id"):
-            await call.message.answer_photo(
-                photo=r["card_file_id"],
-                caption=caption,
-                reply_markup=kb
-            )
-        else:
-            await call.message.answer(caption, reply_markup=kb)
+        # Безопасная отправка: мёртвый file_id (после смены токена) → перегенерация
+        await send_review_card_safe(bot, call.message.chat.id, r, db, config, caption, kb)
 
 
 @router.callback_query(F.data == "menu:mylink")

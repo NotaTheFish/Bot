@@ -28,10 +28,22 @@ _PENDING_MAX = 500
 _LAST_INLINE_Q: dict[int, str] = {}
 
 import html as _html_mod
+import re as _re_premium
 
 
 def _esc(t) -> str:
     return _html_mod.escape(str(t or ""))
+
+
+def _flatten_premium(text: str) -> str:
+    """Срезает премиум-теги <tg-emoji emoji-id="…">X</tg-emoji> → X.
+    Нужно для инлайн-результата: Telegram всё равно срежет custom_emoji на
+    входе, но если текст будет побайтово равен тому, что бот потом пишет в
+    правке, Telegram ответит "message is not modified". Поэтому в результат
+    кладём заведомо плоскую версию, а правка возвращает премиум."""
+    if not text or "<tg-emoji" not in text:
+        return text or ""
+    return _re_premium.sub(r'<tg-emoji[^>]*>(.*?)</tg-emoji>', r'\1', text)
 
 
 async def _safe_answer(query: InlineQuery, **kwargs):
@@ -188,9 +200,25 @@ async def inline_review(query: InlineQuery, db: Database, bot, config):
         if config.CACHE_CHAT_ID:
             # Своё фото приглашения (хранится как file_id) — используем без генерации
             custom_photo = seller.get("invite_photo")
+            file_id = None
             if custom_photo:
-                file_id = custom_photo
-            else:
+                # Проверяем валидность: чужой (от старого бота) file_id даёт PHOTO_INVALID.
+                # Тихо шлём в лог-чат и удаляем — если прошло, фото живое.
+                try:
+                    _t = await bot.send_photo(config.CACHE_CHAT_ID, custom_photo)
+                    try:
+                        await bot.delete_message(config.CACHE_CHAT_ID, _t.message_id)
+                    except Exception:
+                        pass
+                    file_id = custom_photo
+                except Exception:
+                    # Мёртвое фото — сбрасываем в БД и уходим в генерацию превью
+                    try:
+                        await db.update_seller(seller["id"], invite_photo=None)
+                    except Exception:
+                        pass
+                    custom_photo = None
+            if not custom_photo and not file_id:
                 # Генерируем карточку-превью: шаблон приглашения → инлайн → основной
                 preview_tpl = (seller.get("invite_template_id")
                                or seller.get("inline_template_id")
@@ -233,12 +261,18 @@ async def inline_review(query: InlineQuery, db: Database, bot, config):
                 # тогда восстановление работает даже если Telegram отдал результат
                 # из своего кеша (бот при этом не вызывается) или бот перезапустился.
                 inv_id = f"invite:{seller['id']}"
+                # В сам инлайн-результат кладём «плоскую» версию (премиум-теги →
+                # обычные эмодзи). Правка в on_chosen_inline_result вернёт премиум,
+                # но Telegram применит её ТОЛЬКО если контент отличается от
+                # показанного — иначе "message is not modified". Поэтому flat здесь
+                # и полный caption в правке обязаны различаться.
+                flat_caption = _flatten_premium(caption)
                 await _safe_answer(query,
                     results=[
                         InlineQueryResultCachedPhoto(
                             id=inv_id,
                             photo_file_id=file_id,
-                            caption=caption,
+                            caption=flat_caption,
                             parse_mode="HTML",
                             reply_markup=kb,
                             title=f"📨 Пригласить оставить отзыв — {seller['shop_name']}",

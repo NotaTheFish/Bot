@@ -340,11 +340,22 @@ async def cb_invite_preview(call: CallbackQuery, db: Database, bot, config):
         caption = _default_text(seller["shop_name"], seller["pub_id"], config.BOT_USERNAME)
 
     photo = seller.get("invite_photo")
-    try:
-        if photo:
+    sent_ok = False
+    if photo:
+        try:
             await bot.send_photo(call.from_user.id, photo=photo, caption=caption,
                                  reply_markup=kb, parse_mode="HTML")
-        else:
+            sent_ok = True
+        except Exception as e:
+            # Мёртвый file_id (фото грузил старый бот — после смены токена оно
+            # невалидно) — сбрасываем в БД и уходим в генерацию превью.
+            logger.info(f"invite_photo мёртв, сбрасываю и генерирую превью: {e}")
+            try:
+                await db.update_seller(call.from_user.id, invite_photo=None)
+            except Exception:
+                pass
+    if not sent_ok:
+        try:
             # Генерируем карточку-превью тем же способом, что и инлайн
             from services.card_generator import generate_card
             from aiogram.types import BufferedInputFile
@@ -364,7 +375,7 @@ async def cb_invite_preview(call: CallbackQuery, db: Database, bot, config):
             await bot.send_photo(call.from_user.id,
                                  photo=BufferedInputFile(img, filename="invite.png"),
                                  caption=caption, reply_markup=kb, parse_mode="HTML")
-    except Exception as e:
-        logger.error(f"Предпросмотр приглашения не удался: {e}")
-        await call.message.answer("⚠️ Не удалось показать предпросмотр. "
-                                  "Проверь текст — возможно, в нём битая разметка.")
+        except Exception as e:
+            logger.error(f"Предпросмотр приглашения не удался: {e}")
+            await call.message.answer("⚠️ Не удалось показать предпросмотр. "
+                                      "Проверь текст — возможно, в нём битая разметка.")

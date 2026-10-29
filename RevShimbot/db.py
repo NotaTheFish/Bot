@@ -1028,7 +1028,9 @@ class Database:
     async def get_pending_reviews(self, seller_id: int) -> list:
         async with self.pool.acquire() as conn:
             rows = await conn.fetch("""
-                SELECT r.id, r.buyer_name, r.buyer_username, r.review_text, r.stars, r.created_at, r.card_file_id
+                SELECT r.id, r.seller_id, r.buyer_name, r.buyer_username, r.review_text,
+                       r.stars, r.item_bought, r.verify_code, r.template_used,
+                       r.is_anonymous, r.created_at, r.card_file_id
                 FROM rvb_reviews r
                 JOIN rvb_seller_channels c ON c.seller_id = r.seller_id
                 WHERE r.seller_id = $1

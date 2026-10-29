@@ -5,6 +5,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 import logging
 import asyncio
+import re as _re_tg
 import html as _html_mod
 
 
@@ -38,6 +39,77 @@ from db import Database
 from keyboards import kb_buyer_stars, kb_templates, kb_cancel
 from constants import REVIEW_MAX_LEN, REVIEW_SOFT_LEN
 from services.card_generator import generate_card
+
+
+async def _regen_card_bytes(review: dict, db, bot, config) -> bytes:
+    """Перегенерирует PNG карточки из данных отзыва. Нужно, когда сохранённый
+    card_file_id мёртв (например бот сменил токен — старые file_id чужие).
+    Старые пруфы и премиум-эмодзи в тексте восстановить нельзя (их file_id тоже
+    принадлежали старому боту), поэтому карточка выходит без них — но читаемая."""
+    import base64 as _b64
+    seller = await db.get_seller(review["seller_id"])
+    if not seller:
+        raise ValueError("продавец не найден")
+    buyer_name = review.get("buyer_name") or "Покупатель"
+    if review.get("is_anonymous"):
+        nick, av_b64 = await _resolve_anon_profile(db, seller, review.get("template_used"))
+        display_name = nick
+        display_initials = "?"
+        display_avatar = _b64.b64decode(av_b64) if av_b64 else None
+    else:
+        display_name = buyer_name
+        display_initials = "".join(w[0].upper() for w in buyer_name.split() if w)[:2]
+        display_avatar = None
+    card_data = {
+        "shop_name": seller["shop_name"],
+        "seller_tag": f"@{seller['username']}" if seller.get("username") else f"ID: {seller['id']}",
+        "buyer_name": display_name,
+        "buyer_initials": display_initials,
+        "review_text": review.get("review_text", ""),
+        "item_bought": review.get("item_bought", ""),
+        "verify_code": review.get("verify_code"),
+        "stars": review.get("stars", 0),
+        "stars_mode": seller["stars_mode"],
+        "template_id": review.get("template_used") or seller["template_id"],
+        "avatar_bytes": display_avatar,
+        "entities": [],
+        "bot": bot,
+        "bot_username": config.BOT_USERNAME,
+        "db": db,
+        "proof_list": [],
+    }
+    return await generate_card(card_data)
+
+
+async def send_review_card_safe(bot, chat_id, review: dict, db, config,
+                                caption: str, reply_markup=None):
+    """Шлёт карточку отзыва по сохранённому file_id; при мёртвом file_id
+    (wrong file identifier) перегенерирует картинку и чинит file_id в БД —
+    тогда старые заявки открываются и лечатся сами при первом показе."""
+    from aiogram.exceptions import TelegramBadRequest
+    fid = review.get("card_file_id")
+    if fid:
+        try:
+            return await bot.send_photo(chat_id, fid, caption=caption,
+                                        reply_markup=reply_markup, parse_mode="HTML")
+        except TelegramBadRequest as e:
+            if "file" not in str(e).lower():
+                raise  # не про file_id — пробрасываем
+    # file_id мёртв или отсутствует → перегенерируем
+    try:
+        img = await _regen_card_bytes(review, db, bot, config)
+        sent = await bot.send_photo(chat_id, BufferedInputFile(img, filename="review.png"),
+                                    caption=caption, reply_markup=reply_markup, parse_mode="HTML")
+        try:
+            await db.update_review_card(review["id"], sent.photo[-1].file_id)
+        except Exception:
+            pass
+        return sent
+    except Exception as e:
+        logger.error(f"Перегенерация карточки заявки {review.get('id')} не удалась: {e}")
+        # Последний фолбэк — текст, чтобы заявку хотя бы можно было обработать
+        return await bot.send_message(chat_id, caption, reply_markup=reply_markup,
+                                      parse_mode="HTML")
 
 
 async def _place_review_number(bot, db, config, seller_id: int, review_id: int,
@@ -1003,10 +1075,62 @@ async def cb_review_accept(call: CallbackQuery, bot: Bot, db: Database, config):
                 parse_mode="HTML",
             )
         except Exception as e:
-            # Публикация не удалась — откатываем захват, чтобы можно было повторить
-            await db.set_review_status(review_id, "pending")
-            await call.answer(f"Ошибка публикации: {e}", show_alert=True)
-            return
+            # Мёртвый file_id (смена токена бота) — перегенерируем карточку и публикуем
+            if "file" in str(e).lower():
+                try:
+                    full = await db.get_review(review_id)
+                    img = await _regen_card_bytes(full, db, bot, config)
+                    new_fid = None
+                    # Если в подписи премиум-эмодзи — напрямую в канал боту их слать
+                    # нельзя, поэтому повторяем приём «лог-чат → forward» уже со
+                    # свежесгенерированной картинкой. Заодно берём валидный file_id.
+                    if "<tg-emoji" in caption and cache_chat:
+                        try:
+                            tmp = await bot.send_photo(
+                                chat_id=cache_chat,
+                                photo=BufferedInputFile(img, filename="review.png"),
+                                caption=caption, parse_mode="HTML")
+                            new_fid = tmp.photo[-1].file_id if tmp.photo else None
+                            posted = await bot.forward_message(
+                                chat_id=ch["channel_id"], from_chat_id=cache_chat,
+                                message_id=tmp.message_id)
+                            try:
+                                await bot.delete_message(cache_chat, tmp.message_id)
+                            except Exception:
+                                pass
+                            if channel_kb:
+                                try:
+                                    await bot.edit_message_reply_markup(
+                                        chat_id=ch["channel_id"], message_id=posted.message_id,
+                                        reply_markup=channel_kb)
+                                except Exception:
+                                    pass
+                        except Exception:
+                            posted = None
+                    if posted is None:
+                        # Без премиума (или если forward не прошёл) — обычная отправка.
+                        # Премиум-теги срезаем, чтобы прямая отправка в канал не упала.
+                        safe_caption = _re_tg.sub(
+                            r'<tg-emoji[^>]*>(.*?)</tg-emoji>', r'\1', caption)
+                        posted = await bot.send_photo(
+                            chat_id=ch["channel_id"],
+                            photo=BufferedInputFile(img, filename="review.png"),
+                            caption=safe_caption, reply_markup=channel_kb, parse_mode="HTML")
+                        new_fid = posted.photo[-1].file_id if posted.photo else None
+                    if new_fid:
+                        try:
+                            await db.update_review_card(review_id, new_fid)
+                        except Exception:
+                            pass
+                except Exception as e2:
+                    await db.set_review_status(review_id, "pending")
+                    await call.answer(f"Не удалось опубликовать: {e2}", show_alert=True)
+                    return
+            else:
+                # Иная ошибка — откатываем захват, чтобы можно было повторить
+                await db.set_review_status(review_id, "pending")
+                await call.answer(f"Ошибка публикации: {e}", show_alert=True)
+                return
 
     # Статус уже 'accepted' (захвачен в начале try_accept_review) — повторно не ставим
 
@@ -1150,8 +1274,14 @@ async def cb_proofedit(call: CallbackQuery, state: FSMContext, db: Database, bot
                     sent_any = True
                 except Exception as e:
                     logger.info(f"Не удалось отдать оригинал пруфа: {e}")
-        intro = ("👆 Выше — оригиналы пруфов. Скачай, замажь на них личные данные "
-                 "(ники, суммы и т.п.) и пришли обратно.\n\n") if sent_any else ""
+        if sent_any:
+            intro = ("👆 Выше — оригиналы пруфов. Скачай, замажь на них личные данные "
+                     "(ники, суммы и т.п.) и пришли обратно.\n\n")
+        else:
+            # Оригиналы грузил старый бот — после смены токена их file_id невалидны,
+            # перегенерировать их нельзя. Честно говорим продавцу.
+            intro = ("<i>Оригиналы этих пруфов недоступны (были загружены до "
+                     "обновления бота) — пришли свои версии фото.</i>\n\n")
     else:
         # Старые отзывы без сохранённых оригиналов
         intro = ("<i>Оригиналы этого отзыва не сохранены (старый отзыв) — "
