@@ -661,6 +661,6 @@ async def render_with_data(cfg: dict, data: dict) -> bytes:
         html = _inject_proof(html, proofs, accent)
     if data.get("verify_code"):
         from services.card_generator import _inject_verify_code
-        html = _inject_verify_code(html, data["verify_code"], data.get("bot_username", "RevShimbot"))
+        html = _inject_verify_code(html, data["verify_code"], data.get("bot_username", "RevShimmbot"))
     loop = asyncio.get_event_loop()
     return await loop.run_in_executor(None, _render, html)

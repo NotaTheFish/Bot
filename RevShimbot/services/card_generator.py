@@ -696,7 +696,7 @@ async def generate_card(data: dict) -> bytes:
         }
         html = _inject_proof(html, proof_b64_list, accents.get(template_id, "#c9a84c"))
     if data.get("verify_code"):
-        html = _inject_verify_code(html, data["verify_code"], data.get("bot_username", "RevShimbot"))
+        html = _inject_verify_code(html, data["verify_code"], data.get("bot_username", "RevShimmbot"))
     loop = asyncio.get_event_loop()
     # Один выделенный поток-воркер: браузер живёт в нём и обслуживает карточки
     # по очереди. Наплыв клиентов выстраивается в очередь, а не плодит браузеры.

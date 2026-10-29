@@ -142,11 +142,11 @@ async def cb_start_seller(call: CallbackQuery, db: Database, state: FSMContext):
 
 
 @router.callback_query(F.data == "start:client")
-async def cb_start_client(call: CallbackQuery, state: FSMContext, db: Database):
+async def cb_start_client(call: CallbackQuery, state: FSMContext, db: Database, config):
     await call.answer()
     await call.message.edit_reply_markup(reply_markup=None)
     from handlers.client_setup import start_client_setup
-    await start_client_setup(call.message, state, db, call.from_user.id)
+    await start_client_setup(call.message, state, db, call.from_user.id, config)
 
 
 @router.callback_query(F.data == "start:quick")
@@ -533,7 +533,7 @@ async def cb_mytemplate(call: CallbackQuery, db: Database, config):
 
 
 @router.callback_query(F.data == "menu:myclienttemplate")
-async def cb_myclienttemplate(call: CallbackQuery, db: Database):
+async def cb_myclienttemplate(call: CallbackQuery, db: Database, config):
     client = await db.get_client_template(call.from_user.id)
     if not client:
         await call.answer("Клиентский шаблон не настроен", show_alert=True)
@@ -551,7 +551,7 @@ async def cb_myclienttemplate(call: CallbackQuery, db: Database):
     await call.message.answer(
         f"🎨 <b>Клиентский шаблон</b>\n\n"
         f"Стиль карточки: <b>{_h_esc(tpl)}</b>\n\n"
-        f"Используется когда ты пишешь <code>@RevShimbot текст</code> в чате.\n\n"
+        f"Используется когда ты пишешь <code>@{config.BOT_USERNAME} текст</code> в чате.\n\n"
         f"Изменить стиль?",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="🎨 Изменить стиль", callback_data="start:client")],
