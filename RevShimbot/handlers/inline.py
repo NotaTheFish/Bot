@@ -517,6 +517,28 @@ async def on_chosen_inline_result(chosen, bot, db: Database, config):
         except Exception as e:
             logger.info("[INVITE-PREM] chosen: ПРАВКА НЕ ПРИМЕНЕНА: %s: %s",
                         type(e).__name__, e)
+
+        # ── ДИАГНОСТИКА СПОСОБНОСТИ БОТА СТАВИТЬ CUSTOM_EMOJI ──
+        # editMessageCaption для инлайна возвращает True, поэтому entity оттуда
+        # не видно. Шлём ту же подпись в лог-чат (там бот — участник) и смотрим,
+        # какие entity реально вернул Telegram. Если custom_emoji среди них нет —
+        # значит аккаунт бота не умеет слать премиум-эмодзи (нужен Premium/Business
+        # у бота или эмодзи из разрешённого набора), и правка здесь бессильна.
+        if config.CACHE_CHAT_ID:
+            try:
+                probe = await bot.send_message(
+                    config.CACHE_CHAT_ID, caption, parse_mode="HTML")
+                types = [getattr(e, "type", None) for e in (probe.entities or [])]
+                has_custom = any(t == "custom_emoji" for t in types)
+                logger.info("[INVITE-PREM] probe лог-чат: has_custom_emoji=%s entity_types=%s",
+                            has_custom, types)
+                try:
+                    await bot.delete_message(config.CACHE_CHAT_ID, probe.message_id)
+                except Exception:
+                    pass
+            except Exception as e:
+                logger.info("[INVITE-PREM] probe лог-чат не прошёл: %s: %s",
+                            type(e).__name__, e)
         return
 
     if not result_id.startswith("notify:"):
